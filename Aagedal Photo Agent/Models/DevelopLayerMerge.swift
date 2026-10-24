@@ -463,3 +463,145 @@ extension CameraRawSettings {
         }
     }
 }
+
+/// Combines Anonymizer redactions across the copies of one photo's develop settings (sidecar,
+/// embedded, the Browser's live copy) so that merging copies only ever adds redactions:
+/// every enabled Anonymizer mask of every copy (deduplicated by identity, then by region), and
+/// the strongest global Anonymizer. Over-redacting is recoverable; publishing a face is not.
+///
+/// Also the fail-closed check every output render runs (`covers`): a redaction saved in any
+/// copy that the render settings don't carry refuses the render.
+nonisolated enum RedactionUnion {
+    /// Enabled Anonymizer masks (face blur / Black Out) in `settings`.
+    static func redactionMasks(in settings: CameraRawSettings?) -> [MaskAdjustment] {
+        settings?.localAdjustments?.filter { $0.enabled && $0.isRedaction } ?? []
+    }
+
+    /// The region a mask covers (geometry, inversion, full-frame), ignoring identity, name,
+    /// strength and adjustments. Two copies of the same face blur share it even when their
+    /// identities differ (e.g. one copy re-created by another tool).
+    static func regionFingerprint(_ mask: MaskAdjustment) -> String? {
+        struct Region: Encodable {
+            let geometry: EllipseMaskGeometry?
+            let brush: BrushMaskGeometry?
+            let aiMask: AIMaskGeometry?
+            let inverted: Bool
+            let fullFrame: Bool
+        }
+        let usesEllipse = mask.brush == nil && mask.aiMask == nil && !mask.isFullFrame
+        return CameraRawSettings.canonicalJSONFingerprint(Region(
+            geometry: usesEllipse ? mask.geometry : nil,
+            brush: mask.brush,
+            aiMask: mask.aiMask,
+            inverted: mask.inverted,
+            fullFrame: mask.isFullFrame
+        ), scale: 1_000)
+    }
+
+    /// `base` (the preferred copy, which keeps all its own settings) plus every enabled
+    /// redaction from `others`: a mask `base` already has (same identity, or an enabled
+    /// redaction over the same region) is re-enabled/strengthened in place, any other is
+    /// appended; the global Anonymizer becomes the strongest of all copies. Redactions are kept
+    /// within the renderer's mask limit (ordinary masks are disabled to make room).
+    static func merged(_ base: CameraRawSettings, adding others: [CameraRawSettings?]) -> CameraRawSettings {
+        var result = base
+        let others = others.compactMap { $0 }
+
+        var anonymizer = base.anonymizer
+        for other in others {
+            anonymizer = AnonymizerSettings.atLeastAsStrong(target: anonymizer, incoming: other.anonymizer)
+        }
+        if let anonymizer, !anonymizer.isEmpty, anonymizer != base.anonymizer {
+            result.anonymizer = anonymizer
+        }
+
+        var masks = base.localAdjustments ?? []
+        var appendedIDs: [UUID] = []
+        for other in others {
+            for mask in redactionMasks(in: other) {
+                if let index = masks.firstIndex(where: { $0.id == mask.id }) {
+                    masks[index] = strengthened(masks[index], covering: mask)
+                    continue
+                }
+                let region = regionFingerprint(mask)
+                if let region, let index = masks.firstIndex(where: {
+                    $0.enabled && $0.isRedaction && regionFingerprint($0) == region
+                }) {
+                    masks[index] = strengthened(masks[index], covering: mask)
+                    continue
+                }
+                masks.append(mask)   // its identity isn't taken (checked above)
+                appendedIDs.append(mask.id)
+            }
+        }
+        if masks != (base.localAdjustments ?? []) {
+            result.localAdjustments = masks
+            if !appendedIDs.isEmpty, var order = base.layerOrder, !order.isEmpty {
+                // An explicit chain: place the added redactions ahead of the watermarks.
+                let insertAt = order.firstIndex {
+                    if case .watermark = $0 { return true }
+                    return false
+                } ?? order.count
+                order.insert(contentsOf: appendedIDs.map(LayerRef.mask), at: insertAt)
+                result.layerOrder = order
+            }
+        }
+        keepRedactionsRenderable(&result)
+        return result
+    }
+
+    /// True when `render` carries every redaction saved in `saved`: each enabled Anonymizer
+    /// mask (matched by identity or region, enabled and redacting) and, when any copy has a
+    /// global Anonymizer, a global Anonymizer of its own; and the renderer's mask limit doesn't
+    /// skip any of its redaction masks.
+    static func covers(render: CameraRawSettings?, saved: [CameraRawSettings?]) -> Bool {
+        let renderMasks = redactionMasks(in: render)
+        let renderIDs = Set(renderMasks.map(\.id))
+        let renderRegions = Set(renderMasks.compactMap(regionFingerprint))
+        for copy in saved.compactMap({ $0 }) {
+            if copy.anonymizer?.isEmpty == false, render?.anonymizer?.isEmpty != false {
+                return false
+            }
+            for mask in redactionMasks(in: copy) {
+                if renderIDs.contains(mask.id) { continue }
+                if let region = regionFingerprint(mask), renderRegions.contains(region) { continue }
+                return false
+            }
+        }
+        if let render, redactionsExceedRenderLimit(render) { return false }
+        return true
+    }
+
+    /// True when the renderer (which takes the first `maxEnabledMasks` enabled masks in array
+    /// order) would skip an enabled redaction mask.
+    static func redactionsExceedRenderLimit(_ settings: CameraRawSettings) -> Bool {
+        let enabled = settings.localAdjustments?.filter(\.enabled) ?? []
+        guard enabled.count > DevelopLayerLimits.maxEnabledMasks else { return false }
+        return enabled.dropFirst(DevelopLayerLimits.maxEnabledMasks).contains(where: \.isRedaction)
+    }
+
+    /// Disables ordinary masks (the last one ahead of a skipped redaction first) until no
+    /// enabled redaction falls past the renderer's mask limit, or nothing more can be freed.
+    static func keepRedactionsRenderable(_ settings: inout CameraRawSettings) {
+        guard var masks = settings.localAdjustments else { return }
+        while true {
+            let enabledIndices = masks.indices.filter { masks[$0].enabled }
+            guard enabledIndices.count > DevelopLayerLimits.maxEnabledMasks,
+                  let skipped = enabledIndices.dropFirst(DevelopLayerLimits.maxEnabledMasks)
+                    .first(where: { masks[$0].isRedaction }),
+                  let victim = enabledIndices.last(where: { $0 < skipped && !masks[$0].isRedaction })
+            else { break }
+            masks[victim].enabled = false
+        }
+        if masks != settings.localAdjustments { settings.localAdjustments = masks }
+    }
+
+    private static func strengthened(_ existing: MaskAdjustment, covering incoming: MaskAdjustment) -> MaskAdjustment {
+        var mask = existing
+        if !mask.enabled { mask.enabled = true }
+        let anonymizer = AnonymizerSettings.atLeastAsStrong(target: mask.anonymizer, incoming: incoming.anonymizer)
+        if anonymizer != mask.anonymizer { mask.anonymizer = anonymizer }
+        if incoming.amount > mask.amount { mask.amount = incoming.amount }
+        return mask
+    }
+}

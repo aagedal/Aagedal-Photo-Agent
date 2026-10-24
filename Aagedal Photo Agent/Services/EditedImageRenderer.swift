@@ -207,10 +207,12 @@ nonisolated enum EditedImageRenderer {
             outputIsHDR: outputIsHDR,
             maximumOutputPixelSize: maximumOutputPixelSize
         )
-        return CameraRawApproximation.applyWithCrop(
+        // Fail closed: a GPU failure must not fall back to a render that drops redactions.
+        return try CameraRawApproximation.applyWithCropForOutput(
             to: source.image,
             settings: source.settings,
-            exifOrientation: source.pixelOrientation
+            exifOrientation: source.pixelOrientation,
+            sourceURL: sourceURL
         )
     }
 
@@ -235,10 +237,14 @@ nonisolated enum EditedImageRenderer {
             maximumOutputPixelSize: maximumOutputPixelSize
         )
         try Task.checkCancellation()
-        let processed = await CameraRawApproximation.applyWithCropAsync(
+        // Fail closed: when the GPU render fails and the CIFilter fallback can't reproduce the
+        // edit (masks, Anonymizer, watermarks), this throws `EditRenderRefusedError` before
+        // anything is encoded.
+        let processed = try await CameraRawApproximation.applyWithCropForOutputAsync(
             to: source.image,
             settings: source.settings,
-            exifOrientation: source.pixelOrientation
+            exifOrientation: source.pixelOrientation,
+            sourceURL: sourceURL
         )
         try Task.checkCancellation()
         return processed

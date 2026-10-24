@@ -1039,9 +1039,15 @@ final class FTPViewModel {
                 let isRender = effectiveRenderURLs.contains(url)
                 do {
                     if isRender, redactedURLs.contains(url),
-                       !FTPUploadRedaction.isActive(metadataMap[url]?.cameraRaw) {
+                       !RedactionUnion.covers(render: metadataMap[url]?.cameraRaw, saved: [
+                           SupportedImageFormats.isRaw(url: url) ? nil : embeddedMap[url]?.cameraRaw,
+                           inMemoryCameraRaw(url),
+                           sidecarDevelop[url],
+                       ]) {
                         // A saved Anonymizer the render inputs don't carry would publish the
                         // face un-redacted. Refuse rather than guess which copy is current.
+                        // (The same check runs again inside `EditExportPipeline.renderItem`,
+                        // against what is on disk at render time.)
                         self.errorMessages.append("\(url.lastPathComponent) has a saved Anonymizer that its current Develop settings don't include. It was not uploaded — open it in Develop, check the redaction, and upload again.")
                         notPrepared(url, reason: "Redaction couldn't be confirmed — not uploaded.")
                     } else if isRender {

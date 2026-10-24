@@ -641,6 +641,12 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             // remove the renderer's frozen target-gamut evidence rather than a source profile.
             destMetadata.exif?.ifd1 = nil
 
+            // Drop source blobs that describe the *original* pixels (camera C2PA manifest,
+            // Photoshop/DNG private data, embedded previews, XMP thumbnails) and, when the
+            // render redacts, where the faces are (region metadata, maker-note previews).
+            Self.stripSourceBlobsForRendition(
+                &destMetadata, renderRedacts: bakedCameraRaw?.hasActiveRedaction == true)
+
             // Drop the source's Exif pixel-dimension tags (PixelXDimension/Y,
             // 0xA002/0xA003). They describe the *source* frame and drift from the
             // rendered output whenever a crop was applied, leaving a file whose Exif
@@ -691,6 +697,91 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 throw error
             }
         }
+    }
+
+    /// IFD0 tags a rendition keeps from its source: descriptive and technical camera fields
+    /// (plus the Exif/GPS sub-IFD pointers, rebuilt by the writer). Everything else in a
+    /// source IFD0 is structural (taken from the rendered file) or a source blob: the camera's
+    /// C2PA manifest (0xCD41, bound to the unredacted original), Photoshop IRB/layers (0x8649,
+    /// 0x935C, with their thumbnails), DNG private data and original raw data, Sony SR2
+    /// (0x7200), JPEG thumbnail offsets, SubIFDs, XMP-in-TIFF (XMP is handled separately),
+    /// IPTC-NAA and ICC (handled separately), PrintIM and vendor tags.
+    nonisolated static let renditionIFD0Allowlist: Set<UInt16> = [
+        0x010D, 0x010E, 0x010F, 0x0110,   // DocumentName, ImageDescription, Make, Model
+        0x0112,                           // Orientation (normalized to 1 below)
+        0x011A, 0x011B, 0x0128,           // X/Y resolution, resolution unit
+        0x0131, 0x0132, 0x013B, 0x013C,   // Software, DateTime, Artist, HostComputer
+        0x0213,                           // YCbCrPositioning
+        0x4746, 0x4749,                   // Rating, RatingPercent
+        0x8298,                           // Copyright
+        0x8769, 0x8825,                   // Exif / GPS sub-IFD pointers
+        0x882A,                           // TimeZoneOffset
+        0x9C9B, 0x9C9C, 0x9C9D, 0x9C9E, 0x9C9F,   // XPTitle/Comment/Author/Keywords/Subject
+    ]
+
+    /// Exif-technical tags some writers (scanners, older TIFF tools) put in IFD0 instead of
+    /// the Exif sub-IFD: exposure, date, lens and similar small values. Blob tags in the range
+    /// (MakerNote, ImageSourceData, ICC, IPTC, Photoshop IRB, GeoTIFF, Interop pointer) are
+    /// excluded.
+    nonisolated static func isRenditionIFD0Tag(_ tag: UInt16) -> Bool {
+        if renditionIFD0Allowlist.contains(tag) { return true }
+        let excluded: Set<UInt16> = [0x83BB, 0x8649, 0x8773, 0x87AF, 0x87B0, 0x87B1,
+                                     0x927C, 0x935C, 0xA005]
+        return (0x829A...0xA4FF).contains(tag) && !excluded.contains(tag)
+    }
+
+    /// XMP properties that embed images of (or a pointer to the provenance of) the source:
+    /// xmp:Thumbnails, Google depth/portrait payloads, and the C2PA provenance link of the
+    /// original's manifest.
+    nonisolated static let sourceImageXMPProperties: [(namespace: String, property: String)] = [
+        (XMPNamespace.xmp, "Thumbnails"),
+        ("http://purl.org/dc/terms/", "provenance"),
+    ]
+    nonisolated static let sourceImageXMPNamespaces: [String] = [
+        XMPNamespace.gImage,   // GImage:Data — the unedited primary image of a portrait shot
+        XMPNamespace.gDepth,   // GDepth:Data/Confidence — depth maps of the original
+        "http://ns.adobe.com/xap/1.0/g/img/",   // xmpGImg (thumbnail payloads)
+    ]
+    /// Face/person region metadata (MWG, Microsoft Photo, IPTC Extension image regions).
+    nonisolated static let regionXMPProperties: [(namespace: String, property: String)] = [
+        (XMPNamespace.mwgRegions, "Regions"),
+        ("http://ns.microsoft.com/photo/1.2/", "RegionInfo"),
+        (XMPNamespace.iptcExt, "ImageRegion"),
+    ]
+
+    /// Removes source blobs a rendition must not inherit (see `renditionIFD0Allowlist`,
+    /// `sourceImageXMPProperties`). When the render redacts, also drops face/person region
+    /// metadata (it publishes where the blurred faces are) and the maker note (several
+    /// vendors embed a preview of the unredacted original there).
+    nonisolated static func stripSourceBlobsForRendition(_ metadata: inout ImageMetadata, renderRedacts: Bool) {
+        if var exif = metadata.exif {
+            if let ifd0 = exif.ifd0 {
+                let kept = ifd0.entries.filter { isRenditionIFD0Tag($0.tag) }
+                if kept.count != ifd0.entries.count {
+                    exif.ifd0 = IFD(entries: kept, nextIFDOffset: ifd0.nextIFDOffset)
+                }
+            }
+            if renderRedacts {
+                if let exifIFD = exif.exifIFD, exifIFD.hasEntry(for: 0x927C) {
+                    exif.exifIFD = exifIFD.removingEntry(for: 0x927C)
+                }
+                exif.makerNoteIFD = nil
+            }
+            metadata.exif = exif
+        }
+        guard var xmp = metadata.xmp else { return }
+        for item in sourceImageXMPProperties {
+            xmp.removeValue(namespace: item.namespace, property: item.property)
+        }
+        for namespace in sourceImageXMPNamespaces {
+            xmp.removeAll(namespace: namespace)
+        }
+        if renderRedacts {
+            for item in regionXMPProperties {
+                xmp.removeValue(namespace: item.namespace, property: item.property)
+            }
+        }
+        metadata.xmp = xmp
     }
 
     /// Removes the Camera Raw namespace and the app-private develop keys (layer chain,

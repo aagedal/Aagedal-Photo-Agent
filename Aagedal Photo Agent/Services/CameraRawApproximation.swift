@@ -2,6 +2,28 @@ import CoreImage
 import CoreGraphics
 import os
 
+/// Test seam: makes every offscreen GPU edit render report failure, as a texture-allocation,
+/// command-buffer or upload failure would. Task-local, so it only affects the test that binds
+/// it (and work that explicitly re-binds it across a detached hop, like `renderItem`).
+nonisolated enum GPURenderFaultInjection {
+    @TaskLocal static var forceFailure = false
+}
+
+/// An output render refused because the GPU render failed and the CIFilter fallback can't
+/// reproduce the edit (it drops masks, the Anonymizer and watermarks). Nothing is written.
+nonisolated struct EditRenderRefusedError: LocalizedError, Sendable, Equatable {
+    let filename: String?
+    let hasRedaction: Bool
+
+    var errorDescription: String? {
+        let prefix = filename.map { "\($0): " } ?? ""
+        if hasRedaction {
+            return prefix + "The edit couldn't be rendered on the GPU; the photo has redactions, so it wasn't exported."
+        }
+        return prefix + "The edit couldn't be rendered on the GPU; the photo has masks or watermarks that can't be rendered without it, so it wasn't exported."
+    }
+}
+
 enum CameraRawApproximation {
     nonisolated static let workingColorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
     nonisolated static let ciContext = CIContext(options: [
@@ -55,52 +77,117 @@ enum CameraRawApproximation {
         return max(px[0], px[1], px[2])
     }
 
+    // MARK: - Render entry points
+    //
+    // Privacy rule: the CIFilter fallback (used when the GPU render returns nil: Metal
+    // unavailable, texture allocation, command buffer or upload failure) renders global
+    // adjustments only. It cannot reproduce masks (including Anonymizer face blurs and Black
+    // Out), the global Anonymizer, or watermark layers. When the settings carry any of those,
+    // the fallback is refused: output renders throw `EditRenderRefusedError` (nothing is
+    // encoded), and previews show a neutral placeholder instead of unredacted pixels (a preview
+    // can be screen-shared).
+
+    /// Whether the CIFilter fallback can stand in for a failed GPU render of `settings`:
+    /// no redaction, no enabled mask layer, no enabled watermark layer.
+    nonisolated static func fallbackCanReproduce(_ settings: CameraRawSettings) -> Bool {
+        if settings.hasActiveRedaction { return false }
+        if settings.localAdjustments?.contains(where: \.enabled) == true { return false }
+        if settings.watermarkLayers?.contains(where: \.enabled) == true { return false }
+        return true
+    }
+
+    /// A neutral mid-grey stand-in with `input`'s extent, shown by previews when the GPU render
+    /// failed for settings the fallback can't reproduce. Never derived from the source pixels.
+    nonisolated static func redactionSafePlaceholder(for input: CIImage) -> CIImage {
+        CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: input.extent)
+    }
+
+    /// CGImage form of `redactionSafePlaceholder`, for callers that would otherwise fall back to
+    /// the unedited source CGImage when materializing an edit fails.
+    nonisolated static func redactionSafePlaceholderCGImage(width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0,
+              let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+              ) else { return nil }
+        context.setFillColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+    }
+
+    /// Preview render (Develop scopes, full screen, thumbnails). A refused fallback yields
+    /// `redactionSafePlaceholder`, never the unredacted input.
     nonisolated static func apply(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CIImage {
         guard let settings else { return input }
-
-        // Primary path: Metal compute shader renders all adjustments in one pass.
-        // Uses the exact same shader as the live preview — guarantees pixel-perfect match.
-        // `exifOrientation` is the orientation baked into `input`'s pixels; the
-        // renderer uses it to move sensor-frame mask geometry into that frame.
-        if let metalResult = MetalEditPipeline.renderOffscreen(
-            source: input, settings: settings, exifOrientation: exifOrientation
-        ) {
-            return metalResult
-        }
-        return metalUnavailableFallback(to: input, settings: settings)
+        return applyOrRefuse(to: input, settings: settings, exifOrientation: exifOrientation)
+            ?? redactionSafePlaceholder(for: input)
     }
 
     /// Async sibling of `apply`. Suspends on the dedicated render queue instead of blocking the
     /// caller's thread — use this from `Task`s (prefetch, thumbnail generation) so a slow GPU
     /// render can't starve the cooperative thread pool. Produces identical pixels to `apply`.
-    /// Cancellation returns the unchanged input; callers discard their cancelled request.
+    /// Cancellation returns the unchanged input (callers discard their cancelled request),
+    /// except for settings the fallback can't reproduce, which get the placeholder.
     nonisolated static func applyAsync(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) async -> CIImage {
-        guard !Task.isCancelled, let settings else { return input }
-        if let metalResult = await MetalEditPipeline.renderOffscreenAsync(
-            source: input, settings: settings, exifOrientation: exifOrientation
-        ) {
+        guard let settings else { return input }
+        guard !Task.isCancelled else { return cancelledPreviewResult(input, settings: settings) }
+        let result = await applyAsyncOrRefuse(to: input, settings: settings, exifOrientation: exifOrientation)
+        guard !Task.isCancelled else { return cancelledPreviewResult(input, settings: settings) }
+        return result ?? redactionSafePlaceholder(for: input)
+    }
+
+    /// GPU render, else the CIFilter fallback when it can reproduce `settings`; nil = refused.
+    nonisolated private static func applyOrRefuse(
+        to input: CIImage, settings: CameraRawSettings, exifOrientation: Int
+    ) -> CIImage? {
+        // Primary path: Metal compute shader renders all adjustments in one pass.
+        // Uses the exact same shader as the live preview — guarantees pixel-perfect match.
+        // `exifOrientation` is the orientation baked into `input`'s pixels; the
+        // renderer uses it to move sensor-frame mask geometry into that frame.
+        if !GPURenderFaultInjection.forceFailure,
+           let metalResult = MetalEditPipeline.renderOffscreen(
+               source: input, settings: settings, exifOrientation: exifOrientation
+           ) {
             return metalResult
         }
-        guard !Task.isCancelled else { return input }
+        return fallbackOrRefuse(to: input, settings: settings)
+    }
+
+    nonisolated private static func applyAsyncOrRefuse(
+        to input: CIImage, settings: CameraRawSettings, exifOrientation: Int
+    ) async -> CIImage? {
+        if !GPURenderFaultInjection.forceFailure,
+           let metalResult = await MetalEditPipeline.renderOffscreenAsync(
+               source: input, settings: settings, exifOrientation: exifOrientation
+           ) {
+            return metalResult
+        }
+        if Task.isCancelled { return nil }
+        return fallbackOrRefuse(to: input, settings: settings)
+    }
+
+    nonisolated private static func cancelledPreviewResult(_ input: CIImage, settings: CameraRawSettings) -> CIImage {
+        fallbackCanReproduce(settings) ? input : redactionSafePlaceholder(for: input)
+    }
+
+    nonisolated private static func fallbackOrRefuse(to input: CIImage, settings: CameraRawSettings) -> CIImage? {
+        guard fallbackCanReproduce(settings) else {
+            Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")
+                .error("GPU render failed; CIFilter fallback refused (redaction=\(settings.hasActiveRedaction, privacy: .public)): it can't render masks, the Anonymizer or watermarks")
+            return nil
+        }
         return metalUnavailableFallback(to: input, settings: settings)
     }
 
-    /// CIFilter fallback path shared by `apply` / `applyAsync` (used only when Metal is unavailable).
-    /// This path applies global adjustments only — it already drops masks entirely, so the
-    /// layer-order (reorderable global node) has no effect here. True layer ordering is a
-    /// Metal-only feature; the fallback always renders global-as-base.
+    /// CIFilter fallback path shared by `apply` / `applyAsync` (used only when the GPU render
+    /// failed). It applies global adjustments only and is reached only for settings that pass
+    /// `fallbackCanReproduce` (no enabled masks, no Anonymizer, no enabled watermarks), so the
+    /// layer order (reorderable global node) has no effect here.
     nonisolated private static func metalUnavailableFallback(to input: CIImage, settings: CameraRawSettings) -> CIImage {
-        if !(settings.localAdjustments?.isEmpty ?? true) {
-            Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")
-                .warning("CIFilter fallback: mask adjustments will not be applied")
-        }
         if !(settings.hslAdjustments?.isEmpty ?? true) {
             Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")
                 .warning("CIFilter fallback: HSL adjustments will not be applied")
-        }
-        if !(settings.watermarkLayers?.isEmpty ?? true) {
-            Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")
-                .warning("CIFilter fallback: watermark layers will not be applied")
         }
         return applyCIFilters(to: input, settings: settings)
     }
@@ -209,36 +296,86 @@ enum CameraRawApproximation {
         return output
     }
 
-    /// Applies tonal adjustments + crop/rotation in one pass.
+    /// Applies tonal adjustments + crop/rotation in one pass (preview: a refused fallback
+    /// yields the placeholder).
     nonisolated static func applyWithCrop(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CIImage {
         guard let settings else { return input }
+        return applyWithCropOrRefuse(to: input, settings: settings, exifOrientation: exifOrientation)
+            ?? redactionSafePlaceholder(for: input)
+    }
+
+    /// Async sibling of `applyWithCrop` — suspends on the render queue for the tonal pass, then
+    /// applies the (cheap, CPU-only) crop/rotation. Use from `Task`s to avoid blocking the pool.
+    nonisolated static func applyWithCropAsync(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) async -> CIImage {
+        guard let settings else { return input }
+        guard !Task.isCancelled else { return cancelledPreviewResult(input, settings: settings) }
+        let result = await applyWithCropAsyncOrRefuse(to: input, settings: settings, exifOrientation: exifOrientation)
+        guard !Task.isCancelled else { return cancelledPreviewResult(input, settings: settings) }
+        return result ?? redactionSafePlaceholder(for: input)
+    }
+
+    /// Output render (export, Save As, Sign, FTP, Develop Save): throws instead of ever
+    /// returning pixels that miss a mask, Anonymizer or watermark the settings carry.
+    nonisolated static func applyWithCropForOutput(
+        to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1, sourceURL: URL? = nil
+    ) throws -> CIImage {
+        guard let settings else { return input }
+        guard let result = applyWithCropOrRefuse(to: input, settings: settings, exifOrientation: exifOrientation) else {
+            throw EditRenderRefusedError(filename: sourceURL?.lastPathComponent, hasRedaction: settings.hasActiveRedaction)
+        }
+        return result
+    }
+
+    /// Async sibling of `applyWithCropForOutput`. Cancellation throws `CancellationError`
+    /// (never returns the unedited input).
+    nonisolated static func applyWithCropForOutputAsync(
+        to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1, sourceURL: URL? = nil
+    ) async throws -> CIImage {
+        try Task.checkCancellation()
+        guard let settings else { return input }
+        let result = await applyWithCropAsyncOrRefuse(to: input, settings: settings, exifOrientation: exifOrientation)
+        try Task.checkCancellation()
+        guard let result else {
+            throw EditRenderRefusedError(filename: sourceURL?.lastPathComponent, hasRedaction: settings.hasActiveRedaction)
+        }
+        return result
+    }
+
+    nonisolated private static func applyWithCropOrRefuse(
+        to input: CIImage, settings: CameraRawSettings, exifOrientation: Int
+    ) -> CIImage? {
         if settings.crop?.isEffectiveCrop == true,
            settings.watermarkLayers?.contains(where: { $0.enabled }) == true,
+           !GPURenderFaultInjection.forceFailure,
            let croppedMetalResult = MetalEditPipeline.renderOffscreenCropped(
                 source: input, settings: settings, exifOrientation: exifOrientation
            ) {
             return croppedMetalResult
         }
         let originalExtent = input.extent
-        let adjusted = apply(to: input, settings: settings, exifOrientation: exifOrientation)
+        guard let adjusted = applyOrRefuse(to: input, settings: settings, exifOrientation: exifOrientation) else {
+            return nil
+        }
         return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
     }
 
-    /// Async sibling of `applyWithCrop` — suspends on the render queue for the tonal pass, then
-    /// applies the (cheap, CPU-only) crop/rotation. Use from `Task`s to avoid blocking the pool.
-    nonisolated static func applyWithCropAsync(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) async -> CIImage {
-        guard !Task.isCancelled, let settings else { return input }
+    nonisolated private static func applyWithCropAsyncOrRefuse(
+        to input: CIImage, settings: CameraRawSettings, exifOrientation: Int
+    ) async -> CIImage? {
         if settings.crop?.isEffectiveCrop == true,
            settings.watermarkLayers?.contains(where: { $0.enabled }) == true,
+           !GPURenderFaultInjection.forceFailure,
            let croppedMetalResult = await MetalEditPipeline.renderOffscreenCroppedAsync(
                 source: input, settings: settings, exifOrientation: exifOrientation
            ) {
             return croppedMetalResult
         }
-        guard !Task.isCancelled else { return input }
+        if Task.isCancelled { return nil }
         let originalExtent = input.extent
-        let adjusted = await applyAsync(to: input, settings: settings, exifOrientation: exifOrientation)
-        guard !Task.isCancelled else { return input }
+        guard let adjusted = await applyAsyncOrRefuse(to: input, settings: settings, exifOrientation: exifOrientation),
+              !Task.isCancelled else {
+            return nil
+        }
         return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
     }
 

@@ -62,8 +62,10 @@ nonisolated struct ExportCameraRawResolutionRequest: Equatable, Sendable {
 /// The persisted settings — read fresh from the file/sidecar with the complete parser — are the
 /// default. The Browser's in-memory copy can be stale or incomplete (an older parser, a reload
 /// that raced a write), so it only wins for the photo open in Develop, whose newest edits may not
-/// be on disk yet. Whichever copy is chosen, a redaction present only in the other copy is never
-/// dropped: over-redacting is recoverable, publishing an unredacted face is not.
+/// be on disk yet. Whichever copy is chosen, the redactions of the other copy are added to it
+/// (`RedactionUnion`: every enabled Anonymizer mask, the strongest global Anonymizer), so a
+/// partial set in either copy is combined, never dropped: over-redacting is recoverable,
+/// publishing an unredacted face is not.
 nonisolated enum ExportCameraRawSourcePolicy {
     static func resolve(
         live: CameraRawSettings?,
@@ -76,10 +78,7 @@ nonisolated enum ExportCameraRawSourcePolicy {
         guard let persisted else { return live }
         let preferred = liveIsAuthoritative ? live : persisted
         let other = liveIsAuthoritative ? persisted : live
-        if !preferred.hasActiveRedaction && other.hasActiveRedaction {
-            return other
-        }
-        return preferred
+        return RedactionUnion.merged(preferred, adding: [other])
     }
 
     /// The develop settings a photo persists: a RAW's sidecar is authoritative; any other file
@@ -249,6 +248,31 @@ actor ExportArtifactFinalizationService {
             cancellationObservedBeforeFinalization: cancellationObservedBeforeFinalization,
             cancellationObservedAfterFinalization: Task.isCancelled
         )
+    }
+}
+
+/// Reads the develop settings a photo has saved on disk, for the fail-closed redaction check
+/// every output render runs: a RAW's (ownership-filtered) sidecar; any other file's sidecar
+/// block and its embedded block.
+nonisolated struct ExportSavedRedactionAccess: Sendable {
+    let load: @Sendable (URL) -> [CameraRawSettings?]
+
+    static let system = ExportSavedRedactionAccess { imageURL in
+        let sidecar = XMPSidecarService().loadDevelopSettings(for: imageURL)
+        if SupportedImageFormats.isRaw(url: imageURL) { return [sidecar] }
+        let embedded = (try? ImageMetadata.read(from: imageURL))
+            .flatMap { iptcMetadataFromDict($0.asMetadataDict(fileURL: imageURL)).cameraRaw }
+        return [sidecar, embedded]
+    }
+}
+
+/// An output render refused because a redaction saved with the photo (sidecar or embedded)
+/// is missing from the settings it would render with. Nothing is written.
+nonisolated struct RedactionMissingFromRenderError: LocalizedError, Sendable, Equatable {
+    let filename: String
+
+    var errorDescription: String? {
+        "\(filename) has a saved Anonymizer redaction that its current Develop settings don't include. It wasn't exported. Open it in Develop, check the redaction, and try again."
     }
 }
 
@@ -506,9 +530,20 @@ enum EditExportPipeline {
                            outputFilenameSuffix: String = "",
                            collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .replaceExisting,
                            finalizationService: ExportArtifactFinalizationService = .shared,
-                           metadataFailurePolicy: ExportMetadataFailurePolicy = .keepLocalCopy) async throws -> URL {
+                           metadataFailurePolicy: ExportMetadataFailurePolicy = .keepLocalCopy,
+                           savedRedactionAccess: ExportSavedRedactionAccess = .system) async throws -> URL {
         try await MetadataSidecarService().requireNoPendingOrientation(
             for: sourceURL, in: folderURL ?? sourceURL.deletingLastPathComponent())
+        switch kind {
+        case .format, .saveAs, .jpeg:
+            // Fail closed (Export, Save As, Sign, FTP, Develop Save): a redaction saved with the
+            // photo that the render settings don't carry refuses the render.
+            try await requireSavedRedactionsCovered(
+                sourceURL: sourceURL, cameraRaw: cameraRaw, access: savedRedactionAccess)
+        case .rawJXL16, .rawTIFF16, .rawDNG:
+            // RAW archives are intentionally unredacted decodes; the caller confirms that.
+            break
+        }
         if case .rawDNG(let compression, let executableURL) = kind {
             // A DNG is still a camera RAW, not a rendered output. Do not run the
             // rendered-metadata copier or sidecar overlay; the converter preserves
@@ -564,39 +599,43 @@ enum EditExportPipeline {
                 }
             }
 
+            // The detached hop drops task-locals; carry the GPU fault-injection test seam over.
+            let forceGPUFailure = GPURenderFaultInjection.forceFailure
             let renderedURL = try await Task.detached(priority: .userInitiated) {
-                switch kind {
-                case .format:
-                    return try await EditedImageRenderer.render(
-                        from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
-                        outputFolder: outputFolder,
-                        configuration: configuration,
-                        outputFilenameSuffix: outputFilenameSuffix,
-                        collisionPolicy: collisionPolicy,
-                        metadataCopier: copier, reservationOwner: reservationOwner)
-                case .saveAs(let format):
-                    return try await EditedImageRenderer.saveAs(
-                        from: sourceURL, cameraRaw: cameraRaw, format: format,
-                        destinationFolder: outputFolder, metadataCopier: copier,
-                        reservationOwner: reservationOwner)
-                case .rawJXL16(let decodeProfile):
-                    return try await EditedImageRenderer.convertRAWTo16BitJXL(
-                        from: sourceURL, decodeProfile: decodeProfile,
-                        destinationFolder: outputFolder, metadataCopier: copier,
-                        reservationOwner: reservationOwner)
-                case .rawTIFF16(let decodeProfile):
-                    return try await EditedImageRenderer.convertRAWTo16BitTIFF(
-                        from: sourceURL, decodeProfile: decodeProfile,
-                        destinationFolder: outputFolder, metadataCopier: copier,
-                        reservationOwner: reservationOwner)
-                case .rawDNG:
-                    // Handled before constructing the rendered metadata copier above.
-                    preconditionFailure("RAW DNG archives must use the converter path")
-                case .jpeg:
-                    return try await EditedImageRenderer.renderJPEG(
-                        from: sourceURL, cameraRaw: cameraRaw,
-                        outputFolder: outputFolder, metadataCopier: copier,
-                        collisionPolicy: collisionPolicy, reservationOwner: reservationOwner)
+                try await GPURenderFaultInjection.$forceFailure.withValue(forceGPUFailure) {
+                    switch kind {
+                    case .format:
+                        return try await EditedImageRenderer.render(
+                            from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
+                            outputFolder: outputFolder,
+                            configuration: configuration,
+                            outputFilenameSuffix: outputFilenameSuffix,
+                            collisionPolicy: collisionPolicy,
+                            metadataCopier: copier, reservationOwner: reservationOwner)
+                    case .saveAs(let format):
+                        return try await EditedImageRenderer.saveAs(
+                            from: sourceURL, cameraRaw: cameraRaw, format: format,
+                            destinationFolder: outputFolder, metadataCopier: copier,
+                            reservationOwner: reservationOwner)
+                    case .rawJXL16(let decodeProfile):
+                        return try await EditedImageRenderer.convertRAWTo16BitJXL(
+                            from: sourceURL, decodeProfile: decodeProfile,
+                            destinationFolder: outputFolder, metadataCopier: copier,
+                            reservationOwner: reservationOwner)
+                    case .rawTIFF16(let decodeProfile):
+                        return try await EditedImageRenderer.convertRAWTo16BitTIFF(
+                            from: sourceURL, decodeProfile: decodeProfile,
+                            destinationFolder: outputFolder, metadataCopier: copier,
+                            reservationOwner: reservationOwner)
+                    case .rawDNG:
+                        // Handled before constructing the rendered metadata copier above.
+                        preconditionFailure("RAW DNG archives must use the converter path")
+                    case .jpeg:
+                        return try await EditedImageRenderer.renderJPEG(
+                            from: sourceURL, cameraRaw: cameraRaw,
+                            outputFolder: outputFolder, metadataCopier: copier,
+                            collisionPolicy: collisionPolicy, reservationOwner: reservationOwner)
+                    }
                 }
             }.value
             renderReturned = true
@@ -649,6 +688,23 @@ enum EditExportPipeline {
                 await reservationOwner.discardOnFailure()
             }
             throw error
+        }
+    }
+
+    /// Throws `RedactionMissingFromRenderError` when a redaction saved with `sourceURL`
+    /// (sidecar or embedded develop block) is missing from `cameraRaw` (`RedactionUnion.covers`).
+    /// Reads off the caller's actor.
+    @concurrent
+    nonisolated static func requireSavedRedactionsCovered(
+        sourceURL: URL,
+        cameraRaw: CameraRawSettings?,
+        access: ExportSavedRedactionAccess = .system
+    ) async throws {
+        try Task.checkCancellation()
+        let saved = access.load(sourceURL)
+        guard RedactionUnion.covers(render: cameraRaw, saved: saved) else {
+            Logger(subsystem: "com.aagedal.photo-agent", category: "ExportPipeline").error("Refused render of \(sourceURL.lastPathComponent, privacy: .public): a saved redaction is missing from the render settings")
+            throw RedactionMissingFromRenderError(filename: sourceURL.lastPathComponent)
         }
     }
 

@@ -231,9 +231,11 @@ struct EditExportPipelineTests {
         let redactedRender = try await EditExportPipeline.renderItem(
             sourceURL: jpeg, cameraRaw: renderSettings, kind: .jpeg, outputFolder: redactedDir,
             folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+        // The unedited baseline bypasses the saved-redaction check (which would refuse it).
         let plainRender = try await EditExportPipeline.renderItem(
             sourceURL: jpeg, cameraRaw: nil, kind: .jpeg, outputFolder: plainDir,
-            folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+            folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: tracker,
+            savedRedactionAccess: ExportSavedRedactionAccess { _ in [] })
         let redactedDeviation = try centerLuminanceDeviation(of: redactedRender)
         let plainDeviation = try centerLuminanceDeviation(of: plainRender)
         #expect(plainDeviation > 60, "the unedited checkerboard should be high-contrast (\(plainDeviation))")
@@ -6326,5 +6328,401 @@ struct ExportRoundSixTests {
         #expect(meta.description == "Kept caption")
         #expect(meta.credit == "Kept credit")
         #expect(meta.latitude != nil)
+    }
+}
+
+// MARK: - Redaction fail-closed rendering
+
+@Suite("Redactions reach every rendition or the render is refused")
+struct RedactionFailClosedTests {
+
+    private func makeFolder(_ name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("apa-redact-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func imageData(_ type: NSBitmapImageRep.FileType, size: Int = 32) throws -> Data {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+            isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ) else { throw CocoaError(.fileWriteUnknown) }
+        for y in 0..<size {
+            for x in 0..<size {
+                let white = ((x / 2) + (y / 2)) % 2 == 0
+                rep.setColor(white ? .white : .black, atX: x, y: y)
+            }
+        }
+        guard let data = rep.representation(using: type, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return data
+    }
+
+    private func faceMask(id: UUID = UUID(), centerX: Double = 0.5, amount: Double = 90) -> MaskAdjustment {
+        var mask = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: amount, blackOut: nil))
+        mask.id = id
+        mask.geometry = EllipseMaskGeometry(centerX: centerX, centerY: 0.5, radiusX: 0.2, radiusY: 0.2,
+                                            rotation: 0, feather: 0)
+        return mask
+    }
+
+    private func redacted() -> CameraRawSettings {
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.2
+        settings.localAdjustments = [faceMask()]
+        return settings
+    }
+
+    private func visibleFiles(in folder: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+    }
+
+    // MARK: Finding 1 — GPU failure
+
+    @Test("The CIFilter fallback may stand in only for settings it can reproduce")
+    func fallbackReproducibility() {
+        var global = CameraRawSettings()
+        global.exposure2012 = 0.5
+        #expect(CameraRawApproximation.fallbackCanReproduce(global))
+        #expect(!CameraRawApproximation.fallbackCanReproduce(redacted()))
+        var globalAnonymizer = global
+        globalAnonymizer.anonymizer = AnonymizerSettings(amount: 40, blackOut: nil)
+        #expect(!CameraRawApproximation.fallbackCanReproduce(globalAnonymizer))
+        var ordinaryMask = global
+        ordinaryMask.localAdjustments = [MaskAdjustment(name: "Sky", exposure: -0.5)]
+        #expect(!CameraRawApproximation.fallbackCanReproduce(ordinaryMask))
+        var disabledMask = ordinaryMask
+        disabledMask.localAdjustments?[0].enabled = false
+        #expect(CameraRawApproximation.fallbackCanReproduce(disabledMask))
+        var watermark = global
+        watermark.watermarkLayers = [WatermarkLayer(libraryAssetID: UUID())]
+        #expect(!CameraRawApproximation.fallbackCanReproduce(watermark))
+    }
+
+    @Test("A preview of redacted settings shows a placeholder, never the source, when the GPU fails")
+    func previewPlaceholderOnGPUFailure() async throws {
+        let input = try #require(CIImage(data: try imageData(.png)))
+        let settings = redacted()
+        let sync = GPURenderFaultInjection.$forceFailure.withValue(true) {
+            CameraRawApproximation.applyWithCrop(to: input, settings: settings)
+        }
+        let asyncOutput = await GPURenderFaultInjection.$forceFailure.withValue(true) {
+            await CameraRawApproximation.applyWithCropAsync(to: input, settings: settings)
+        }
+        for output in [sync, asyncOutput] {
+            #expect(output.extent == input.extent)
+            var px: [Float] = [0, 0, 0, 0]
+            let maxOut = output.applyingFilter("CIAreaMaximum", parameters: [kCIInputExtentKey: CIVector(cgRect: input.extent)])
+            CameraRawApproximation.ciContext.render(maxOut, toBitmap: &px, rowBytes: 16,
+                bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf,
+                colorSpace: CameraRawApproximation.workingColorSpace)
+            // The checkerboard source has white pixels; the uniform grey placeholder doesn't.
+            #expect(px[0] < 0.9 && px[1] < 0.9 && px[2] < 0.9, "\(px)")
+        }
+        #expect(throws: EditRenderRefusedError.self) {
+            try GPURenderFaultInjection.$forceFailure.withValue(true) {
+                try CameraRawApproximation.applyWithCropForOutput(to: input, settings: settings)
+            }
+        }
+    }
+
+    @MainActor
+    @Test("A GPU render failure refuses the export of a redacted photo and writes nothing",
+          arguments: [0, 1, 2])
+    func gpuFailureRefusesRedactedExport(kindIndex: Int) async throws {
+        let dir = try makeFolder("gpu-fail")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: source)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let kind: RenderKind = [RenderKind.jpeg, .saveAs(.png), .saveAs(.jpeg)][kindIndex]
+        let settings = redacted()
+
+        var refusal: (any Error)?
+        do {
+            _ = try await GPURenderFaultInjection.$forceFailure.withValue(true) {
+                try await EditExportPipeline.renderItem(
+                    sourceURL: source, cameraRaw: settings, kind: kind, outputFolder: output,
+                    folderURL: dir, writeEngine: SwiftExifWriteEngine(),
+                    failureTracker: MetadataFailureTracker(),
+                    savedRedactionAccess: ExportSavedRedactionAccess { _ in [] })
+            }
+        } catch {
+            refusal = error
+        }
+        let refused = try #require(refusal as? EditRenderRefusedError)
+        #expect(refused.hasRedaction)
+        #expect(refused.errorDescription?.contains("the photo has redactions, so it wasn't exported") == true)
+        #expect(visibleFiles(in: output).isEmpty, "\(visibleFiles(in: output))")
+    }
+
+    @MainActor
+    @Test("A GPU render failure still exports global-only edits through the fallback")
+    func gpuFailureKeepsGlobalOnlyExport() async throws {
+        let dir = try makeFolder("gpu-fail-global")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: source)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        let rendered = try await GPURenderFaultInjection.$forceFailure.withValue(true) {
+            try await EditExportPipeline.renderItem(
+                sourceURL: source, cameraRaw: settings, kind: .jpeg, outputFolder: output,
+                folderURL: dir, writeEngine: SwiftExifWriteEngine(),
+                failureTracker: MetadataFailureTracker())
+        }
+        #expect(FileManager.default.fileExists(atPath: rendered.path))
+    }
+
+    // MARK: Finding 3 — merging copies only adds redactions
+
+    @Test("Reconciling sidecar and embedded develop combines redaction masks and keeps the strongest global Anonymizer")
+    func reconciliationUnionsRedactions() {
+        let maskA = faceMask(centerX: 0.3)
+        let maskB = faceMask(centerX: 0.7)
+
+        var embedded = CameraRawSettings()
+        embedded.localAdjustments = [maskA]
+        var sidecar = CameraRawSettings()
+        sidecar.exposure2012 = 0.4
+        sidecar.localAdjustments = [maskA, maskB]
+        let both = EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: sidecar, embedded: embedded)
+        #expect(Set(RedactionUnion.redactionMasks(in: both).map(\.id)) == [maskA.id, maskB.id])
+        #expect(both?.localAdjustments?.count == 2)
+
+        // The embedded copy has a redaction the sidecar's (non-empty) mask list lacks.
+        var sidecarB = CameraRawSettings()
+        sidecarB.localAdjustments = [maskB]
+        let combined = EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: sidecarB, embedded: embedded)
+        #expect(Set(RedactionUnion.redactionMasks(in: combined).map(\.id)) == [maskA.id, maskB.id])
+
+        // The same face re-created under another identity is not duplicated.
+        var sameRegion = embedded
+        sameRegion.localAdjustments = [faceMask(centerX: 0.3)]
+        let deduped = EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: sidecar, embedded: sameRegion)
+        #expect(deduped?.localAdjustments?.count == 2)
+
+        // An embedded global Anonymizer survives a sidecar with develop settings.
+        var embeddedGlobal = CameraRawSettings()
+        embeddedGlobal.anonymizer = AnonymizerSettings(amount: 60, blackOut: nil)
+        var sidecarDevelop = CameraRawSettings()
+        sidecarDevelop.exposure2012 = 0.8
+        let global = EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: sidecarDevelop, embedded: embeddedGlobal)
+        #expect(global?.anonymizer == AnonymizerSettings(amount: 60, blackOut: nil))
+        #expect(global?.exposure2012 == 0.8)
+        var weaker = sidecarDevelop
+        weaker.anonymizer = AnonymizerSettings(amount: 20, blackOut: nil)
+        #expect(EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: weaker, embedded: embeddedGlobal)?
+            .anonymizer == AnonymizerSettings(amount: 60, blackOut: nil))
+    }
+
+    @Test("The export source policy combines partial redaction sets of both copies")
+    func exportPolicyUnionsPartialRedactions() {
+        let maskA = faceMask(centerX: 0.3)
+        let maskB = faceMask(centerX: 0.7)
+        var live = CameraRawSettings()
+        live.exposure2012 = 1.0
+        live.localAdjustments = [maskA]
+        var persisted = CameraRawSettings()
+        persisted.exposure2012 = 0.2
+        persisted.localAdjustments = [maskB]
+        persisted.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+
+        for authoritative in [false, true] {
+            let resolved = ExportCameraRawSourcePolicy.resolve(
+                live: live, persisted: persisted, liveIsAuthoritative: authoritative)
+            #expect(Set(RedactionUnion.redactionMasks(in: resolved).map(\.id)) == [maskA.id, maskB.id])
+            #expect(resolved?.anonymizer?.blackOut == true)
+            #expect(resolved?.exposure2012 == (authoritative ? 1.0 : 0.2))
+            #expect(RedactionUnion.covers(render: resolved, saved: [live, persisted]))
+        }
+
+        // A redaction disabled in the preferred copy but enabled in the other is re-enabled.
+        var disabled = persisted
+        disabled.localAdjustments?[0].enabled = false
+        var liveB = CameraRawSettings()
+        liveB.localAdjustments = [maskB]
+        let reenabled = ExportCameraRawSourcePolicy.resolve(live: liveB, persisted: disabled, liveIsAuthoritative: false)
+        #expect(reenabled?.localAdjustments?.count == 1)
+        #expect(reenabled?.localAdjustments?.first?.enabled == true)
+    }
+
+    @Test("Merged redactions stay within the renderer's mask limit")
+    func unionKeepsRedactionsRenderable() {
+        var base = CameraRawSettings()
+        base.localAdjustments = (0..<DevelopLayerLimits.maxEnabledMasks).map {
+            MaskAdjustment(name: "Adjust \($0)", exposure: 0.1)
+        }
+        var other = CameraRawSettings()
+        other.localAdjustments = [faceMask()]
+        let merged = RedactionUnion.merged(base, adding: [other])
+        #expect(!RedactionUnion.redactionsExceedRenderLimit(merged))
+        #expect(RedactionUnion.covers(render: merged, saved: [other]))
+        #expect(merged.localAdjustments?.filter(\.enabled).count == DevelopLayerLimits.maxEnabledMasks)
+    }
+
+    @Test("The coverage check fails for a missing mask or global Anonymizer")
+    func coverageCheck() {
+        let saved = redacted()
+        var stale = CameraRawSettings()
+        stale.exposure2012 = 0.2
+        #expect(!RedactionUnion.covers(render: stale, saved: [saved]))
+        #expect(!RedactionUnion.covers(render: nil, saved: [saved]))
+        #expect(RedactionUnion.covers(render: saved, saved: [saved, nil]))
+        var global = CameraRawSettings()
+        global.anonymizer = AnonymizerSettings(amount: 30, blackOut: nil)
+        #expect(!RedactionUnion.covers(render: saved, saved: [global]))
+        #expect(RedactionUnion.covers(render: stale, saved: [stale, nil]))
+    }
+
+    @MainActor
+    @Test("renderItem refuses when the render settings lack a redaction saved in the photo's sidecar")
+    func renderItemRefusesMissingSavedRedaction() async throws {
+        let dir = try makeFolder("missing-saved")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: source)
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(title: "Caption", cameraRaw: redacted()), for: source)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        var stale = CameraRawSettings()
+        stale.exposure2012 = 0.2
+
+        await #expect(throws: RedactionMissingFromRenderError.self) {
+            _ = try await EditExportPipeline.renderItem(
+                sourceURL: source, cameraRaw: stale, kind: .format, outputFolder: output,
+                folderURL: dir, writeEngine: SwiftExifWriteEngine(),
+                failureTracker: MetadataFailureTracker())
+        }
+        await #expect(throws: RedactionMissingFromRenderError.self) {
+            _ = try await EditExportPipeline.renderItem(
+                sourceURL: source, cameraRaw: nil, kind: .saveAs(.jpeg), outputFolder: output,
+                folderURL: dir, writeEngine: SwiftExifWriteEngine(),
+                failureTracker: MetadataFailureTracker())
+        }
+        #expect(visibleFiles(in: output).isEmpty, "\(visibleFiles(in: output))")
+    }
+
+    // MARK: Finding 2 — source blobs
+
+    private static let blobTags: [UInt16] = [0xCD41, 0x935C, 0xC634, 0x7200, 0xC68B]
+
+    /// A TIFF source with descriptive EXIF/GPS (written by ImageIO) plus fake source blobs in
+    /// IFD0 (camera C2PA manifest, Photoshop layers, DNG private data, Sony SR2, original raw
+    /// data) and XMP thumbnails / face regions.
+    private func makeBlobbySourceTIFF(at url: URL) throws {
+        let png = try imageData(.png)
+        guard let imageSource = CGImageSourceCreateWithData(png as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil),
+              let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.tiff" as CFString, 1, nil)
+        else { throw CocoaError(.fileWriteUnknown) }
+        let properties: [CFString: Any] = [
+            kCGImagePropertyTIFFDictionary: [
+                kCGImagePropertyTIFFMake: "TestCam",
+                kCGImagePropertyTIFFModel: "Model X",
+                kCGImagePropertyTIFFDateTime: "2026:10:24 12:00:00",
+            ],
+            kCGImagePropertyExifDictionary: [
+                kCGImagePropertyExifExposureTime: 0.004,
+                kCGImagePropertyExifFNumber: 2.8,
+                kCGImagePropertyExifDateTimeOriginal: "2026:10:24 12:00:00",
+                kCGImagePropertyExifLensModel: "Test Lens 50mm",
+            ],
+            kCGImagePropertyGPSDictionary: [
+                kCGImagePropertyGPSLatitude: 59.91,
+                kCGImagePropertyGPSLatitudeRef: "N",
+                kCGImagePropertyGPSLongitude: 10.75,
+                kCGImagePropertyGPSLongitudeRef: "E",
+            ],
+        ]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+
+        var metadata = try SwiftMediaMetadata.readMetadata(from: url)
+        var exif = try #require(metadata.exif)
+        var entries = exif.ifd0?.entries ?? []
+        for tag in Self.blobTags {
+            let payload = Data(repeating: UInt8(tag & 0xFF), count: 8_192)
+            entries.append(IFDEntry(tag: tag, type: .undefined, count: UInt32(payload.count), valueData: payload))
+        }
+        exif.ifd0 = IFD(entries: entries.sorted { $0.tag < $1.tag })
+        metadata.exif = exif
+        var xmp = metadata.xmp ?? XMPData()
+        xmp.description = "Kept caption"
+        xmp.setValue(.simple("base64-thumbnail-of-the-original"), namespace: XMPNamespace.xmp, property: "Thumbnails")
+        xmp.setValue(.simple("face-region"), namespace: XMPNamespace.mwgRegions, property: "Regions")
+        metadata.xmp = xmp
+        _ = try metadata.write(to: url)
+    }
+
+    @Test("Camera C2PA, Photoshop/DNG blobs and XMP thumbnails never reach a TIFF or PNG rendition; descriptive EXIF does",
+          arguments: ["tiff", "png"])
+    func sourceBlobsStripped(format: String) async throws {
+        let dir = try makeFolder("blobs-\(format)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("camera.tif")
+        try makeBlobbySourceTIFF(at: source)
+        let sourceIFD0 = try #require(try SwiftMediaMetadata.readMetadata(from: source).exif?.ifd0)
+        for tag in Self.blobTags {
+            try #require(sourceIFD0.hasEntry(for: tag), "fixture lacks tag \(String(tag, radix: 16))")
+        }
+
+        let output = dir.appendingPathComponent("rendered.\(format)")
+        try imageData(format == "png" ? .png : .tiff).write(to: output)
+        var baked = redacted()
+        baked.localAdjustments = [faceMask()]
+        try await SwiftExifWriteEngine().copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: baked)
+
+        let written = try ImageMetadata.read(from: output)
+        let ifd0 = written.exif?.ifd0
+        for tag in Self.blobTags {
+            #expect(ifd0?.hasEntry(for: tag) != true, "tag \(String(tag, radix: 16)) survived")
+        }
+        #expect(written.c2pa == nil)
+        #expect(written.xmp?.value(namespace: XMPNamespace.xmp, property: "Thumbnails") == nil)
+        #expect(written.xmp?.value(namespace: XMPNamespace.mwgRegions, property: "Regions") == nil)
+
+        #expect(written.exif?.make == "TestCam")
+        #expect(written.exif?.model == "Model X")
+        #expect(written.exif?.exposureTime != nil)
+        #expect(written.exif?.dateTimeOriginal == "2026:10:24 12:00:00")
+        #expect(written.exif?.gpsIFD?.hasEntry(for: 0x0002) == true)
+        let meta = try await SwiftExifReadService().readFullMetadata(url: output)
+        #expect(meta.description == "Kept caption")
+        #expect(meta.latitude != nil)
+    }
+
+    @Test("A Photoshop IRB, maker note and JPEG thumbnail offsets in a source IFD0 are dropped")
+    func photoshopAndMakerNoteStripped() {
+        var exif = ExifData(byteOrder: .bigEndian)
+        let blob = Data(repeating: 0xAB, count: 64)
+        exif.ifd0 = IFD(entries: [
+            IFDEntry(tag: 0x010F, type: .ascii, count: 8, valueData: Data("TestCam\0".utf8)),
+            IFDEntry(tag: 0x0201, type: .long, count: 1, valueData: Data([0, 0, 0, 8])),
+            IFDEntry(tag: 0x0202, type: .long, count: 1, valueData: Data([0, 0, 0, 64])),
+            IFDEntry(tag: 0x014A, type: .long, count: 1, valueData: Data([0, 0, 0, 8])),
+            IFDEntry(tag: 0x02BC, type: .undefined, count: UInt32(blob.count), valueData: blob),
+            IFDEntry(tag: 0x8298, type: .ascii, count: 3, valueData: Data("C\0\0".utf8)),
+            IFDEntry(tag: 0x8649, type: .undefined, count: UInt32(blob.count), valueData: blob),
+        ])
+        exif.exifIFD = IFD(entries: [
+            IFDEntry(tag: 0x829A, type: .rational, count: 1, valueData: Data([0, 0, 0, 1, 0, 0, 0, 250])),
+            IFDEntry(tag: 0x927C, type: .undefined, count: UInt32(blob.count), valueData: blob),
+        ])
+        var metadata = ImageMetadata(exif: exif)
+        SwiftExifWriteEngine.stripSourceBlobsForRendition(&metadata, renderRedacts: false)
+        #expect(metadata.exif?.ifd0?.entries.map(\.tag) == [0x010F, 0x8298])
+        #expect(metadata.exif?.exifIFD?.hasEntry(for: 0x927C) == true, "an unredacted render keeps its maker note")
+        SwiftExifWriteEngine.stripSourceBlobsForRendition(&metadata, renderRedacts: true)
+        #expect(metadata.exif?.exifIFD?.hasEntry(for: 0x927C) == false)
+        #expect(metadata.exif?.exifIFD?.hasEntry(for: 0x829A) == true)
     }
 }

@@ -193,8 +193,10 @@ nonisolated enum EffectiveMetadataResolver {
 
     /// The develop settings a photo displays from its sidecar and embedded develop blocks: a
     /// non-empty sidecar block wins wholesale, except that embedded masks show through when the
-    /// sidecar has none; without a sidecar block the embedded one applies. Develop paste merges
-    /// onto this so a sidecar it writes can't hide an embedded redaction.
+    /// sidecar has none; without a sidecar block the embedded one applies. Redactions are never
+    /// dropped (`RedactionUnion`): every enabled embedded Anonymizer mask the sidecar lacks is
+    /// added and the global Anonymizer is the stronger of the two. Develop paste merges onto
+    /// this so a sidecar it writes can't hide an embedded redaction.
     static func reconciledDevelopSettings(sidecar: CameraRawSettings?,
                                           embedded: CameraRawSettings?) -> CameraRawSettings? {
         guard let sidecar, !sidecar.isEmpty else { return embedded }
@@ -203,7 +205,7 @@ nonisolated enum EffectiveMetadataResolver {
            let masks = embedded?.localAdjustments, !masks.isEmpty {
             result.localAdjustments = masks
         }
-        return result
+        return RedactionUnion.merged(result, adding: [embedded])
     }
 
     static func physicalMetadata(for source: MetadataReferenceSource,

@@ -827,9 +827,15 @@ final class FullScreenImageCache: @unchecked Sendable {
             fileOrientation: fileOrientation,
             displayOrientation: displayOrientation
         )
+        // Never fall back to the unedited source when it would show what the edit hides
+        // (redactions, masks, watermarks): a preview can be screen-shared.
+        let unedited = CameraRawApproximation.fallbackCanReproduce(settings)
+            ? cgImage
+            : CameraRawApproximation.redactionSafePlaceholderCGImage(
+                width: cgImage.width, height: cgImage.height) ?? cgImage
         let extent = processed.extent
-        guard extent.width > 0, extent.height > 0 else { return cgImage }
-        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
+        guard extent.width > 0, extent.height > 0 else { return unedited }
+        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? unedited
     }
 
     /// Browse-mode scope source for `url`: a small decode, edited (with crop) when `settings`

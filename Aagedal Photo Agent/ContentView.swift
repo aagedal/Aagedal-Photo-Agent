@@ -4464,6 +4464,12 @@ struct ContentView: View {
                 return
             }
         }
+        // An archive is an unedited decode by design; Anonymizer redactions only travel as
+        // editable settings in the copied .xmp. Make that explicit before archiving.
+        let redactedCount = selectedRAW.filter { $0.cameraRawSettings?.hasActiveRedaction == true }.count
+        if redactedCount > 0, !confirmUnredactedRAWArchive(count: redactedCount) {
+            return
+        }
 
         let locationMode = RAWArchiveService.currentLocationMode
         var askedFolder: URL?
@@ -4726,6 +4732,21 @@ struct ContentView: View {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Archive Unsigned")
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    private func confirmUnredactedRAWArchive(count: Int) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Archive Contains Unredacted Originals"
+        let noun = count == 1 ? "RAW file has" : "RAW files have"
+        alert.informativeText = """
+        \(count) selected \(noun) Anonymizer redactions. This archive contains the unredacted original. Face blurs are kept only as editable settings in the copied XMP.
+
+        Don't publish the archive file. Use Export or Save As for a redacted copy.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Archive Anyway")
         return alert.runModal() == .alertSecondButtonReturn
     }
 
