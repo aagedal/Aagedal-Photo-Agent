@@ -77,11 +77,22 @@ final class AnalysisWorkspaceModel {
     @ObservationIgnored private var workspaceGeneration = UUID()
     @ObservationIgnored private var renameQuiescenceFolderURL: URL?
     @ObservationIgnored private var renameQuiescenceNeedsCaseSave = false
-    @ObservationIgnored private var caseSaveFailed = false
-    @ObservationIgnored private var folderMapSaveFailed = false
+    /// Messages of the open case's and the folder map's failed saves; nil when durable.
+    @ObservationIgnored private var caseSaveFailure: String?
+    @ObservationIgnored private var folderMapSaveFailure: String?
     /// Saves of a previously open photo's case that failed after the workspace moved on. They are
-    /// reported through `saveError`, retried by Retry Save, and dropped only by Discard.
-    @ObservationIgnored private var failedBackgroundCaseSaves: [UUID: (AnalysisCase, AnalysisCaseRepository)] = [:]
+    /// reported through `saveError`, retried by Retry Save, adopted when that photo is reopened,
+    /// and dropped only by Discard (or a failed-rename reset).
+    @ObservationIgnored private var failedBackgroundCaseSaves: [UUID: BackgroundCaseSaveFailure] = [:]
+    /// Changes whenever an unsaved-changes exit is requested or cancelled, so a slow Retry Save
+    /// cannot perform an exit the user has since replaced or abandoned.
+    @ObservationIgnored private var unsavedExitRequestID = UUID()
+
+    private struct BackgroundCaseSaveFailure {
+        let analysisCase: AnalysisCase
+        let repository: AnalysisCaseRepository
+        let message: String
+    }
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
     @ObservationIgnored private let repositoryFactory: (URL) async throws -> AnalysisCaseRepository
     private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
@@ -194,17 +205,44 @@ final class AnalysisWorkspaceModel {
             return
         }
 
-        var targetCase: AnalysisCase
-        let match = await targetRepository.loadMostRelevantCase(for: targetRevision)
-        switch match {
-        case .exact(let existing):
-            targetCase = existing
-        case .sourceChanged, .none:
-            targetCase = AnalysisCase.create(for: targetRevision)
+        // Another photo: queue behind pending saves so none of them can land after the paste.
+        let previousSave = saveTask
+        let pasteSave = Task { [weak self] () throws -> AnalysisCase in
+            await previousSave?.value
+            // A failed earlier save of this photo holds edits newer than its disk copy; paste into
+            // that copy, which then replaces the failed record once it is durable.
+            if let self,
+               let record = self.failedBackgroundCaseSaves.values.first(where: {
+                   $0.analysisCase.source.relationship(to: targetRevision) == .exactRevision
+               }) {
+                var updated = record.analysisCase
+                updated.replaceAnnotations(updated.annotations + copies)
+                try updated.validateForPersistence()
+                self.failedBackgroundCaseSaves[updated.id] = nil
+                do {
+                    try await record.repository.save(updated)
+                } catch {
+                    self.failedBackgroundCaseSaves[updated.id] = record
+                    self.refreshSaveError()
+                    throw error
+                }
+                self.refreshSaveError()
+                return updated
+            }
+            var targetCase: AnalysisCase
+            switch await targetRepository.loadMostRelevantCase(for: targetRevision) {
+            case .exact(let existing):
+                targetCase = existing
+            case .sourceChanged, .none:
+                targetCase = AnalysisCase.create(for: targetRevision)
+            }
+            targetCase.replaceAnnotations(targetCase.annotations + copies)
+            try targetCase.validateForPersistence()
+            try await targetRepository.save(targetCase)
+            return targetCase
         }
-        targetCase.replaceAnnotations(targetCase.annotations + copies)
-        try targetCase.validateForPersistence()
-        try await targetRepository.save(targetCase)
+        saveTask = Task { _ = try? await pasteSave.value }
+        let targetCase = try await pasteSave.value
         // The pasted copies are durable on disk; a workspace that moved on keeps its own state.
         guard workspaceGeneration == generation else { return }
 
@@ -336,6 +374,14 @@ final class AnalysisWorkspaceModel {
         renameQuiescenceFolderURL = normalizedFolder
         renameQuiescenceNeedsCaseSave = false
         await flushPendingSaves()
+
+        // A failed save of a photo in this folder would be retried with its old path hint.
+        if let failed = failedBackgroundCaseSaves.values.first(where: {
+            isInRenameQuiescedFolder($0.analysisCase)
+        }) {
+            renameQuiescenceFolderURL = nil
+            throw AnalysisRenameQuiescenceError.persistenceFailed(failed.message)
+        }
 
         if sourceURL?.deletingLastPathComponent().standardizedFileURL == normalizedFolder {
             var failureDetail = saveError
@@ -549,7 +595,18 @@ final class AnalysisWorkspaceModel {
         sourceOrientation = image.exifOrientation
         hasDevelopedRepresentation = image.hasDevelopEdits && image.cameraRawSettings != nil
         loadState = .loading
-        clearSaveFailures()
+        // Failed saves are never dropped by navigation or Try Again: an open case whose save
+        // failed becomes a background record, which the reload adopts if it is the same case.
+        if let failure = caseSaveFailure, let analysisCase, let repository, !sourceChanged {
+            failedBackgroundCaseSaves[analysisCase.id] = BackgroundCaseSaveFailure(
+                analysisCase: analysisCase,
+                repository: repository,
+                message: Self.backgroundFailureMessage(for: analysisCase, detail: failure)
+            )
+        }
+        caseSaveFailure = nil
+        folderMapSaveFailure = nil
+        refreshSaveError()
         pendingUnsavedChangesExit = nil
         pendingExternalCloseTransition = nil
         analysisCase = nil
@@ -594,7 +651,14 @@ final class AnalysisWorkspaceModel {
                 switch caseLoad.match {
                 case .exact(var existing):
                     let normalizationDate = Date()
-                    if AnalysisLinkedMapMarkerNaming.normalize(
+                    if let failed = self.failedBackgroundCaseSaves.removeValue(forKey: existing.id) {
+                        // This case's last save failed after it was left, so its disk copy is
+                        // older than the edits still held in memory. Reopen those edits and show
+                        // them as this case's failed save for Retry Save / Discard.
+                        existing = failed.analysisCase
+                        self.caseSaveFailure = failed.message
+                        self.refreshSaveError()
+                    } else if AnalysisLinkedMapMarkerNaming.normalize(
                         &existing.mapState.annotations,
                         using: existing.annotations,
                         now: normalizationDate
@@ -660,13 +724,23 @@ final class AnalysisWorkspaceModel {
     /// Re-persists the in-memory documents whose last save failed. Unlike `retry()`, this never
     /// reloads from disk, so edits made after the failure are kept.
     func retryFailedSave() {
-        let retryCase = caseSaveFailed
-        let retryFolderMap = folderMapSaveFailed
-        let retryBackgroundCases = failedBackgroundCaseSaves.values
-        clearSaveFailures()
-        for (backgroundCase, backgroundRepository) in retryBackgroundCases
-        where backgroundCase.id != analysisCase?.id {
-            enqueueCaseSave(backgroundCase, repository: backgroundRepository)
+        let retryCase = caseSaveFailure != nil
+        let retryFolderMap = folderMapSaveFailure != nil
+        caseSaveFailure = nil
+        folderMapSaveFailure = nil
+        var retryRecords: [BackgroundCaseSaveFailure] = []
+        for (id, record) in failedBackgroundCaseSaves {
+            // A record that cannot be written now stays reported rather than being cleared.
+            let isOpenEditableCase = id == analysisCase?.id && !sourceChanged
+            guard !isOpenEditableCase, !isInRenameQuiescedFolder(record.analysisCase) else {
+                continue
+            }
+            failedBackgroundCaseSaves[id] = nil
+            retryRecords.append(record)
+        }
+        refreshSaveError()
+        for record in retryRecords {
+            enqueueCaseSave(record.analysisCase, repository: record.repository, isBackgroundRetry: true)
         }
         if retryCase, let analysisCase {
             persist(analysisCase)
@@ -698,6 +772,7 @@ final class AnalysisWorkspaceModel {
     /// Opening another photo reloads the workspace from disk, so after a failed save it waits
     /// for the user's Retry Save / Discard Changes / Cancel choice instead of dropping edits.
     func requestOpen(_ image: ImageFile, preferredWorkspaceMode: AnalysisWorkspaceMode? = nil) {
+        unsavedExitRequestID = UUID()
         guard saveError == nil else {
             pendingExternalCloseTransition = nil
             pendingUnsavedChangesExit = .openImage(image, preferredWorkspaceMode: preferredWorkspaceMode)
@@ -713,6 +788,7 @@ final class AnalysisWorkspaceModel {
     /// Returns true when the workspace may close now; otherwise the unsaved-changes prompt is
     /// raised and the caller closes only if `completeUnsavedChangesExit` says so.
     func requestClose() -> Bool {
+        unsavedExitRequestID = UUID()
         guard saveError == nil else {
             pendingExternalCloseTransition = nil
             pendingUnsavedChangesExit = .close
@@ -741,8 +817,14 @@ final class AnalysisWorkspaceModel {
 
     /// The prompt's Cancel: stay in Analysis and drop any queued workspace switch.
     func cancelUnsavedChangesExit() {
+        unsavedExitRequestID = UUID()
         pendingUnsavedChangesExit = nil
         pendingExternalCloseTransition = nil
+    }
+
+    /// The save-error banner's Discard: forget every failed save, including earlier photos'.
+    func discardFailedSaves() {
+        clearSaveFailures()
     }
 
     /// Finishes an exit the user confirmed from the unsaved-changes prompt. A failed retry keeps
@@ -754,10 +836,17 @@ final class AnalysisWorkspaceModel {
         retryingSave: Bool
     ) async -> Bool {
         pendingUnsavedChangesExit = nil
+        let requestID = unsavedExitRequestID
+        let generation = workspaceGeneration
         let externalTransition = pendingExternalCloseTransition
         pendingExternalCloseTransition = nil
         if retryingSave {
             guard await savePendingChanges() else { return false }
+            // The retry can take long. A newer exit request, a cancelled prompt, or another
+            // photo opened meanwhile supersedes this exit.
+            guard unsavedExitRequestID == requestID, workspaceGeneration == generation else {
+                return false
+            }
         } else {
             clearSaveFailures()
         }
@@ -775,10 +864,23 @@ final class AnalysisWorkspaceModel {
     }
 
     private func clearSaveFailures() {
-        caseSaveFailed = false
-        folderMapSaveFailed = false
+        caseSaveFailure = nil
+        folderMapSaveFailure = nil
         failedBackgroundCaseSaves = [:]
         saveError = nil
+    }
+
+    private func refreshSaveError() {
+        saveError = caseSaveFailure
+            ?? folderMapSaveFailure
+            ?? failedBackgroundCaseSaves.values
+                .map(\.message)
+                .sorted()
+                .first
+    }
+
+    private static func backgroundFailureMessage(for failedCase: AnalysisCase, detail: String) -> String {
+        "Changes to \(failedCase.source.filenameAtCreation) could not be saved: \(detail)"
     }
 
     private func recordBackgroundSaveFailure(
@@ -786,40 +888,44 @@ final class AnalysisWorkspaceModel {
         for failedCase: AnalysisCase,
         repository: AnalysisCaseRepository
     ) {
-        failedBackgroundCaseSaves[failedCase.id] = (failedCase, repository)
         let detail = error.localizedDescription.isEmpty
             ? "The analysis case could not be saved."
             : error.localizedDescription
-        saveError = "Changes to \(failedCase.source.filenameAtCreation) could not be saved: \(detail)"
-    }
-
-    private func recordBackgroundSaveSuccess(id: UUID) {
-        guard failedBackgroundCaseSaves.removeValue(forKey: id) != nil else { return }
-        if !caseSaveFailed && !folderMapSaveFailed && failedBackgroundCaseSaves.isEmpty {
-            saveError = nil
-        }
+        failedBackgroundCaseSaves[failedCase.id] = BackgroundCaseSaveFailure(
+            analysisCase: failedCase,
+            repository: repository,
+            message: Self.backgroundFailureMessage(for: failedCase, detail: detail)
+        )
+        refreshSaveError()
     }
 
     private func recordSaveFailure(_ error: Error, isFolderMap: Bool) {
-        if isFolderMap {
-            folderMapSaveFailed = true
-        } else {
-            caseSaveFailed = true
-        }
-        saveError = error.localizedDescription.isEmpty
+        let message = error.localizedDescription.isEmpty
             ? "Analysis changes could not be saved."
             : error.localizedDescription
+        if isFolderMap {
+            folderMapSaveFailure = message
+        } else {
+            caseSaveFailure = message
+        }
+        refreshSaveError()
     }
 
     private func recordSaveSuccess(isFolderMap: Bool) {
         if isFolderMap {
-            folderMapSaveFailed = false
+            folderMapSaveFailure = nil
         } else {
-            caseSaveFailed = false
+            caseSaveFailure = nil
         }
-        if !caseSaveFailed && !folderMapSaveFailed && failedBackgroundCaseSaves.isEmpty {
-            saveError = nil
-        }
+        refreshSaveError()
+    }
+
+    private func isInRenameQuiescedFolder(_ analysisCase: AnalysisCase) -> Bool {
+        guard let quiescedFolder = renameQuiescenceFolderURL else { return false }
+        let caseFolder = analysisCase.source.canonicalURL.deletingLastPathComponent()
+            .standardizedFileURL
+        return caseFolder == quiescedFolder
+            || caseFolder.resolvingSymlinksInPath() == quiescedFolder.resolvingSymlinksInPath()
     }
 
     /// Keeps an open analysis workspace attached to the same source bytes after a successful
@@ -1504,7 +1610,11 @@ final class AnalysisWorkspaceModel {
         enqueueCaseSave(updatedCase, repository: repository)
     }
 
-    private func enqueueCaseSave(_ updatedCase: AnalysisCase, repository: AnalysisCaseRepository) {
+    private func enqueueCaseSave(
+        _ updatedCase: AnalysisCase,
+        repository: AnalysisCaseRepository,
+        isBackgroundRetry: Bool = false
+    ) {
         saveSequence += 1
         let sequence = saveSequence
         latestCaseSaveSequence[updatedCase.id] = sequence
@@ -1520,8 +1630,7 @@ final class AnalysisWorkspaceModel {
                 let storage = try await repository.save(updatedCase)
                 guard let self else { return }
                 self.finishCaseSave(id: updatedCase.id, sequence: sequence)
-                self.recordBackgroundSaveSuccess(id: updatedCase.id)
-                guard self.analysisCase?.id == updatedCase.id else { return }
+                guard !isBackgroundRetry, self.analysisCase?.id == updatedCase.id else { return }
                 self.caseStorage = storage
                 self.recordSaveSuccess(isFolderMap: false)
             } catch is CancellationError {
@@ -1529,7 +1638,7 @@ final class AnalysisWorkspaceModel {
             } catch {
                 guard let self else { return }
                 self.finishCaseSave(id: updatedCase.id, sequence: sequence)
-                if self.analysisCase?.id == updatedCase.id {
+                if !isBackgroundRetry, self.analysisCase?.id == updatedCase.id {
                     self.recordSaveFailure(error, isFolderMap: false)
                 } else {
                     // The photo was left before its last save failed; still tell the user.
@@ -1666,13 +1775,17 @@ final class AnalysisWorkspaceTerminationFlush {
         models.add(model)
     }
 
+    /// Every window is saved before any failure is reported, so one failing window cannot stop
+    /// the others' edits from becoming durable.
     func flush() async throws {
+        var failures: [String] = []
         for model in models.allObjects {
-            guard await model.savePendingChanges(waitingForLoad: false) else {
-                throw AnalysisTerminationSaveError(
-                    message: model.saveError ?? "Analysis changes could not be saved."
-                )
+            if await !model.savePendingChanges(waitingForLoad: false) {
+                failures.append(model.saveError ?? "Analysis changes could not be saved.")
             }
+        }
+        guard failures.isEmpty else {
+            throw AnalysisTerminationSaveError(message: failures.joined(separator: "\n"))
         }
     }
 }

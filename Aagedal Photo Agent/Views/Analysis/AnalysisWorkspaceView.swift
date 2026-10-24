@@ -707,6 +707,10 @@ struct AnalysisWorkspaceView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Button("Discard Changes", role: .destructive) {
+                model.discardFailedSaves()
+            }
+            .help("Forget the unsaved Analysis changes; nothing is written")
             Button("Retry Save") {
                 model.retryFailedSave()
             }
@@ -714,7 +718,7 @@ struct AnalysisWorkspaceView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(Color.red.opacity(0.10))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("analysis.save-error")
     }
 
