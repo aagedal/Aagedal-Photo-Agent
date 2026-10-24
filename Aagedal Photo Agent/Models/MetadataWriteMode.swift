@@ -58,9 +58,16 @@ extension MetadataWriteMode {
     /// other files' embedding mode (Photo Mechanic: the JPEGs are embedded, the RAWs get
     /// sidecars). Any other mix keeps the most protective mode for the whole selection.
     static func current(forSelection images: [ImageFile]) -> MetadataWriteMode {
-        let resolved = images.map {
-            (isRaw: SupportedImageFormats.isRaw(url: $0.url),
-             mode: current(forC2PA: $0.hasC2PA, isRaw: SupportedImageFormats.isRaw(url: $0.url)))
+        current(forURLs: images.map(\.url), c2paURLs: Set(images.filter(\.hasC2PA).map(\.url)))
+    }
+
+    /// The same selection rule keyed by URL, for callers that own the photos' C2PA facts
+    /// (the metadata editor) rather than a browser's current `ImageFile` array.
+    static func current(forURLs urls: [URL], c2paURLs: Set<URL>) -> MetadataWriteMode {
+        let resolved = urls.map {
+            (isRaw: SupportedImageFormats.isRaw(url: $0),
+             hasC2PA: c2paURLs.contains($0),
+             mode: current(forC2PA: c2paURLs.contains($0), isRaw: SupportedImageFormats.isRaw(url: $0)))
         }
         let modes = Set(resolved.map(\.mode))
         if modes.count == 1, let mode = modes.first { return mode }
@@ -71,7 +78,7 @@ extension MetadataWriteMode {
             return mode
         }
         return current(
-            forC2PA: images.contains(where: \.hasC2PA),
+            forC2PA: resolved.contains(where: \.hasC2PA),
             isRaw: resolved.contains(where: \.isRaw)
         )
     }

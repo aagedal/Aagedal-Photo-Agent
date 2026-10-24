@@ -7,10 +7,13 @@ struct StructuredEditorialMetadataEditor: View {
     @Binding var locationsCreated: [EditorialLocation]
     @Binding var locationsShown: [EditorialLocation]
     var onChange: () -> Void
+    /// Saves like the panel's other fields: on Return, on leaving a field, and on Remove.
+    var onCommit: () -> Void = {}
 
     @State private var isContactExpanded = false
     @State private var isCreatedExpanded = false
     @State private var isShownExpanded = false
+    @FocusState private var focusedKey: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -34,6 +37,10 @@ struct StructuredEditorialMetadataEditor: View {
                 identifier: "metadata.locationsShown"
             )
         }
+        .onSubmit { onCommit() }
+        .onChange(of: focusedKey) { oldValue, newValue in
+            if oldValue != nil, oldValue != newValue { onCommit() }
+        }
     }
 
     var contact: Binding<CreatorContactInfo> {
@@ -54,18 +61,26 @@ struct StructuredEditorialMetadataEditor: View {
     private var contactEditor: some View {
         let contact = contact
         VStack(alignment: .leading, spacing: 6) {
-            RepeatableStructuredTextEditor(title: "Address line", values: contact.addressLines)
+            RepeatableStructuredTextEditor(title: "Address line", values: contact.addressLines,
+                focus: $focusedKey, keyPrefix: "contact.address", onRemove: onCommit)
             HStack {
                 TextField("City", text: optionalText(contact.city))
+                    .focused($focusedKey, equals: "contact.city")
                 TextField("Region / State", text: optionalText(contact.region))
+                    .focused($focusedKey, equals: "contact.region")
             }
             HStack {
                 TextField("Postal code", text: optionalText(contact.postalCode))
+                    .focused($focusedKey, equals: "contact.postalCode")
                 TextField("Country", text: optionalText(contact.country))
+                    .focused($focusedKey, equals: "contact.country")
             }
-            RepeatableStructuredTextEditor(title: "Email", values: contact.emails)
-            RepeatableStructuredTextEditor(title: "Phone", values: contact.phoneNumbers)
-            RepeatableStructuredTextEditor(title: "Web URL", values: contact.webURLs)
+            RepeatableStructuredTextEditor(title: "Email", values: contact.emails,
+                focus: $focusedKey, keyPrefix: "contact.email", onRemove: onCommit)
+            RepeatableStructuredTextEditor(title: "Phone", values: contact.phoneNumbers,
+                focus: $focusedKey, keyPrefix: "contact.phone", onRemove: onCommit)
+            RepeatableStructuredTextEditor(title: "Web URL", values: contact.webURLs,
+                focus: $focusedKey, keyPrefix: "contact.web", onRemove: onCommit)
         }
         .textFieldStyle(.roundedBorder)
     }
@@ -93,10 +108,12 @@ struct StructuredEditorialMetadataEditor: View {
                                 guard locations.wrappedValue.indices.contains(index) else { return }
                                 locations.wrappedValue.remove(at: index)
                                 onChange()
+                                onCommit()
                             }
                             .buttonStyle(.borderless)
                         }
-                        EditorialLocationEditor(location: location(at: index, in: locations))
+                        EditorialLocationEditor(location: location(at: index, in: locations),
+                            focus: $focusedKey, keyPrefix: "\(identifier).\(index)", onRemove: onCommit)
                     }
                     .padding(8)
                     .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
@@ -141,27 +158,41 @@ struct StructuredEditorialMetadataEditor: View {
 
 private struct EditorialLocationEditor: View {
     @Binding var location: EditorialLocation
+    let focus: FocusState<String?>.Binding
+    let keyPrefix: String
+    var onRemove: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            RepeatableStructuredTextEditor(title: "Identifier", values: $location.identifiers)
+            RepeatableStructuredTextEditor(title: "Identifier", values: $location.identifiers,
+                focus: focus, keyPrefix: "\(keyPrefix).identifier", onRemove: onRemove)
             TextField("Location name", text: optionalText($location.name))
+                .focused(focus, equals: "\(keyPrefix).name")
             HStack {
                 TextField("Sublocation", text: optionalText($location.sublocation))
+                    .focused(focus, equals: "\(keyPrefix).sublocation")
                 TextField("City", text: optionalText($location.city))
+                    .focused(focus, equals: "\(keyPrefix).city")
             }
             HStack {
                 TextField("Province / State", text: optionalText($location.provinceState))
+                    .focused(focus, equals: "\(keyPrefix).provinceState")
                 TextField("Country", text: optionalText($location.countryName))
+                    .focused(focus, equals: "\(keyPrefix).country")
             }
             HStack {
                 TextField("Country code", text: optionalText($location.countryCode))
+                    .focused(focus, equals: "\(keyPrefix).countryCode")
                 TextField("World region", text: optionalText($location.worldRegion))
+                    .focused(focus, equals: "\(keyPrefix).worldRegion")
             }
             HStack {
                 TextField("Latitude", value: $location.latitude, format: .number)
+                    .focused(focus, equals: "\(keyPrefix).latitude")
                 TextField("Longitude", value: $location.longitude, format: .number)
+                    .focused(focus, equals: "\(keyPrefix).longitude")
                 TextField("Altitude (m)", value: $location.altitudeMeters, format: .number)
+                    .focused(focus, equals: "\(keyPrefix).altitude")
             }
         }
         .textFieldStyle(.roundedBorder)
@@ -178,6 +209,9 @@ private struct EditorialLocationEditor: View {
 private struct RepeatableStructuredTextEditor: View {
     let title: String
     @Binding var values: [String]
+    let focus: FocusState<String?>.Binding
+    let keyPrefix: String
+    var onRemove: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -185,9 +219,11 @@ private struct RepeatableStructuredTextEditor: View {
                 HStack {
                     TextField(title, text: value(at: index))
                         .accessibilityIdentifier("metadata.structured.\(title).\(index)")
+                        .focused(focus, equals: "\(keyPrefix).\(index)")
                     Button {
                         guard values.indices.contains(index) else { return }
                         values.remove(at: index)
+                        onRemove()
                     } label: {
                         Image(systemName: "minus.circle")
                     }

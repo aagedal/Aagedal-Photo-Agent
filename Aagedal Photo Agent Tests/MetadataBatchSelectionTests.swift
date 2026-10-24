@@ -819,3 +819,315 @@ struct MetadataBatchSelectionTests {
         #expect(model.saveError == nil)
     }
 }
+
+/// Fails every embedded descriptive write, as a full disk or a loss-guard refusal would.
+private nonisolated final class FailingDescriptiveWriteEngine: MetadataWriteEngine, @unchecked Sendable {
+    private let inner = SwiftExifWriteEngine()
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        throw CocoaError(.fileWriteOutOfSpace)
+    }
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        try await inner.writeFieldsToRenderedFiles(fields, to: urls, structuredData: structuredData)
+    }
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {
+        throw CocoaError(.fileWriteOutOfSpace)
+    }
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws { try await inner.writeRating(rating, to: urls) }
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws { try await inner.writeLabel(label, to: urls) }
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws { try await inner.writeOrientation(orientation, to: urls) }
+    func stripIPTCAndXMP(from urls: [URL]) async throws { try await inner.stripIPTCAndXMP(from: urls) }
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {
+        try await inner.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
+    }
+}
+
+// MARK: - Metadata panel editing workflow (3.0)
+
+extension MetadataBatchSelectionTests {
+    /// Runs `body` under the Professional preset (sidecar for C2PA) in the test-isolated store.
+    private func withProfessionalPreset(_ body: () async throws -> Void) async rethrows {
+        let defaults = AppDefaults.store
+        let saved = defaults.object(forKey: UserDefaultsKeys.metadataWritePreset)
+        defaults.set(MetadataWritePreset.professional.rawValue, forKey: UserDefaultsKeys.metadataWritePreset)
+        defer {
+            if let saved { defaults.set(saved, forKey: UserDefaultsKeys.metadataWritePreset) }
+            else { defaults.removeObject(forKey: UserDefaultsKeys.metadataWritePreset) }
+        }
+        try await body()
+    }
+
+    private func waitForSingleLoad(_ model: MetadataViewModel) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.isLoading, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(!model.isLoading)
+        try #require(model.metadata != nil)
+    }
+
+    private func sharedBatchFixture(in folder: URL) async throws -> [URL] {
+        let urls = [try makeJPEG(in: folder, name: "one.jpg"), try makeJPEG(in: folder, name: "two.jpg")]
+        var shared = IPTCMetadata()
+        shared.urgency = 3
+        shared.digitalSourceType = .digitalCapture
+        shared.latitude = 59.91
+        shared.longitude = 10.75
+        shared.dateCreated = "2026-05-17"
+        for url in urls { try await write(shared, to: url) }
+        return urls
+    }
+
+    private func clearSharedScalars(_ model: MetadataViewModel) {
+        model.editingMetadata.urgency = nil
+        model.editingMetadata.digitalSourceType = nil
+        model.editingMetadata.latitude = nil
+        model.editingMetadata.longitude = nil
+        model.editingMetadata.dateCreated = nil
+        model.markChanged()
+    }
+
+    @Test("batch embedded save clears a common urgency, digital source type and GPS")
+    func batchEmbeddedClearsCommonValues() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await sharedBatchFixture(in: folder)
+        let before = try await SwiftExifReadService().readFullMetadata(url: urls[0])
+        try #require(before.urgency == 3 && before.digitalSourceType == .digitalCapture && before.latitude != nil)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        #expect(model.batchPlaceholder(for: "dateCreated") == "Leave empty to skip")
+        clearSharedScalars(model)
+        #expect(model.batchPlaceholder(for: "dateCreated") == "Will be cleared on all 2 photos")
+        model.writeMetadata()
+        try await waitForSave(model)
+        for url in urls {
+            let read = try await SwiftExifReadService().readFullMetadata(url: url)
+            #expect(read.urgency == nil)
+            #expect(read.digitalSourceType == nil)
+            #expect(read.latitude == nil && read.longitude == nil)
+            #expect(read.dateCreated == nil)
+        }
+    }
+
+    @Test("batch sidecar save clears a common urgency, digital source type, GPS and date")
+    func batchSidecarClearsCommonValues() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await sharedBatchFixture(in: folder)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        clearSharedScalars(model)
+        model.saveToSidecar()
+        try await waitForSave(model)
+        for url in urls {
+            let draft = try #require(MetadataSidecarService().loadSidecar(for: url, in: folder))
+            #expect(draft.metadata.urgency == nil)
+            #expect(draft.metadata.digitalSourceType == nil)
+            #expect(draft.metadata.latitude == nil && draft.metadata.longitude == nil)
+            #expect(draft.metadata.dateCreated == nil)
+        }
+    }
+
+    @Test("a mixed batch value left empty stays untouched on the sidecar path")
+    func batchSidecarLeavesMixedValues() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg")]
+        for (url, urgency) in zip(urls, [2, 6]) {
+            var metadata = IPTCMetadata()
+            metadata.urgency = urgency
+            try await write(metadata, to: url)
+        }
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        model.editingMetadata.city = "Oslo"
+        model.markChanged()
+        model.saveToSidecar()
+        try await waitForSave(model)
+        for (url, urgency) in zip(urls, [2, 6]) {
+            let draft = try #require(MetadataSidecarService().loadSidecar(for: url, in: folder))
+            #expect(draft.metadata.urgency == urgency)
+            #expect(draft.metadata.city == "Oslo")
+        }
+    }
+
+    @Test("a partial keyword added to every photo leaves the partial chips")
+    func partialKeywordAddedToAllIsNoLongerPartial() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg")]
+        for (url, keywords) in zip(urls, [["shared", "alpha"], ["shared", "beta"]]) {
+            var metadata = IPTCMetadata()
+            metadata.keywords = keywords
+            try await write(metadata, to: url)
+        }
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        try #require(Set(model.batchPartialKeywords) == ["alpha", "beta"])
+        model.editingMetadata.keywords.append("alpha")
+        model.markChanged()
+        #expect(model.visibleBatchPartialKeywords == ["beta"])
+        model.writeMetadata()
+        try await waitForSave(model)
+        #expect(model.batchPartialKeywords == ["beta"])
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).keywords.contains("alpha"))
+        }
+    }
+
+    @Test("a folder switch saves a C2PA JPEG to its sidecar in the folder it was loaded from")
+    func departingEditorUsesEditorModeAndFolder() async throws {
+        try await withProfessionalPreset {
+            let folder = try makeFolder()
+            let nextFolder = try makeFolder()
+            defer {
+                try? FileManager.default.removeItem(at: folder)
+                try? FileManager.default.removeItem(at: nextFolder)
+            }
+            let url = try makeJPEG(in: folder, name: "credentialed.jpg")
+            var image = ImageFile(url: url)
+            image.hasC2PA = true
+            let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+            model.loadMetadata(for: [image], folderURL: folder)
+            try await waitForSingleLoad(model)
+            model.editingMetadata.description = "Departing caption"
+            model.markChanged()
+            // The browser has already published the next folder (and emptied its arrays).
+            model.currentFolderURL = nextFolder
+            #expect(model.editorWriteMode() == .writeToXMPSidecar)
+            let outcome = await withCheckedContinuation { continuation in
+                model.commitDepartingEditor { continuation.resume(returning: $0) }
+            }
+            #expect(outcome == .saved)
+            #expect(model.currentFolderURL == nextFolder)
+            let embedded = try await SwiftExifReadService().readFullMetadata(url: url)
+            #expect(embedded.description == nil, "a C2PA file must never be embedded into automatically")
+            #expect(XMPSidecarService().loadSidecar(for: url)?.description == "Departing caption")
+            #expect(MetadataSidecarService().loadSidecar(for: url, in: folder)?.metadata.description == "Departing caption")
+            #expect(MetadataSidecarService().loadSidecar(for: url, in: nextFolder) == nil)
+        }
+    }
+
+    @Test("a failed navigation save keeps the edit as a pending draft and names the photo")
+    func failedDepartingSaveKeepsDraft() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = try makeJPEG(in: folder, name: "failing.jpg")
+        let next = try makeJPEG(in: folder, name: "next.jpg")
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: FailingDescriptiveWriteEngine())
+        try await loadSingle(model, url, in: folder)
+        model.editingMetadata.description = "Must survive"
+        model.markChanged()
+        var outcome: EditorBoundaryCommitOutcome?
+        await withProfessionalPreset {
+            #expect(model.editorWriteMode() == .writeToFile)
+            model.commitDepartingEditor { outcome = $0 }
+        }
+        // The user has already moved on when the failure arrives.
+        model.loadMetadata(for: [ImageFile(url: next)], folderURL: folder)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while outcome == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        let result = try #require(outcome)
+        guard case .keptAsDraft(let message) = result else {
+            Issue.record("Expected a pending draft, got \(result)")
+            return
+        }
+        #expect(message.contains("failing.jpg"))
+        let draft = try #require(MetadataSidecarService().loadSidecar(for: url, in: folder))
+        #expect(draft.pendingChanges)
+        #expect(draft.metadata.description == "Must survive")
+    }
+
+    @Test("resolving a description conflict to the shown value still saves it")
+    func descriptionConflictChoiceIsSaved() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = try makeJPEG(in: folder, name: "conflict.jpg")
+        var metadata = IPTCMetadata()
+        metadata.description = "XMP text"
+        try await write(metadata, to: url)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        try await loadSingle(model, url, in: folder)
+        model.descriptionConflict = DescriptionConflict(xmpDescription: "XMP text", iptcCaptionAbstract: "IPTC text")
+        model.resolveDescriptionConflict(keepXMP: true)
+        #expect(model.editingMetadata.description == "XMP text")
+        #expect(model.hasUnpersistedEditorChanges, "the choice must reach the write path")
+        let result = await withCheckedContinuation { continuation in
+            model.commitEditsReportingResult(mode: .writeToFile) { continuation.resume(returning: $0) }
+        }
+        #expect(result == .succeeded)
+        let (read, conflict) = try await SwiftExifReadService().readFullMetadataWithConflictCheck(url: url)
+        #expect(read.description == "XMP text")
+        #expect(conflict == nil)
+        #expect(!model.hasUnpersistedEditorChanges)
+    }
+
+    @Test("a sidecar-mode save disables Write until there is something new to write")
+    func writeButtonDisabledAfterSidecarSave() async throws {
+        try await withProfessionalPreset {
+            let folder = try makeFolder()
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let url = try makeJPEG(in: folder, name: "c2pa.jpg")
+            var image = ImageFile(url: url)
+            image.hasC2PA = true
+            let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+            model.loadMetadata(for: [image], folderURL: folder)
+            try await waitForSingleLoad(model)
+            model.editingMetadata.description = "Sidecar only"
+            model.markChanged()
+            #expect(model.canWriteMetadataToImage)
+            let result = await withCheckedContinuation { continuation in
+                model.commitEditsReportingResult(mode: model.editorWriteMode()) { continuation.resume(returning: $0) }
+            }
+            #expect(result == .succeeded)
+            #expect(model.embeddedMetadata?.description == nil)
+            #expect(!model.canWriteMetadataToImage)
+        }
+    }
+
+    @Test("panel notices clear on a new selection; a navigation notice survives one load")
+    func noticeLifetimeFollowsSelection() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = try makeJPEG(in: folder, name: "first.jpg")
+        let second = try makeJPEG(in: folder, name: "second.jpg")
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        try await loadSingle(model, first, in: folder)
+        model.notice = MetadataPanelNotice(title: "Template: 1 rejected", detail: [], severity: .warning)
+        try await loadSingle(model, second, in: folder)
+        #expect(model.notice == nil)
+        model.editingMetadata.description = "{filename}"
+        model.markChanged()
+        model.keepUnresolvedVariablesAsPendingDraft()
+        try await waitForSave(model)
+        try await loadSingle(model, first, in: folder)
+        #expect(model.notice != nil, "the boundary's own notice must survive its navigation")
+        try await loadSingle(model, second, in: folder)
+        #expect(model.notice == nil)
+    }
+
+    @Test("a typed chip token registered with the editor buffers is committed on flush")
+    func pendingChipInputCommitsOnFlush() {
+        let registry = MetadataEditorBufferRegistry()
+        let owner = UUID()
+        var committed: [String] = []
+        var pending = "berlin"
+        registry.registerPendingInput(key: "keywords", owner: owner) {
+            guard !pending.isEmpty else { return false }
+            committed.append(pending)
+            pending = ""
+            return true
+        }
+        #expect(registry.commitPendingInputs())
+        #expect(committed == ["berlin"])
+        #expect(!registry.commitPendingInputs())
+        registry.unregisterPendingInput(key: "keywords", owner: UUID())
+        pending = "oslo"
+        #expect(registry.commitPendingInputs(), "another owner must not unregister the field")
+        registry.unregisterPendingInput(key: "keywords", owner: owner)
+        pending = "paris"
+        #expect(!registry.commitPendingInputs())
+    }
+}

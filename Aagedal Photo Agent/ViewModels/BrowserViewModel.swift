@@ -449,6 +449,15 @@ final class BrowserViewModel {
 
     var selectedImages: [ImageFile] { selectedImagesCache }
 
+    /// The given photos this folder currently knows to carry Content Credentials. C2PA detection
+    /// finishes after a photo is first listed, so metadata saves add this to the editor's facts.
+    func c2paURLs(among urls: [URL]) -> Set<URL> {
+        Set(urls.filter { url in
+            guard let index = urlToImageIndex[url], images.indices.contains(index) else { return false }
+            return images[index].hasC2PA
+        })
+    }
+
     var firstSelectedImage: ImageFile? {
         guard let firstID = selectedImageIDs.first else { return nil }
         if let index = urlToImageIndex[firstID] { return images[index] }

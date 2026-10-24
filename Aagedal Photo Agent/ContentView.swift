@@ -196,14 +196,14 @@ struct ContentView: View {
     /// through the scene command router, so it shows even when a non-primary pane opened it.
     private func openFolderInActivePane(_ url: URL, addToOpenFolders: Bool) {
         let targetPane = panes.active
-        performAfterCaptionFlush {
+        performAfterBrowserEditorCommit {
             targetPane.loadFolder(url: url, addToOpenFolders: addToOpenFolders)
         }
     }
 
     /// Close a sidebar root in the sidebar's pane and in any other pane showing it.
     private func closeFolderInAllPanes(_ url: URL) {
-        performAfterCaptionFlush {
+        performAfterBrowserEditorCommit {
             sidebarViewModel.closeOpenFolder(url)
             for pane in panes.panes.dropFirst() {
                 pane.releaseClosedFolder(url)
@@ -211,6 +211,8 @@ struct ContentView: View {
         }
     }
     @State private var metadataViewModel: MetadataViewModel
+    /// A Browser-editor save admitted ahead of a folder or workspace change is still running.
+    @State private var isCommittingBrowserEditor = false
     @State private var faceRecognitionViewModel: FaceRecognitionViewModel
     @State private var templateViewModel: TemplateViewModel
     @State private var developTemplateViewModel = DevelopTemplateViewModel()
@@ -466,7 +468,7 @@ struct ContentView: View {
                 mainViewMode: mainViewMode,
                 commandRouter: commandRouter,
                 loadTechnicalMetadata: loadTechnicalMetadata,
-                performAfterMetadataFlush: performAfterCaptionFlush,
+                performAfterMetadataFlush: performAfterBrowserEditorCommit,
                 selectAdjacentAnalysisImage: selectAdjacentAnalysisImage(offset:),
                 technicalMetadataCache: $technicalMetadataCache,
                 technicalMetadata: $technicalMetadata
@@ -1404,7 +1406,7 @@ struct ContentView: View {
     /// its local exit button. Route them through the same registered flush handler and leave the
     /// editor visible when persistence fails.
     private func leaveEditWorkspaceIfNeeded(_ transition: @escaping @MainActor () -> Void) {
-        performAfterCaptionFlush {
+        performAfterBrowserEditorCommit {
             performAfterAnalysisClose {
                 performAfterDevelopFlush(reason: .workspaceExit, transition)
             }
@@ -1465,19 +1467,19 @@ struct ContentView: View {
         // the editor itself has nothing new to commit.
         await metadataViewModel.waitForPendingWrites()
         guard metadataViewModel.hasUnpersistedEditorChanges else { return }
-        let selection = browserViewModel.selectedImages
+        let editorURLs = metadataViewModel.selectedURLs
         if metadataViewModel.shouldDeferAutomaticCommitForVariables {
             metadataViewModel.keepUnresolvedVariablesAsPendingDraft()
             await metadataViewModel.waitForPendingWrites()
-            browserViewModel.refreshPendingStatusBatch(for: selection.map(\.url))
+            browserViewModel.refreshPendingStatusBatch(for: editorURLs)
             return
         }
-        let mode = MetadataWriteMode.current(forSelection: selection)
+        let mode = metadataViewModel.editorWriteMode(knownC2PAURLs: browserViewModel.c2paURLs(among: editorURLs))
         let result = await withCheckedContinuation { continuation in
             metadataViewModel.commitEditsReportingResult(mode: mode) { continuation.resume(returning: $0) }
         }
         await metadataViewModel.waitForPendingWrites()
-        browserViewModel.refreshPendingStatusBatch(for: selection.map(\.url))
+        browserViewModel.refreshPendingStatusBatch(for: editorURLs)
         switch result {
         case .succeeded: return
         case .failed(let message), .cancelled(let message):
@@ -1509,6 +1511,51 @@ struct ContentView: View {
             if workspace == .metadataReview { browserViewModel.errorMessage = error.localizedDescription }
             else { metadataViewModel.saveError = error.localizedDescription }
             return false
+        }
+    }
+
+    /// Folder switches, folder closes and workspace exits leave the Browser editor's photos.
+    /// Save them first — with the editor's own mode and folder, before the browser arrays are
+    /// replaced — then run the usual flush. A failed write keeps a pending draft and continues;
+    /// only when even that fails does the transition stop, leaving the edit on screen.
+    private func performAfterBrowserEditorCommit(_ operation: @escaping @MainActor () -> Void) {
+        let workspace = mainViewMode
+        guard workspace == .browser || workspace == .faceManagement,
+              !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else {
+            performAfterCaptionFlush(operation)
+            return
+        }
+        metadataViewModel.captureFocusedEditorText()
+        guard metadataViewModel.hasUnpersistedEditorChanges else {
+            performAfterCaptionFlush(operation)
+            return
+        }
+        guard !isCommittingBrowserEditor else { return }
+        isCommittingBrowserEditor = true
+        let editorURLs = metadataViewModel.selectedURLs
+        Task { @MainActor in
+            defer { isCommittingBrowserEditor = false }
+            let outcome: EditorBoundaryCommitOutcome
+            if metadataViewModel.shouldDeferAutomaticCommitForVariables {
+                metadataViewModel.keepUnresolvedVariablesAsPendingDraft()
+                await metadataViewModel.waitForPendingWrites()
+                outcome = .saved
+            } else {
+                outcome = await withCheckedContinuation { continuation in
+                    metadataViewModel.commitDepartingEditor(
+                        knownC2PAURLs: browserViewModel.c2paURLs(among: editorURLs)
+                    ) { continuation.resume(returning: $0) }
+                }
+            }
+            browserViewModel.refreshPendingStatusBatch(for: editorURLs)
+            guard outcome.preservesEdits else {
+                metadataViewModel.saveError = outcome.attentionMessage
+                return
+            }
+            guard mainViewMode == workspace else { return }
+            performAfterCaptionFlush(operation)
+            // After the operation: a folder load clears the browser's error banner.
+            if let message = outcome.attentionMessage { browserViewModel.errorMessage = message }
         }
     }
 
@@ -1582,7 +1629,11 @@ struct ContentView: View {
             return
         }
 
-        mainViewMode = .editing
+        guard mainViewMode == .browser || mainViewMode == .faceManagement else {
+            mainViewMode = .editing
+            return
+        }
+        performAfterBrowserEditorCommit { mainViewMode = .editing }
     }
 
     private func prepareSelectedVoiceMemoBatch(imageURLs: [URL]? = nil, languageIdentifier: String? = nil) {
@@ -4685,17 +4736,18 @@ struct ContentViewModifiers: ViewModifier {
                 if !oldValue.isEmpty {
                     MetadataAutomaticSaveBoundary.perform(.selectionChange, in: mainViewMode,
                         viewModel: metadataViewModel, captionFlush: {}) {
-                        // Index lookups: scanning the whole folder per selected URL is O(n·m)
-                        // on the main thread for every selection change with unsaved edits.
-                        let previousImages = metadataViewModel.selectedURLs.compactMap { url in
-                            browserViewModel.urlToImageIndex[url].map { browserViewModel.images[$0] }
-                        }
-                        let mode = MetadataWriteMode.current(forSelection: previousImages)
+                        // The editor's own photos, C2PA facts and load folder decide the save: a
+                        // folder or pane switch has already replaced the browser's arrays.
                         let previousURLs = metadataViewModel.selectedURLs
+                        let browser = browserViewModel
                         // Admit the save before scheduling the next selection load; its I/O
-                        // is already asynchronous. Avoid adding another deferred model read.
-                        metadataViewModel.commitEdits(mode: mode) {
-                            browserViewModel.refreshPendingStatusBatch(for: previousURLs)
+                        // is already asynchronous. A failure keeps a pending draft and is shown
+                        // in the browser, because the editor has moved on to the next photo.
+                        metadataViewModel.commitDepartingEditor(
+                            knownC2PAURLs: browser.c2paURLs(among: previousURLs)
+                        ) { outcome in
+                            browser.refreshPendingStatusBatch(for: previousURLs)
+                            if let message = outcome.attentionMessage { browser.errorMessage = message }
                         }
                     }
                 }
@@ -4724,7 +4776,8 @@ struct ContentViewModifiers: ViewModifier {
                                 throw CaptionWorkspaceFlushError.handlerUnavailable
                             }
                         }, commitConfigured: {
-                            let mode = MetadataWriteMode.current(forSelection: browserViewModel.selectedImages)
+                            let mode = metadataViewModel.editorWriteMode(knownC2PAURLs:
+                                browserViewModel.c2paURLs(among: metadataViewModel.selectedURLs))
                             metadataViewModel.commitEdits(mode: mode)
                         })
                 } catch {

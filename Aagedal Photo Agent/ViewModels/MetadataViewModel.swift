@@ -74,6 +74,30 @@ nonisolated enum MetadataCommitResult: Sendable, Equatable {
     case failed(message: String)
 }
 
+/// Outcome of saving the photos the Browser editor is leaving (selection change, folder switch,
+/// workspace exit). The editor has usually moved on by the time it arrives, so the caller shows
+/// `attentionMessage` somewhere that survives the change of selection.
+nonisolated enum EditorBoundaryCommitOutcome: Sendable, Equatable {
+    case nothingToCommit
+    case saved
+    /// The configured write failed; the edit was kept as a pending metadata draft instead.
+    case keptAsDraft(message: String)
+    /// Neither the write nor a pending draft succeeded. The edit exists only in the editor.
+    case failed(message: String)
+
+    var preservesEdits: Bool {
+        if case .failed = self { return false }
+        return true
+    }
+
+    var attentionMessage: String? {
+        switch self {
+        case .nothingToCommit, .saved: nil
+        case .keptAsDraft(let message), .failed(let message): message
+        }
+    }
+}
+
 /// Batch-specific presentation stays separate from the current editor's error state.
 nonisolated struct PendingMetadataWriteBatchAttention: Identifiable, Sendable {
     let id: UUID
@@ -228,11 +252,23 @@ final class MetadataViewModel {
     var variableProcessingStatus: String?
     var variableProcessingHadFailures = false
     var selectedHasC2PA = false
+    /// The loaded photos known to carry Content Credentials. Automatic saves resolve their write
+    /// mode from this editor-owned fact: by the time a selection or folder change saves, the
+    /// browser's arrays may already describe the next selection (or be empty).
+    private(set) var selectedC2PAURLs: Set<URL> = []
+    /// The folder the editor's current photos were loaded from. A folder switch can publish the
+    /// next folder into `currentFolderURL` before the departing photos' save is admitted.
+    private(set) var editorFolderURL: URL?
     var descriptionConflict: DescriptionConflict?
     /// Non-blocking notice rendered as a dismissible banner in the metadata panel.
     /// Set by bulk-add paths (template apply, partial promotion, Quick List pick)
     /// when entries are rejected or canonicalised against the approved list.
-    var notice: MetadataPanelNotice?
+    /// Notices describe the photos they were raised for, so loading another selection clears
+    /// them (except a navigation-boundary notice, which must survive its own navigation).
+    var notice: MetadataPanelNotice? {
+        didSet { noticeSurvivesNextSelectionLoad = false }
+    }
+    @ObservationIgnored private var noticeSurvivesNextSelectionLoad = false
 
     var originalImageMetadata: IPTCMetadata?
     var embeddedMetadata: IPTCMetadata?
@@ -277,11 +313,22 @@ final class MetadataViewModel {
     }
     var canWriteMetadataToImage: Bool {
         if isSaving { return false }
-        if hasChanges { return true }
-        if selectedCount == 1, let embedded = embeddedMetadata {
+        if hasChanges || selectedHavePendingSidecars { return true }
+        // The editor can show values the file itself lacks (for example an XMP reference copy
+        // of a JPEG). Only a mode that embeds can write those into the file; a sidecar-mode save
+        // never updates `embeddedMetadata`, so comparing it there kept Write enabled forever.
+        if selectedCount == 1, let embedded = embeddedMetadata,
+           let url = selectedURLs.first, !SupportedImageFormats.isRaw(url: url),
+           editorWriteMode().writesEmbedded {
             return editingMetadata != embedded
         }
-        return selectedHavePendingSidecars
+        return false
+    }
+
+    /// The write mode for the photos this editor holds. `knownC2PAURLs` adds Content Credentials
+    /// a caller learned after the load (the browser detects C2PA asynchronously).
+    func editorWriteMode(knownC2PAURLs: Set<URL> = []) -> MetadataWriteMode {
+        MetadataWriteMode.current(forURLs: selectedURLs, c2paURLs: selectedC2PAURLs.union(knownC2PAURLs))
     }
 
     // Batch metadata state - stores common values across selected images
@@ -652,8 +699,16 @@ final class MetadataViewModel {
         saveError = nil
         variableProcessingStatus = nil
         selectedHasC2PA = images.contains { $0.hasC2PA }
+        selectedC2PAURLs = Set(images.filter(\.hasC2PA).map(\.url))
         descriptionConflict = nil
         sidecarHistory = []
+        if !isReloadingSameBatch && !isReloadingSameImage {
+            if noticeSurvivesNextSelectionLoad {
+                noticeSurvivesNextSelectionLoad = false
+            } else if notice != nil {
+                notice = nil
+            }
+        }
         // A passive reload that keeps unsaved edits also keeps their diff baseline until the
         // fresh one arrives: a save issued meanwhile must not see "no baseline" and treat every
         // field — including an unchanged crs block — as changed.
@@ -685,6 +740,7 @@ final class MetadataViewModel {
             currentFolderURL = folderURL
         }
         let folderSnapshot = currentFolderURL
+        editorFolderURL = folderSnapshot
 
         guard !images.isEmpty else {
             metadata = nil
@@ -799,7 +855,13 @@ final class MetadataViewModel {
                           self.selectedURLs.count == 1,
                           self.selectedURLs.first == imageURL else { return }
                     self.embeddedMetadata = embedded
-                    self.descriptionConflict = conflict
+                    // A sidecar-only photo whose XMP sidecar carries the description is not
+                    // affected by its file's internal disagreement — resolving it saves to the
+                    // sidecar, so showing the banner would bring it back on every load.
+                    let sidecarOwnsDescription = referenceSource == .xmp && xmpMeta?.description != nil
+                        && !MetadataWriteMode.current(forC2PA: images[0].hasC2PA,
+                            isRaw: SupportedImageFormats.isRaw(url: imageURL)).writesEmbedded
+                    self.descriptionConflict = sidecarOwnsDescription ? nil : conflict
                     self.xmpMetadata = xmpMeta
                     self.editorXMPWriteBaseline = (imageURL, folderSnapshot, requestID,
                         sourceFacts.xmpWriteSnapshot, sourceFacts.xmpReadFailure)
@@ -1383,7 +1445,42 @@ final class MetadataViewModel {
         if batchDifferingFields.contains(field) {
             return "Multiple values"
         }
+        // Emptying a value every selected photo shared clears it on save (Photo Mechanic).
+        if let path = MetadataEditorFieldPaths.scalarText(for: field),
+           let common = previousEditingMetadata?[keyPath: path], !common.isEmpty,
+           (editingMetadata[keyPath: path] ?? "").isEmpty {
+            return "Will be cleared on all \(selectedCount) photos"
+        }
         return "Leave empty to skip"
+    }
+
+    /// Partial keywords not yet added to every photo by the editor. A partial value the user
+    /// typed (or picked) is now common, so it must not also show as a partial chip.
+    var visibleBatchPartialKeywords: [String] {
+        let common = Set(editingMetadata.keywords)
+        return batchPartialKeywords.filter { !common.contains($0) }
+    }
+
+    var visibleBatchPartialPersonShown: [String] {
+        let common = Set(editingMetadata.personShown)
+        return batchPartialPersonShown.filter { !common.contains($0) }
+    }
+
+    /// After a batch save, values written to every photo are no longer partial. Overwrite mode
+    /// replaced each photo's list, so nothing remains partial.
+    private func reconcileBatchPartials(afterSaving saved: IPTCMetadata) {
+        if multiSelectMode(for: "keywords") == .overwrite, !saved.keywords.isEmpty {
+            batchPartialKeywords = []
+        } else {
+            let common = Set(saved.keywords)
+            batchPartialKeywords.removeAll { common.contains($0) }
+        }
+        if multiSelectMode(for: "personShown") == .overwrite, !saved.personShown.isEmpty {
+            batchPartialPersonShown = []
+        } else {
+            let common = Set(saved.personShown)
+            batchPartialPersonShown.removeAll { common.contains($0) }
+        }
     }
 
     /// Returns true if a field has differing values across the batch selection
@@ -1490,10 +1587,21 @@ final class MetadataViewModel {
         return addedCount
     }
 
+    /// Picks one of the file's disagreeing descriptions. The choice must then be saved so both
+    /// containers agree — call `commitEdits` afterwards. When the chosen text is what the editor
+    /// already shows, nothing would look changed and the save would be skipped (bringing the
+    /// banner back on the next load), so the baseline records the losing container's text: that
+    /// is literally what one of the containers still holds.
     func resolveDescriptionConflict(keepXMP: Bool) {
         guard let conflict = descriptionConflict else { return }
-        editingMetadata.description = keepXMP ? conflict.xmpDescription : conflict.iptcCaptionAbstract
+        let chosen = keepXMP ? conflict.xmpDescription : conflict.iptcCaptionAbstract
+        let losing = keepXMP ? conflict.iptcCaptionAbstract : conflict.xmpDescription
+        let chosenValue: String? = chosen.isEmpty ? nil : chosen
+        editingMetadata.description = chosenValue
         descriptionConflict = nil
+        if selectedCount == 1, previousEditingMetadata?.description == chosenValue {
+            previousEditingMetadata?.description = losing.isEmpty ? nil : losing
+        }
         markChanged()
     }
 
@@ -1716,7 +1824,10 @@ final class MetadataViewModel {
                     $0.imageURL == request.imageURL && $0.folderURL == request.folderURL && $0.loadID == request.loadID
                 }
                 if metadataLoadRequestID == request.loadID, selectedURLs == [request.imageURL] {
-                    if result.refusedForContentCredentials { selectedHasC2PA = true }
+                    if result.refusedForContentCredentials {
+                        selectedHasC2PA = true
+                        selectedC2PAURLs.insert(request.imageURL)
+                    }
                     revertPrimaryDevelopToPersisted()
                     saveError = message
                 }
@@ -1893,6 +2004,86 @@ final class MetadataViewModel {
         }
     }
 
+    /// Saves the photos the editor holds before it moves on, using the editor's own write mode
+    /// and load folder — never the browser's current arrays, which a folder or pane switch has
+    /// already replaced. A failed write keeps a single photo's edit as a pending JSON draft so
+    /// navigating away never silently drops it; the outcome names the photo and the reason.
+    func commitDepartingEditor(
+        knownC2PAURLs: Set<URL> = [],
+        onComplete: @escaping (EditorBoundaryCommitOutcome) -> Void
+    ) {
+        guard hasUnpersistedEditorChanges else { onComplete(.nothingToCommit); return }
+        let names = selectedURLs.map(\.lastPathComponent).joined(separator: ", ")
+        let mode = editorWriteMode(knownC2PAURLs: knownC2PAURLs)
+        withEditorFolder {
+            let fallback = boundaryDraftFallback()
+            let edited = editingMetadata
+            let loadID = metadataLoadRequestID
+            commitEditsReportingResult(mode: mode) { [weak self] result in
+                switch result {
+                case .succeeded:
+                    onComplete(.saved)
+                case .failed(let message), .cancelled(let message):
+                    guard let fallback else {
+                        onComplete(.failed(message: "Metadata for \(names) was not saved. \(message)"))
+                        return
+                    }
+                    Task { @MainActor in
+                        do {
+                            try await fallback.persistAsync()
+                            self?.adoptBoundaryDraft(fallback, edited: edited, loadID: loadID)
+                            onComplete(.keptAsDraft(message: "Metadata for \(names) could not be written and was kept as a pending draft. Use Write to retry. \(message)"))
+                        } catch {
+                            onComplete(.failed(message: "Metadata for \(names) was not saved, and no pending draft could be kept. \(message) \(error.localizedDescription)"))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Runs `body` with `currentFolderURL` set to the folder the editor's photos were loaded
+    /// from. Saves capture the folder synchronously, so restoring it afterwards is safe.
+    private func withEditorFolder<T>(_ body: () -> T) -> T {
+        guard let editorFolderURL, currentFolderURL != editorFolderURL else { return body() }
+        let published = currentFolderURL
+        currentFolderURL = editorFolderURL
+        defer { if currentFolderURL == editorFolderURL { currentFolderURL = published } }
+        return body()
+    }
+
+    /// The pending draft a failed boundary save falls back to: the editor's field changes,
+    /// replayed onto the photo's latest JSON record. Captured before the write is attempted,
+    /// because the editor may hold another photo by the time the write reports its failure.
+    private func boundaryDraftFallback() -> CaptionDraftPersistence? {
+        guard selectedCount == 1, let imageURL = selectedURLs.first,
+              let folderURL = currentFolderURL else { return nil }
+        let now = Date()
+        let previous = previousEditingMetadata ?? IPTCMetadata()
+        let changes = MetadataHistoryEntry.changes(from: previous, to: editingMetadata, timestamp: now)
+        guard !changes.isEmpty else { return nil }
+        var history = sidecarHistory + changes
+        history.trimToHistoryLimit()
+        let sidecar = MetadataSidecar(sourceFile: imageURL.lastPathComponent, lastModified: now,
+            pendingChanges: true, metadata: editingMetadata,
+            imageMetadataSnapshot: pendingDraftImageMetadataSnapshot, history: history)
+        return CaptionDraftPersistence(request: MetadataSidecarReplayRequest(
+            sidecar: sidecar, baselineMetadata: previous, baselineHistory: sidecarHistory,
+            baselineRecordExisted: currentWriteExpectedRecord != nil,
+            changes: changes, imageURL: imageURL, folderURL: folderURL))
+    }
+
+    /// When the editor still shows the photo whose save fell back to a draft, it now holds a
+    /// pending draft (Write enabled) rather than an unsaved edit that would be saved again.
+    private func adoptBoundaryDraft(_ draft: CaptionDraftPersistence, edited: IPTCMetadata, loadID: UUID?) {
+        guard selectedURLs == [draft.imageURL], metadataLoadRequestID == loadID,
+              editingMetadata == edited else { return }
+        previousEditingMetadata = edited
+        sidecarHistory = draft.sidecar.history
+        hasChanges = true
+        selectedHavePendingSidecars = true
+    }
+
     func writeMetadata() {
         do { try requirePrimaryDevelopWritesPersisted() }
         catch { saveError = error.localizedDescription; return }
@@ -1967,13 +2158,20 @@ final class MetadataViewModel {
                     }
                     // Add mode personShown handled below via addRemoveListValues
 
-                    if let v = edited.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
-                    if let v = edited.urgency { fields[.urgency] = String(v) }
+                    if let v = Self.batchScalarWriteValue(edited.digitalSourceType?.newsCodeURI,
+                        previous: prevEditing?.digitalSourceType?.newsCodeURI) { fields[.digitalSourceType] = v }
+                    if let v = Self.batchScalarWriteValue(edited.urgency.map(String.init),
+                        previous: prevEditing?.urgency.map(String.init)) { fields[.urgency] = v }
                     if let lat = edited.latitude, let lon = edited.longitude {
                         fields[.gpsLatitude] = String(abs(lat))
                         fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
                         fields[.gpsLongitude] = String(abs(lon))
                         fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+                    } else if Self.batchClearsGPS(edited: edited, previous: prevEditing) {
+                        fields[.gpsLatitude] = ""
+                        fields[.gpsLatitudeRef] = ""
+                        fields[.gpsLongitude] = ""
+                        fields[.gpsLongitudeRef] = ""
                     }
                     if let v = edited.creatorTransportValue { fields[.creator] = v }
                     if let v = Self.batchScalarWriteValue(edited.creatorJobTitle, previous: prevEditing?.creatorJobTitle) { fields[.creatorJobTitle] = v }
@@ -2257,6 +2455,7 @@ final class MetadataViewModel {
                             self.batchLocationsShownMutation = .untouched
                         }
                         self.batchCommonMetadata = edited
+                        self.reconcileBatchPartials(afterSaving: edited)
                     }
                     self.hasChanges = self.editingMetadata != edited
                     if !draftedRefusedURLs.isEmpty { self.selectedHavePendingSidecars = true }
@@ -3316,12 +3515,14 @@ final class MetadataViewModel {
     /// tokens. Keep the edit as a pending draft instead and tell the user why.
     func keepUnresolvedVariablesAsPendingDraft() {
         let names = selectedURLs.map(\.lastPathComponent)
-        saveToSidecar()
+        withEditorFolder { saveToSidecar() }
         notice = MetadataPanelNotice(
             title: "Unresolved variables were kept as a pending draft. Use Process Variables, then Write, to update the file.",
             detail: names,
             severity: .warning
         )
+        // Raised at a navigation boundary: keep it through the load of the next selection.
+        noticeSurvivesNextSelectionLoad = true
     }
 
     /// The write a new single-photo save must wait for. Saves queue instead of cancelling the
@@ -4604,6 +4805,7 @@ final class MetadataViewModel {
             // The saved state is the new baseline for later add/remove diffs and list operations.
             previousEditingMetadata = savedEditing
             batchCommonMetadata = savedEditing
+            reconcileBatchPartials(afterSaving: savedEditing)
             if batchFieldMutations == savedFieldMutations { batchFieldMutations = [:] }
             if batchLocationsShownMutation == savedLocationsShownMutation {
                 batchLocationsShownMutation = .untouched
@@ -4763,9 +4965,13 @@ final class MetadataViewModel {
         applyBatchScalar(batchMeta.digitalImageGUID, previous: previousCommon?.digitalImageGUID, to: &metadata.digitalImageGUID)
         applyBatchScalar(batchMeta.imageSupplierImageID, previous: previousCommon?.imageSupplierImageID, to: &metadata.imageSupplierImageID)
         applyBatchScalar(batchMeta.jobId, previous: previousCommon?.jobId, to: &metadata.jobId)
-        if let dateCreated = batchMeta.dateCreated,
-           (try? EditorialDateCreated(parsing: dateCreated)) != nil {
-            metadata.dateCreated = dateCreated
+        if let dateCreated = batchMeta.dateCreated, !dateCreated.isEmpty {
+            if (try? EditorialDateCreated(parsing: dateCreated)) != nil {
+                metadata.dateCreated = dateCreated
+            }
+        } else if let previous = previousCommon?.dateCreated, !previous.isEmpty {
+            // Emptying a date every photo shared clears it, like every other batch scalar.
+            metadata.dateCreated = nil
         }
         if batchFieldMutations[.creator] == nil, !batchMeta.creators.isEmpty {
             metadata.creators = batchMeta.creators
@@ -4781,21 +4987,38 @@ final class MetadataViewModel {
         applyBatchScalar(batchMeta.event, previous: previousCommon?.event, to: &metadata.event)
         applyBatchScalar(batchMeta.instructions, previous: previousCommon?.instructions, to: &metadata.instructions)
         applyBatchScalar(batchMeta.source, previous: previousCommon?.source, to: &metadata.source)
+        // Clearing a value common to the selection clears it everywhere; a value that was
+        // already empty or mixed leaves each photo's own value untouched.
         if batchMeta.digitalSourceType != nil {
             metadata.digitalSourceType = batchMeta.digitalSourceType
+        } else if previousCommon?.digitalSourceType != nil {
+            metadata.digitalSourceType = nil
         }
         if batchMeta.urgency != nil {
             metadata.urgency = batchMeta.urgency
+        } else if previousCommon?.urgency != nil {
+            metadata.urgency = nil
         }
 
         // GPS — apply only when both coordinates are set, mirroring the batch
         // file-write path in writeMetadata(). When GPS differs across the
         // selection and the user hasn't picked a location, the common
         // coordinates are nil, so each image's existing GPS is preserved.
+        // Clearing coordinates every photo shared removes them from all.
         if let lat = batchMeta.latitude, let lon = batchMeta.longitude {
             metadata.latitude = lat
             metadata.longitude = lon
+        } else if batchClearsGPS(edited: batchMeta, previous: previousCommon) {
+            metadata.latitude = nil
+            metadata.longitude = nil
         }
+    }
+
+    /// The Clear button empties both coordinates. Only a location the whole selection shared
+    /// is cleared; mixed GPS has no common value and stays untouched.
+    nonisolated static func batchClearsGPS(edited: IPTCMetadata, previous: IPTCMetadata?) -> Bool {
+        edited.latitude == nil && edited.longitude == nil
+            && previous?.latitude != nil && previous?.longitude != nil
     }
 
     private nonisolated static func applyImplicitAdditiveEdit(
@@ -5629,5 +5852,35 @@ final class MetadataViewModel {
         originalImageMetadata = nil
         previousEditingMetadata = nil
         metadataReferenceSource = .embedded
+    }
+}
+
+/// Batch scalar text fields keyed by the editor's field name (the `batchPlaceholder` key).
+nonisolated enum MetadataEditorFieldPaths {
+    static func scalarText(for key: String) -> WritableKeyPath<IPTCMetadata, String?>? {
+        switch key {
+        case "title": \.title
+        case "description": \.description
+        case "extendedDescription": \.extendedDescription
+        case "copyright": \.copyright
+        case "rightsUsageTerms": \.rightsUsageTerms
+        case "webStatementOfRights": \.webStatementOfRights
+        case "digitalImageGUID": \.digitalImageGUID
+        case "imageSupplierImageID": \.imageSupplierImageID
+        case "jobId": \.jobId
+        case "dateCreated": \.dateCreated
+        case "creatorJobTitle": \.creatorJobTitle
+        case "descriptionWriter": \.descriptionWriter
+        case "credit": \.credit
+        case "source": \.source
+        case "city": \.city
+        case "sublocation": \.sublocation
+        case "provinceState": \.provinceState
+        case "country": \.country
+        case "countryCode": \.countryCode
+        case "event": \.event
+        case "instructions": \.instructions
+        default: nil
+        }
     }
 }
