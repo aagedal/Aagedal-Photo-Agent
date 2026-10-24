@@ -895,7 +895,7 @@ final class DeadlineDeliveryProductionSession {
         connections: [FTPConnection],
         writeEngine: any MetadataWriteEngine,
         resume: Bool,
-        onRenameRefused: @escaping @Sendable (UUID) -> Void = { _ in },
+        onCompatibilityLearned: @escaping @Sendable (UUID, FTPUploadOutcome, String) -> Void = { _, _, _ in },
         progress: @escaping DeadlineDeliveryExecutionDependencies.Progress
     ) async throws -> DeliveryWorkflowResult {
         guard activeCoordinator == nil,
@@ -945,7 +945,7 @@ final class DeadlineDeliveryProductionSession {
             uploadCoordinator: VerifiedDeliveryUploadCoordinator(
                 transport: DeliveryFTPTransportFactory.make(
                     connections: connections,
-                    onRenameRefused: onRenameRefused
+                    onCompatibilityLearned: onCompatibilityLearned
                 )
             ),
             receiptAssembler: DeliveryReceiptAssembler(applicationVersion: {

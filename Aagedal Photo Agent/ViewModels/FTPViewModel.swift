@@ -294,6 +294,8 @@ final class FTPViewModel {
     var isShowingServerForm = false
     var editingConnection = FTPConnection.secureDefault
     var editingPassword = ""
+    /// The user pressed "Reset Server Compatibility" in the open form.
+    @ObservationIgnored private var editingCompatibilityReset = false
 
     enum ConnectionTestState: Equatable {
         case idle
@@ -451,6 +453,7 @@ final class FTPViewModel {
     func startEditingConnection(_ connection: FTPConnection? = nil) {
         editingConnection = connection ?? FTPConnection.secureDefault
         editingPassword = connection.flatMap { KeychainService.load(forKey: $0.keychainKey) } ?? ""
+        editingCompatibilityReset = false
         connectionTestTask?.cancel()
         connectionTest = .idle
         serverFormError = nil
@@ -513,6 +516,7 @@ final class FTPViewModel {
         }
 
         let edited = editingConnection
+        let resetCompatibility = editingCompatibilityReset
         mutateStoredConnections { stored in
             if let index = stored.firstIndex(where: { $0.id == edited.id }) {
                 var merged = edited
@@ -522,13 +526,19 @@ final class FTPViewModel {
                    stored[index].transportSecurity == edited.transportSecurity {
                     merged.firstUploadAcknowledgedSecurity = stored[index].firstUploadAcknowledgedSecurity
                 }
-                // Rename support is a property of the server account: keep what an upload
-                // learned meanwhile, forget it when the form points at another server/user.
+                // Rename/temporary-name support is a property of the server account: keep what
+                // uploads learned meanwhile (the stored copy is newer than the form's), forget
+                // it when the form points at another server/user or the user reset it.
                 let sameAccount = stored[index].host.caseInsensitiveCompare(edited.host) == .orderedSame
                     && stored[index].port == edited.port
                     && stored[index].username == edited.username
-                merged.serverRefusesRename = sameAccount
-                    && (stored[index].serverRefusesRename || edited.serverRefusesRename)
+                merged.resetServerCompatibility()
+                if sameAccount, !resetCompatibility {
+                    merged.serverRefusesRename = stored[index].serverRefusesRename
+                    merged.serverRefusesTemporaryName = stored[index].serverRefusesTemporaryName
+                    merged.renameRefusalCount = stored[index].renameRefusalCount
+                    merged.lastRenameRefusalFileName = stored[index].lastRenameRefusalFileName
+                }
                 stored[index] = merged
             } else {
                 stored.append(edited)
@@ -556,13 +566,28 @@ final class FTPViewModel {
         return acknowledged
     }
 
-    /// Persists that this server refuses RNFR/RNTO, so later uploads skip the temporary name.
-    func markServerRefusesRename(connectionID: UUID) {
-        guard connections.first(where: { $0.id == connectionID })?.serverRefusesRename != true else { return }
+    /// Persists what an upload of `fileName` learned about the server's temporary-name and
+    /// rename support (see `FTPConnection.learnServerCompatibility`).
+    func learnServerCompatibility(connectionID: UUID, outcome: FTPUploadOutcome, fileName: String) {
+        guard outcome != FTPUploadOutcome() else { return }
+        var learned: FTPConnection?
+        guard var probe = storedConnections()?.first(where: { $0.id == connectionID }) ?? connections.first(where: { $0.id == connectionID }),
+              probe.learnServerCompatibility(from: outcome, fileName: fileName) else { return }
         mutateStoredConnections { stored in
             guard let index = stored.firstIndex(where: { $0.id == connectionID }) else { return }
-            stored[index].serverRefusesRename = true
+            stored[index].learnServerCompatibility(from: outcome, fileName: fileName)
+            learned = stored[index]
         }
+        if let learned, isShowingServerForm, editingConnection.id == connectionID {
+            editingConnection.serverRefusesRename = learned.serverRefusesRename
+            editingConnection.serverRefusesTemporaryName = learned.serverRefusesTemporaryName
+        }
+    }
+
+    /// The form's "Reset Server Compatibility": the next Save clears what uploads learned.
+    func resetEditingServerCompatibility() {
+        editingConnection.resetServerCompatibility()
+        editingCompatibilityReset = true
     }
 
     /// Re-sends only the files of the last run that didn't arrive, with the same settings.
@@ -724,9 +749,9 @@ final class FTPViewModel {
                 case .cancelled:
                     return
                 case .succeeded(let outcome):
-                    if outcome.renameRefused {
-                        activeConnection.serverRefusesRename = true
-                        self.markServerRefusesRename(connectionID: connection.id)
+                    if activeConnection.learnServerCompatibility(from: outcome, fileName: url.lastPathComponent) {
+                        self.learnServerCompatibility(connectionID: connection.id, outcome: outcome,
+                                                      fileName: url.lastPathComponent)
                     }
                     // Count completion here, on the awaited result, rather than from the
                     // background progress callback: the callback is delivered via an
@@ -924,11 +949,12 @@ final class FTPViewModel {
                 case .cancelled:
                     return false
                 case .succeeded(let outcome):
-                    if outcome.renameRefused {
-                        activeConnection.serverRefusesRename = true
-                        self.markServerRefusesRename(connectionID: connection.id)
+                    let fileName = current.url.lastPathComponent
+                    if activeConnection.learnServerCompatibility(from: outcome, fileName: fileName) {
+                        self.learnServerCompatibility(connectionID: connection.id, outcome: outcome,
+                                                      fileName: fileName)
                     }
-                    self.markFileComplete(current.url.lastPathComponent)
+                    self.markFileComplete(fileName)
                     delivered.insert(current.source)
                 case .failed(let error):
                     self.recordUploadFailure(current.url.lastPathComponent, error: error)

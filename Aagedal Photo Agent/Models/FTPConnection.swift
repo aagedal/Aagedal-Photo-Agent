@@ -49,11 +49,20 @@ nonisolated struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
     /// The exact insecure transport state explicitly accepted before its first upload. A change
     /// to protocol or verification invalidates this acknowledgement.
     var firstUploadAcknowledgedSecurity: DeliveryTransportSecurity?
-    /// The server accepted a temporary upload but refused to rename it (RNFR/RNTO), as
-    /// write-only drop boxes do. Learned on the first such upload and persisted, so later
-    /// uploads go straight to the final name instead of leaving a `.part` file each time.
-    /// Cleared when the host, port or user name changes.
+    /// The server accepts temporary uploads but refuses to rename them (RNFR/RNTO), as
+    /// write-only drop boxes do. Set only after refusals on two different files (a single
+    /// refusal can be a transient 421/450 or a name-specific RNTO refusal), so later uploads
+    /// go straight to the final name. Cleared when the host, port or user name changes, or by
+    /// "Reset Server Compatibility".
     var serverRefusesRename: Bool
+    /// The server refuses to store the temporary `.<name>.<token>.part` file itself (dot-file
+    /// or extension filters, e.g. vsftpd `deny_file`, pure-ftpd anonymous dot-file blocking,
+    /// agency servers that accept only `.jpg`) while accepting the final name.
+    var serverRefusesTemporaryName: Bool
+    /// Rename refusals seen on distinct files since the last successful rename.
+    var renameRefusalCount: Int
+    /// The file of the last counted rename refusal, so retries of one file count once.
+    var lastRenameRefusalFileName: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -67,6 +76,9 @@ nonisolated struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         case allowInsecureHostVerification
         case firstUploadAcknowledgedSecurity
         case serverRefusesRename
+        case serverRefusesTemporaryName
+        case renameRefusalCount
+        case lastRenameRefusalFileName
     }
 
     nonisolated init(
@@ -80,7 +92,8 @@ nonisolated struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         useTLS: Bool = false,
         allowInsecureHostVerification: Bool = false,
         firstUploadAcknowledgedSecurity: DeliveryTransportSecurity? = nil,
-        serverRefusesRename: Bool = false
+        serverRefusesRename: Bool = false,
+        serverRefusesTemporaryName: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -93,6 +106,56 @@ nonisolated struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         self.allowInsecureHostVerification = allowInsecureHostVerification
         self.firstUploadAcknowledgedSecurity = firstUploadAcknowledgedSecurity
         self.serverRefusesRename = serverRefusesRename
+        self.serverRefusesTemporaryName = serverRefusesTemporaryName
+        self.renameRefusalCount = 0
+        self.lastRenameRefusalFileName = nil
+    }
+
+    /// Uploads go straight to the final name (no temporary name + rename).
+    nonisolated var uploadsDirectly: Bool { serverRefusesRename || serverRefusesTemporaryName }
+
+    /// Whether anything about the server's rename/temporary-name support has been learned.
+    nonisolated var hasLearnedServerCompatibility: Bool {
+        serverRefusesRename || serverRefusesTemporaryName || renameRefusalCount > 0
+    }
+
+    /// Folds what one upload of `fileName` learned into the profile. Returns true when a
+    /// persisted field changed.
+    @discardableResult
+    nonisolated mutating func learnServerCompatibility(
+        from outcome: FTPUploadOutcome,
+        fileName: String
+    ) -> Bool {
+        var changed = false
+        if outcome.temporaryNameRefused, !serverRefusesTemporaryName {
+            serverRefusesTemporaryName = true
+            changed = true
+        }
+        if outcome.renameRefused {
+            if lastRenameRefusalFileName != fileName {
+                renameRefusalCount += 1
+                lastRenameRefusalFileName = fileName
+                changed = true
+            }
+            if renameRefusalCount >= 2, !serverRefusesRename {
+                serverRefusesRename = true
+                changed = true
+            }
+        } else if outcome.renamedIntoPlace, renameRefusalCount > 0 {
+            // A rename worked: earlier refusals were transient or name-specific.
+            renameRefusalCount = 0
+            lastRenameRefusalFileName = nil
+            changed = true
+        }
+        return changed
+    }
+
+    /// Forgets everything learned about rename/temporary-name support.
+    nonisolated mutating func resetServerCompatibility() {
+        serverRefusesRename = false
+        serverRefusesTemporaryName = false
+        renameRefusalCount = 0
+        lastRenameRefusalFileName = nil
     }
 
     nonisolated var keychainKey: String { "ftpConnection-\(id.uuidString)" }
@@ -246,6 +309,11 @@ nonisolated struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
             forKey: .firstUploadAcknowledgedSecurity
         )
         serverRefusesRename = try container.decodeIfPresent(Bool.self, forKey: .serverRefusesRename) ?? false
+        serverRefusesTemporaryName = try container.decodeIfPresent(
+            Bool.self, forKey: .serverRefusesTemporaryName) ?? false
+        renameRefusalCount = max(0, try container.decodeIfPresent(Int.self, forKey: .renameRefusalCount) ?? 0)
+        lastRenameRefusalFileName = try container.decodeIfPresent(
+            String.self, forKey: .lastRenameRefusalFileName)
         normalizeTransportAcknowledgement()
         // Migrate profiles saved before host validation: "ftp://host:2121/path" produced
         // unusable URLs. Applied only when it normalizes cleanly.

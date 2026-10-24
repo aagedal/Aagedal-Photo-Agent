@@ -8,12 +8,17 @@ struct FTPUploadProgress: Sendable {
     var isComplete: Bool
 }
 
-/// What a successful upload learned about the server. `renameRefused` means the server
-/// accepted the temporary file but refused RNFR/RNTO (typical for write-only drop boxes), so
-/// the file was re-sent directly under its final name. Callers persist this on the profile
-/// (`FTPConnection.serverRefusesRename`) so later uploads skip the temporary name.
+/// What a successful upload learned about the server, folded into the profile by
+/// `FTPConnection.learnServerCompatibility(from:fileName:)`.
 nonisolated struct FTPUploadOutcome: Equatable, Sendable {
+    /// The temporary file arrived but RNFR/RNTO was refused (typical for write-only drop
+    /// boxes); the file was re-sent directly under its final name.
     var renameRefused: Bool = false
+    /// The server refused to store the temporary name itself (dot-file or extension filter);
+    /// the file was re-sent directly under its final name, which the server accepted.
+    var temporaryNameRefused: Bool = false
+    /// The file arrived under the temporary name and was renamed into place.
+    var renamedIntoPlace: Bool = false
 }
 
 /// Fixed, credential-free classification of a failed curl transfer. Derived from curl's exit
@@ -77,6 +82,7 @@ struct FTPService: Sendable {
         password: String,
         runner: FTPCurlRunner = .live,
         retryDelay: Duration = FTPService.transientRetryDelay,
+        makeTemporaryToken: @escaping @Sendable () -> String = FTPService.randomTemporaryToken,
         progressHandler: @Sendable @escaping (FTPUploadProgress) -> Void
     ) async throws -> FTPUploadOutcome {
         try Task.checkCancellation()
@@ -121,7 +127,8 @@ struct FTPService: Sendable {
             filename: fileName,
             connection: connection,
             netrcPath: netrcURL.path,
-            retryDelay: retryDelay
+            retryDelay: retryDelay,
+            makeTemporaryToken: makeTemporaryToken
         ) { arguments, isTransfer in
             try await runner.run(arguments, isTransfer ? progressParser : nil)
         }
@@ -142,6 +149,9 @@ struct FTPService: Sendable {
     /// refused. Post-quote commands only run after a complete transfer, so this status means
     /// the temporary file arrived but could not be renamed.
     nonisolated static let curlQuoteErrorExitCode: Int32 = 21
+    /// curl's `CURLE_UPLOAD_FAILED`: the server refused the STOR command (550/553/452…). On the
+    /// temporary name this is usually a dot-file or extension filter.
+    nonisolated static let curlUploadRefusedExitCode: Int32 = 25
 
     /// Exit statuses retried in-app: couldn't connect (7), timed out/stalled (28), send (55)
     /// and receive (56) errors — the transient failures of a bad network. Everything else
@@ -150,14 +160,26 @@ struct FTPService: Sendable {
     nonisolated static let maximumTransferAttempts = 4
     nonisolated static let transientRetryDelay: Duration = .seconds(2)
 
+    /// A short random token so every attempt uses a fresh temporary name: a leftover from an
+    /// earlier attempt on a server that allows neither overwrite nor delete can't block it.
+    nonisolated static func randomTemporaryToken() -> String {
+        String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(6)).lowercased()
+    }
+
     /// The temporary name a file is uploaded under before being renamed into place:
-    /// `.<name>.part`. The leading dot hides it from most hot-folder scanners and directory
-    /// listings, and the `.part` extension keeps image ingesters from picking it up even where
-    /// dot-files are visible. Returns `nil` (upload directly) when the name can't safely be
-    /// used in an RNFR/RNTO command — control characters would split the FTP command line —
-    /// or would exceed a 255-byte file-name limit.
-    nonisolated static func temporaryUploadName(for filename: String) -> String? {
-        let candidate = ".\(filename).part"
+    /// `.<name>.<token>.part`.
+    ///
+    /// The name deliberately does *not* end in the image extension: hot-folder ingesters that
+    /// match `*.jpg` would otherwise pick up the partial file mid-transfer, which is exactly
+    /// what the temporary name prevents. The leading dot hides it from scanners that skip
+    /// hidden files, and `.part` from those that match extensions. Servers that refuse such a
+    /// name (dot-file or extension filters) are handled by a direct re-send and remembered.
+    ///
+    /// Returns `nil` (upload directly) when the name can't safely be used in an RNFR/RNTO
+    /// command — control characters would split the FTP command line — or would exceed a
+    /// 255-byte file-name limit.
+    nonisolated static func temporaryUploadName(for filename: String, token: String) -> String? {
+        let candidate = ".\(filename).\(token).part"
         guard !filename.isEmpty,
               candidate.utf8.count <= 255,
               !filename.unicodeScalars.contains(where: {
@@ -166,17 +188,19 @@ struct FTPService: Sendable {
         return candidate
     }
 
-    /// Uploads one file and, unless the profile is known to refuse renames, does so atomically:
+    /// Uploads one file and, unless the profile is known to need direct uploads, atomically:
     ///
-    /// 1. STOR to `.<name>.part` (curl `-T` to the temporary URL), then — only after a complete
-    ///    transfer — post-quote `DELE <name>` (failure ignored: some servers, e.g. IIS, refuse
-    ///    to RNTO over an existing file), `RNFR .<name>.part`, `RNTO <name>`. Post-quote
-    ///    commands run in the URL's directory, so the bare names are relative to it.
-    /// 2. Transient failures (7/28/55/56) are retried in-app; each attempt overwrites the
-    ///    temporary file, so a broken attempt never surfaces under the final name.
-    /// 3. If the transfer succeeded but the rename was refused (curl 21), the temporary file is
-    ///    deleted best-effort and the file is re-sent directly under its final name; the
-    ///    returned outcome reports `renameRefused` so the caller can remember it.
+    /// 1. STOR to `.<name>.<token>.part` (curl `-T` to the temporary URL), then — only after a
+    ///    complete transfer — post-quote `DELE <name>` (failure ignored: some servers, e.g. IIS,
+    ///    refuse to RNTO over an existing file), `RNFR <temp>`, `RNTO <name>`. Post-quote
+    ///    commands run in the URL's directory, so the bare names are relative to it. They are
+    ///    passed through a `-K` config file, never argv: `Process` converts arguments to NFD,
+    ///    which would make "å" in RNFR differ byte-for-byte from the NFC name curl STORed.
+    /// 2. Transient failures (7/28/55/56) are retried in-app, each attempt with a fresh
+    ///    temporary name, so a broken attempt never surfaces under the final name.
+    /// 3. If the server refuses the temporary name itself (curl 25 on its STOR) or the rename
+    ///    (curl 21), the temporary file is deleted best-effort and the file is re-sent once
+    ///    directly; the outcome reports which, for `FTPConnection.learnServerCompatibility`.
     /// 4. On failure or cancellation the temporary file is deleted best-effort (skipped for
     ///    server-level failures, where a cleanup connection would fail the same way).
     ///
@@ -188,27 +212,33 @@ struct FTPService: Sendable {
         connection: FTPConnection,
         netrcPath: String,
         retryDelay: Duration = transientRetryDelay,
+        makeTemporaryToken: @Sendable () -> String = randomTemporaryToken,
         run: @escaping @Sendable (_ arguments: [String], _ isTransfer: Bool) async throws -> DeliveryProcessResult
     ) async throws -> FTPUploadOutcome {
-        var temporaryName = connection.serverRefusesRename || connection.useSFTP
-            ? nil
-            : temporaryUploadName(for: filename)
-        var renameRefused = false
+        var useTemporaryName = !connection.uploadsDirectly && !connection.useSFTP
+        var outcome = FTPUploadOutcome()
+        var attempt = 0
 
         while true {
-            let arguments = uploadArguments(
-                localPath: localPath,
-                filename: filename,
-                temporaryName: temporaryName,
-                netrcPath: netrcPath,
-                connection: connection
-            )
+            attempt += 1
+            try Task.checkCancellation()
+            let temporaryName = useTemporaryName
+                ? temporaryUploadName(for: filename, token: makeTemporaryToken())
+                : nil
             let result: DeliveryProcessResult
             do {
-                result = try await runRetryingTransientFailures(
-                    arguments,
-                    retryDelay: retryDelay
-                ) { try await run($0, true) }
+                result = try await withQuoteConfig(
+                    temporaryName.map { quoteCommands(filename: filename, temporaryName: $0) } ?? []
+                ) { configPath in
+                    try await run(uploadArguments(
+                        localPath: localPath,
+                        filename: filename,
+                        temporaryName: temporaryName,
+                        quoteConfigPath: configPath,
+                        netrcPath: netrcPath,
+                        connection: connection
+                    ), true)
+                }
             } catch is CancellationError {
                 if let temporaryName {
                     await removeTemporaryUpload(temporaryName, netrcPath: netrcPath, connection: connection, run: run)
@@ -216,38 +246,80 @@ struct FTPService: Sendable {
                 throw CancellationError()
             }
 
-            if result.terminationStatus == 0 {
-                return FTPUploadOutcome(renameRefused: renameRefused)
+            let status = result.terminationStatus
+            if status == 0 {
+                outcome.renamedIntoPlace = temporaryName != nil
+                return outcome
             }
-            if result.terminationStatus == curlQuoteErrorExitCode, let pending = temporaryName {
-                await removeTemporaryUpload(pending, netrcPath: netrcPath, connection: connection, run: run)
-                try Task.checkCancellation()
-                temporaryName = nil
-                renameRefused = true
+            if let temporaryName, status == curlQuoteErrorExitCode || status == curlUploadRefusedExitCode {
+                // The server accepted the transfer but not the rename (21), or refused the
+                // temporary name itself (25): clean up and re-send once under the final name.
+                await removeTemporaryUpload(temporaryName, netrcPath: netrcPath, connection: connection, run: run)
+                if status == curlQuoteErrorExitCode {
+                    outcome.renameRefused = true
+                } else {
+                    outcome.temporaryNameRefused = true
+                }
+                useTemporaryName = false
+                attempt = 0
                 continue
             }
-            if let temporaryName,
-               !failureCategory(exitCode: result.terminationStatus, stderr: result.standardError).isServerLevel {
+            let category = failureCategory(exitCode: status, stderr: result.standardError)
+            if transientExitCodes.contains(status), attempt < maximumTransferAttempts {
+                // 28/55/56 may have left a partial temporary file; 7 never connected.
+                if let temporaryName, status != 7 {
+                    await removeTemporaryUpload(temporaryName, netrcPath: netrcPath, connection: connection, run: run)
+                }
+                if retryDelay > .zero { try await Task.sleep(for: retryDelay) }
+                continue
+            }
+            if let temporaryName, !category.isServerLevel {
                 await removeTemporaryUpload(temporaryName, netrcPath: netrcPath, connection: connection, run: run)
             }
-            throw FTPError.uploadFailed(result.terminationStatus, result.standardError)
+            throw FTPError.uploadFailed(status, result.standardError)
         }
     }
 
-    nonisolated static func runRetryingTransientFailures(
-        _ arguments: [String],
-        retryDelay: Duration,
-        run: @Sendable ([String]) async throws -> DeliveryProcessResult
-    ) async throws -> DeliveryProcessResult {
-        var attempt = 1
-        while true {
-            try Task.checkCancellation()
-            let result = try await run(arguments)
-            guard transientExitCodes.contains(result.terminationStatus),
-                  attempt < maximumTransferAttempts else { return result }
-            attempt += 1
-            if retryDelay > .zero { try await Task.sleep(for: retryDelay) }
-        }
+    /// The post-transfer commands that move a complete temporary upload into place.
+    /// "-" = after the transfer, and only if it succeeded; "*" = ignore a failure.
+    nonisolated static func quoteCommands(filename: String, temporaryName: String) -> [String] {
+        [
+            "-*DELE \(filename)",
+            "-RNFR \(temporaryName)",
+            "-RNTO \(filename)",
+        ]
+    }
+
+    /// curl config-file text for `quote` options. Values are double-quoted with `\` and `"`
+    /// escaped (curl's config syntax); control characters never reach here (see
+    /// `temporaryUploadName`). Written as UTF-8 exactly as the Swift string holds it.
+    nonisolated static func curlConfigContent(quoteCommands: [String]) -> String {
+        quoteCommands.map { command in
+            var escaped = ""
+            for scalar in command.unicodeScalars {
+                switch scalar {
+                case "\\": escaped += "\\\\"
+                case "\"": escaped += "\\\""
+                default: escaped.unicodeScalars.append(scalar)
+                }
+            }
+            return "quote = \"\(escaped)\"\n"
+        }.joined()
+    }
+
+    /// Writes `quoteCommands` to a private (0600) curl config file for the duration of
+    /// `body`, then removes it. With no commands, `body` gets `nil` and no file is written.
+    nonisolated static func withQuoteConfig<T>(
+        _ quoteCommands: [String],
+        _ body: (String?) async throws -> T
+    ) async throws -> T {
+        guard !quoteCommands.isEmpty else { return try await body(nil) }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("curlrc")
+        try writePrivateFile(Data(curlConfigContent(quoteCommands: quoteCommands).utf8), to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try await body(url.path)
     }
 
     /// Best-effort `DELE` of a leftover temporary upload. Runs detached so a cancelled upload
@@ -258,18 +330,24 @@ struct FTPService: Sendable {
         connection: FTPConnection,
         run: @escaping @Sendable ([String], Bool) async throws -> DeliveryProcessResult
     ) async {
-        let arguments = cleanupArguments(temporaryName: temporaryName, netrcPath: netrcPath, connection: connection)
         await Task.detached {
-            _ = try? await run(arguments, false)
+            _ = try? await withQuoteConfig(["-DELE \(temporaryName)"]) { configPath in
+                try await run(cleanupArguments(
+                    quoteConfigPath: configPath ?? "",
+                    netrcPath: netrcPath,
+                    connection: connection
+                ), false)
+            }
         }.value
     }
 
     /// The full curl argument vector for one transfer attempt: direct to `filename`, or to
-    /// `temporaryName` followed by the post-transfer rename into place.
+    /// `temporaryName` with the rename commands read from `quoteConfigPath` (`-K`).
     nonisolated static func uploadArguments(
         localPath: String,
         filename: String,
         temporaryName: String?,
+        quoteConfigPath: String?,
         netrcPath: String,
         connection: FTPConnection
     ) -> [String] {
@@ -279,22 +357,17 @@ struct FTPService: Sendable {
             netrcPath: netrcPath,
             connection: connection
         )
-        if let temporaryName {
-            // "-" = after the transfer, and only if it succeeded; "*" = ignore a failure.
-            arguments += [
-                "-Q", "-*DELE \(filename)",
-                "-Q", "-RNFR \(temporaryName)",
-                "-Q", "-RNTO \(filename)",
-            ]
+        if temporaryName != nil, let quoteConfigPath {
+            arguments += ["-K", quoteConfigPath]
         }
         return arguments
     }
 
-    /// `curl --head` on the remote directory with a post-quote `DELE`: connects, changes into
-    /// the folder and deletes the temporary file without listing or transferring anything
-    /// (listing is often forbidden on drop boxes).
+    /// `curl --head` on the remote directory with a post-quote `DELE` (from the `-K` config):
+    /// connects, changes into the folder and deletes the temporary file without listing or
+    /// transferring anything (listing is often forbidden on drop boxes).
     nonisolated static func cleanupArguments(
-        temporaryName: String,
+        quoteConfigPath: String,
         netrcPath: String,
         connection: FTPConnection
     ) -> [String] {
@@ -307,7 +380,7 @@ struct FTPService: Sendable {
             "--connect-timeout", "10",
             "--max-time", "20",
             remoteDirectoryURL(connection: connection),
-            "-Q", "-DELE \(temporaryName)",
+            "-K", quoteConfigPath,
         ]
         arguments.append(contentsOf: transportFlags(for: connection))
         return arguments
@@ -561,6 +634,10 @@ struct FTPService: Sendable {
     /// Create the .netrc with mode 0o600 in a single open(2) call so the file
     /// never exists with default umask permissions (closes the chmod TOCTOU
     /// against other processes running as the same user).
+    nonisolated static func writePrivateFile(_ data: Data, to url: URL) throws {
+        try writeNetrcAtomically(data, to: url)
+    }
+
     nonisolated private static func writeNetrcAtomically(_ data: Data, to url: URL) throws {
         let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, mode_t(0o600))
         guard fd >= 0 else {
@@ -717,6 +794,8 @@ private nonisolated final class FTPCurlProcessState: @unchecked Sendable {
     private let lock = NSLock()
     private var resumed = false
     private var cancelled = false
+    private var transferComplete = false
+    private var progressTail = ""
     private var process: Process?
 
     func install(_ process: Process) -> Bool {
@@ -726,12 +805,31 @@ private nonisolated final class FTPCurlProcessState: @unchecked Sendable {
         }
     }
 
-    func cancel() {
-        let process = lock.withLock { () -> Process? in
-            cancelled = true
-            return self.process
+    /// Watches curl's progress output for "100.0%": every byte is sent and curl is only
+    /// waiting for the server's acknowledgement and then running the post-transfer rename.
+    func observeProgress(_ text: String) {
+        lock.withLock {
+            guard !transferComplete else { return }
+            let window = progressTail + text
+            if window.contains("100.0%") { transferComplete = true }
+            progressTail = String(window.suffix(8))
         }
-        if let process { FTPCurlProcessExecutor.terminate(process) }
+    }
+
+    func cancel() {
+        let (process, deferTermination) = lock.withLock { () -> (Process?, Bool) in
+            cancelled = true
+            return (self.process, transferComplete)
+        }
+        guard let process else { return }
+        if deferTermination {
+            // Interrupting now could leave the file half-renamed (after `DELE <name>`, before
+            // `RNTO`) or record a delivered file as cancelled. Let curl finish the short
+            // acknowledgement + rename phase; terminate only if it hangs.
+            FTPCurlProcessExecutor.terminate(process, after: FTPCurlProcessExecutor.postTransferGracePeriod)
+        } else {
+            FTPCurlProcessExecutor.terminate(process)
+        }
     }
 
     func claim() -> (claimed: Bool, cancelled: Bool) {
@@ -761,6 +859,7 @@ nonisolated enum FTPCurlProcessExecutor {
         process.arguments = arguments
         let stdout = Pipe()
         let stderr = Pipe()
+        let state = FTPCurlProcessState()
         let stdoutBuffer = FTPCurlProcessBuffer()
         let stderrBuffer = FTPCurlProcessBuffer()
         process.standardOutput = stdout
@@ -772,11 +871,11 @@ nonisolated enum FTPCurlProcessExecutor {
             let data = handle.availableData
             guard !data.isEmpty else { return }
             stderrBuffer.append(data)
-            if let stderrChunk, let text = String(data: data, encoding: .utf8) {
-                stderrChunk(text)
+            if let text = String(data: data, encoding: .utf8) {
+                state.observeProgress(text)
+                stderrChunk?(text)
             }
         }
-        let state = FTPCurlProcessState()
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -788,7 +887,10 @@ nonisolated enum FTPCurlProcessExecutor {
                     stderrBuffer.append(stderr.fileHandleForReading.readDataToEndOfFile())
                     let outcome = state.claim()
                     guard outcome.claimed else { return }
-                    if outcome.cancelled {
+                    // A clean exit 0 means the file arrived (and was renamed): report it even
+                    // if a cancel arrived meanwhile, or Resume would upload it a second time.
+                    let succeeded = process.terminationReason == .exit && process.terminationStatus == 0
+                    if outcome.cancelled, !succeeded {
                         continuation.resume(throwing: CancellationError())
                     } else {
                         continuation.resume(returning: FTPService.DeliveryProcessResult(
@@ -815,15 +917,27 @@ nonisolated enum FTPCurlProcessExecutor {
         }
     }
 
-    /// SIGTERM now, SIGKILL after the grace period if curl hasn't exited.
-    static func terminate(_ process: Process) {
+    /// How long a cancel waits once the transfer reached 100% (server acknowledgement plus the
+    /// post-transfer DELE/RNFR/RNTO) before terminating curl anyway.
+    static let postTransferGracePeriod: TimeInterval = 15
+
+    /// SIGTERM now (or after `delay`), SIGKILL after the grace period if curl hasn't exited.
+    static func terminate(_ process: Process, after delay: TimeInterval = 0) {
         guard process.isRunning else { return }
-        process.terminate()
         let pid = process.processIdentifier
-        DispatchQueue.global().asyncAfter(deadline: .now() + terminationGracePeriod) {
-            if process.isRunning, process.processIdentifier == pid {
-                kill(pid, SIGKILL)
+        let sendTerm: @Sendable () -> Void = {
+            guard process.isRunning, process.processIdentifier == pid else { return }
+            process.terminate()
+            DispatchQueue.global().asyncAfter(deadline: .now() + terminationGracePeriod) {
+                if process.isRunning, process.processIdentifier == pid {
+                    kill(pid, SIGKILL)
+                }
             }
+        }
+        if delay > 0 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: sendTerm)
+        } else {
+            sendTerm()
         }
     }
 }
