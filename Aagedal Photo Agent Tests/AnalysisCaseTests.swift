@@ -103,6 +103,46 @@ struct AnalysisCaseTests {
         #expect(persisted.annotations.map(\.id) == [annotation.id])
     }
 
+    @Test("The banner's Discard drops the open photo's failed edits instead of saving them later")
+    func bannerDiscardReloadsOpenPhoto() async throws {
+        let fixture = try AnalysisFixture(contents: "banner discard workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.removeItem(at: casesDirectory)
+        try Data("blocker".utf8).write(to: casesDirectory)
+        let discarded = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.2, y: 0.2)), text: "Discarded"
+        )
+        model.setAnnotation(discarded)
+        await model.flushPendingSaves()
+        #expect(model.saveError != nil)
+
+        try FileManager.default.removeItem(at: casesDirectory)
+        model.discardFailedSaves()
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.saveError == nil)
+        #expect(model.annotations.isEmpty)
+
+        let kept = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.6, y: 0.6)), text: "Kept"
+        )
+        model.setAnnotation(kept)
+        await model.flushPendingSaves()
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("The new edit must persist after Discard")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [kept.id])
+    }
+
     @Test("After a failed save, navigation and close wait for Retry Save, Discard, or Cancel")
     func failedSaveGatesNavigationAndClose() async throws {
         let fixture = try AnalysisFixture(contents: "gated first image")

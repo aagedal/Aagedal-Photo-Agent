@@ -823,8 +823,12 @@ final class AnalysisWorkspaceModel {
     }
 
     /// The save-error banner's Discard: forget every failed save, including earlier photos'.
+    /// The open photo stays on screen, so its in-memory edits are dropped by reloading it from
+    /// disk; otherwise the next annotation would save the discarded changes anyway.
     func discardFailedSaves() {
+        let openDocumentFailed = caseSaveFailure != nil || folderMapSaveFailure != nil
         clearSaveFailures()
+        if openDocumentFailed { retry() }
     }
 
     /// Finishes an exit the user confirmed from the unsaved-changes prompt. A failed retry keeps
