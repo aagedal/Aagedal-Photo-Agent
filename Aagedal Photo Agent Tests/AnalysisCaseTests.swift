@@ -615,6 +615,16 @@ struct AnalysisCaseTests {
         #expect(model.requestClose() == false)
         model.cancelUnsavedChangesExit()
 
+        // Try Again reloads the open photo but keeps the earlier photo's failed save.
+        model.retry()
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.saveError?.contains("source.jpg") == true)
+
+        // A rename of that folder is refused while the failed save is outstanding.
+        await #expect(throws: AnalysisRenameQuiescenceError.self) {
+            try await model.beginRenameQuiescence(in: fixture.directoryURL)
+        }
+
         model.retryFailedSave()
         await model.flushPendingSaves()
         #expect(model.saveError == nil)
@@ -628,6 +638,210 @@ struct AnalysisCaseTests {
             return
         }
         #expect(persisted.annotations.map(\.id) == [annotation.id])
+    }
+
+    @Test("Pasting into a photo whose earlier save failed pastes into its unsaved copy")
+    func pasteIntoBackgroundFailedPhoto() async throws {
+        let fixture = try AnalysisFixture(contents: "background paste first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("background paste second".utf8).write(to: secondURL)
+        let failures = AnalysisSaveFailureInjector()
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { try await failures.consume() }
+            )
+        })
+        let firstImage = ImageFile(url: fixture.fileURL)
+        model.open(firstImage)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        await failures.failNext()
+        let leftBehind = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.3, y: 0.7)), text: "Left behind"
+        )
+        model.setAnnotation(leftBehind)
+        model.open(ImageFile(url: secondURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        #expect(model.saveError?.contains("source.jpg") == true)
+
+        let pasted = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.6, y: 0.2)), text: "Pasted"
+        )
+        try await model.pastePhotoAnnotations([pasted], to: firstImage)
+        await model.flushPendingSaves()
+
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("The paste must land on the previous photo's case")
+            return
+        }
+        #expect(persisted.annotations.count == 2)
+        #expect(persisted.annotations.first?.id == leftBehind.id)
+    }
+
+    @Test("Reopening a photo whose save failed while it was left adopts the unsaved edits")
+    func reopenAdoptsFailedBackgroundSave() async throws {
+        let fixture = try AnalysisFixture(contents: "reopen adoption first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("reopen adoption second".utf8).write(to: secondURL)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let failures = AnalysisSaveFailureInjector()
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: {
+                    await gate.passIfArmed()
+                    try await failures.consume()
+                }
+            )
+        })
+        let firstImage = ImageFile(url: fixture.fileURL)
+        model.open(firstImage)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        await gate.arm()
+        await failures.failNext()
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.4, y: 0.4)), text: "Slow then failed"
+        )
+        model.setAnnotation(annotation)
+        await gate.waitUntilEntered()
+        model.open(ImageFile(url: secondURL))
+        model.open(firstImage)
+        await gate.open()
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        // The reload shows the unsaved edits as this case's failed save, not the older disk copy.
+        #expect(model.annotations.map(\.id) == [annotation.id])
+        #expect(model.saveError != nil)
+
+        model.retryFailedSave()
+        await model.flushPendingSaves()
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Retry Save must persist the adopted edits")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+    }
+
+    @Test("Termination saves every window before reporting a failing one")
+    func terminationFlushSavesAllWindows() async throws {
+        let failing = try AnalysisFixture(contents: "termination failing window")
+        defer { failing.remove() }
+        let healthy = try AnalysisFixture(contents: "termination healthy window")
+        defer { healthy.remove() }
+        let failingModel = AnalysisWorkspaceModel(analyzers: [])
+        let healthyModel = AnalysisWorkspaceModel(analyzers: [])
+        failingModel.open(ImageFile(url: failing.fileURL))
+        healthyModel.open(ImageFile(url: healthy.fileURL))
+        try await waitForAnalysisState {
+            failingModel.loadState == .ready && healthyModel.loadState == .ready
+        }
+        await failingModel.flushPendingSaves()
+        await healthyModel.flushPendingSaves()
+        let healthyRevision = try #require(healthyModel.currentRevision)
+
+        let casesDirectory = failing.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.removeItem(at: casesDirectory)
+        try Data("blocker".utf8).write(to: casesDirectory)
+        failingModel.setAnnotation(AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Cannot save"
+        ))
+        let healthyEdit = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.2, y: 0.2)), text: "Saved on quit"
+        )
+        healthyModel.setAnnotation(healthyEdit)
+
+        let flush = AnalysisWorkspaceTerminationFlush()
+        flush.register(failingModel)
+        flush.register(healthyModel)
+        await #expect(throws: AnalysisTerminationSaveError.self) { try await flush.flush() }
+
+        #expect(failingModel.saveError != nil)
+        #expect(healthyModel.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: healthy.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: healthyRevision) else {
+            Issue.record("The healthy window's edit must be saved")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [healthyEdit.id])
+    }
+
+    @Test("A slow Retry Save does not perform an exit that was replaced meanwhile")
+    func supersededExitDoesNotRunAfterSlowRetry() async throws {
+        let fixture = try AnalysisFixture(contents: "superseded exit first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("superseded exit second".utf8).write(to: secondURL)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let failures = AnalysisSaveFailureInjector()
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: {
+                    try await failures.consume()
+                    await gate.passIfArmed()
+                }
+            )
+        })
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        await failures.failNext()
+        model.setAnnotation(AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Unsaved"
+        ))
+        await model.flushPendingSaves()
+        #expect(model.saveError != nil)
+
+        var transitions: [Int] = []
+        model.requestClose { transitions.append(1) }
+        let exit = try #require(model.pendingUnsavedChangesExit)
+        model.dismissUnsavedChangesPrompt()
+        await gate.arm()
+        let completion = Task { await model.completeUnsavedChangesExit(exit, retryingSave: true) }
+        await gate.waitUntilEntered()
+        // While the retry is still writing, the user leaves another way.
+        model.requestClose { transitions.append(2) }
+        #expect(transitions == [2])
+        await gate.open()
+
+        #expect(await completion.value == false)
+        #expect(transitions == [2])
+        #expect(model.saveError == nil)
     }
 
     @Test("Browser commands that would change the hidden selection's files are ignored in Analysis")
