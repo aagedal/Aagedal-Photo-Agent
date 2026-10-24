@@ -3,6 +3,51 @@ import os
 
 private nonisolated let sidecarLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataSidecarService")
 
+/// Process-wide record of app-sidecar mutations, so a reader that took a directory listing
+/// can tell which photos' carriers may have changed after it. Keyed by filename (case and
+/// Unicode normalization folded): a collision across folders only over-reports, which costs
+/// the reader one fresh read and never hides a write. Writers note *after* touching disk, so
+/// a listing taken before the note is always flagged.
+nonisolated final class MetadataSidecarWriteJournal: @unchecked Sendable {
+    static let shared = MetadataSidecarWriteJournal()
+
+    private let lock = NSLock()
+    private var generationValue: UInt64 = 0
+    private var lastWriteByName: [String: UInt64] = [:]
+    private var lastWildcardWrite: UInt64 = 0
+
+    /// Capture before taking the listing; pass to `urlsWritten(since:among:)` afterwards.
+    var generation: UInt64 { lock.withLock { generationValue } }
+
+    func noteWrite(_ imageURLs: URL...) {
+        lock.withLock {
+            generationValue &+= 1
+            for url in imageURLs { lastWriteByName[Self.key(url)] = generationValue }
+        }
+    }
+
+    /// Folder-wide mutation (e.g. deleting `.photo_metadata`): every photo is flagged.
+    func noteWriteAll() {
+        lock.withLock {
+            generationValue &+= 1
+            lastWildcardWrite = generationValue
+        }
+    }
+
+    func urlsWritten(since generation: UInt64, among urls: [URL]) -> Set<URL> {
+        lock.withLock {
+            guard generationValue > generation else { return [] }
+            if lastWildcardWrite > generation { return Set(urls) }
+            return Set(urls.filter { (lastWriteByName[Self.key($0)] ?? 0) > generation })
+        }
+    }
+
+    private static func key(_ url: URL) -> String {
+        url.lastPathComponent.precomposedStringWithCanonicalMapping
+            .lowercased(with: Locale(identifier: "en_US_POSIX"))
+    }
+}
+
 struct MetadataSidecarService: Sendable {
 
     nonisolated static let sidecarDirectoryName = ".photo_metadata"
@@ -128,6 +173,7 @@ struct MetadataSidecarService: Sendable {
         beforeInstall: @Sendable () throws -> Void = {},
         install: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
     ) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(destinationImageURL) }
         let snapshots = try carrierSnapshots(for: sourceImageURL, in: folderURL)
         let owned = snapshots.filter(\.isOwned)
         try requireMetadataDirectory(in: folderURL)
@@ -529,6 +575,7 @@ struct MetadataSidecarService: Sendable {
         createOnly: Bool = false,
         beforeCommit: @escaping @Sendable () throws -> Void = {}
     ) async throws -> VoiceMemoTranscriptRecord {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         try Task.checkCancellation()
         guard transcript.schemaVersion == VoiceMemoTranscriptRecord.currentSchemaVersion else {
             throw EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
@@ -595,6 +642,7 @@ struct MetadataSidecarService: Sendable {
     @MetadataSidecarFilesystemActor
     func resetVoiceMemoTranscriptSerialized(for imageURL: URL, in folderURL: URL,
         beforeCommit: @escaping @Sendable () throws -> Void = {}) async throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         try Task.checkCancellation()
         let reservation = try MCPProcessReservation.acquirePhoto(imageURL)
         defer { reservation.release() }
@@ -690,6 +738,7 @@ struct MetadataSidecarService: Sendable {
         expectedContentTokens: [Data?]? = nil,
         preserveModificationDate: Bool
     ) throws -> MetadataSidecar {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         try requireIncomingOwner(sidecar, imageURL: imageURL)
         let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
         if let expectedContentTokens {
@@ -1580,6 +1629,7 @@ struct MetadataSidecarService: Sendable {
     }
 
     nonisolated func deleteSidecar(for imageURL: URL, in folderURL: URL) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
         let owned = snapshots.filter(\.isOwned)
         _ = try decodeOwnedRecords(owned)
@@ -1607,6 +1657,7 @@ struct MetadataSidecarService: Sendable {
     }
 
     nonisolated func deleteAllSidecars(in folderURL: URL) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWriteAll() }
         let dir = sidecarDirectory(for: folderURL)
         if try entryExists(dir) {
             try requireMetadataDirectory(in: folderURL)
@@ -1616,6 +1667,7 @@ struct MetadataSidecarService: Sendable {
 
     func renameSidecar(from oldImageURL: URL, to newImageURL: URL, in folderURL: URL) throws {
         guard oldImageURL.standardizedFileURL != newImageURL.standardizedFileURL else { return }
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(oldImageURL, newImageURL) }
         let snapshots = try carrierSnapshots(for: oldImageURL, in: folderURL)
         let owned = snapshots.filter(\.isOwned)
         guard !owned.isEmpty else { return }
@@ -1629,6 +1681,7 @@ struct MetadataSidecarService: Sendable {
     }
 
     nonisolated func moveSidecar(for imageURL: URL, from sourceFolderURL: URL, to destinationFolderURL: URL) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         let fm = FileManager.default
         let sourceURLs = try ownedRelocationSources(for: imageURL, in: sourceFolderURL)
         guard !sourceURLs.isEmpty else { return }
@@ -1686,6 +1739,7 @@ struct MetadataSidecarService: Sendable {
         from sourceFolderURL: URL,
         to destinationFolderURL: URL
     ) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(sourceImageURL, destinationImageURL) }
         let fm = FileManager.default
         let sourceURLs = try ownedRelocationSources(for: sourceImageURL, in: sourceFolderURL)
         guard let sourceURL = sourceURLs.first else { return }

@@ -683,6 +683,66 @@ struct SerializedFileSystemServiceTests {
         #expect(!embeddedOnly.ranOnMainThread)
     }
 
+    @Test("the eager orientation pass never overwrites an orientation an authoritative source wrote")
+    @MainActor
+    func eagerOrientationPassYieldsToAuthoritativeWrites() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("eager-orientation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for name in ["a.jpg", "b.jpg"] {
+            try Data("x".utf8).write(to: folder.appendingPathComponent(name))
+        }
+        // Neither photo has an .xmp, so the pass reads the (blocked) embedded header. The
+        // XMP gate holds the real metadata pass so only this test's batch apply lands.
+        let embedded = BlockingDisplayOrientationProbe(orientation: 6)
+        let xmpGate = BlockingDisplayOrientationProbe(orientation: nil)
+        defer {
+            embedded.release()
+            xmpGate.release()
+        }
+        let model = BrowserViewModel(
+            fileSystemService: FileSystemService(
+                displayOrientation: { _ in 6 },
+                embeddedDisplayOrientation: embedded.read
+            ),
+            xmpSidecarLoadService: BrowserXMPSidecarLoadService(access: .init(read: { url in
+                _ = xmpGate.read(url)
+                return nil
+            })),
+            subfolderLoader: { _ in [] },
+            refreshSidecarLoader: { _ in [:] }
+        )
+        model.loadFolder(url: folder, addToOpenFolders: false)
+        let didBlock = await embedded.waitUntilBlocked()
+        #expect(didBlock, "The eager orientation read did not start within 30 seconds")
+        guard didBlock else { return }
+
+        let a = try #require(model.images.first { $0.filename == "a.jpg" }?.url)
+        let b = try #require(model.images.first { $0.filename == "b.jpg" }?.url)
+        #expect(model.images.allSatisfy { $0.exifOrientation == 1 })
+
+        // A metadata batch decides a's orientation is 1 — equal to the pass's starting value.
+        model.applyBatchMetadataResults(
+            [[MetadataDictKey.sourceFile: a.path, MetadataDictKey.orientation: 1, MetadataDictKey.rating: 4]],
+            to: &model.images,
+            localIndex: model.urlToImageIndex,
+            nativeHDRByURL: [:]
+        )
+        let aIndex = try #require(model.urlToImageIndex[a])
+        #expect(model.images[aIndex].starRating == .four, "the authoritative batch apply must land")
+
+        embedded.release()
+        await model.waitForEagerOrientationPass()
+
+        let bIndex = try #require(model.urlToImageIndex[b])
+        #expect(model.images[aIndex].exifOrientation == 1)
+        #expect(model.images[bIndex].exifOrientation == 6, "untouched rows still get the eager value")
+
+        xmpGate.release()
+        await model.waitForFolderLoad()
+    }
+
     @Test("pre-cancelled Browser orientation snapshot performs no reads")
     func displayOrientationSnapshotHonorsPreCancellation() async {
         let requestID = UUID()

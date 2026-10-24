@@ -303,6 +303,12 @@ final class BrowserViewModel {
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var folderOrientationLoadRequestID: UUID?
     @ObservationIgnored private var folderOrientationTask: Task<Void, Never>?
+    /// Identity of the running eager orientation pass (nil when none is running).
+    @ObservationIgnored private var eagerOrientationPassID: UUID?
+    /// Rows whose orientation an authoritative source (metadata batch, pending draft,
+    /// rotation, refresh) wrote while the eager pass runs. The pass never overwrites them,
+    /// even when the authoritative value happens to equal the pass's starting value.
+    @ObservationIgnored private var eagerOrientationAuthoritativeURLs: Set<URL> = []
     @ObservationIgnored private var refreshOrientationLoadRequestID: UUID?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var fieldMutationTask: Task<Void, Never>?
@@ -988,6 +994,8 @@ final class BrowserViewModel {
         batchReadTask?.cancel()
         folderOrientationTask?.cancel()
         folderOrientationTask = nil
+        eagerOrientationPassID = nil
+        eagerOrientationAuthoritativeURLs.removeAll()
         folderOrientationLoadRequestID = nil
         refreshOrientationLoadRequestID = nil
         // Reset in case the cancelled task's metadata loop left this true,
@@ -1302,6 +1310,7 @@ final class BrowserViewModel {
                     return
                 }
                 guard self.canPublishRefresh(requestID, in: folderURL) else { return }
+                for url in newURLs { noteAuthoritativeOrientation(for: url) }
                 let orientations = orientationSnapshot.orientations
                 if !orientations.isEmpty {
                     for index in merged.indices {
@@ -1389,11 +1398,18 @@ final class BrowserViewModel {
     /// A chunk result only fills in a row whose orientation is still the value it had when
     /// the pass started: a metadata batch, a pending orientation draft or a user rotation
     /// that landed meanwhile is authoritative and is never overwritten by this early read.
+    /// Those writers record the row in `eagerOrientationAuthoritativeURLs`, which also
+    /// covers an authoritative value equal to the starting value and a row whose scan-time
+    /// "no .xmp" fact went stale (a rotation that created a sidecar).
     private func startEagerFolderOrientationLoad(folderURL: URL) {
         folderOrientationTask?.cancel()
         folderOrientationTask = nil
+        eagerOrientationPassID = nil
+        eagerOrientationAuthoritativeURLs.removeAll()
         let eligible = images.filter { $0.isImageFile && !$0.isICloudDownloadPending }
         guard !eligible.isEmpty else { return }
+        let passID = UUID()
+        eagerOrientationPassID = passID
         let urlsWithoutSidecar = Set(eligible.lazy.filter { $0.sidecarModified == nil }.map(\.url))
         var baseline: [URL: Int] = [:]
         baseline.reserveCapacity(eligible.count)
@@ -1401,22 +1417,41 @@ final class BrowserViewModel {
         let orderedURLs = gridPrioritizedURLs(eligible.map(\.url))
 
         folderOrientationTask = Task { [weak self] in
+            defer { self?.finishEagerOrientationPass(passID) }
             let chunkSize = Self.eagerOrientationChunkSize
             for chunkStart in stride(from: 0, to: orderedURLs.count, by: chunkSize) {
                 // Checked before `loadOrientationSnapshot` claims the folder-load request
                 // identity, so a superseded pass can never steal it from its replacement.
-                guard let self, !Task.isCancelled, self.currentFolderURL == folderURL else { return }
+                guard let self, !Task.isCancelled, self.currentFolderURL == folderURL,
+                      self.eagerOrientationPassID == passID else { return }
                 let chunk = Array(orderedURLs[chunkStart..<min(chunkStart + chunkSize, orderedURLs.count)])
                 guard let snapshot = await self.loadOrientationSnapshot(
                     for: chunk,
                     owner: .folderLoad,
                     urlsWithoutSidecar: urlsWithoutSidecar
                 ) else { return }
-                guard !Task.isCancelled, self.currentFolderURL == folderURL else { return }
+                guard !Task.isCancelled, self.currentFolderURL == folderURL,
+                      self.eagerOrientationPassID == passID else { return }
                 self.applyEagerOrientations(snapshot.orientations, baseline: baseline)
             }
         }
     }
+
+    private func finishEagerOrientationPass(_ passID: UUID) {
+        guard eagerOrientationPassID == passID else { return }
+        eagerOrientationPassID = nil
+        eagerOrientationAuthoritativeURLs.removeAll()
+    }
+
+    /// Records that an authoritative source just wrote `url`'s orientation (or decided it),
+    /// so a still-running eager pass leaves the row alone. No-op when no pass is running.
+    private func noteAuthoritativeOrientation(for url: URL) {
+        guard eagerOrientationPassID != nil else { return }
+        eagerOrientationAuthoritativeURLs.insert(url)
+    }
+
+    /// Test seam: waits for the current eager orientation pass, if any.
+    func waitForEagerOrientationPass() async { await folderOrientationTask?.value }
 
     private func applyEagerOrientations(_ orientations: [URL: Int], baseline: [URL: Int]) {
         guard !orientations.isEmpty else { return }
@@ -1425,7 +1460,8 @@ final class BrowserViewModel {
         suppressImagesCascade = true
         var changedURLs: [URL] = []
         for (url, orientation) in orientations {
-            guard let index = validImageIndex(for: url),
+            guard !eagerOrientationAuthoritativeURLs.contains(url),
+                  let index = validImageIndex(for: url),
                   let original = baseline[url],
                   images[index].exifOrientation == original,
                   orientation != original,
@@ -1601,6 +1637,9 @@ final class BrowserViewModel {
                     imageURLs: batchURLs,
                     requestID: requestID
                 )
+                // Captured before the listing below, so any carrier write that lands after it
+                // (while this batch is in flight) is reported at apply time and re-read then.
+                let sidecarJournalGeneration = MetadataSidecarWriteJournal.shared.generation
                 var reusableSidecars: [URL: MetadataSidecar] = [:]
                 for url in batchURLs {
                     if let cached = cachedSidecars[url] { reusableSidecars[url] = cached }
@@ -1644,12 +1683,19 @@ final class BrowserViewModel {
                     guard let index = validImageIndex(for: url) else { return nil }
                     return (url, images[index].starRating, images[index].colorLabel)
                 }
+                // Same actor turn as the merge below: nothing can write between this check
+                // and the per-row decision.
+                let sidecarsWrittenDuringBatch = MetadataSidecarWriteJournal.shared.urlsWritten(
+                    since: sidecarJournalGeneration,
+                    among: batchURLs
+                )
                 applyBatchMetadataResults(
                     results,
                     to: &images,
                     localIndex: urlToImageIndex,
                     cachedSidecars: batchSidecars ?? [:],
                     sidecarsAreAuthoritative: batchSidecars != nil,
+                    staleSidecarURLs: sidecarsWrittenDuringBatch,
                     xmpMetadataMap: xmpMetadataMap,
                     nativeHDRByURL: hdrSnapshot.isHDRByImageURL,
                     tagRevisionsAtRead: tagRevisions
@@ -1738,6 +1784,7 @@ final class BrowserViewModel {
         localIndex: [URL: Int],
         cachedSidecars: [URL: MetadataSidecar] = [:],
         sidecarsAreAuthoritative: Bool = false,
+        staleSidecarURLs: Set<URL> = [],
         xmpMetadataMap: [URL: IPTCMetadata] = [:],
         nativeHDRByURL: [URL: Bool],
         tagRevisionsAtRead: [URL: UUID]? = nil
@@ -1765,6 +1812,7 @@ final class BrowserViewModel {
                 updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
                 let previousOrientation = updated[index].exifOrientation
+                noteAuthoritativeOrientation(for: sourceURL)
                 updated[index].exifOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? 1
                 updated[index].isNativeHDR = nativeHDRByURL[sourceURL] == true
                     || (AppDefaults.store.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
@@ -1877,8 +1925,9 @@ final class BrowserViewModel {
                     to: &updated,
                     for: sourceURL,
                     index: index,
-                    cachedSidecar: cachedSidecars[sourceURL],
-                    cacheIsAuthoritative: sidecarsAreAuthoritative
+                    // A carrier written after the batch's listing is re-read from disk now.
+                    cachedSidecar: staleSidecarURLs.contains(sourceURL) ? nil : cachedSidecars[sourceURL],
+                    cacheIsAuthoritative: sidecarsAreAuthoritative && !staleSidecarURLs.contains(sourceURL)
                 )
                 // Background reads can finish while a field write is suspended. Keep the
                 // accepted optimistic value until its own verified completion or rollback.
@@ -2371,6 +2420,7 @@ final class BrowserViewModel {
                 currentResults.append(contentsOf: unresolved)
                 if !unresolved.contains(where: { $0.requestID == result.requestID }) { currentResults.append(result) }
                 suppressImagesCascade = true
+                if field == "orientation" { noteAuthoritativeOrientation(for: request.imageURL) }
                 let oldOrientation = images[index].exifOrientation
                 let oldRating = images[index].starRating
                 let oldLabel = images[index].colorLabel
@@ -2552,6 +2602,9 @@ final class BrowserViewModel {
 
     private func rotate(_ captured: [ImageFile], clockwise: Bool) {
         guard !captured.isEmpty else { return }
+        // A user rotation decides these rows' orientation (and may create an .xmp the eager
+        // pass's scan-time facts don't know about).
+        for image in captured { noteAuthoritativeOrientation(for: image.url) }
         let targets = Dictionary(uniqueKeysWithValues: captured.map { image in
             (image.url, clockwise ? ImageFile.orientationAfterClockwiseRotation(image.exifOrientation)
                 : ImageFile.orientationAfterCounterclockwiseRotation(image.exifOrientation))
@@ -2713,6 +2766,9 @@ final class BrowserViewModel {
 
     /// `cacheIsAuthoritative` means `cachedSidecar` came from a read that covered this
     /// photo, so nil means "no sidecar" and the synchronous per-file fallback is skipped.
+    /// Exception: a row that already shows pending state while the read reported no sidecar
+    /// disagrees with it (the draft may have landed after the read's listing), so that rare
+    /// row is re-read from disk rather than silently losing its draft.
     private func applyPendingSidecarOverrides(
         to array: inout [ImageFile],
         for url: URL,
@@ -2720,10 +2776,11 @@ final class BrowserViewModel {
         cachedSidecar: MetadataSidecar? = nil,
         cacheIsAuthoritative: Bool = false
     ) {
+        let rowShowsPendingState = array[index].hasPendingMetadataChanges || !array[index].pendingFieldNames.isEmpty
         let sidecar: MetadataSidecar
         if let cached = cachedSidecar {
             sidecar = cached
-        } else if !cacheIsAuthoritative,
+        } else if !cacheIsAuthoritative || rowShowsPendingState,
                   let folderURL = currentFolderURL,
                   let loaded = sidecarService.loadSidecar(for: url, in: folderURL) {
             sidecar = loaded
@@ -2762,6 +2819,7 @@ final class BrowserViewModel {
         // Camera Raw is still sourced from physical metadata. Only the typed orientation
         // intent overrides the physical display baseline while the rotation remains pending.
         guard let draft = sidecar.orientationDraft, !hasActiveOrientationMutation(for: imageFile.url) else { return }
+        noteAuthoritativeOrientation(for: imageFile.url)
         let previous = imageFile.exifOrientation
         imageFile.exifOrientation = draft.targetOrientation
         imageFile.hasPendingMetadataChanges = true

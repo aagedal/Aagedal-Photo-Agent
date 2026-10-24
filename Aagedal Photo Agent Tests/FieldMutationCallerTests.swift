@@ -1314,6 +1314,66 @@ struct FieldMutationCallerTests {
         #expect(model.pendingStatusFullRefreshCount == fullCount)
     }
 
+    @Test("Sidecar writes are journaled after they land and reported only for written photos")
+    func sidecarWriteJournalReportsLateWrites() throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let written = folder.appendingPathComponent("journal-\(UUID().uuidString).jpg")
+        let untouched = folder.appendingPathComponent("journal-\(UUID().uuidString).jpg")
+        let journal = MetadataSidecarWriteJournal.shared
+        let service = MetadataSidecarService()
+
+        let beforeSave = journal.generation
+        try service.saveSidecar(MetadataSidecar(sourceFile: written.lastPathComponent, pendingChanges: true,
+            metadata: IPTCMetadata(title: "New"), imageMetadataSnapshot: IPTCMetadata(title: "Old"),
+            history: []), for: written, in: folder)
+        #expect(journal.urlsWritten(since: beforeSave, among: [written, untouched]) == [written])
+
+        let beforeDelete = journal.generation
+        #expect(journal.urlsWritten(since: beforeDelete, among: [written]).isEmpty)
+        try service.deleteSidecar(for: written, in: folder)
+        #expect(journal.urlsWritten(since: beforeDelete, among: [written, untouched]) == [written])
+    }
+
+    @Test("An authoritative batch read yields to sidecars written after its listing and to pending rows")
+    @MainActor
+    func authoritativeBatchSidecarsYieldToLateWrites() throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("late.jpg")
+        try Data("x".utf8).write(to: url)
+        // A historyOnly-style pending draft (rating 5) that landed after the batch's listing.
+        var draft = IPTCMetadata()
+        draft.rating = 5
+        _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: "late.jpg",
+            pendingChanges: true, metadata: draft, imageMetadataSnapshot: IPTCMetadata(), history: []),
+            for: url, in: folder)
+
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        let embedded: [[String: Any]] = [[MetadataDictKey.sourceFile: url.path, MetadataDictKey.rating: 0]]
+        func apply(to row: ImageFile, stale: Set<URL>) -> ImageFile {
+            var images = [row]
+            model.applyBatchMetadataResults(embedded, to: &images, localIndex: [url: 0],
+                cachedSidecars: [:], sidecarsAreAuthoritative: true, staleSidecarURLs: stale,
+                nativeHDRByURL: [:])
+            return images[0]
+        }
+
+        // A clean row the batch's read covered: absent means none, no fallback read.
+        #expect(apply(to: ImageFile(url: url), stale: []).starRating == StarRating.none)
+        // Written after the listing (journaled): re-read from disk at apply time.
+        #expect(apply(to: ImageFile(url: url), stale: [url]).starRating == .five)
+        // The row already shows pending state the read missed: re-read from disk.
+        var pendingRow = ImageFile(url: url)
+        pendingRow.hasPendingMetadataChanges = true
+        #expect(apply(to: pendingRow, stale: []).starRating == .five)
+    }
+
     @Test("A folder refresh keeps unchanged rows' metadata and derived search text")
     @MainActor
     func folderRefreshReusesUnchangedRows() async throws {
