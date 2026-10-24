@@ -33,6 +33,55 @@ enum DevelopUndoActionName {
     }
 }
 
+/// A keyboard / VoiceOver stepping session. Steps (incl. key repeats) only preview; the value is
+/// committed once — one Develop commit, one Undo entry — when the key is released or after a
+/// short pause without another step.
+final class EditSliderKeyStepper {
+    static let settleDelay: Duration = .milliseconds(300)
+
+    private(set) var pendingValue: Double?
+    private var commitTask: Task<Void, Never>?
+    private let settleDelay: Duration
+    var onBegin: () -> Void = {}
+    var onPreview: (Double) -> Void = { _ in }
+    var onCommit: (Double) -> Void = { _ in }
+
+    init(settleDelay: Duration = EditSliderKeyStepper.settleDelay) {
+        self.settleDelay = settleDelay
+    }
+
+    var isStepping: Bool { pendingValue != nil }
+
+    func step(from committedValue: Double, range: ClosedRange<Double>, step: Double, direction: Int, large: Bool) {
+        let base = pendingValue ?? committedValue
+        let newValue = EditSliderStepping.steppedValue(
+            from: base, range: range, step: step, direction: direction, large: large
+        )
+        if newValue != base {
+            if pendingValue == nil { onBegin() }
+            pendingValue = newValue
+            onPreview(newValue)
+        }
+        guard pendingValue != nil else { return }
+        commitTask?.cancel()
+        let delay = settleDelay
+        commitTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.commitNow()
+        }
+    }
+
+    /// Commits a pending step value now (key-up, mouse-down, or the settle timer).
+    func commitNow() {
+        commitTask?.cancel()
+        commitTask = nil
+        guard let value = pendingValue else { return }
+        pendingValue = nil
+        onCommit(value)
+    }
+}
+
 /// Keyboard / VoiceOver stepping shared by the horizontal and vertical Develop sliders.
 nonisolated enum EditSliderStepping {
     /// One arrow-key step: the slider's own step, but at least 1/200 of the range so fine-step
@@ -106,8 +155,8 @@ struct EditSlider: NSViewRepresentable {
 
     func updateNSView(_ nsView: EditSliderNSView, context: Context) {
         context.coordinator.parent = self
-        // Don't override visual state during drag — coordinator controls it
-        if !context.coordinator.isDragging {
+        // Don't override visual state during drag or key stepping — coordinator controls it
+        if !context.coordinator.isDragging, !context.coordinator.keyStepper.isStepping {
             updateViewState(nsView, context: context)
         }
     }
@@ -173,6 +222,7 @@ struct EditSlider: NSViewRepresentable {
         }
 
         func handleMouseDown(at locationX: CGFloat, width: CGFloat, clickCount: Int) {
+            keyStepper.commitNow()
             // AppKit's click count honors the user's double-click speed setting.
             if clickCount >= 2, let onReset = parent.onReset {
                 DevelopUndoActionName.perform(parent.label) {
@@ -261,26 +311,38 @@ struct EditSlider: NSViewRepresentable {
             lastClickCommittedWithoutDrag = !didDragSinceMouseDown
         }
 
-        /// One keyboard / VoiceOver step, committed like a click (one Undo entry).
+        /// Keyboard / VoiceOver stepping: previews each step like a drag, commits once.
+        lazy var keyStepper: EditSliderKeyStepper = {
+            let stepper = EditSliderKeyStepper()
+            stepper.onBegin = { [unowned self] in
+                lastClickCommittedWithoutDrag = false
+                parent.onEditingChanged?(true)
+            }
+            stepper.onPreview = { [unowned self] value in
+                currentDragValue = value
+                sliderView?.fraction = fractionForValue(value)
+                sliderView?.needsDisplay = true
+                if let preview = parent.onDragValueChanged { preview(value) } else { parent.value = value }
+            }
+            stepper.onCommit = { [unowned self] value in
+                DevelopUndoActionName.perform(parent.label) {
+                    parent.value = value
+                }
+                parent.onEditingChanged?(false)
+                sliderView?.fraction = fractionForValue(value)
+                sliderView?.needsDisplay = true
+            }
+            return stepper
+        }()
+
         func step(direction: Int, large: Bool) {
             guard !isDragging else { return }
-            let newValue = EditSliderStepping.steppedValue(
-                from: parent.value, range: parent.range, step: parent.step,
-                direction: direction, large: large
-            )
-            guard newValue != parent.value else { return }
-            lastClickCommittedWithoutDrag = false
-            parent.onEditingChanged?(true)
-            DevelopUndoActionName.perform(parent.label) {
-                parent.value = newValue
-            }
-            parent.onEditingChanged?(false)
-            sliderView?.fraction = fractionForValue(newValue)
-            sliderView?.needsDisplay = true
+            keyStepper.step(from: parent.value, range: parent.range, step: parent.step,
+                            direction: direction, large: large)
         }
 
         var accessibilityValueText: String {
-            let value = isDragging ? currentDragValue : parent.value
+            let value = isDragging ? currentDragValue : (keyStepper.pendingValue ?? parent.value)
             return parent.valueText?(value) ?? value.formatted(.number.precision(.fractionLength(0...2)))
         }
 
@@ -366,6 +428,18 @@ final class EditSliderNSView: NSView {
             return
         }
         coordinator?.step(direction: direction, large: event.modifierFlags.contains(.shift))
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if EditSliderStepping.direction(forKeyCode: event.keyCode) != nil {
+            coordinator?.keyStepper.commitNow()
+        }
+        super.keyUp(with: event)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        coordinator?.keyStepper.commitNow()
+        return super.resignFirstResponder()
     }
 
     override func draw(_ dirtyRect: NSRect) {

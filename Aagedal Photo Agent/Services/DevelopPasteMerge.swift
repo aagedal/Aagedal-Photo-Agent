@@ -4,24 +4,37 @@ import os
 /// A multi-image Develop paste where some files failed or were refused; the rest were written
 /// and the failed files keep their previous settings.
 nonisolated struct DevelopPasteFailedError: LocalizedError, Sendable {
+    /// Nothing was written; these files keep their previous settings.
     let failures: [URL: String]
+    /// The XMP sidecar (which wins on load) took the paste; the embedded copy wasn't updated.
+    var sidecarOnly: [URL: String] = [:]
     let total: Int
 
     var errorDescription: String? {
-        let details = failures.sorted { $0.key.lastPathComponent < $1.key.lastPathComponent }
-            .map { "\($0.key.lastPathComponent): \($0.value)" }
-        return "Pasted to \(total - failures.count) of \(total) images; \(failures.count) failed and keep "
-            + "their previous settings.\n" + details.joined(separator: "\n")
+        func lines(_ entries: [URL: String]) -> [String] {
+            entries.sorted { $0.key.lastPathComponent < $1.key.lastPathComponent }
+                .map { "\($0.key.lastPathComponent): \($0.value)" }
+        }
+        var parts: [String] = []
+        if !failures.isEmpty {
+            parts.append("Pasted to \(total - failures.count) of \(total) images; \(failures.count) failed and keep "
+                + "their previous settings.\n" + lines(failures).joined(separator: "\n"))
+        }
+        if !sidecarOnly.isEmpty {
+            parts.append("Pasted to the XMP sidecar; the embedded copy wasn't updated:\n"
+                + lines(sidecarOnly).joined(separator: "\n"))
+        }
+        return parts.joined(separator: "\n\n")
     }
 }
 
 extension CameraRawSettings {
     /// The Develop record a multi-image paste leaves on one target. Scalar sliders come from the
-    /// copied source; collections the source doesn't carry (HSL, anonymizer, tone curve) and the
-    /// crop when it isn't pasted are kept from the target. Layers are never replaced: the
-    /// source's masks and watermark layers are appended to the target's own (see
-    /// `appendingLayers(from:maskIdentity:watermarkIdentity:)`), so a paste can't delete the
-    /// target's Anonymizer face masks or watermarks.
+    /// copied source; collections the source doesn't carry (HSL, tone curve) and the crop when it
+    /// isn't pasted are kept from the target. Lightroom-like layers (see `pastedResult` /
+    /// `pastingLayers`): the source's masks replace the target's ordinary masks and its
+    /// watermarks replace the target's, but the target's Anonymizer masks — and an active global
+    /// Anonymizer — are never removed or weakened.
     nonisolated static func pasted(
         _ source: CameraRawSettings,
         onto existing: CameraRawSettings?,

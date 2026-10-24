@@ -703,7 +703,7 @@ struct DescriptiveMetadataWriteBoundaryTests {
         for _ in 0..<2 {
             let report = try await engine.writeDevelopFields(
                 [:], to: [source],
-                structuredData: StructuredWriteData(masks: [pastedBlur], appendsLayers: true),
+                structuredData: StructuredWriteData(masks: [pastedBlur], mergesLayersForPaste: true),
                 allowsCredentialedEmbed: false
             )
             #expect(report.isEmpty)
@@ -713,6 +713,40 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(masks.count == 2)
         #expect(masks.contains { $0.anonymizer?.amount == 90 && abs($0.geometry.centerX - 0.7) < 1e-4 })
         #expect(masks.contains { $0.anonymizer?.amount == 60 && abs($0.geometry.centerX - 0.2) < 1e-4 })
+    }
+
+    @Test("Embedded Develop paste replaces ordinary masks, keeps the file's redactions and Anonymizer")
+    func embeddedDevelopPasteReplacesOrdinaryMasks() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = SwiftExifWriteEngine()
+
+        var ownMask = MaskAdjustment(name: "Own", exposure: 0.5)
+        ownMask.geometry.centerX = 0.3
+        var ownBlur = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        ownBlur.geometry.centerX = 0.7
+        _ = try await engine.writeDevelopFields(
+            [.crsExposure2012: "+0.30"], to: [source],
+            structuredData: StructuredWriteData(masks: [ownMask, ownBlur],
+                                                anonymizer: AnonymizerSettings(amount: 80, blackOut: nil)),
+            allowsCredentialedEmbed: false
+        )
+
+        var sky = MaskAdjustment(name: "Sky", exposure: -1)
+        sky.geometry.centerY = 0.2
+        let report = try await engine.writeDevelopFields(
+            [:], to: [source],
+            structuredData: StructuredWriteData(masks: [sky],
+                                                anonymizer: AnonymizerSettings(amount: 20, blackOut: nil),
+                                                mergesLayersForPaste: true),
+            allowsCredentialedEmbed: false
+        )
+        #expect(report.isEmpty)
+
+        let settings = try #require(try await SwiftExifReadService().readFullMetadata(url: source).cameraRaw)
+        let names = Set(settings.localAdjustments?.map(\.name) ?? [])
+        #expect(names == ["Face", "Sky"])
+        #expect(settings.anonymizer?.amount == 80)
     }
 
     @Test("Sidecar Develop paste appends to the RAW's own masks and is idempotent")

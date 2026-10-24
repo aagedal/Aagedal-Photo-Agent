@@ -83,21 +83,15 @@ nonisolated struct DevelopTemplate: Codable, Identifiable, Sendable, Equatable {
         applicationResult(preserving: target).settings
     }
 
-    /// Applies the template to `target` the way an Adobe preset does: it never removes what it
-    /// doesn't contain. Scalar Global settings come from the template; collections it doesn't
-    /// carry (tone curve, HSL, Anonymizer, the crop when excluded or absent) stay with the
-    /// target; the template's masks and watermark layers are appended to the target's own with
-    /// fresh identities, so the target's masks (incl. Anonymizer face masks) and watermarks
-    /// always survive. Decoder state and unknown ACR corrections remain attached to the target.
+    /// Applies the template to `target` (see `CameraRawSettings.templateResult`): the template
+    /// sets the look — every non-layer group it stores overrides the target, neutral values
+    /// included — while masks and watermark layers are add-only (the target's own, incl.
+    /// Anonymizer face masks, always survive; the template's get fresh identities). The global
+    /// Anonymizer is never turned off. Decoder state and unknown ACR corrections stay with the
+    /// target.
     func applicationResult(preserving target: CameraRawSettings?) -> DevelopLayerAppendResult {
-        let template = settings.settingsForDevelopTemplate
-        var result = CameraRawSettings.pastedResult(
-            template, onto: target, includeCrop: includesCrop,
-            maskIdentity: .fresh, watermarkIdentity: .fresh
-        )
-        // A template carries no paste marker: keep its stored value (or the target's).
-        result.settings.hasSettings = template.hasSettings ?? target?.hasSettings
-        return result
+        CameraRawSettings.templateResult(settings.settingsForDevelopTemplate, onto: target,
+                                         includeCrop: includesCrop)
     }
 }
 

@@ -295,6 +295,8 @@ struct EditWorkspaceView: View {
     /// The settings Develop itself last published for `undoHistoryImageURL`. A same-photo load
     /// that replaces them from outside ends the history (see `DevelopUndoHistoryPolicy`).
     @State private var undoHistorySettings: CameraRawSettings?
+    /// Last seen `MetadataViewModel.developSettingsReplacementGeneration` (Reset All Edits).
+    @State private var undoHistoryReplacementGeneration = 0
     /// RAW whose Phase 2 decode failed (format unsupported by this macOS): Develop is editing
     /// its embedded preview. Keyed by URL so it can't leak to another photo.
     @State private var unsupportedRAWPreviewURL: URL?
@@ -918,12 +920,16 @@ struct EditWorkspaceView: View {
                 syncCameraRawToImageFile()
                 loadSelectedImagePreview()
             }
+            let replacedExternally = metadataViewModel.developSettingsReplacementGeneration
+                != undoHistoryReplacementGeneration
+            undoHistoryReplacementGeneration = metadataViewModel.developSettingsReplacementGeneration
             if metadataViewModel.selectedURLs.count == 1,
                DevelopUndoHistoryPolicy.shouldClearHistory(
                 historyImageURL: undoHistoryImageURL,
                 loadedImageURL: metadataViewModel.selectedURLs.first,
                 settingsDevelopPublished: undoHistorySettings,
-                loadedSettings: metadataViewModel.editingMetadata.cameraRaw
+                loadedSettings: metadataViewModel.editingMetadata.cameraRaw,
+                settingsReplacedExternally: replacedExternally
                ) {
                 undoHistoryImageURL = metadataViewModel.selectedURLs.first
                 persistenceSession.removeAllUndoActions()
@@ -3094,6 +3100,7 @@ struct EditWorkspaceView: View {
         // photo starts a fresh one (same-photo reloads keep Undo).
         undoHistoryImageURL = isSelectedImageMetadataReady ? selectedImageURL : nil
         undoHistorySettings = metadataViewModel.editingMetadata.cameraRaw
+        undoHistoryReplacementGeneration = metadataViewModel.developSettingsReplacementGeneration
         loadDevelopVersionCatalog()
         editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
         loadSelectedImagePreview()
@@ -3108,6 +3115,7 @@ struct EditWorkspaceView: View {
         DevelopUndoMenuRouter.shared.register(.init(
             ownerID: primaryEditorOwnerID,
             session: persistenceSession,
+            window: { [self] in keyboardWindow.window },
             canRoute: { [self] in
                 let window = NSApp.keyWindow
                 return keyboardWindow.ownsKeyEvent(in: window) && !isTextFieldActive()
@@ -8125,8 +8133,19 @@ struct EditWorkspaceView: View {
         // read the pre-paste sidecar back over the in-memory result.
         let reloadedURL = selectedImageURL.flatMap { urls.contains($0) ? $0 : nil }
         // Per-file outcome: a failing or refused file never stops the rest of the batch.
+        // `failures` = nothing was written (rolled back in memory); `sidecarOnly` = the sidecar
+        // (which wins on load) took the paste but the embedded copy wasn't updated, so the
+        // pasted state stays in memory and the file is reported.
         var failures: [URL: String] = [:]
-        var finishedURLs = Set<URL>()
+        var sidecarOnly: [URL: String] = [:]
+        var writtenURLs = Set<URL>()
+        @MainActor func recordEmbeddedFailure(_ url: URL, _ message: String) {
+            if writtenURLs.contains(url) {
+                sidecarOnly[url] = message
+            } else {
+                failures[url] = message
+            }
+        }
         @MainActor func pasteWrites() async throws {
             // Sidecar probes and per-file header reads stay off the main thread.
             let sidecarURLs = await Self.pasteSidecarTargets(Array(urls), sidecarService: sidecarService)
@@ -8134,12 +8153,12 @@ struct EditWorkspaceView: View {
                 try Task.checkCancellation()
                 do {
                     try await sidecarService.pasteCameraRawSerialized(cameraRaw, includeCrop: includeCrop, for: url)
+                    writtenURLs.insert(url)
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
                     failures[url] = error.localizedDescription
                 }
-                if SupportedImageFormats.isRaw(url: url) { finishedURLs.insert(url) }
             }
             // A file whose sidecar failed isn't half-written into its embedded XMP as well.
             let embedURLs = targetURLs.filter { failures[$0] == nil }
@@ -8177,10 +8196,9 @@ struct EditWorkspaceView: View {
 
             // Carry tone curve and masks too — a paste without them leaves the
             // targets rendering differently from the source. Masks only when the
-            // source has some (merge-style, no replaceCameraRawBlock), and appended to
-            // each file's own layers: a paste must never strip the targets' masks
-            // (Anonymizer redactions included), watermarks or other settings the paste
-            // doesn't carry.
+            // source has some (merge-style, no replaceCameraRawBlock), merged per file
+            // with paste semantics: ordinary masks / watermarks replaced, the file's
+            // Anonymizer masks and active global Anonymizer always kept.
             let structuredData = StructuredWriteData(
                 toneCurve: cameraRaw.toneCurve,
                 masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
@@ -8188,7 +8206,7 @@ struct EditWorkspaceView: View {
                 hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil,
                 layerOrder: cameraRaw.layerOrder,
                 anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil,
-                appendsLayers: true
+                mergesLayersForPaste: true
             )
 
             // Camera Raw-only embed: no descriptive rewrite, never into a file whose metadata
@@ -8215,13 +8233,16 @@ struct EditWorkspaceView: View {
                         urlFields, to: [url], structuredData: structuredData,
                         allowsCredentialedEmbed: allowsCredentialedEmbed
                     )
-                    if let message = report.message { failures[url] = message }
+                    if let message = report.message {
+                        recordEmbeddedFailure(url, message)
+                    } else {
+                        writtenURLs.insert(url)
+                    }
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
-                    failures[url] = error.localizedDescription
+                    recordEmbeddedFailure(url, error.localizedDescription)
                 }
-                finishedURLs.insert(url)
             }
         }
 
@@ -8231,8 +8252,9 @@ struct EditWorkspaceView: View {
             do {
                 try await pasteWrites()
             } catch {
-                // Cancelled (or unexpected) mid-batch: files never written keep their old state.
-                restorePreviousState(of: urls.filter { !finishedURLs.contains($0) || failures[$0] != nil })
+                // Cancelled (or unexpected) mid-batch: only files where nothing was written go
+                // back to their old state; a landed sidecar wins on load, so its paste stays.
+                restorePreviousState(of: urls.filter { !writtenURLs.contains($0) })
                 throw error
             }
             restorePreviousState(of: failures.keys)
@@ -8241,6 +8263,10 @@ struct EditWorkspaceView: View {
                 ? "Pasted to \(total) image\(total == 1 ? "" : "s")\(cropSuffix)"
                 : "Pasted to \(pastedCount) of \(total) images\(cropSuffix); \(failures.count) failed: "
                     + failures.keys.map(\.lastPathComponent).sorted().joined(separator: ", ")
+            if !sidecarOnly.isEmpty {
+                feedback += ". Pasted to the XMP sidecar only (embedded copy not updated): "
+                    + sidecarOnly.keys.map(\.lastPathComponent).sorted().joined(separator: ", ")
+            }
             if skippedLayers > 0 {
                 feedback += ". \(skippedLayers) layer\(skippedLayers == 1 ? "" : "s") skipped (layer limit)"
             }
@@ -8253,8 +8279,8 @@ struct EditWorkspaceView: View {
                 editLog.info("[\(reloadedURL.lastPathComponent)] loadSelectedImagePreview triggered by: pasteCameraRaw")
                 loadSelectedImagePreview()
             }
-            if !failures.isEmpty {
-                throw DevelopPasteFailedError(failures: failures, total: total)
+            if !failures.isEmpty || !sidecarOnly.isEmpty {
+                throw DevelopPasteFailedError(failures: failures, sidecarOnly: sidecarOnly, total: total)
             }
         }
 

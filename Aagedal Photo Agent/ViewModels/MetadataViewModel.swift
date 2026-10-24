@@ -319,6 +319,9 @@ final class MetadataViewModel {
     /// Incremented after every metadata load completes. Observed by EditWorkspaceView
     /// to force re-render even when editingMetadata.cameraRaw hasn't changed.
     var metadataLoadGeneration: Int = 0
+    /// Incremented whenever the editor's develop settings are replaced from outside Develop
+    /// (Reset All Edits). Develop ends its undo history on it: Undo must not resurrect them.
+    private(set) var developSettingsReplacementGeneration: Int = 0
     /// Identity used to reject UI buffers registered for a previous load of the same photo.
     var editorBufferLoadID: UUID? { metadataLoadRequestID }
 
@@ -1652,6 +1655,7 @@ final class MetadataViewModel {
         originalImageMetadata?.cameraRaw = nil
         metadata?.cameraRaw = nil
         previousEditingMetadata?.cameraRaw = nil
+        developSettingsReplacementGeneration += 1
         metadataLoadGeneration += 1
     }
 

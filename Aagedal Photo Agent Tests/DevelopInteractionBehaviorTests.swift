@@ -838,7 +838,8 @@ struct DevelopInteractionBehaviorTests {
         #expect(single.anonymizer == source.anonymizer)
         #expect(single.toneCurve == target.toneCurve)
         #expect(single.hslAdjustments == target.hslAdjustments)
-        #expect(single.unparsedMaskCorrections == [preserved])
+        // Pasted masks replace the target's ordinary masks, ACR-only corrections included.
+        #expect(single.unparsedMaskCorrections == nil)
         #expect(single.crop == target.crop)
         #expect(single.asShotNeutralTemperature == 6500)
     }
@@ -891,39 +892,159 @@ struct DevelopInteractionBehaviorTests {
             != CameraRawSettings.layerFingerprint(different, clearing: \.id, \.name))
     }
 
-    @Test("Paste respects the layer limit, prefers Anonymizer masks and keeps the target's chain")
-    func pasteRespectsLayerLimit() throws {
-        var targetMasks: [MaskAdjustment] = []
-        for index in 0..<(DevelopLayerLimits.maxEnabledMasks - 1) {
-            var mask = MaskAdjustment(name: "Own \(index)", exposure: 0.2)
-            mask.geometry.centerX = 0.1 + Double(index) * 0.05
-            targetMasks.append(mask)
+    private func ordinaryMask(_ name: String, x: Double, exposure: Double = 0.3) -> MaskAdjustment {
+        var mask = MaskAdjustment(name: name, exposure: exposure)
+        mask.geometry.centerX = x
+        return mask
+    }
+
+    private func redactionMask(_ name: String, x: Double) -> MaskAdjustment {
+        var mask = MaskAdjustment(name: name, anonymizer: AnonymizerSettings(amount: nil, blackOut: true))
+        mask.geometry.centerX = x
+        return mask
+    }
+
+    @Test("Paste replaces the target's ordinary masks but always keeps its Anonymizer masks")
+    func pasteReplacesOrdinaryMasksKeepsRedactions() throws {
+        let ownMask = ordinaryMask("Own", x: 0.1)
+        let ownRedaction = redactionMask("Own face", x: 0.9)
+        let ownWatermark = WatermarkLayer(libraryAssetID: UUID())
+        var target = CameraRawSettings()
+        target.localAdjustments = [ownMask, ownRedaction]
+        target.watermarkLayers = [ownWatermark]
+        target.unparsedMaskCorrections = [PreservedMaskCorrection(fields: ["What": .string("ACR")])]
+
+        let sky = ordinaryMask("Sky", x: 0.4)
+        var lut = ordinaryMask("LUT", x: 0.5)
+        lut.colorTransform = ColorTransformSettings()
+        var source = CameraRawSettings(exposure2012: 0.7)
+        source.localAdjustments = [sky, lut]
+
+        let pasted = CameraRawSettings.pasted(source, onto: target, includeCrop: false)
+        let masks = try #require(pasted.localAdjustments)
+        #expect(masks.map(\.name) == ["Own face", "Sky", "LUT"])
+        #expect(masks[0] == ownRedaction)
+        // Source has no watermarks: the target keeps its own.
+        #expect(pasted.watermarkLayers == [ownWatermark])
+        // Preserved ACR-only corrections are ordinary masks: replaced too.
+        #expect(pasted.unparsedMaskCorrections == nil)
+        // Source chain first; the kept redaction (after Global) follows the source's adjustment
+        // layers; the kept watermark goes last.
+        #expect(pasted.resolvedLayerOrder() == [
+            .global, .mask(sky.id), .mask(lut.id), .mask(ownRedaction.id), .watermark(ownWatermark.id),
+        ])
+
+        // A source without masks leaves every target mask alone.
+        let scalarsOnly = CameraRawSettings.pasted(CameraRawSettings(exposure2012: 1), onto: target, includeCrop: false)
+        #expect(scalarsOnly.localAdjustments == target.localAdjustments)
+        #expect(scalarsOnly.unparsedMaskCorrections == target.unparsedMaskCorrections)
+
+        // Source watermarks replace the target's.
+        let otherWatermark = WatermarkLayer(libraryAssetID: UUID())
+        var watermarkSource = CameraRawSettings()
+        watermarkSource.watermarkLayers = [otherWatermark]
+        let rewatermarked = CameraRawSettings.pasted(watermarkSource, onto: target, includeCrop: false)
+        #expect(rewatermarked.watermarkLayers == [otherWatermark])
+        #expect(rewatermarked.localAdjustments == target.localAdjustments)
+    }
+
+    @Test("A kept Anonymizer mask below Global stays below it after a replacing paste")
+    func pasteKeepsRedactionSideOfGlobal() {
+        let ownRedaction = redactionMask("Face", x: 0.8)
+        let ownMask = ordinaryMask("Own", x: 0.2)
+        var target = CameraRawSettings()
+        target.localAdjustments = [ownRedaction, ownMask]
+        target.layerOrder = [.mask(ownRedaction.id), .global, .mask(ownMask.id)]
+
+        let sky = ordinaryMask("Sky", x: 0.4)
+        var source = CameraRawSettings()
+        source.localAdjustments = [sky]
+        source.layerOrder = [.global, .mask(sky.id)]
+
+        let pasted = CameraRawSettings.pasted(source, onto: target, includeCrop: false)
+        #expect(pasted.resolvedLayerOrder() == [.mask(ownRedaction.id), .global, .mask(sky.id)])
+    }
+
+    @Test("Over the layer limit, every target Anonymizer mask is kept first")
+    func pasteLimitKeepsTargetRedactions() throws {
+        let ownRedactions = (0..<DevelopLayerLimits.maxEnabledMasks).map {
+            redactionMask("Face \($0)", x: 0.05 + Double($0) * 0.1)
         }
         var target = CameraRawSettings()
-        target.localAdjustments = targetMasks
-        target.layerOrder = targetMasks.map { LayerRef.mask($0.id) } + [.global]
+        target.localAdjustments = ownRedactions + [ordinaryMask("Own", x: 0.33)]
 
-        var plain = MaskAdjustment(name: "Plain", exposure: 1)
-        plain.geometry.centerY = 0.9
-        var redaction = MaskAdjustment(name: "Redact", anonymizer: AnonymizerSettings(amount: nil, blackOut: true))
-        redaction.geometry.centerY = 0.1
-        var disabled = MaskAdjustment(name: "Off", exposure: 2)
-        disabled.enabled = false
         var source = CameraRawSettings()
-        source.localAdjustments = [plain, redaction, disabled]
+        source.localAdjustments = [ordinaryMask("Sky", x: 0.44), redactionMask("New face", x: 0.58)]
 
         let result = CameraRawSettings.pastedResult(
             source, onto: target, includeCrop: false,
             maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
         )
-        let masks = try #require(result.settings.localAdjustments)
-        #expect(Array(masks.prefix(targetMasks.count)) == targetMasks)
-        // One free enabled slot goes to the redaction; the disabled mask costs no slot.
-        #expect(masks.dropFirst(targetMasks.count).map(\.name) == ["Redact", "Off"])
-        #expect(DevelopLayerLimits.enabledMaskCount(in: result.settings) == DevelopLayerLimits.maxEnabledMasks)
-        #expect(result.skippedMasks == 1)
-        // The target's order (Global last) is kept; new layers follow it.
-        #expect(result.settings.layerOrder == target.layerOrder! + [.mask(redaction.id), .mask(disabled.id)])
+        #expect(result.settings.localAdjustments == ownRedactions)
+        #expect(result.skippedMasks == 2)
+
+        // With one slot free, the source's redaction wins it over its ordinary mask.
+        var roomier = target
+        roomier.localAdjustments = Array(ownRedactions.dropLast())
+        let partial = CameraRawSettings.pastedResult(
+            source, onto: roomier, includeCrop: false,
+            maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
+        )
+        let masks = try #require(partial.settings.localAdjustments)
+        #expect(masks.count == DevelopLayerLimits.maxEnabledMasks)
+        #expect(masks.last?.name == "New face")
+        #expect(partial.skippedMasks == 1)
+    }
+
+    @Test("Paste never turns the target's global Anonymizer off or weaker")
+    func pasteNeverWeakensGlobalAnonymizer() {
+        var target = CameraRawSettings()
+        target.anonymizer = AnonymizerSettings(amount: 80, blackOut: nil)
+
+        let off = CameraRawSettings.pasted(CameraRawSettings(exposure2012: 1), onto: target, includeCrop: false)
+        #expect(off.anonymizer == target.anonymizer)
+
+        var weaker = CameraRawSettings()
+        weaker.anonymizer = AnonymizerSettings(amount: 30, blackOut: nil)
+        #expect(CameraRawSettings.pasted(weaker, onto: target, includeCrop: false).anonymizer == target.anonymizer)
+
+        var blackOut = CameraRawSettings()
+        blackOut.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        #expect(CameraRawSettings.pasted(blackOut, onto: target, includeCrop: false).anonymizer
+            == AnonymizerSettings(amount: 80, blackOut: true))
+        // Turning it on from the source is fine.
+        #expect(CameraRawSettings.pasted(weaker, onto: CameraRawSettings(), includeCrop: false).anonymizer
+            == weaker.anonymizer)
+    }
+
+    @Test("Key-repeat stepping previews every step and commits once")
+    @MainActor func sliderKeyStepperCommitsOnce() async throws {
+        let stepper = EditSliderKeyStepper(settleDelay: .milliseconds(20))
+        var begins = 0
+        var previews: [Double] = []
+        var commits: [Double] = []
+        stepper.onBegin = { begins += 1 }
+        stepper.onPreview = { previews.append($0) }
+        stepper.onCommit = { commits.append($0) }
+
+        for _ in 0..<5 {
+            stepper.step(from: 0, range: -100...100, step: 1, direction: 1, large: false)
+        }
+        #expect(begins == 1)
+        #expect(previews == [1, 2, 3, 4, 5])
+        #expect(commits.isEmpty)
+        stepper.commitNow()
+        #expect(commits == [5])
+        stepper.commitNow()
+        #expect(commits == [5])
+
+        // Without a key-up the settle timer commits once.
+        stepper.step(from: 5, range: -100...100, step: 1, direction: -1, large: true)
+        for _ in 0..<100 where commits.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(commits == [5, -5])
+        #expect(begins == 2)
     }
 
     @Test("Arrow-key slider stepping uses at least 1/200 of the range and Shift for 10x")

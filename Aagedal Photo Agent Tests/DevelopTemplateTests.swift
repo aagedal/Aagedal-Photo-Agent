@@ -408,7 +408,7 @@ struct DevelopTemplateTests {
         #expect(decoded.includesCrop)
     }
 
-    @Test("A tone-only template keeps the target's Anonymizer mask, watermark and other layers")
+    @Test("A tone-only template keeps the target's layers but resets the groups it stores")
     func toneOnlyTemplateKeepsTargetLayers() {
         var source = CameraRawSettings()
         source.exposure2012 = 0.8
@@ -434,10 +434,53 @@ struct DevelopTemplateTests {
         #expect(result.settings.localAdjustments == [faceBlur])
         #expect(result.settings.watermarkLayers == [watermark])
         #expect(result.settings.layerOrder == target.layerOrder)
+        // Privacy: a template never turns the target's global Anonymizer off.
         #expect(result.settings.anonymizer == target.anonymizer)
-        #expect(result.settings.hslAdjustments == target.hslAdjustments)
+        // The template stores the complete look: its neutral HSL overrides the target's.
+        #expect(result.settings.hslAdjustments == nil)
         #expect(result.settings.unparsedMaskCorrections == [preserved])
         #expect(result.skippedLayerCount == 0)
+    }
+
+    @Test("Switching template A to B leaves none of A's tone curve or HSL behind")
+    func templateSwitchResetsCurveAndHSL() {
+        var lookA = CameraRawSettings(exposure2012: 0.5)
+        lookA.toneCurve = ToneCurve(
+            master: [ToneCurvePoint(x: 0, y: 0.1), ToneCurvePoint(x: 1, y: 0.9)],
+            red: nil, green: nil, blue: nil
+        )
+        lookA.hslAdjustments = HSLAdjustments(blue: HSLColorAdjustment(saturation: -40))
+        lookA.filmEmulation = FilmEmulationSettings(grain: 30)
+        var lookB = CameraRawSettings(exposure2012: -0.3)
+        lookB.contrast2012 = 10
+        let templateA = DevelopTemplate(name: "A", settings: lookA)
+        let templateB = DevelopTemplate(name: "B", settings: lookB)
+
+        let afterA = templateA.settingsForApplication(preserving: CameraRawSettings())
+        #expect(afterA.toneCurve == lookA.toneCurve)
+        #expect(afterA.hslAdjustments == lookA.hslAdjustments)
+
+        let afterB = templateB.settingsForApplication(preserving: afterA)
+        #expect(afterB.exposure2012 == -0.3)
+        #expect(afterB.contrast2012 == 10)
+        #expect(afterB.toneCurve == nil)
+        #expect(afterB.hslAdjustments == nil)
+        #expect(afterB.filmEmulation == nil)
+    }
+
+    @Test("A template turns the global Anonymizer on or stronger, never off or weaker")
+    func templateNeverWeakensAnonymizer() {
+        var strong = CameraRawSettings()
+        strong.anonymizer = AnonymizerSettings(amount: 80, blackOut: nil)
+        let neutral = DevelopTemplate(name: "Neutral", settings: CameraRawSettings(exposure2012: 0.1))
+        #expect(neutral.settingsForApplication(preserving: strong).anonymizer == strong.anonymizer)
+
+        var weakLook = CameraRawSettings()
+        weakLook.anonymizer = AnonymizerSettings(amount: 20, blackOut: true)
+        let weak = DevelopTemplate(name: "Weak", settings: weakLook)
+        #expect(weak.settingsForApplication(preserving: strong).anonymizer
+            == AnonymizerSettings(amount: 80, blackOut: true))
+        #expect(weak.settingsForApplication(preserving: CameraRawSettings()).anonymizer == weakLook.anonymizer)
     }
 
     @Test("A template's masks are appended after the target's, keeping the target's chain")

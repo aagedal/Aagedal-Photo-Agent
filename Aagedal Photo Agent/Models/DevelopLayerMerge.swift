@@ -61,11 +61,33 @@ nonisolated enum DevelopLayerAppendIdentity: Sendable, Equatable {
     case keepUnlessTaken
 }
 
+extension MaskAdjustment {
+    /// An Anonymizer redaction mask (face blur / black-out). Paste and templates never remove one.
+    nonisolated var isRedaction: Bool { anonymizer?.isEmpty == false }
+}
+
+extension AnonymizerSettings {
+    /// The global Anonymizer a paste/template leaves when the target already redacts: it may be
+    /// turned on or strengthened from the source, never turned off or weakened (privacy rule).
+    nonisolated static func atLeastAsStrong(
+        target: AnonymizerSettings?,
+        incoming: AnonymizerSettings?
+    ) -> AnonymizerSettings? {
+        guard let target, !target.isEmpty else { return incoming }
+        guard let incoming, !incoming.isEmpty else { return target }
+        let amount = max(target.amount ?? 0, incoming.amount ?? 0)
+        let blackOut = target.blackOut == true || incoming.blackOut == true
+        return AnonymizerSettings(amount: amount > 0 ? amount : nil, blackOut: blackOut ? true : nil)
+    }
+}
+
 extension CameraRawSettings {
-    /// The shared paste/template merge: scalar settings from `source`, the target's crop when
-    /// the crop isn't applied, collections `source` doesn't carry kept from the target, and
-    /// layers appended (never replaced). See `pasted(_:onto:includeCrop:)` and
-    /// `DevelopTemplate.applicationResult(preserving:)`.
+    /// The Develop record a paste (Lightroom-like) leaves on one target: scalar sliders from the
+    /// source; tone curve / HSL kept from the target when the source has none; the crop only
+    /// when pasted. Layers follow `pastingLayers(from:maskIdentity:watermarkIdentity:)`: the
+    /// source's masks replace the target's ordinary masks and its watermarks replace the
+    /// target's, but the target's Anonymizer masks are always kept. The global Anonymizer is
+    /// never turned off or weakened.
     nonisolated static func pastedResult(
         _ source: CameraRawSettings,
         onto existing: CameraRawSettings?,
@@ -80,25 +102,189 @@ extension CameraRawSettings {
         }
         if source.toneCurve == nil { result.toneCurve = existing?.toneCurve }
         if source.hslAdjustments?.isEmpty != false { result.hslAdjustments = existing?.hslAdjustments }
-        if source.anonymizer?.isEmpty != false { result.anonymizer = existing?.anonymizer }
-        // Layers start from the target's own chain; the source's are appended below.
-        result.localAdjustments = existing?.localAdjustments
-        result.watermarkLayers = existing?.watermarkLayers
-        result.layerOrder = existing?.layerOrder
-        result.unparsedMaskCorrections = existing?.unparsedMaskCorrections
-        // Per-image decode facts, never part of a paste (see their declarations).
-        result.asShotNeutralTemperature = existing?.asShotNeutralTemperature
-        result.asShotNeutralTint = existing?.asShotNeutralTint
-        result.sourceHasHDRHeadroom = existing?.sourceHasHDRHeadroom
-        return result.appendingLayers(from: source, maskIdentity: maskIdentity,
-                                      watermarkIdentity: watermarkIdentity)
+        result.anonymizer = AnonymizerSettings.atLeastAsStrong(target: existing?.anonymizer, incoming: source.anonymizer)
+        result.copyLayersAndDecodeFacts(from: existing)
+        return result.pastingLayers(from: source, maskIdentity: maskIdentity,
+                                    watermarkIdentity: watermarkIdentity)
     }
 
-    /// Appends `source`'s masks and watermark layers to this record's own (Adobe convention: a
-    /// preset or paste adds layers, it never removes the photo's own — an Anonymizer face mask or
-    /// a watermark on the target always survives). Copied layers that already exist on the
-    /// target (same content, ignoring identity and name) are skipped, so pasting twice doesn't
-    /// duplicate them. Enabled layers are appended only up to the renderer's limits; enabled
+    /// The Develop record a template (preset) leaves on one target: every non-layer group the
+    /// template carries overrides the target, neutral values included (a template stores the
+    /// complete look, so switching template A → B leaves none of A's curve or HSL behind). The
+    /// crop follows `includeCrop` (the target's is kept when the template has none). Masks and
+    /// watermark layers are add-only (`appendingLayers`), and the global Anonymizer is never
+    /// turned off or weakened.
+    nonisolated static func templateResult(
+        _ template: CameraRawSettings,
+        onto existing: CameraRawSettings?,
+        includeCrop: Bool
+    ) -> DevelopLayerAppendResult {
+        var result = template
+        result.hasSettings = template.hasSettings ?? existing?.hasSettings
+        if !includeCrop || template.crop?.isEmpty != false {
+            result.crop = existing?.crop
+        }
+        result.anonymizer = AnonymizerSettings.atLeastAsStrong(target: existing?.anonymizer, incoming: template.anonymizer)
+        result.copyLayersAndDecodeFacts(from: existing)
+        return result.appendingLayers(from: template, maskIdentity: .fresh, watermarkIdentity: .fresh)
+    }
+
+    /// Layers start from the target's own chain; per-image decode facts are never copied.
+    nonisolated private mutating func copyLayersAndDecodeFacts(from existing: CameraRawSettings?) {
+        localAdjustments = existing?.localAdjustments
+        watermarkLayers = existing?.watermarkLayers
+        layerOrder = existing?.layerOrder
+        unparsedMaskCorrections = existing?.unparsedMaskCorrections
+        asShotNeutralTemperature = existing?.asShotNeutralTemperature
+        asShotNeutralTint = existing?.asShotNeutralTint
+        sourceHasHDRHeadroom = existing?.sourceHasHDRHeadroom
+    }
+
+    /// Paste layer merge onto this (target) record:
+    /// - Source ordinary masks (incl. extra Global and LUT/CST layers) — or preserved ACR
+    ///   corrections — replace the target's ordinary masks and preserved corrections; without
+    ///   them the target keeps its own.
+    /// - The target's Anonymizer masks are always kept; the source's are appended unless the
+    ///   target already has the same one (content match ignoring identity/name).
+    /// - Source watermark layers replace the target's; without any the target keeps its own.
+    /// - Order: the source's chain for what it brings; kept target Anonymizer masks stay on
+    ///   their side of Global (before-Global ones just before it, the rest after the source's
+    ///   adjustment layers, ahead of watermarks); kept target watermarks go last.
+    /// - Limits: kept target Anonymizer masks always stay (even beyond the limit); free enabled
+    ///   slots go to source Anonymizer masks first, then source ordinary masks.
+    nonisolated func pastingLayers(
+        from source: CameraRawSettings,
+        maskIdentity: DevelopLayerAppendIdentity,
+        watermarkIdentity: DevelopLayerAppendIdentity
+    ) -> DevelopLayerAppendResult {
+        let targetMasks = localAdjustments ?? []
+        let sourceMasks = source.localAdjustments ?? []
+        let sourceOrdinary = sourceMasks.filter { !$0.isRedaction }
+        let replacesOrdinary = !sourceOrdinary.isEmpty || source.unparsedMaskCorrections?.isEmpty == false
+        let sourceWatermarks = source.watermarkLayers ?? []
+        let replacesWatermarks = !sourceWatermarks.isEmpty
+
+        guard replacesOrdinary || replacesWatermarks else {
+            // Only Anonymizer masks (or nothing) to bring: purely additive.
+            var redactionsOnly = CameraRawSettings()
+            redactionsOnly.localAdjustments = sourceMasks
+            redactionsOnly.layerOrder = source.layerOrder
+            return appendingLayers(from: redactionsOnly, maskIdentity: maskIdentity,
+                                   watermarkIdentity: watermarkIdentity)
+        }
+
+        var result = self
+        let keptMasks = replacesOrdinary ? targetMasks.filter(\.isRedaction) : targetMasks
+        let keptWatermarks = replacesWatermarks ? [] : (watermarkLayers ?? [])
+        result.unparsedMaskCorrections = replacesOrdinary ? source.unparsedMaskCorrections : unparsedMaskCorrections
+
+        // Incoming masks in source order; Anonymizer duplicates of kept target masks dropped.
+        var redactionPrints = Set(keptMasks.filter(\.isRedaction)
+            .compactMap { Self.layerFingerprint($0, clearing: \.id, \.name) })
+        var incoming: [MaskAdjustment] = []
+        for mask in sourceMasks {
+            if mask.isRedaction, let print = Self.layerFingerprint(mask, clearing: \.id, \.name) {
+                guard redactionPrints.insert(print).inserted else { continue }
+            } else if !mask.isRedaction && !replacesOrdinary {
+                continue
+            }
+            incoming.append(mask)
+        }
+        var freeMaskSlots = max(0, DevelopLayerLimits.maxEnabledMasks - keptMasks.filter(\.enabled).count)
+        var acceptedMasks = Set(incoming.indices.filter { !incoming[$0].enabled })
+        let enabledByPriority = incoming.indices.filter { incoming[$0].enabled }.sorted { lhs, rhs in
+            let lhsRedacts = incoming[lhs].isRedaction
+            let rhsRedacts = incoming[rhs].isRedaction
+            return lhsRedacts != rhsRedacts ? lhsRedacts : lhs < rhs
+        }
+        for index in enabledByPriority where freeMaskSlots > 0 {
+            acceptedMasks.insert(index)
+            freeMaskSlots -= 1
+        }
+        let skippedMasks = incoming.count - acceptedMasks.count
+
+        var usedMaskIDs = Set(keptMasks.map(\.id))
+        var maskIDMap: [UUID: UUID] = [:]
+        var appendedMasks: [MaskAdjustment] = []
+        for (index, mask) in incoming.enumerated() where acceptedMasks.contains(index) {
+            var copy = mask
+            if maskIdentity == .fresh || usedMaskIDs.contains(copy.id) { copy.id = UUID() }
+            usedMaskIDs.insert(copy.id)
+            maskIDMap[mask.id] = copy.id
+            appendedMasks.append(copy)
+        }
+
+        var freeWatermarkSlots = max(0, DevelopLayerLimits.maxEnabledWatermarks
+            - keptWatermarks.filter(\.enabled).count)
+        var usedWatermarkIDs = Set(keptWatermarks.map(\.id))
+        var watermarkIDMap: [UUID: UUID] = [:]
+        var appendedWatermarks: [WatermarkLayer] = []
+        var skippedWatermarks = 0
+        for layer in replacesWatermarks ? sourceWatermarks : [] {
+            if layer.enabled {
+                guard freeWatermarkSlots > 0 else {
+                    skippedWatermarks += 1
+                    continue
+                }
+                freeWatermarkSlots -= 1
+            }
+            var copy = layer
+            if watermarkIdentity == .fresh || usedWatermarkIDs.contains(copy.id) { copy.id = UUID() }
+            usedWatermarkIDs.insert(copy.id)
+            watermarkIDMap[layer.id] = copy.id
+            appendedWatermarks.append(copy)
+        }
+
+        let masks = keptMasks + appendedMasks
+        result.localAdjustments = masks.isEmpty ? nil : masks
+        let watermarks = keptWatermarks + appendedWatermarks
+        result.watermarkLayers = watermarks.isEmpty ? nil : watermarks
+
+        // Order: the source's chain for what it brought, kept target layers placed around it.
+        let targetOrder = resolvedLayerOrder()
+        let targetGlobalIndex = targetOrder.firstIndex(of: .global) ?? 0
+        let keptMaskIDs = Set(keptMasks.map(\.id))
+        var keptBeforeGlobal: [LayerRef] = []
+        var keptAfterGlobal: [LayerRef] = []
+        for (index, ref) in targetOrder.enumerated() {
+            guard case .mask(let id) = ref, keptMaskIDs.contains(id) else { continue }
+            if index < targetGlobalIndex { keptBeforeGlobal.append(ref) } else { keptAfterGlobal.append(ref) }
+        }
+        let keptWatermarkIDs = Set(keptWatermarks.map(\.id))
+        let keptWatermarkRefs = targetOrder.filter {
+            if case .watermark(let id) = $0 { return keptWatermarkIDs.contains(id) }
+            return false
+        }
+        var order: [LayerRef] = []
+        for ref in source.resolvedLayerOrder() {
+            switch ref {
+            case .global:
+                order += keptBeforeGlobal
+                order.append(.global)
+            case .mask(let id):
+                if let mapped = maskIDMap[id] { order.append(.mask(mapped)) }
+            case .watermark(let id):
+                if let mapped = watermarkIDMap[id] { order.append(.watermark(mapped)) }
+            }
+        }
+        let globalPosition = order.firstIndex(of: .global) ?? 0
+        let firstWatermarkAfterGlobal = order.indices.first { index in
+            guard index > globalPosition, case .watermark = order[index] else { return false }
+            return true
+        }
+        order.insert(contentsOf: keptAfterGlobal, at: firstWatermarkAfterGlobal ?? order.count)
+        order += keptWatermarkRefs
+
+        let canonical: [LayerRef] = [.global] + masks.map { .mask($0.id) } + watermarks.map { .watermark($0.id) }
+        result.layerOrder = order == canonical ? nil : order
+        return DevelopLayerAppendResult(settings: result, skippedMasks: skippedMasks,
+                                        skippedWatermarks: skippedWatermarks)
+    }
+
+    /// Appends `source`'s masks and watermark layers to this record's own (template/preset
+    /// semantics, and a paste that only brings Anonymizer masks: layers are added, the photo's
+    /// own are never removed). Copied layers that already exist on the target (same content,
+    /// ignoring identity and name) are skipped, so applying twice doesn't duplicate them. Enabled layers are appended only up to the renderer's limits; enabled
     /// Anonymizer masks take priority for the remaining mask slots. Preserved (unmodelled) ACR
     /// mask corrections the target doesn't already carry are appended too.
     ///
@@ -224,32 +410,43 @@ extension CameraRawSettings {
         _ namePath: WritableKeyPath<Layer, String>
     ) -> String? {
         var normalized = layer
-        normalized[keyPath: idPath] = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        normalized[keyPath: idPath] = Self.zeroIdentity
         normalized[keyPath: namePath] = ""
-        guard let data = try? JSONEncoder().encode(normalized),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let canonical = canonicalFingerprintValue(object),
-              JSONSerialization.isValidJSONObject(canonical),
-              let encoded = try? JSONSerialization.data(withJSONObject: canonical, options: [.sortedKeys])
+        return canonicalJSONFingerprint(normalized)
+    }
+
+    nonisolated static let zeroIdentity = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    /// Canonical JSON of any Codable value: sorted keys, numbers rounded to `1 / scale`, and
+    /// zero/false values dropped (so nil ≡ 0 ≡ false), for tolerant content comparison.
+    nonisolated static func canonicalJSONFingerprint<Value: Encodable>(
+        _ value: Value,
+        scale: Double = 10_000
+    ) -> String? {
+        guard let data = try? JSONEncoder().encode(value),
+              let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
+              let canonical = canonicalFingerprintValue(object, scale: scale),
+              let encoded = try? JSONSerialization.data(
+                withJSONObject: canonical, options: [.sortedKeys, .fragmentsAllowed])
         else { return nil }
         return String(decoding: encoded, as: UTF8.self)
     }
 
-    nonisolated private static func canonicalFingerprintValue(_ value: Any) -> Any? {
+    nonisolated private static func canonicalFingerprintValue(_ value: Any, scale: Double) -> Any? {
         switch value {
         case let dictionary as [String: Any]:
             var result: [String: Any] = [:]
             for (key, child) in dictionary {
-                if let canonical = canonicalFingerprintValue(child) { result[key] = canonical }
+                if let canonical = canonicalFingerprintValue(child, scale: scale) { result[key] = canonical }
             }
             return result
         case let array as [Any]:
-            return array.map { canonicalFingerprintValue($0) ?? NSNull() }
+            return array.map { canonicalFingerprintValue($0, scale: scale) ?? NSNull() }
         case let number as NSNumber:
             if CFGetTypeID(number) == CFBooleanGetTypeID() {
                 return number.boolValue ? true : nil
             }
-            let rounded = (number.doubleValue * 10_000).rounded() / 10_000
+            let rounded = (number.doubleValue * scale).rounded() / scale
             return rounded == 0 ? nil : NSNumber(value: rounded)
         default:
             return value

@@ -891,19 +891,23 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             applyToneCurves(tc, metadata: &metadata)
         }
 
-        if structuredData.appendsLayers, !structuredData.replaceCameraRawBlock {
-            // Develop paste: the file's own layers stay; the copied ones are appended.
+        // Develop paste merges against this file's own develop state (see `mergesLayersForPaste`).
+        let pasteMergeBase: CameraRawSettings? = structuredData.mergesLayersForPaste && !structuredData.replaceCameraRawBlock
+            ? iptcMetadataFromDict(metadata.asMetadataDict(fileURL: url)).cameraRaw
+            : nil
+        if structuredData.mergesLayersForPaste, !structuredData.replaceCameraRawBlock {
             var copied = CameraRawSettings()
             copied.localAdjustments = structuredData.masks
             copied.watermarkLayers = structuredData.watermarkLayers
             copied.layerOrder = structuredData.layerOrder
             copied.unparsedMaskCorrections = structuredData.unparsedMaskCorrections
-            let existing = iptcMetadataFromDict(metadata.asMetadataDict(fileURL: url)).cameraRaw
-            let merged = (existing ?? CameraRawSettings()).appendingLayers(
+            let existing = pasteMergeBase
+            let merged = (existing ?? CameraRawSettings()).pastingLayers(
                 from: copied, maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
             ).settings
             if merged.localAdjustments != existing?.localAdjustments
                 || merged.watermarkLayers != existing?.watermarkLayers
+                || merged.layerOrder != existing?.layerOrder
                 || merged.unparsedMaskCorrections != existing?.unparsedMaskCorrections {
                 applyLayerChain(masks: merged.localAdjustments ?? [], watermarks: merged.watermarkLayers ?? [],
                                 layerOrder: merged.layerOrder,
@@ -921,7 +925,11 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         }
 
         if let anon = structuredData.anonymizer {
-            applyAnonymizer(anon, metadata: &metadata)
+            // A paste never turns off or weakens the file's own global Anonymizer.
+            let effective = structuredData.mergesLayersForPaste
+                ? AnonymizerSettings.atLeastAsStrong(target: pasteMergeBase?.anonymizer, incoming: anon) ?? anon
+                : anon
+            applyAnonymizer(effective, metadata: &metadata)
         }
 
         if let editorial = structuredData.editorial {
