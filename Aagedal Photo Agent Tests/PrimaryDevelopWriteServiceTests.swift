@@ -96,6 +96,67 @@ struct PrimaryDevelopWriteServiceTests {
         #expect(model.metadata != nil)
     }
 
+    @Test("A RAW+JPEG pair's JPEG saves Develop into its own file; the RAW's crs stays; a C2PA pair is refused unretained")
+    func pairedJPEGDevelopUsesEmbeddedDestination() async throws {
+        let folder = URL(fileURLWithPath: "/private/tmp/PrimaryDevelopPair-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let raw = folder.appendingPathComponent("IMG_1.ARW")
+        try Data("placeholder raw".utf8).write(to: raw)
+        let jpeg = folder.appendingPathComponent("IMG_1.jpg")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 5, pixelsHigh: 3,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .jpeg, properties: [:])).write(to: jpeg)
+        var rawCRS = CameraRawSettings(); rawCRS.temperature = 5500; rawCRS.exposure2012 = 1.25
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(title: "Shared caption", cameraRaw: rawCRS), for: raw)
+
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+        try await load(model, image: jpeg, folder: folder)
+        #expect(model.editingMetadata.title == "Shared caption")
+        #expect(model.editingMetadata.cameraRaw?.exposure2012 == nil)
+
+        var jpegCRS = CameraRawSettings(); jpegCRS.exposure2012 = -0.5
+        model.editingMetadata.cameraRaw = jpegCRS
+        model.markChanged()
+        var outcome: MetadataCommitResult?
+        model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar) { outcome = $0 }
+        await model.waitForPrimaryDevelopWrites()
+        if case .succeeded = outcome {} else { Issue.record("Paired JPEG Develop save did not succeed: \(String(describing: outcome)) \(model.saveError ?? "")") }
+        #expect(!model.hasRetainedPrimaryDevelopWrites)
+        let physical = try #require(try await SwiftExifReadService().readBatchFullMetadata(urls: [jpeg])[jpeg])
+        #expect(physical.cameraRaw?.exposure2012 == -0.5)
+        let shared = try #require(XMPSidecarService().loadSidecar(for: raw))
+        #expect(shared.cameraRaw?.exposure2012 == 1.25)
+        #expect(shared.cameraRaw?.temperature == 5500)
+
+        // Reload reads the JPEG's own embedded develop, not the RAW's sidecar block.
+        let other = folder.appendingPathComponent("other.jpg")
+        try FileManager.default.copyItem(at: jpeg, to: other)
+        try await load(model, image: other, folder: folder)
+        try await load(model, image: jpeg, folder: folder)
+        #expect(model.editingMetadata.cameraRaw?.exposure2012 == -0.5)
+
+        // A paired JPEG with Content Credentials has no destination: refused, nothing retained.
+        var credentialed = ImageFile(url: jpeg); credentialed.hasC2PA = true
+        model.loadMetadata(for: [credentialed], folderURL: folder)
+        let deadline = ContinuousClock.now + .seconds(10)
+        while model.isLoading, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.primaryDevelopRefusal(for: jpeg) != nil)
+        model.editingMetadata.cameraRaw?.exposure2012 = 2
+        model.markChanged()
+        outcome = nil
+        model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar) { outcome = $0 }
+        if case .failed = outcome {} else { Issue.record("A C2PA paired JPEG must be refused") }
+        #expect(model.retainedPrimaryDevelopWrites.isEmpty && !model.hasRetainedPrimaryDevelopWrites)
+        #expect(model.editingMetadata.cameraRaw?.exposure2012 == -0.5)
+        #expect(!model.hasUncapturedPrimaryDevelopEdits(mode: .writeToXMPSidecar))
+        let unchanged = try #require(try await SwiftExifReadService().readBatchFullMetadata(urls: [jpeg])[jpeg])
+        #expect(unchanged.cameraRaw?.exposure2012 == -0.5)
+        #expect(XMPSidecarService().loadSidecar(for: raw)?.cameraRaw?.exposure2012 == 1.25)
+    }
+
     @Test("XMP Primary save preserves pixels and actual mask/settings receipt")
     func xmpCompletion() async throws {
         let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
