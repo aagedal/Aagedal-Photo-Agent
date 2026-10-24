@@ -16,6 +16,12 @@ nonisolated struct FTPUploadExecutionAccess: Sendable {
     var sign: @Sendable (C2PAUploadSigningConfiguration, URL) async throws -> Void = { configuration, url in
         try await configuration.sign(url)
     }
+    /// Applies the source's sidecar metadata (the export overlay) onto a staged private copy
+    /// of an as-is upload. Never called with the user's original as the destination.
+    var overlay: @MainActor @Sendable (URL, URL, any MetadataWriteEngine) async -> SidecarIPTCOverlay.Outcome = { source, staged, engine in
+        await SidecarIPTCOverlay.apply(sourceURL: source, renderedURL: staged,
+            folderURL: source.deletingLastPathComponent(), writeEngine: engine)
+    }
 }
 
 /// Immutable file facts used to create one upload-history entry after filesystem work has
@@ -177,6 +183,27 @@ actor FTPUploadFileSystemBoundary {
                 cancellationRequestedAfterCommit: Task.isCancelled
             )
         }
+    }
+
+    /// Always a real copy (an APFS clone where available), never a hard link: the staged file
+    /// receives a metadata write, which must not reach the user's original through a shared inode.
+    func stageCopyForMetadataOverlay(
+        _ sourceURL: URL,
+        as fileName: String,
+        in temporaryDirectory: URL,
+        index: Int
+    ) throws -> FTPPreparedUploadFile {
+        try Task.checkCancellation()
+        let itemDirectory = temporaryDirectory.appendingPathComponent("m\(index)", isDirectory: true)
+        try FileManager.default.createDirectory(at: itemDirectory, withIntermediateDirectories: true)
+        let destinationURL = itemDirectory.appendingPathComponent(fileName)
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        return FTPPreparedUploadFile(
+            url: destinationURL,
+            wasStaged: true,
+            usedCopyFallback: true,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        )
     }
 
     func sequenceRenderedFile(
@@ -680,10 +707,14 @@ final class FTPViewModel {
     /// folders; non-rendered originals upload in place unless a name collision forces staging a
     /// safe hard-link/copy (the user's real files are never moved or renamed). Falls back to the
     /// plain `uploadFiles(_:to:)` fast path when nothing in the batch needs rendering.
+    /// `sidecarOverlayURLs` are as-is files whose `.xmp` sidecar carries descriptive metadata
+    /// the embedded copy lacks: they upload as a private staged copy with the export overlay
+    /// applied, so the server receives what the metadata panel shows (originals are untouched).
     @discardableResult
     func uploadFiles(
         _ urls: [URL],
         renderURLs: Set<URL>,
+        sidecarOverlayURLs: Set<URL> = [],
         to connection: FTPConnection,
         readService: SwiftExifReadService,
         writeEngine: any MetadataWriteEngine,
@@ -691,7 +722,13 @@ final class FTPViewModel {
         signingConfiguration: C2PAUploadSigningConfiguration? = nil
     ) -> Bool {
         let renderTargets = urls.filter { renderURLs.contains($0) }
-        guard !renderTargets.isEmpty else {
+        // As-is originals were already signed in place; rewriting a copy's metadata would
+        // invalidate that credential, so signed uploads keep the signed original.
+        let overlayTargets = signingConfiguration == nil
+            ? Set(urls.filter { sidecarOverlayURLs.contains($0) && !renderURLs.contains($0)
+                && !SupportedImageFormats.isRaw(url: $0) })
+            : []
+        guard !renderTargets.isEmpty || !overlayTargets.isEmpty else {
             return uploadFiles(urls, to: connection)
         }
         guard let password = admitUpload(to: connection) else { return false }
@@ -731,7 +768,7 @@ final class FTPViewModel {
                 self.recordUploadStart(
                     inventory: inventory,
                     connection: connection,
-                    didRenderJPEG: true,
+                    didRenderJPEG: !renderTargets.isEmpty,
                     id: historyID,
                     startedAt: historyStartedAt
                 )
@@ -803,6 +840,37 @@ final class FTPViewModel {
             for (index, url) in urls.enumerated() {
                 guard self.ownsUpload(generation) else { return }
                 guard renderURLs.contains(url) else {
+                    if overlayTargets.contains(url) {
+                        // Upload a private copy carrying the sidecar's metadata.
+                        do {
+                            let stagedName = usedNames.insert(url.lastPathComponent).inserted
+                                ? url.lastPathComponent
+                                : self.reserveUploadName(for: url, avoiding: &usedNames)
+                            let staged = try await fileSystem.stageCopyForMetadataOverlay(
+                                url, as: stagedName, in: tempDir, index: index)
+                            guard self.ownsUpload(generation) else { return }
+                            switch await execution.overlay(url, staged.url, writeEngine) {
+                            case .applied, .noPendingEdits:
+                                break
+                            case .staleSidecarSkipped:
+                                await failureTracker.recordStaleSidecar(url.lastPathComponent)
+                            case .failed:
+                                await failureTracker.recordOverlayFailure(url.lastPathComponent)
+                                guard self.ownsUpload(generation) else { return }
+                                unpreparedFileNames.append(url.lastPathComponent)
+                                continue
+                            }
+                            guard self.ownsUpload(generation) else { return }
+                            uploadURLs.append(staged.url)
+                        } catch is CancellationError {
+                            return
+                        } catch {
+                            guard self.ownsUpload(generation) else { return }
+                            self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
+                            unpreparedFileNames.append(url.lastPathComponent)
+                        }
+                        continue
+                    }
                     // Upload the untouched original (staged only on a name collision).
                     do {
                         if usedNames.insert(url.lastPathComponent).inserted {
@@ -877,7 +945,7 @@ final class FTPViewModel {
                 self.errorMessages.append("Metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images") — these renders were not uploaded")
             }
             if !overlayFailures.isEmpty {
-                self.errorMessages.append("Sidecar metadata overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images") — these renders were not uploaded")
+                self.errorMessages.append("Sidecar metadata overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images") — these files were not uploaded")
             }
             if !staleWarnings.isEmpty {
                 self.errorMessages.append("\(staleWarnings.count) \(staleWarnings.count == 1 ? "image" : "images") used embedded metadata instead of the .xmp sidecar (the image file was edited more recently) — check if you expected sidecar values")

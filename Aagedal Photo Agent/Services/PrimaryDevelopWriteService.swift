@@ -338,6 +338,14 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
             }
             var writtenSource = source
             let target = DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: request.imageURL, requestedMode: request.mode)
+            // The JPEG of a RAW+JPEG pair keeps its develop settings embedded (Adobe); the shared
+            // stem sidecar's crs belongs to the RAW and is never written for the JPEG. A
+            // sidecar-only target would therefore drop the edit — refuse it visibly instead.
+            if !target.writesEmbedded, request.replaceDevelop,
+               PrimaryDevelopWriteRequestBuilder.developSettingsChanged(request.edited.cameraRaw, request.previous?.cameraRaw),
+               let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: request.imageURL) {
+                throw StemSidecarDevelopOwnedByRawError(imageURL: request.imageURL, rawURL: rawURL)
+            }
             try await validateAuthority()
             if target.writesEmbedded {
                 guard let engine = engine as? any PrimaryDevelopWriting else {

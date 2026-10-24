@@ -1103,8 +1103,10 @@ struct MetadataSidecarService: Sendable {
             if !allowPendingOrientation, current?.orientationDraft != nil { throw PendingOrientationWriteError() }
             guard Self.sameOptionalRecord(current, expectedSidecar) else { throw self.ownershipChanged(imageURL) }
             let xmpData = try self.xmpBytes(for: imageURL)
-            let technical = xmpData.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
-                imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) }
+            let technical = PhotoSidecarOwnership.applyingDevelopOwnership(
+                xmpData.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
+                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) },
+                for: imageURL)
             guard xmpData == nil || technical != nil else {
                 throw DescriptiveMetadataWriteError.staleXMPSidecar(XMPSidecarService().sidecarURL(for: imageURL))
             }
@@ -1250,8 +1252,11 @@ struct MetadataSidecarService: Sendable {
 
     private nonisolated func metadataFromXMPReceipt(_ receipt: MetadataSidecarXMPCommitReceipt,
                                                    imageURL: URL) -> IPTCMetadata? {
-        receipt.snapshot?.data.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
-            imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) }
+        // A RAW+JPEG pair's stem crs belongs to the RAW, never to the JPEG's editor state.
+        PhotoSidecarOwnership.applyingDevelopOwnership(
+            receipt.snapshot?.data.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
+                imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) },
+            for: imageURL)
     }
 
     private nonisolated func xmpBytes(for imageURL: URL) throws -> Data? {
@@ -1390,9 +1395,9 @@ struct MetadataSidecarService: Sendable {
                 let xmpService = XMPSidecarService()
                 let xmpURL = xmpService.sidecarURL(for: request.imageURL)
                 let xmpData = try self.xmpBytes(for: request.imageURL)
-                let xmpMetadata = xmpData.flatMap {
+                let xmpMetadata = PhotoSidecarOwnership.applyingDevelopOwnership(xmpData.flatMap {
                     xmpService.loadSidecar(fromData: $0, imageAspect: { ImagePixelAspect.aspect(at: request.imageURL) })
-                }
+                }, for: request.imageURL)
                 guard (xmpData == nil || xmpMetadata != nil),
                       request.expectedXMPSnapshot.map({ $0.data == xmpData }) ?? (xmpMetadata == request.expectedXMPMetadata) else {
                     throw DescriptiveMetadataWriteError.staleXMPSidecar(xmpURL)

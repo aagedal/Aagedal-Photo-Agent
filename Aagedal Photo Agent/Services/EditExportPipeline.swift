@@ -191,7 +191,7 @@ nonisolated struct ExportCameraRawSidecarAccess: Sendable {
     let load: @Sendable (URL) -> CameraRawSettings?
 
     static let system = ExportCameraRawSidecarAccess { imageURL in
-        guard let settings = XMPSidecarService().loadSidecar(for: imageURL)?.cameraRaw,
+        guard let settings = XMPSidecarService().loadDevelopSettings(for: imageURL),
               !settings.isEmpty else {
             return nil
         }
@@ -453,6 +453,9 @@ enum EditExportPipeline {
         // destination afterward. Keep its name claimed until the complete artifact finishes.
         let reservationOwner = ExportOutputReservationOwner()
         defer { withExtendedLifetime(reservationOwner) {} }
+        // Until the renderer returns, a thrown error means the encode itself failed or was
+        // cancelled: whatever sits under the reserved name is partial and must not survive.
+        var renderReturned = false
 
         do {
             let bakedCameraRaw: CameraRawSettings?
@@ -515,6 +518,7 @@ enum EditExportPipeline {
                         collisionPolicy: collisionPolicy, reservationOwner: reservationOwner)
                 }
             }.value
+            renderReturned = true
 
             var overlayFailed = false
             switch await SidecarIPTCOverlay.apply(
@@ -558,7 +562,11 @@ enum EditExportPipeline {
             await reservationOwner.release()
             return renderedURL
         } catch {
-            await reservationOwner.release()
+            if renderReturned {
+                await reservationOwner.release()
+            } else {
+                await reservationOwner.discardOnFailure()
+            }
             throw error
         }
     }
@@ -663,8 +671,11 @@ actor ExportIPTCSelectionService {
         if let folderURL, let draft = access.loadDraft(sourceURL, folderURL), draft.pendingChanges {
             return .pendingDraft(draft.metadata)
         }
+        // GPS counts as content: a geotagged RAW sidecar with no caption must still carry
+        // its coordinates onto the export (applied additively — see authoritativeFields).
         guard let sidecar = access.loadXMP(sourceURL),
-              sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil else {
+              sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil
+                || SidecarIPTCOverlay.hasGPS(sidecar) else {
             return .noPendingEdits
         }
         // The staleness policy only compares descriptive metadata. Rating/label-only
@@ -704,7 +715,19 @@ enum SidecarIPTCOverlay {
         var fields = metadata.hasDescriptiveContent ? metadata.toOverwriteFields() : [:]
         if let rating = metadata.rating { fields[.rating] = String(rating) }
         if let label = metadata.label { fields[.label] = label }
+        // GPS is additive and independent of descriptive authority: present coordinates are
+        // written; absent ones never clear the destination's embedded GPS.
+        if let lat = metadata.latitude, let lon = metadata.longitude {
+            fields[.gpsLatitude] = String(abs(lat))
+            fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+            fields[.gpsLongitude] = String(abs(lon))
+            fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+        }
         return fields
+    }
+
+    nonisolated static func hasGPS(_ metadata: IPTCMetadata) -> Bool {
+        metadata.latitude != nil && metadata.longitude != nil
     }
 
     /// Carry list item boundaries separately from the legacy comma-delimited field map.

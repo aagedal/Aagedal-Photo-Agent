@@ -29,7 +29,8 @@ nonisolated struct FTPUploadSidecarAccess: Sendable {
     let load: @Sendable (URL) -> IPTCMetadata?
 
     static let system = FTPUploadSidecarAccess { imageURL in
-        XMPSidecarService().loadSidecar(for: imageURL)
+        PhotoSidecarOwnership.applyingDevelopOwnership(
+            XMPSidecarService().loadSidecar(for: imageURL), for: imageURL)
     }
 }
 

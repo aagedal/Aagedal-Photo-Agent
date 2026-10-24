@@ -85,7 +85,7 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
                     for: imageURL
                 )
             },
-            readPrimary: { sidecars.loadSidecar(for: imageURL)?.cameraRaw },
+            readPrimary: { sidecars.loadDevelopSettings(for: imageURL) },
             orientation: orientation
         )
     }

@@ -27,6 +27,8 @@ nonisolated struct DevelopTemplateBatchCapture: Sendable {
 nonisolated struct DevelopTemplateBatchCaptureService: Sendable {
     enum Failure: Error, Equatable, Sendable {
         case invalidSelection, invalidTemplateRevision, metadataConflict, pendingOrientation, byteLimit
+        /// The non-RAW half of a RAW+JPEG pair: its stem `.xmp` develop block belongs to the RAW.
+        case sharedRawSidecar
     }
     typealias Decoder = @Sendable (Data, URL) throws -> MCPDevelopTemplatePreview.DecoderState
     let facade: MCPAutomationFacade
@@ -52,6 +54,11 @@ nonisolated struct DevelopTemplateBatchCaptureService: Sendable {
         for photo in photos {
             let key = photo.standardizedFileURL.resolvingSymlinksInPath().deletingPathExtension().path.lowercased()
             guard identities.insert(key).inserted else { throw DevelopTemplateBatchFailure.duplicatePhoto }
+            // The rooted writer publishes the stem `.xmp`; for a RAW+JPEG pair's JPEG that would
+            // overwrite the RAW's Camera Raw settings (Adobe: the JPEG's develop is embedded).
+            guard !PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: photo) else {
+                throw Failure.sharedRawSidecar
+            }
         }
         try Task.checkCancellation()
         let authorizationConfiguration = try facade.authorizationStore.load()

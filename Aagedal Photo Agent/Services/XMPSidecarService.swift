@@ -63,6 +63,14 @@ struct XMPSidecarService: Sendable {
         return loadSidecar(fromData: data, imageAspect: { ImagePixelAspect.aspect(at: imageURL) })
     }
 
+    /// The sidecar's develop (`crs`) settings as they apply to `imageURL` for display, render,
+    /// export and Develop load: nil for a non-RAW file whose stem `.xmp` belongs to a same-stem
+    /// RAW sibling (see `PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling`). Writers
+    /// doing read-modify-write must keep using `loadSidecar(for:)` so the RAW's block survives.
+    nonisolated func loadDevelopSettings(for imageURL: URL) -> CameraRawSettings? {
+        PhotoSidecarOwnership.stemSidecarCameraRaw(loadSidecar(for: imageURL)?.cameraRaw, for: imageURL)
+    }
+
     /// Parses already-read XMP bytes into IPTCMetadata. `imageAspect` supplies the image's
     /// sensor-frame width/height ratio for the ACR angled-crop conversion; it is only invoked when
     /// the sidecar carries an angled crop (the conversion is the identity at angle 0).
@@ -204,12 +212,15 @@ struct XMPSidecarService: Sendable {
                 )
             }
         }
-        // nil cameraRaw clears the crs block (matches the prior "nil = clear" contract).
-        XMPDataBuilder.applyCameraRaw(
-            metadata.cameraRaw,
-            imageAspect: imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop),
-            into: &xmp
-        )
+        // nil cameraRaw clears the crs block (matches the prior "nil = clear" contract) —
+        // except for the JPEG of a RAW+JPEG pair, whose stem sidecar crs belongs to the RAW.
+        if ownsDevelopBlock(for: imageURL) {
+            XMPDataBuilder.applyCameraRaw(
+                metadata.cameraRaw,
+                imageAspect: imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop),
+                into: &xmp
+            )
+        }
         xmp.creatorTool = SwiftExifWriteEngine.creatorTool
         try writeXMP(xmp, to: url)
     }
@@ -343,7 +354,10 @@ struct XMPSidecarService: Sendable {
         validateCommitAuthority: @escaping @Sendable () throws -> Void = {}
     ) async throws -> Bool {
         let technicalOnly = onlyIfExisting && expectedSnapshot.data == nil
-        let createsTechnicalSidecar = replaceDevelopSettings && metadata.cameraRaw?.isEmpty == false
+        // A RAW+JPEG pair's stem sidecar crs belongs to the RAW: the JPEG's develop settings
+        // live in its embedded XMP (the caller refuses sidecar-only targets upfront).
+        let writesDevelop = replaceDevelopSettings && ownsDevelopBlock(for: imageURL)
+        let createsTechnicalSidecar = writesDevelop && metadata.cameraRaw?.isEmpty == false
         return try await updateXMPTransaction(for: imageURL, expectedSnapshot: expectedSnapshot,
             onlyIfExisting: onlyIfExisting && !createsTechnicalSidecar, onInstalled: onInstalled,
             validateCommitAuthority: validateCommitAuthority) { xmp in
@@ -361,7 +375,7 @@ struct XMPSidecarService: Sendable {
                     }
                 }
             }
-            if replaceDevelopSettings {
+            if writesDevelop {
                 XMPDataBuilder.applyCameraRaw(metadata.cameraRaw,
                     imageAspect: self.imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop), into: &xmp)
             }
@@ -461,7 +475,7 @@ struct XMPSidecarService: Sendable {
                                         property: localizedTitleClearedProperty)
                     }
                 }
-                if !preservesDevelopSettings {
+                if !preservesDevelopSettings, self.ownsDevelopBlock(for: imageURL) {
                     XMPDataBuilder.applyCameraRaw(
                         metadata.cameraRaw,
                         imageAspect: self.imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop),
@@ -493,6 +507,7 @@ struct XMPSidecarService: Sendable {
         metadata: IPTCMetadata,
         for imageURL: URL
     ) async throws {
+        let ownsDevelop = ownsDevelopBlock(for: imageURL)
         try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             _ = try await self.updateXMPTransaction(for: imageURL) { xmp in
                 XMPDataBuilder.applyDescriptive(metadata, into: &xmp)
@@ -510,14 +525,16 @@ struct XMPSidecarService: Sendable {
                         )
                     }
                 }
-                XMPDataBuilder.applyCameraRaw(
-                    metadata.cameraRaw,
-                    imageAspect: self.imageAspectIfCropAngled(
-                        for: imageURL,
-                        crop: metadata.cameraRaw?.crop
-                    ),
-                    into: &xmp
-                )
+                if ownsDevelop {
+                    XMPDataBuilder.applyCameraRaw(
+                        metadata.cameraRaw,
+                        imageAspect: self.imageAspectIfCropAngled(
+                            for: imageURL,
+                            crop: metadata.cameraRaw?.crop
+                        ),
+                        into: &xmp
+                    )
+                }
                 xmp.creatorTool = SwiftExifWriteEngine.creatorTool
             }
         }
@@ -531,6 +548,11 @@ struct XMPSidecarService: Sendable {
         orientation: Int?,
         for imageURL: URL
     ) async throws {
+        if let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL) {
+            // Clearing the JPEG's develop must not erase the RAW's; writing it would overwrite it.
+            guard let settings, !settings.isEmpty else { return }
+            throw StemSidecarDevelopOwnedByRawError(imageURL: imageURL, rawURL: rawURL)
+        }
         try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             _ = try await self.updateXMPTransaction(for: imageURL) { xmp in
                 if let settings, !settings.isEmpty {
@@ -559,6 +581,9 @@ struct XMPSidecarService: Sendable {
         for imageURL: URL,
         mutation: @escaping @Sendable (CameraRawSettings?) -> CameraRawSettings
     ) async throws {
+        if let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL) {
+            throw StemSidecarDevelopOwnedByRawError(imageURL: imageURL, rawURL: rawURL)
+        }
         _ = try await updateXMPTransaction(for: imageURL) { xmp in
             let existing = XMPMetadataReader.parseMetadata(
                 from: xmp, imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
@@ -574,6 +599,10 @@ struct XMPSidecarService: Sendable {
     }
 
     func saveCameraRawOnly(_ settings: CameraRawSettings?, orientation: Int?, for imageURL: URL) throws {
+        if let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL) {
+            guard let settings, !settings.isEmpty else { return }
+            throw StemSidecarDevelopOwnedByRawError(imageURL: imageURL, rawURL: rawURL)
+        }
         let url = sidecarURL(for: imageURL)
         if let settings, !settings.isEmpty {
             var xmp = (try? XMPSidecar.read(from: url)) ?? XMPData()
@@ -597,6 +626,12 @@ struct XMPSidecarService: Sendable {
     }
 
     // MARK: - Write
+
+    /// False for the non-RAW half of a RAW+JPEG pair: the shared stem sidecar's Camera Raw block
+    /// belongs to the RAW and is left exactly as stored by every write made for the JPEG.
+    nonisolated private func ownsDevelopBlock(for imageURL: URL) -> Bool {
+        !PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: imageURL)
+    }
 
     nonisolated private func writeXMP(_ xmp: XMPData, to url: URL) throws {
         let xml = XMPWriter.generateXML(xmp)

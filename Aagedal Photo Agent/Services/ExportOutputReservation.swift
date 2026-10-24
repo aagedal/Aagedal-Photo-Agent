@@ -137,13 +137,27 @@ nonisolated final class ExportOutputReservationOwner: @unchecked Sendable {
     /// Finish admitted filesystem work before releasing names, without running cleanup
     /// on the caller's actor. Cancellation must not abandon these ownership obligations.
     func release() async {
+        await release(discardingOwnedContents: false)
+    }
+
+    /// Failure/cancellation path: a failed encoder (e.g. FFmpeg writing JPEG XL/AVIF with
+    /// `-y` straight to the reserved name, or an interrupted ImageIO finalize) can leave
+    /// partial bytes under the final name. Unlink every file this owner itself created
+    /// (O_EXCL placeholder) whose device/inode still match, regardless of size. A claim on a
+    /// pre-existing file, or a path whose identity changed (replaced by anyone), is never
+    /// deleted — only names are released for those.
+    func discardOnFailure() async {
+        await release(discardingOwnedContents: true)
+    }
+
+    private func release(discardingOwnedContents: Bool) async {
         let drained = drainClaims()
         guard !drained.isEmpty else { return }
         let hook = beforeCleanup
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 hook()
-                Self.cleanup(drained)
+                Self.cleanup(drained, discardingOwnedContents: discardingOwnedContents)
                 continuation.resume()
             }
         }
@@ -157,13 +171,26 @@ nonisolated final class ExportOutputReservationOwner: @unchecked Sendable {
         }
     }
 
-    private static func cleanup(_ claims: [Claim]) {
+    private static func cleanup(_ claims: [Claim], discardingOwnedContents: Bool = false) {
         for claim in claims {
             if let descriptor = claim.descriptor {
-                Self.removeEmptyPlaceholder(at: claim.url, device: claim.device, inode: claim.inode)
+                if discardingOwnedContents {
+                    Self.removeOwnedFile(at: claim.url, device: claim.device, inode: claim.inode)
+                } else {
+                    Self.removeEmptyPlaceholder(at: claim.url, device: claim.device, inode: claim.inode)
+                }
                 Darwin.close(descriptor)
             }
             ExportOutputNamespace.release(claim.keys)
+        }
+    }
+
+    private static func removeOwnedFile(at url: URL, device: dev_t, inode: ino_t) {
+        var current = stat()
+        if Darwin.lstat(url.path, &current) == 0,
+           current.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+           current.st_dev == device, current.st_ino == inode {
+            _ = Darwin.unlink(url.path)
         }
     }
 

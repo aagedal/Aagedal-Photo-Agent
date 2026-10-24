@@ -2512,7 +2512,9 @@ final class MetadataViewModel {
                         sidecarHistory = installed.history
                         xmpMetadata = result.writtenXMPMetadata ?? edited
                         editorXMPWriteBaseline = (imageURL, folderURL, loadID, result.writtenXMPSnapshot, nil)
-                        editingMetadata.cameraRaw = xmpMetadata?.cameraRaw
+                        // A RAW+JPEG pair's stem crs is the RAW's; the JPEG keeps its embedded develop.
+                        editingMetadata.cameraRaw = PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: imageURL)
+                            ? edited.cameraRaw : xmpMetadata?.cameraRaw
                         editingMetadata.exifOrientation = xmpMetadata?.exifOrientation
                         previousEditingMetadata = editingMetadata
                         if metadataReferenceSource == .xmp {
@@ -4256,7 +4258,8 @@ final class MetadataViewModel {
                             sidecarHistory = installed.history
                             xmpMetadata = result.writtenXMPMetadata ?? edited
                             editorXMPWriteBaseline = (imageURL, folderURL, loadID, result.writtenXMPSnapshot, nil)
-                            editingMetadata.cameraRaw = xmpMetadata?.cameraRaw
+                            editingMetadata.cameraRaw = PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: imageURL)
+                                ? edited.cameraRaw : xmpMetadata?.cameraRaw
                             editingMetadata.exifOrientation = xmpMetadata?.exifOrientation
                             previousEditingMetadata = editingMetadata
                             hasChanges = true
