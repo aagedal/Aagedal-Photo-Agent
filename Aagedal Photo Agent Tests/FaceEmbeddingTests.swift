@@ -5,6 +5,7 @@ import ImageIO
 import CryptoKit
 import Darwin
 import AppKit
+import CoreML
 @testable import Aagedal_Photo_Agent
 
 /// Golden wire bytes are from FTP Sync fixture commit da3579e; contract source 2dc18e9.
@@ -891,6 +892,30 @@ struct FaceEmbeddingTests {
         )?.makeImage())
         let vector = try await embedder.embed(face)
         #expect(vector.count == embedder.dimension)
+    }
+
+    @Test func reloadFailureAfterUnloadIsRetriedNotCached() throws {
+        guard let url = CoreMLFaceEmbedder.bundledModelURL() else { return }
+        let loader = FlakyModelLoader()
+        let embedder = CoreMLFaceEmbedder(
+            modelURL: url, idleUnloadDelay: 3_600,
+            memoryCoordinator: ImageMemoryCoordinator(observesSystemPressure: false),
+            modelLoader: { try loader.load($0) }
+        )
+        _ = try embedder.prepareNativeScanModel()
+        #expect(loader.attempts == 1)
+        embedder.unloadModelForMemoryPressure()
+
+        loader.setFailing(true)
+        #expect(throws: (any Error).self) { try embedder.prepareNativeScanModel() }
+        // One immediate retry, and the failure is not cached for the session.
+        #expect(loader.attempts == 3)
+        #expect(embedder.availability.isAvailable)
+
+        loader.setFailing(false)
+        _ = try embedder.prepareNativeScanModel()
+        #expect(embedder.isModelLoaded)
+        #expect(loader.attempts == 4)
     }
 
     @Test func criticalPressureUnloadsAnIdleModel() throws {
@@ -3392,5 +3417,24 @@ struct FaceDataMetadataWriteTests {
         let saved = try #require(FaceDataStorageService().loadFaceData(for: folder))
         #expect(saved.scannedFiles[photo.path]?.hasSameFileFacts(as: try facts(photo)) == true)
         #expect(saved.groups.first { $0.id == groupID }?.name == "Støre, Jonas Gahr")
+    }
+}
+
+/// Real CoreML loader that can be switched to fail, to simulate a transient reload failure.
+private nonisolated final class FlakyModelLoader: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failing = false
+    private var attemptCount = 0
+
+    var attempts: Int { lock.withLock { attemptCount } }
+    func setFailing(_ value: Bool) { lock.withLock { failing = value } }
+
+    func load(_ url: URL) throws -> MLModel {
+        let shouldFail = lock.withLock { () -> Bool in
+            attemptCount += 1
+            return failing
+        }
+        if shouldFail { throw CocoaError(.fileReadUnknown) }
+        return try CoreMLFaceEmbedder.loadCompiledModel(at: url)
     }
 }

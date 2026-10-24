@@ -5315,12 +5315,15 @@ private final class AnalysisSourcePreviewCache {
         }
     }
 
-    /// Drops every cached preview and cancels outstanding decodes (workspace closed).
+    /// Drops every cached preview and the prefetch (an Analysis workspace closed). The cache is
+    /// shared by every window, so decodes another Analysis window is still waiting for keep
+    /// running; only decodes nobody waits for are cancelled.
     func removeAll() {
         entries.removeAll()
         prefetchIdentity = nil
-        for decode in inFlight.values { decode.task.cancel() }
-        inFlight.removeAll()
+        for identity in Array(inFlight.keys) {
+            cancelIfUnwanted(identity)
+        }
     }
 
     private final class Decode {

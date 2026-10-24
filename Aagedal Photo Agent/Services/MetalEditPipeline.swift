@@ -1172,22 +1172,36 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
-    /// Releases every per-render GPU resource of the process-lifetime offscreen (export) engine:
-    /// raster-mask alpha array + envelope scratch, the watermark texture array, decoded AI mattes
-    /// and render-graph intermediates. Without this the singleton kept the last export's
-    /// textures alive for the rest of the session (up to ~0.8 GB after a 45 MP render with 8
-    /// masks). Every offscreen render rebuilds these from settings anyway, so the per-render cost
-    /// is a texture allocation (and a small watermark PNG decode), negligible next to the render.
-    /// The cache keys are reset with the textures so no later render mistakes "nil" for "current".
+    /// Releases the full-resolution per-render GPU resources of the process-lifetime offscreen
+    /// engine: raster-mask alpha array + envelope scratch, decoded AI mattes and render-graph
+    /// intermediates. Without this the singleton kept the last render's textures alive for the
+    /// rest of the session (up to ~0.8 GB after a 45 MP render with 8 masks). Every offscreen
+    /// render rebuilds these from settings anyway, so the per-render cost is a texture allocation.
+    /// The cache key is reset with the textures so no later render mistakes "nil" for "current".
+    ///
+    /// The watermark texture array is deliberately kept: it is small (a few MB, keyed by asset
+    /// IDs + library revision) and this engine also renders edited thumbnails and full-screen
+    /// previews, so dropping it re-read (a coordinated iCloud read) and re-decoded the PNG on
+    /// every one of them. It is released on memory pressure (`releaseCachedWatermarkTexture`).
     nonisolated private func releaseTransientRenderResources() {
         updateBrushRasterState { $0 = ExecutorOwnedBrushRasterState.Storage() }
+        releaseImageScopedScratch()
+    }
+
+    /// Drops the cached watermark texture array (memory pressure); the next render reloads it.
+    nonisolated func releaseCachedWatermarkTexture() {
+        preconditionOnStateExecutor()
         updateWatermarkState {
             $0.texture = nil
             $0.lastBuiltAssetIDs = []
             $0.lastBuiltLibraryRevision = -1
             $0.lastBuiltAspects = [:]
         }
-        releaseImageScopedScratch()
+    }
+
+    nonisolated var hasCachedWatermarkTexture: Bool {
+        preconditionOnStateExecutor()
+        return watermarkStateSnapshot().texture != nil
     }
 
     /// Frees Core Image's cached programs/intermediates for this engine's contexts.
@@ -1196,15 +1210,14 @@ final class MetalEditPipeline: @unchecked Sendable {
         wbCIContext.clearCaches()
     }
 
-    /// Test seam: number of per-render GPU textures (mask alpha, envelope scratch, watermark
-    /// array, AI mattes, ping/pong) this engine currently retains.
+    /// Test seam: number of per-render GPU textures (mask alpha, envelope scratch, AI mattes,
+    /// ping/pong) this engine currently retains. The watermark cache is reported separately.
     nonisolated var retainedTransientRenderTextureCount: Int {
         preconditionOnStateExecutor()
         let raster = brushRasterStateSnapshot()
         let scratch = executorOwnedRenderScratchState.snapshot()
         let singles: [MTLTexture?] = [
-            raster.alphaTexture, raster.envelopeScratch,
-            watermarkStateSnapshot().texture, scratch.ping, scratch.pong,
+            raster.alphaTexture, raster.envelopeScratch, scratch.ping, scratch.pong,
         ]
         return singles.compactMap { $0 }.count + scratch.aiMaskTextures.count
     }
@@ -1212,6 +1225,16 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Test seam: transient textures retained by the shared offscreen (export) engine.
     nonisolated static func offscreenRetainedTransientTextureCountForTesting() -> Int {
         offscreenRenderer.retainedTransientTextureCount()
+    }
+
+    /// Test seam: whether the shared offscreen engine currently caches a watermark texture.
+    nonisolated static func offscreenHasCachedWatermarkTextureForTesting() -> Bool {
+        offscreenRenderer.hasCachedWatermarkTexture()
+    }
+
+    /// Runs the offscreen engine's memory-pressure eviction synchronously (tests).
+    nonisolated static func evictOffscreenCachesForTesting() {
+        offscreenRenderer.evictForMemoryPressure()
     }
 
     /// Test seam: number of decoded AI mattes currently retained by this engine.
@@ -1464,7 +1487,10 @@ final class MetalEditPipeline: @unchecked Sendable {
                     level: .critical
                 ) {
                     // The executor (and its engine) live for the whole process.
-                    ownerQueue.async { pipeline.clearCoreImageCaches() }
+                    ownerQueue.async {
+                        pipeline.clearCoreImageCaches()
+                        pipeline.releaseCachedWatermarkTexture()
+                    }
                 }
             }
         }
@@ -1495,6 +1521,19 @@ final class MetalEditPipeline: @unchecked Sendable {
         func retainedTransientTextureCount() -> Int {
             dispatchPrecondition(condition: .notOnQueue(queue))
             return queue.sync { pipeline?.retainedTransientRenderTextureCount ?? 0 }
+        }
+
+        func hasCachedWatermarkTexture() -> Bool {
+            dispatchPrecondition(condition: .notOnQueue(queue))
+            return queue.sync { pipeline?.hasCachedWatermarkTexture ?? false }
+        }
+
+        func evictForMemoryPressure() {
+            dispatchPrecondition(condition: .notOnQueue(queue))
+            queue.sync {
+                pipeline?.clearCoreImageCaches()
+                pipeline?.releaseCachedWatermarkTexture()
+            }
         }
 
         func renderAsync(
@@ -2929,14 +2968,21 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         var decoded: [(id: UUID, image: CGImage)] = []
+        var failedIDs: [UUID] = []
         for id in distinctIDs {
             guard let data = try? CloudCoordinatedIO.readData(at: WatermarkStore.resolvedImageURL(forAssetID: id)),
                   let source = CGImageSourceCreateWithData(data as CFData, nil),
                   let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil),
                   cgImage.width > 0, cgImage.height > 0
-            else { continue }
+            else {
+                failedIDs.append(id)
+                continue
+            }
             decoded.append((id, cgImage))
         }
+        // Exports consult this so a file rendered without a layer is reported, even when the
+        // PNG exists but its (coordinated) read failed, e.g. mid-sync.
+        WatermarkTextureLoadFailures.record(failed: failedIDs, loaded: decoded.map(\.id))
         guard !decoded.isEmpty else {
             watermarkTexture = nil
             lastBuiltWatermarkAssetIDs = []
@@ -2988,7 +3034,10 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         updateWatermarkState {
             $0.texture = tex
-            $0.lastBuiltAssetIDs = distinctIDs
+            // A partial build (an asset failed to load) is used for this render but not cached
+            // as current, so the next render retries the missing asset instead of skipping it
+            // until the library revision changes.
+            $0.lastBuiltAssetIDs = failedIDs.isEmpty ? distinctIDs : []
             $0.lastBuiltLibraryRevision = libraryRevision
             $0.lastBuiltAspects = mapping
         }
@@ -4457,5 +4506,26 @@ final class MetalLivePreviewPipeline {
         forNeutralLinearRGB rgb: SIMD3<Float>
     ) -> (temperature: Double, tint: Double)? {
         engine.solveWhiteBalance(forNeutralLinearRGB: rgb)
+    }
+}
+
+/// Latest load outcome per watermark library asset, across every render engine. The texture
+/// loader skips an asset whose PNG cannot be read or decoded (the layer renders as a no-op);
+/// export checks this after rendering so such a file is reported instead of silently shipping
+/// without its watermark.
+nonisolated enum WatermarkTextureLoadFailures {
+    private static let failed = Mutex<Set<UUID>>([])
+
+    static func record(failed failedIDs: [UUID], loaded loadedIDs: [UUID]) {
+        guard !failedIDs.isEmpty || !loadedIDs.isEmpty else { return }
+        failed.withLock { failed in
+            failed.subtract(loadedIDs)
+            failed.formUnion(failedIDs)
+        }
+    }
+
+    /// Whether the most recent load attempt for `assetID` failed.
+    static func lastLoadFailed(_ assetID: UUID) -> Bool {
+        failed.withLock { $0.contains(assetID) }
     }
 }
