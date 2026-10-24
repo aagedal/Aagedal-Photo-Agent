@@ -111,7 +111,10 @@ struct BrowserPaneContainer: View {
                 viewModel: pane,
                 faceCount: isActive ? activeFaceCount : 0,
                 faceGroupCount: isActive ? activeFaceGroupCount : 0,
-                onFocus: { panes.activePaneIndex = index },
+                onFocus: {
+                    if panes.activePaneIndex != index { panes.activePaneIndex = index }
+                },
+                isActivePane: isActive,
                 // Only the active pane contributes toolbar items, else split view
                 // shows them twice and overflows into the "»" menu.
                 providesToolbar: isActive,

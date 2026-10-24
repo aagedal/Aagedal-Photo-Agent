@@ -569,14 +569,19 @@ final class ImportViewModel {
     var metadataFailedFiles: Int = 0
     /// Skip Existing met a different photo with the same name and kept this one renamed.
     var conflictRenamedFiles: Int = 0
-    /// The folder the running import opened in the browser. Auto-refresh of that folder waits
-    /// until the import finishes, then refreshes once.
+    /// The folder the running import opened in the browser. Auto-refresh of that folder is
+    /// throttled while the import runs, then refreshes once more when it ends.
     private(set) var activeImportFolder: URL?
 
     /// Non-nil while an import is writing into `activeImportFolder`.
     var importRefreshDeferralFolder: URL? {
         isImporting ? activeImportFolder : nil
     }
+
+    /// Verified copies whose finisher (XMP sidecar + template) has not run yet. Throttled
+    /// mid-import refreshes keep these out of the browser, so a template never lands on a
+    /// photo the user could already be captioning or rating.
+    @ObservationIgnored private(set) var unfinishedImportDestinations: Set<URL> = []
     /// Metadata-phase progress: photos processed so far out of `metadataTotalFiles`.
     var metadataProcessedFiles: Int = 0
     var metadataTotalFiles: Int = 0
@@ -1829,6 +1834,7 @@ final class ImportViewModel {
                             guard self.importRequestID == requestID else { return nil }
                             self.importDidStartCopying = true
                             self.activeImportFolder = folderToOpen
+                            self.unfinishedImportDestinations = []
                             if applyMetadata {
                                 self.metadataTotalFiles = metadataJobCount
                                 self.metadataProcessedFiles = 0
@@ -1842,9 +1848,9 @@ final class ImportViewModel {
                         // which brings its XMP sidecar along and writes the template, then marks the
                         // ledger entry finished. The finisher is not cancelled with the import:
                         // Cancel stops copying, and every file already copied is still finished.
-                        // Auto-refresh of the import folder waits until the import completes —
-                        // after the finisher drained — so a template never lands on a photo the
-                        // user could already be captioning.
+                        // Auto-refresh of the import folder is throttled while copying and never
+                        // shows a copy before its finisher ran (`unfinishedImportDestinations`), so
+                        // a template never lands on a photo the user could already be captioning.
                         let boundary = DescriptiveMetadataWriteBoundary(writeEngine: self.writeEngine)
                         let c2paDetector = self.c2paDetector
                         let runState = ImportRunState()
@@ -1866,6 +1872,9 @@ final class ImportViewModel {
                                     interpolator: interpolator,
                                     placeLookup: placeLookup
                                 )
+                                await MainActor.run {
+                                    _ = self.unfinishedImportDestinations.remove(item.destination.standardizedFileURL)
+                                }
                             }
                         }
                         var wasCancelled = false
@@ -1885,6 +1894,10 @@ final class ImportViewModel {
                                           context.isImage,
                                           imageSources.contains(result.source),
                                           let destination = result.primaryURL else { return }
+                                    await MainActor.run {
+                                        guard self?.importRequestID == requestID else { return }
+                                        _ = self?.unfinishedImportDestinations.insert(destination.standardizedFileURL)
+                                    }
                                     finisherInput.yield(ImportFinishItem(
                                         result: result,
                                         destination: destination,

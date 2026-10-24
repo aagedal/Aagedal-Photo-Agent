@@ -585,6 +585,7 @@ struct ComparisonWorkspaceView: View {
         let excludedURL = session[session.focusedPane.other].source?.revision.canonicalURL
         return ComparisonNavigationResolver.replacement(
             in: navigationImages,
+            availableImages: availableImages,
             currentURL: currentURL,
             excluding: excludedURL,
             direction: direction

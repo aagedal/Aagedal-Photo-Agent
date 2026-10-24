@@ -755,20 +755,22 @@ struct FullScreenImageView: View {
             settingsReloadTask?.cancel()
             imageCache.cancelAllPrefetch()
         }
+        // Opened on a multi-selection, the arrows step through the selected photos only and
+        // keep the set; at either end they stop.
         .onKeyPress(.leftArrow) {
-            viewModel.selectPrevious()
+            viewModel.stepFullScreen(by: -1)
             return .handled
         }
         .onKeyPress(.rightArrow) {
-            viewModel.selectNext()
+            viewModel.stepFullScreen(by: 1)
             return .handled
         }
         .onKeyPress(.upArrow) {
-            viewModel.selectPrevious()
+            viewModel.stepFullScreen(by: -1)
             return .handled
         }
         .onKeyPress(.downArrow) {
-            viewModel.selectNext()
+            viewModel.stepFullScreen(by: 1)
             return .handled
         }
         .task(id: "\(currentImageFile?.url.absoluteString ?? "nil")|\(renderEdits)") {

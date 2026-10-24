@@ -507,13 +507,35 @@ nonisolated enum ComparisonNavigationDirection: Sendable {
 /// Resolves filmstrip replacement without letting both comparison panes silently resolve to the
 /// same source. Navigation stops at the visible-order boundary, matching Browser arrow behavior.
 nonisolated enum ComparisonNavigationResolver {
+    /// `availableImages` is the unfiltered order `visibleImages` was filtered from. When the
+    /// current photo is no longer visible (rated or labelled out of the active filter), the
+    /// arrows step from its position in that order to the nearest photo that still passes the
+    /// filter, instead of going dead.
     static func replacement(
         in visibleImages: [ImageFile],
+        availableImages: [ImageFile] = [],
         currentURL: URL,
         excluding excludedURL: URL?,
         direction: ComparisonNavigationDirection
     ) -> ImageFile? {
         guard let currentIndex = visibleImages.firstIndex(where: { $0.url == currentURL }) else {
+            guard let availableIndex = availableImages.firstIndex(where: { $0.url == currentURL }) else {
+                return nil
+            }
+            let visibleByURL = Dictionary(
+                visibleImages.map { ($0.url, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            var index = availableIndex + direction.step
+            while availableImages.indices.contains(index) {
+                let url = availableImages[index].url
+                if let candidate = visibleByURL[url],
+                   url != excludedURL,
+                   SupportedImageFormats.isSupported(url: url) {
+                    return candidate
+                }
+                index += direction.step
+            }
             return nil
         }
 

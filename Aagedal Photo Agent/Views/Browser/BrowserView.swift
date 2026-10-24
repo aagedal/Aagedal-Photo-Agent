@@ -10,6 +10,9 @@ struct BrowserView: View {
     var faceGroupCount: Int = 0
     /// Fired when the user clicks into this grid (split-view pane focus).
     var onFocus: (() -> Void)? = nil
+    /// Whether this is the active split pane. Only the active pane's grid takes keyboard
+    /// focus, since app commands and the full-screen viewer act on the active pane.
+    var isActivePane: Bool = true
     /// Whether this pane contributes the filter/sort/search toolbar items. In split view
     /// both panes are in the hierarchy, so only the active one provides them — otherwise
     /// the groups duplicate and overflow into the toolbar's "»" menu.
@@ -97,10 +100,17 @@ struct BrowserView: View {
     private var browserContent: some View {
         if viewModel.isLoading {
             ProgressView("Loading images...")
-        } else if !viewModel.hasImages {
+        } else if !viewModel.hasImages || viewModel.folderLoadErrorMessage != nil {
+            // A folder that vanished after loading (ejected card, unmounted share) keeps its
+            // rows in memory so editor state survives, but shows this state over the grid.
             if let error = viewModel.folderLoadErrorMessage {
                 ContentUnavailableView {
-                    Label("Couldn’t Open Folder", systemImage: "exclamationmark.triangle")
+                    Label(
+                        error == BrowserViewModel.folderUnavailableMessage
+                            ? "Folder Unavailable"
+                            : "Couldn’t Open Folder",
+                        systemImage: "exclamationmark.triangle"
+                    )
                 } description: {
                     Text(error)
                 } actions: {
@@ -153,6 +163,7 @@ struct BrowserView: View {
                 CollectionViewGridRepresentable(
                     viewModel: viewModel,
                     onFocus: onFocus,
+                    isActivePane: isActivePane,
                     onImproveDescriptions: presentDescriptionBatch,
                     onExtractVideoStills: { url in extractionVideo = ExtractionVideo(url: url) }
                 )
@@ -401,6 +412,15 @@ struct BrowserView: View {
                 .frame(width: 200)
                 .focused($searchFieldFocused)
                 .accessibilityIdentifier("browser.search")
+                // Return/Escape hand the keyboard back to the grid so culling keys work
+                // again (metadata panel convention: Escape ends editing, keeps the text).
+                .onSubmit { returnFocusToGrid() }
+                .onKeyPress(.escape) {
+                    // Escape cancels an input-method composition; let the text view handle it.
+                    if (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true { return .ignored }
+                    returnFocusToGrid()
+                    return .handled
+                }
 
             Button {
                 viewModel.searchText = ""
@@ -416,6 +436,11 @@ struct BrowserView: View {
             .accessibilityHidden(viewModel.searchText.isEmpty)
         }
         .disabled(!viewModel.hasImages)
+    }
+
+    private func returnFocusToGrid() {
+        searchFieldFocused = false
+        viewModel.shouldRestoreGridFocus = true
     }
 
 }

@@ -11,6 +11,16 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     /// Called when the user clicks into this grid — split-view container uses it to
     /// mark the pane active.
     var onFocus: (() -> Void)?
+    /// Whether this grid belongs to the active split pane. Only the active pane's grid takes
+    /// keyboard focus; an inactive pane appearing (e.g. a new split) must not steal it.
+    var isActivePane = true {
+        didSet {
+            collectionView?.isActivePane = isActivePane
+            guard isActivePane, !oldValue else { return }
+            // Activated from pane chrome or the tab bar: keyboard follows the active pane.
+            DispatchQueue.main.async { [weak self] in self?.takeKeyboardFocusIfAppropriate() }
+        }
+    }
     var onExtractVideoStills: ((URL) -> Void)?
     var onImproveDescriptions: (() -> Void)?
     private var collectionView: ThumbnailCollectionView!
@@ -75,6 +85,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         collectionView.viewModel = viewModel
         collectionView.commandRouter = commandRouter
         collectionView.onFocus = { [weak self] in self?.onFocus?() }
+        collectionView.isActivePane = isActivePane
         collectionView.onExtractVideoStills = { [weak self] url in self?.onExtractVideoStills?(url) }
         collectionView.onImproveDescriptions = { [weak self] in self?.onImproveDescriptions?() }
         collectionView.isSelectable = false // We handle selection ourselves
@@ -103,13 +114,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        // Filtering can recreate the grid when results reappear. Preserve an active
-        // text editor (especially toolbar search) instead of interrupting typing.
-        if let window = view.window,
-           !(window.firstResponder is NSText),
-           !(window.firstResponder is NSTextField) {
-            window.makeFirstResponder(collectionView)
-        }
+        takeKeyboardFocusIfAppropriate()
         if viewModel.shouldRestoreGridFocus {
             viewModel.shouldRestoreGridFocus = false
         }
@@ -117,6 +122,18 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         for item in collectionView.visibleItems() {
             (item as? ThumbnailCollectionViewItem)?.refreshVoiceMemoStatus()
         }
+    }
+
+    /// Filtering can recreate the grid when results reappear. Preserve an active text editor
+    /// (especially toolbar search) instead of interrupting typing. In split view both grids
+    /// appear together; only the active pane's grid may take focus.
+    private func takeKeyboardFocusIfAppropriate() {
+        guard isActivePane,
+              let window = view.window,
+              window.firstResponder !== collectionView,
+              !(window.firstResponder is NSText),
+              !(window.firstResponder is NSTextField) else { return }
+        window.makeFirstResponder(collectionView)
     }
 
     // MARK: - Data Source
@@ -319,6 +336,8 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         // Only animate when items are added/removed, not when just reordered (sort change).
         // Animating reorder of hundreds of items causes layout thrashing and constraint conflicts.
         let itemsAddedOrRemoved = isStructuralChange && Set(newURLs) != Set(lastSnapshotURLs)
+        let keepsActiveInView = hasAppliedSnapshot && isStructuralChange
+            && shouldKeepActiveInView(oldURLs: lastSnapshotURLs, newURLs: newURLs)
         dataSource.apply(snapshot, animatingDifferences: itemsAddedOrRemoved) { [weak self] in
             // Diffable-data-source completions can arrive while the surrounding SwiftUI
             // hosting view is still in its layout pass. Forcing AppKit layout here re-enters
@@ -334,12 +353,38 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
                 )
                 if showOriginalsChanged { self.reconfigureVisibleItems() }
                 self.restoreInitialSelectionIfPossible()
+                if keepsActiveInView { self.scrollActiveItemIntoView() }
             }
         }
 
         lastSnapshotURLs = newURLs
         lastImages = images
         hasAppliedSnapshot = true
+    }
+
+    /// A sort/filter change or a rating-driven re-sort moves the selected photo; keep it in
+    /// view. Pure arrivals (auto-refresh, an import adding files) only follow the selection
+    /// when it was on screen, so a user who scrolled elsewhere is not pulled back.
+    private func shouldKeepActiveInView(oldURLs: [URL], newURLs: [URL]) -> Bool {
+        guard let activeURL = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first else {
+            return false
+        }
+        let oldSet = Set(oldURLs)
+        let additionsOnly = oldSet.isSubset(of: Set(newURLs))
+            && newURLs.filter(oldSet.contains) == oldURLs
+        guard additionsOnly else { return true }
+        guard let oldIndex = oldURLs.firstIndex(of: activeURL) else { return false }
+        return collectionView.indexPathsForVisibleItems()
+            .contains(IndexPath(item: oldIndex, section: 0))
+    }
+
+    /// Scrolls the active photo into view (minimum scroll; no-op when mostly visible).
+    /// Resolved through the applied snapshot, which can lag `visibleImages`.
+    private func scrollActiveItemIntoView() {
+        guard view.window != nil,
+              let activeURL = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first,
+              let indexPath = dataSource.indexPath(for: activeURL) else { return }
+        collectionView.scrollToItemIfNeeded(at: indexPath)
     }
 
     /// Rating/label/badge updates keep order and membership. Rebuilding and diffing an
@@ -407,6 +452,8 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         }
 
         layout.invalidateLayout()
+        // A thumbnail-size change reflows every row; keep the selected photo in view.
+        DispatchQueue.main.async { [weak self] in self?.scrollActiveItemIntoView() }
     }
 
     private func updateLayoutItemSize(_ layout: NSCollectionViewFlowLayout, scale: Double) {

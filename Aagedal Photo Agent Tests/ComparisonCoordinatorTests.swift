@@ -335,6 +335,41 @@ struct ComparisonCoordinatorTests {
         ) == nil)
     }
 
+    @Test("a photo rated out of the filter still navigates to the nearest filtered photo")
+    func navigatesFromFilteredOutPhoto() throws {
+        let directory = URL(fileURLWithPath: "/tmp/comparison-navigation", isDirectory: true)
+        let images = (1...5).map {
+            ImageFile(url: directory.appendingPathComponent("0\($0).jpg"))
+        }
+        // 03 was just rated out of the filter; 02 is hidden by the filter too.
+        let visible = [images[0], images[3], images[4]]
+
+        let next = try #require(ComparisonNavigationResolver.replacement(
+            in: visible,
+            availableImages: images,
+            currentURL: images[2].url,
+            excluding: images[3].url,
+            direction: .next
+        ))
+        #expect(next.url == images[4].url)
+
+        let previous = try #require(ComparisonNavigationResolver.replacement(
+            in: visible,
+            availableImages: images,
+            currentURL: images[2].url,
+            excluding: nil,
+            direction: .previous
+        ))
+        #expect(previous.url == images[0].url)
+
+        #expect(ComparisonNavigationResolver.replacement(
+            in: visible,
+            currentURL: images[2].url,
+            excluding: nil,
+            direction: .next
+        ) == nil)
+    }
+
     @Test("missing source offers the nearest distinct survivor")
     func resolvesMissingSourceReplacement() throws {
         let directory = URL(fileURLWithPath: "/tmp/comparison-navigation", isDirectory: true)

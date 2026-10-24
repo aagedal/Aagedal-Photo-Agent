@@ -173,6 +173,78 @@ struct FieldMutationCallerTests {
         #expect(model.selectedImageIDs == Set(urls))
     }
 
+    @Test("Grid rating out of the filter moves to the next survivor, else the previous, and keeps multi-selection survivors")
+    @MainActor
+    func gridRatingOutOfFilterMovesSelection() async {
+        let recorder = FieldMutationCallerRecorder()
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/grid-filter-survivor")
+        let urls = ["a.jpg", "b.jpg", "c.jpg", "d.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.map { var image = ImageFile(url: $0); image.starRating = .three; return image }
+        model.minimumStarRating = .three
+        model.batchUpdate {}
+        #expect(model.visibleImages.map(\.url) == urls)
+
+        // Single selection: the next photo takes over and the culling anchor moves with it.
+        model.applySelection(ids: [urls[1]], active: urls[1])
+        model.setRating(.one)
+        #expect(model.visibleImages.map(\.url) == [urls[0], urls[2], urls[3]])
+        #expect(model.selectedImageIDs == [urls[2]])
+        #expect(model.lastClickedImageURL == urls[2])
+        #expect(model.computeNextSelection()?.active == urls[3])
+
+        // Last photo: falls back to the previous one.
+        model.applySelection(ids: [urls[3]], active: urls[3])
+        model.setLabel(.red)
+        model.setRating(.two)
+        #expect(model.selectedImageIDs == [urls[2]])
+        #expect(model.lastClickedImageURL == urls[2])
+
+        // Multi-selection that partly disappears keeps its survivors.
+        model.applySelection(ids: [urls[0], urls[2]], active: urls[2])
+        model.setRating(.one, imagesToMutate: model.images.filter { $0.url == urls[2] })
+        #expect(model.visibleImages.map(\.url) == [urls[0]])
+        #expect(model.selectedImageIDs == [urls[0]])
+        #expect(model.lastClickedImageURL == urls[0])
+        await model.waitForPendingFieldMutationWrites()
+    }
+
+    @Test("Full screen opened on a multi-selection steps through it, stops at the ends and keeps the set")
+    @MainActor
+    func fullScreenStepsThroughMultiSelection() {
+        let model = BrowserViewModel()
+        let folder = URL(fileURLWithPath: "/virtual/full-screen-steps")
+        let urls = ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        let selection: Set<URL> = [urls[1], urls[3], urls[4]]
+        model.applySelection(ids: selection, active: urls[1])
+        model.isFullScreen = true
+
+        #expect(model.stepFullScreen(by: -1) == .atFirst)
+        #expect(model.fullScreenImage?.url == urls[1])
+        #expect(model.stepFullScreen(by: 1) == .moved)
+        #expect(model.fullScreenImage?.url == urls[3])
+        #expect(model.stepFullScreen(by: 1) == .moved)
+        #expect(model.fullScreenImage?.url == urls[4])
+        #expect(model.stepFullScreen(by: 1) == .atLast)
+        #expect(model.fullScreenImage?.url == urls[4])
+        #expect(model.selectedImageIDs == selection)
+
+        model.isFullScreen = false
+        #expect(model.selectedImageIDs == selection)
+        #expect(model.lastClickedImageURL == urls[4])
+
+        // A single selection steps through every visible photo.
+        model.applySelection(ids: [urls[0]], active: urls[0])
+        model.isFullScreen = true
+        #expect(model.stepFullScreen(by: 1) == .moved)
+        #expect(model.selectedImageIDs == [urls[1]])
+        #expect(model.fullScreenImage?.url == urls[1])
+    }
+
     @Test("Older background metadata cannot overwrite accepted ratings or labels", arguments: [false, true], ["pending", "accepted during read", "completed during read"])
     @MainActor
     func backgroundReadPreservesPendingTag(isLabel: Bool, phase: String) async throws {

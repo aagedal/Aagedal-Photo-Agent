@@ -4,6 +4,7 @@ import SwiftUI
 struct CollectionViewGridRepresentable: NSViewControllerRepresentable {
     let viewModel: BrowserViewModel
     var onFocus: (() -> Void)? = nil
+    var isActivePane: Bool = true
     var onImproveDescriptions: (() -> Void)? = nil
     var onExtractVideoStills: ((URL) -> Void)? = nil
     @Environment(AppCommandRouter.self) private var commandRouter
@@ -14,6 +15,7 @@ struct CollectionViewGridRepresentable: NSViewControllerRepresentable {
             commandRouter: commandRouter
         )
         controller.onFocus = onFocus
+        controller.isActivePane = isActivePane
         controller.onImproveDescriptions = onImproveDescriptions
         controller.onExtractVideoStills = onExtractVideoStills
         return controller
@@ -22,6 +24,7 @@ struct CollectionViewGridRepresentable: NSViewControllerRepresentable {
     func updateNSViewController(_ nsViewController: CollectionViewGridController, context: Context) {
         // ViewModel reference is stable — observation handles all updates
         nsViewController.onFocus = onFocus
+        nsViewController.isActivePane = isActivePane
         nsViewController.onImproveDescriptions = onImproveDescriptions
         nsViewController.onExtractVideoStills = onExtractVideoStills
     }

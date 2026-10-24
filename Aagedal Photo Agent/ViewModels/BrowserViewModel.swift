@@ -683,39 +683,54 @@ final class BrowserViewModel {
 
     private func rebuildVisibleCache() {
         let previousVisibleURLs = visibleImages.map(\.url)
-        let fullScreenAnchor = isFullScreen
-            ? (lastClickedImageURL ?? selectedImageIDs.first)
-            : nil
+        let anchor = lastClickedImageURL ?? selectedImageIDs.first
         let filtered = applyFilters(to: sortedImages)
         visibleImages = filtered
         urlToVisibleIndex = Dictionary(uniqueKeysWithValues: filtered.enumerated().map { ($1.url, $0) })
 
         let visibleSet = Set(filtered.map(\.url))
-        if let fullScreenAnchor,
-           previousVisibleURLs.contains(fullScreenAnchor),
-           !visibleSet.contains(fullScreenAnchor) {
-            // Rating/label changes can make the image being viewed fail the active
-            // filter. Keep full screen anchored in the old filmstrip by moving to the
-            // nearest surviving image (next wins ties), rather than allowing selection
-            // reconciliation to clear the viewer to a black screen.
+        if let anchor,
+           previousVisibleURLs.contains(anchor),
+           !visibleSet.contains(anchor) {
+            // Rating/labelling the active photo out of the active filter must not drop the
+            // selection: in the grid the next culling key would do nothing and → would jump
+            // to the first photo; full screen would go black. Photo Mechanic moves on to the
+            // next photo (else the previous one) in the old order.
+            let survivors = selectedImageIDs.intersection(visibleSet)
+            if !survivors.isEmpty {
+                // A partly filtered-out multi-selection keeps its survivors (full screen keeps
+                // stepping through them); the active photo moves to the nearest survivor.
+                let notSurviving = Set(previousVisibleURLs).subtracting(survivors)
+                let active = Self.closestSurvivingImageURL(
+                    in: previousVisibleURLs,
+                    around: anchor,
+                    deleting: notSurviving
+                ) ?? survivors.first
+                if survivors != selectedImageIDs {
+                    selectedImageIDs = survivors
+                } else {
+                    rebuildSelectedCache()
+                }
+                lastClickedImageURL = active
+                return
+            }
             let removedURLs = Set(previousVisibleURLs).subtracting(visibleSet)
-            let replacementURL = Self.closestSurvivingImageURL(
+            if let replacementURL = Self.closestSurvivingImageURL(
                 in: previousVisibleURLs,
-                around: fullScreenAnchor,
+                around: anchor,
                 deleting: removedURLs
-            ) ?? filtered.first?.url
-
-            if let replacementURL {
-                lastClickedImageURL = replacementURL
-                selectedImageIDs = [replacementURL]
-            } else {
+            ) ?? filtered.first?.url {
+                applySelection(ids: [replacementURL], active: replacementURL)
+                return
+            }
+            if isFullScreen {
                 // No images satisfy the filter anymore, so there is nothing valid for
                 // the full-screen window to display.
                 selectedImageIDs = []
                 lastClickedImageURL = nil
                 isFullScreen = false
+                return
             }
-            return
         }
 
         if !selectedImageIDs.isEmpty {
@@ -1196,8 +1211,37 @@ final class BrowserViewModel {
         }
     }
 
+    static let folderUnavailableMessage = "This folder is no longer available — the volume may have been ejected."
+
+    /// Off the main actor: a stat on a dead network mount can block.
+    @concurrent nonisolated static func folderStillExists(_ url: URL) async -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
+    /// Shows the folder-unavailable state (Retry / Open Another Folder) when the displayed
+    /// folder vanished: an ejected card, an unmounted share or a deleted folder. Rows,
+    /// selection and the metadata editor are left untouched, so unsaved edits are never
+    /// discarded; saving them goes through the normal write-failure path.
+    func verifyCurrentFolderAvailability() async {
+        guard let folderURL = currentFolderURL else { return }
+        let exists = await Self.folderStillExists(folderURL)
+        guard currentFolderURL == folderURL else { return }
+        if !exists {
+            folderLoadErrorMessage = Self.folderUnavailableMessage
+        } else if folderLoadErrorMessage == Self.folderUnavailableMessage {
+            folderLoadErrorMessage = nil
+        }
+    }
+
+    /// `excludingNewURLs` names files a refresh must not add yet (an import's copies whose
+    /// sidecar/template finisher hasn't run). Rows already shown are never removed by it.
     @discardableResult
-    func refreshCurrentFolderIfNeeded(onComplete: ((Set<URL>) -> Void)? = nil) -> Bool {
+    func refreshCurrentFolderIfNeeded(
+        onComplete: ((Set<URL>) -> Void)? = nil,
+        excludingNewURLs: (@MainActor () -> Set<URL>)? = nil
+    ) -> Bool {
         guard let folderURL = currentFolderURL else { return false }
         guard !isLoading, !isMetadataLoading, !isAutoRefreshing, !isRenameQuiesced else { return false }
         isAutoRefreshing = true
@@ -1221,15 +1265,29 @@ final class BrowserViewModel {
             do {
                 scanResult = try await fileSystemService.scanFolderWithStatus(at: folderURL, includeAllFiles: fileVisibility == .all, includeVideos: fileVisibility == .media)
             } catch {
+                // A failed scan is usually transient, but an ejected card, unmounted share or
+                // deleted folder never recovers; show that instead of a silently stale grid.
+                guard !Task.isCancelled, self.canPublishRefresh(requestID, in: folderURL) else { return }
+                await self.verifyCurrentFolderAvailability()
                 return
             }
             guard self.canPublishRefresh(requestID, in: folderURL) else { return }
+            if self.folderLoadErrorMessage == Self.folderUnavailableMessage {
+                self.folderLoadErrorMessage = nil
+            }
             self.iCloudDownloadNotice = scanResult.hasDeferredICloudItems
                 ? Self.iCloudDownloadMessage(for: scanResult.deferredICloudItemCount)
                 : nil
-            let scanned = scanResult.files
-
             let existingByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+            let scanned: [ImageFile]
+            if let excluded = excludingNewURLs?(), !excluded.isEmpty {
+                scanned = scanResult.files.filter {
+                    existingByURL[$0.url] != nil || !excluded.contains($0.url.standardizedFileURL)
+                }
+            } else {
+                scanned = scanResult.files
+            }
+
             let existingURLs = Set(existingByURL.keys)
             let scannedURLs = Set(scanned.map(\.url))
 
@@ -2333,6 +2391,46 @@ final class BrowserViewModel {
     func selectAll() {
         guard let sel = computeSelectAll() else { return }
         applySelection(ids: sel.ids, active: sel.active)
+    }
+
+    enum FullScreenStepOutcome: Equatable {
+        case moved
+        case atFirst
+        case atLast
+    }
+
+    /// Full-screen navigation. Opened on a multi-selection, it steps through the selected
+    /// photos only (in grid order) and keeps the set for when the viewer closes, like Photo
+    /// Mechanic; full-screen ratings already touch only the shown photo. A single selection
+    /// steps through every visible photo. Stops at either end instead of wrapping.
+    @discardableResult
+    func stepFullScreen(by step: Int) -> FullScreenStepOutcome {
+        if navigateFullScreenFaceSequence(step: step) { return .moved }
+        let boundary: FullScreenStepOutcome = step < 0 ? .atFirst : .atLast
+        let current = lastClickedImageURL ?? selectedImageIDs.first
+        if selectedImageIDs.count > 1 {
+            let selected = selectedImageIDs
+            let ordered: [URL] = visibleImages.compactMap { selected.contains($0.url) ? $0.url : nil }
+            guard let current, let index = ordered.firstIndex(of: current) else {
+                guard let first = ordered.first else { return boundary }
+                lastClickedImageURL = first
+                return .moved
+            }
+            let target = index + step
+            guard ordered.indices.contains(target) else { return boundary }
+            lastClickedImageURL = ordered[target]
+            return .moved
+        }
+        guard let current, let index = urlToVisibleIndex[current] else {
+            guard let first = visibleImages.first?.url else { return boundary }
+            applySelection(ids: [first], active: first)
+            return .moved
+        }
+        let target = index + step
+        guard visibleImages.indices.contains(target) else { return boundary }
+        let url = visibleImages[target].url
+        applySelection(ids: [url], active: url)
+        return .moved
     }
 
     // MARK: - Rating & Labels

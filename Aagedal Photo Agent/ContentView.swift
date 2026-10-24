@@ -295,6 +295,9 @@ struct ContentView: View {
     @State private var comparisonRenameEvent: ComparisonRenameEvent?
     @State private var comparisonOrigin: ComparisonOriginWorkspace = .browser
     @State private var comparisonInitialLeftRepresentation: ComparisonRepresentation?
+    /// The photo in Compare's focused pane. Ratings and labels apply to it explicitly (like
+    /// full screen): rating it out of the active filter moves the Browser selection on.
+    @State private var comparisonFocusedURL: URL?
     private let uiTestLaunchConfiguration: UITestLaunchConfiguration
     private let commandRouter: AppCommandRouter
 
@@ -466,6 +469,7 @@ struct ContentView: View {
                 settingsViewModel: settingsViewModel,
                 importViewModel: importViewModel,
                 mainViewMode: mainViewMode,
+                comparisonFocusedURL: { comparisonFocusedURL },
                 commandRouter: commandRouter,
                 loadTechnicalMetadata: loadTechnicalMetadata,
                 performAfterMetadataFlush: performAfterBrowserEditorCommit,
@@ -1263,6 +1267,7 @@ struct ContentView: View {
                     renameEvent: comparisonRenameEvent,
                     isRenaming: browserViewModel.batchRenameSheetRequest != nil,
                     onFocusedImageChange: { image in
+                        comparisonFocusedURL = image.url
                         browserViewModel.selectedImageIDs = [image.url]
                         browserViewModel.lastClickedImageURL = image.url
                     },
@@ -1272,6 +1277,7 @@ struct ContentView: View {
                         performAfterCaptionFlush { browserViewModel.confirmDeleteSelectedImages() }
                     },
                     onClose: { sourceURLs, focusedURL in
+                        comparisonFocusedURL = nil
                         browserViewModel.selectedImageIDs = sourceURLs
                         browserViewModel.lastClickedImageURL = focusedURL ?? sourceURLs.first
                         mainViewMode = .browser
@@ -2169,6 +2175,7 @@ struct ContentView: View {
         guard let selectedComparisonImages else { return }
         leaveEditWorkspaceIfNeeded {
             comparisonImages = selectedComparisonImages
+            comparisonFocusedURL = nil
             comparisonOrigin = .browser
             comparisonInitialLeftRepresentation = nil
             mainViewMode = .comparison
@@ -2196,6 +2203,7 @@ struct ContentView: View {
         performAfterCaptionFlush {
             guard browserViewModel.isFullScreen else { return }
             comparisonImages = fullScreenComparisonImages
+            comparisonFocusedURL = nil
             comparisonOrigin = .fullScreen
             comparisonInitialLeftRepresentation = renderEdits ? .committedEdit : .original
             opensComparisonAfterFullScreenDismissal = true
@@ -4671,6 +4679,8 @@ struct ContentViewModifiers: ViewModifier {
     let settingsViewModel: SettingsViewModel
     let importViewModel: ImportViewModel
     let mainViewMode: MainViewMode
+    /// Compare's focused photo, read when a rating/label command arrives (not in `body`).
+    let comparisonFocusedURL: () -> URL?
     let commandRouter: AppCommandRouter
     let loadTechnicalMetadata: () -> Void
     let performAfterMetadataFlush: (@escaping @MainActor () -> Void) -> Void
@@ -4684,6 +4694,11 @@ struct ContentViewModifiers: ViewModifier {
     private let selectionDebounceNanoseconds: UInt64 = 200_000_000
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
 
+    private var comparisonFocusedImage: ImageFile? {
+        guard mainViewMode == .comparison, let url = comparisonFocusedURL() else { return nil }
+        return browserViewModel.image(at: url)
+    }
+
     /// Kept out of `body` so the modifier chain stays within the type-checker budget.
     private func handleBrowserCommand(_ delivery: AppCommandDelivery?) {
         guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning,
@@ -4696,27 +4711,36 @@ struct ContentViewModifiers: ViewModifier {
             performAfterMetadataFlush { targetPane.loadFolder(url: url, addToOpenFolders: true) }
         // Full screen shows one photo of a possibly larger selection; menu key
         // equivalents reach here instead of the full-screen window's key handler.
+        // Compare likewise rates only its focused photo, which can have left the filter.
         case .setRating(let rating):
             if browserViewModel.isFullScreen {
                 browserViewModel.setRatingOnFullScreenImage(rating)
+            } else if let image = comparisonFocusedImage {
+                browserViewModel.setRating(rating, imagesToMutate: [image])
             } else {
                 browserViewModel.setRating(rating)
             }
         case .setLabel(let label):
             if browserViewModel.isFullScreen {
                 browserViewModel.setLabelOnFullScreenImage(label)
+            } else if let image = comparisonFocusedImage {
+                browserViewModel.setLabel(label, imagesToMutate: [image])
             } else {
                 browserViewModel.setLabel(label)
             }
         case .selectPreviousImage:
             if mainViewMode == .imageAnalysis {
                 selectAdjacentAnalysisImage(-1)
+            } else if browserViewModel.isFullScreen {
+                browserViewModel.stepFullScreen(by: -1)
             } else if mainViewMode != .caption {
                 browserViewModel.selectPrevious()
             }
         case .selectNextImage:
             if mainViewMode == .imageAnalysis {
                 selectAdjacentAnalysisImage(1)
+            } else if browserViewModel.isFullScreen {
+                browserViewModel.stepFullScreen(by: 1)
             } else if mainViewMode != .caption {
                 browserViewModel.selectNext()
             }
@@ -4915,7 +4939,8 @@ struct ContentViewModifiers: ViewModifier {
             .modifier(AutoRefreshModifier(
                 panes: panes,
                 metadataViewModel: metadataViewModel,
-                importDeferralFolder: importViewModel.importRefreshDeferralFolder
+                importDeferralFolder: importViewModel.importRefreshDeferralFolder,
+                unfinishedImportURLs: { [importViewModel] in importViewModel.unfinishedImportDestinations }
             ))
             .onChange(of: settingsViewModel.rawDecodeProfile) { _, _ in
                 discardRAWDecodeCaches(browserViewModel)
@@ -4997,18 +5022,24 @@ struct ContentViewModifiers: ViewModifier {
 struct AutoRefreshModifier: ViewModifier {
     let panes: BrowserPanesModel
     let metadataViewModel: MetadataViewModel
-    /// The running import's destination; its auto-refresh waits until the import ends.
+    /// The running import's destination; its auto-refresh is throttled until the import ends.
     var importDeferralFolder: URL? = nil
     @State private var coordinator: BrowserAutoRefreshCoordinator
 
-    init(panes: BrowserPanesModel, metadataViewModel: MetadataViewModel, importDeferralFolder: URL? = nil) {
+    init(
+        panes: BrowserPanesModel,
+        metadataViewModel: MetadataViewModel,
+        importDeferralFolder: URL? = nil,
+        unfinishedImportURLs: @escaping @MainActor () -> Set<URL> = { [] }
+    ) {
         self.panes = panes
         self.metadataViewModel = metadataViewModel
         self.importDeferralFolder = importDeferralFolder
         _coordinator = State(
             initialValue: BrowserAutoRefreshCoordinator(
                 panes: panes,
-                metadataViewModel: metadataViewModel
+                metadataViewModel: metadataViewModel,
+                unfinishedImportURLs: unfinishedImportURLs
             )
         )
     }

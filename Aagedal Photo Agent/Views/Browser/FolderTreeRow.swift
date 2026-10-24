@@ -313,7 +313,10 @@ struct FolderDropDelegate: DropDelegate {
         let viewModel = viewModel
 
         Task { @MainActor in
-            let sourceURLs = await Self.loadFileURLs(from: providers)
+            // Grid drags also carry each photo's `.xmp`; moving the photo brings it along.
+            let sourceURLs = PhotoDragPasteboardURLs.removingCompanionSidecars(
+                from: await Self.loadFileURLs(from: providers)
+            )
             guard !sourceURLs.isEmpty else { return }
 
             guard let snapshot = try? await viewModel.fileSystemService.dropSourceSnapshot(for: sourceURLs)

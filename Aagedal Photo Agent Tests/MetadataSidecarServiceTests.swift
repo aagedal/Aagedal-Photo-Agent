@@ -360,6 +360,115 @@ struct FolderChangeMonitorServiceTests {
         // disturbed by a refresh, so they alone may defer showing new files.
         #expect(source.contains("|| metadataViewModel.hasUnpersistedEditorChanges"))
         #expect(!source.contains("metadataViewModel.hasChanges"))
+        // An import folder is throttled (not frozen) and never shows unfinished copies.
+        #expect(source.contains("importRefreshThrottle.remainingDelay(for: paneID)"))
+        #expect(source.contains("excludingNewURLs: isImportDeferred ? unfinishedImportURLs : nil"))
+    }
+
+    @Test("Import folder refreshes are throttled to one per interval per pane, not frozen")
+    func importRefreshThrottle() {
+        final class Pane {}
+        let first = Pane(), second = Pane()
+        let firstID = ObjectIdentifier(first), secondID = ObjectIdentifier(second)
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        var throttle = ImportRefreshThrottle()
+        #expect(throttle.interval == 2.5)
+
+        // The first refresh during an import runs at once.
+        #expect(throttle.remainingDelay(for: firstID, now: start) == 0)
+        throttle.recordRefresh(for: firstID, at: start)
+
+        // Arrivals within the interval wait out the rest of it instead of rescanning.
+        #expect(throttle.remainingDelay(for: firstID, now: start.addingTimeInterval(0.5)) == 2.0)
+        #expect(throttle.remainingDelay(for: firstID, now: start.addingTimeInterval(2.4)) > 0)
+        #expect(throttle.remainingDelay(for: firstID, now: start.addingTimeInterval(2.5)) == 0)
+        // Panes are throttled independently.
+        #expect(throttle.remainingDelay(for: secondID, now: start.addingTimeInterval(0.5)) == 0)
+
+        // Ending the import clears the throttle; the final refresh is never delayed.
+        throttle.reset()
+        #expect(throttle.remainingDelay(for: firstID, now: start.addingTimeInterval(0.1)) == 0)
+        withExtendedLifetime((first, second)) {}
+    }
+
+    @Test("Mid-import refreshes skip unfinished copies but never drop rows already shown")
+    @MainActor
+    func refreshExcludesUnfinishedImportCopies() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("import-refresh-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let shown = folder.appendingPathComponent("A.jpg")
+        let finished = folder.appendingPathComponent("B.jpg")
+        let unfinished = folder.appendingPathComponent("C.jpg")
+        try Data("x".utf8).write(to: shown)
+
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        func refresh(excluding excluded: Set<URL>?) async {
+            // A refresh is refused while the previous one's metadata pass runs; retry (bounded).
+            var exclusion: (@MainActor () -> Set<URL>)?
+            if let excluded { exclusion = { excluded } }
+            for _ in 0..<200 {
+                let started: Bool = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                    let didStart = model.refreshCurrentFolderIfNeeded(
+                        onComplete: { _ in continuation.resume(returning: true) },
+                        excludingNewURLs: exclusion
+                    )
+                    if !didStart { continuation.resume(returning: false) }
+                }
+                if started { return }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            Issue.record("Refresh never started")
+        }
+        // The row already shown comes from an ordinary scan.
+        await refresh(excluding: nil)
+        #expect(model.images.map(\.url.lastPathComponent) == ["A.jpg"])
+
+        for url in [finished, unfinished] { try Data("x".utf8).write(to: url) }
+        await refresh(excluding: [unfinished.standardizedFileURL, shown.standardizedFileURL])
+        #expect(Set(model.images.map(\.url.lastPathComponent)) == ["A.jpg", "B.jpg"])
+
+        // Once finished (exclusion lifted), the copy appears.
+        await refresh(excluding: nil)
+        #expect(Set(model.images.map(\.url.lastPathComponent)) == ["A.jpg", "B.jpg", "C.jpg"])
+    }
+}
+
+@Suite("Photo drag pasteboard sidecars")
+struct PhotoDragPasteboardURLsTests {
+    @Test("Dragged photos carry the XMP sidecar they own, once per RAW+JPEG pair")
+    func ownedSidecars() {
+        let folder = URL(fileURLWithPath: "/virtual/drag", isDirectory: true)
+        let raw = folder.appendingPathComponent("IMG_1.CR3")
+        let pairedJPEG = folder.appendingPathComponent("IMG_1.JPG")
+        let loneJPEG = folder.appendingPathComponent("IMG_2.jpg")
+        let noSidecar = folder.appendingPathComponent("IMG_3.jpg")
+        let existing: Set<String> = ["IMG_1.xmp", "IMG_2.xmp"]
+        func sidecars(_ urls: [URL]) -> [String] {
+            PhotoDragPasteboardURLs.ownedSidecars(
+                for: urls,
+                sidecarExists: { existing.contains($0.lastPathComponent) },
+                sidecarBelongsToRawSibling: { $0 == pairedJPEG }
+            ).map(\.lastPathComponent)
+        }
+
+        #expect(sidecars([raw]) == ["IMG_1.xmp"])
+        #expect(sidecars([pairedJPEG, raw]) == ["IMG_1.xmp"])
+        // The shared sidecar belongs to the RAW; the JPEG alone does not take it along.
+        #expect(sidecars([pairedJPEG]).isEmpty)
+        #expect(sidecars([loneJPEG, noSidecar]) == ["IMG_2.xmp"])
+    }
+
+    @Test("In-app folder drops skip a dragged sidecar whose photo is moved with it")
+    func removesCompanionSidecars() {
+        let folder = URL(fileURLWithPath: "/virtual/drag", isDirectory: true)
+        let raw = folder.appendingPathComponent("IMG_1.CR3")
+        let sidecar = folder.appendingPathComponent("IMG_1.xmp")
+        let strayXMP = folder.appendingPathComponent("Other.xmp")
+        #expect(PhotoDragPasteboardURLs.removingCompanionSidecars(from: [raw, sidecar, strayXMP])
+            == [raw, strayXMP])
     }
 }
 

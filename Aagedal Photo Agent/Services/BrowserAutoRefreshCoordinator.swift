@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import os
 
@@ -31,18 +32,26 @@ final class BrowserAutoRefreshCoordinator {
     private let localSafetyInterval: TimeInterval = 300
     private var lastFallbackScan: [ObjectIdentifier: Date] = [:]
     /// Folder an import is copying into. Panes showing it (or a folder inside it) do not
-    /// rescan on every arriving file; they refresh once when the import ends.
+    /// rescan on every arriving file (a rescan storm over thousands of copies); they refresh
+    /// at most once per `ImportRefreshThrottle.defaultInterval` so the user can cull while the
+    /// copy runs, and once more when the import ends.
     private var importDeferralFolder: URL?
     private var importDeferredPaneIDs: Set<ObjectIdentifier> = []
+    private var importRefreshThrottle = ImportRefreshThrottle()
+    /// The running import's copies that are not finished yet; mid-import refreshes never add them.
+    private let unfinishedImportURLs: @MainActor () -> Set<URL>
+    private var unmountObserver: NSObjectProtocol?
 
     init(
         panes: BrowserPanesModel,
         metadataViewModel: MetadataViewModel,
-        monitorService: FolderChangeMonitorService = .shared
+        monitorService: FolderChangeMonitorService = .shared,
+        unfinishedImportURLs: @escaping @MainActor () -> Set<URL> = { [] }
     ) {
         self.panes = panes
         self.metadataViewModel = metadataViewModel
         self.monitorService = monitorService
+        self.unfinishedImportURLs = unfinishedImportURLs
     }
 
     deinit {
@@ -50,10 +59,24 @@ final class BrowserAutoRefreshCoordinator {
         for task in refreshTasks.values { task.cancel() }
         for task in monitorSetupTasks.values { task.cancel() }
         for monitor in monitors.values { monitor.cancel() }
+        // The unmount observer is removed in `stop()` (onDisappear); it holds `self` weakly,
+        // so a coordinator released without `stop()` leaves only an inert observer.
     }
 
     func start() {
         synchronizeMonitors()
+        if unmountObserver == nil {
+            unmountObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didUnmountNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                let volumeURL = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL
+                MainActor.assumeIsolated {
+                    self?.volumeDidUnmount(volumeURL)
+                }
+            }
+        }
         guard fallbackTask == nil else { return }
         fallbackTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -86,6 +109,7 @@ final class BrowserAutoRefreshCoordinator {
         guard standardized == nil else { return }
         let deferred = importDeferredPaneIDs
         importDeferredPaneIDs.removeAll()
+        importRefreshThrottle.reset()
         for paneID in deferred {
             guard let folderURL = monitoredURLs[paneID] else { continue }
             scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: .zero)
@@ -100,12 +124,30 @@ final class BrowserAutoRefreshCoordinator {
         return folder.starts(with: root)
     }
 
+    /// An ejected card or unmounted share produces no FSEvents for the folder itself; check
+    /// every pane whose folder lived on that volume (or all panes when the volume is unknown).
+    func volumeDidUnmount(_ volumeURL: URL?) {
+        let volume = volumeURL?.standardizedFileURL.pathComponents
+        for pane in panes.panes {
+            guard let folderURL = pane.currentFolderURL else { continue }
+            if let volume, !folderURL.standardizedFileURL.pathComponents.starts(with: volume) {
+                continue
+            }
+            Task { await pane.verifyCurrentFolderAvailability() }
+        }
+    }
+
     func stop() {
+        if let unmountObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(unmountObserver)
+            self.unmountObserver = nil
+        }
         fallbackTask?.cancel()
         fallbackTask = nil
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
         importDeferredPaneIDs.removeAll()
+        importRefreshThrottle.reset()
         for task in monitorSetupTasks.values { task.cancel() }
         monitorSetupTasks.removeAll()
         monitorRequestIDs.removeAll()
@@ -207,6 +249,18 @@ final class BrowserAutoRefreshCoordinator {
             NotificationCenter.default.post(name: .versionStoreDidChange, object: change)
         }
         if impact.contains(.browserContent) {
+            if isDeferredForImport(folderURL) {
+                // Files arrive faster than the debounce during an import; restarting a
+                // pending throttled refresh on every event would starve it until the end.
+                guard refreshTasks[paneID] == nil else { return }
+                let remaining = importRefreshThrottle.remainingDelay(for: paneID)
+                scheduleRefresh(
+                    paneID: paneID,
+                    folderURL: folderURL,
+                    delay: max(debounceDuration, .milliseconds(Int((remaining * 1000).rounded(.up))))
+                )
+                return
+            }
             scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: debounceDuration)
         }
     }
@@ -236,12 +290,21 @@ final class BrowserAutoRefreshCoordinator {
             return
         }
 
-        // An import writes thousands of files into this folder; one diff after it finishes
-        // shows the same final state as a rescan per arriving file.
-        if isDeferredForImport(folderURL) {
-            refreshTasks[paneID] = nil
+        // An import writes thousands of files into this folder. A rescan per arriving file
+        // is a storm; freezing the folder until the end stops the user culling while the copy
+        // runs. Throttle instead, and always refresh once more when the import ends.
+        let isImportDeferred = isDeferredForImport(folderURL)
+        if isImportDeferred {
             importDeferredPaneIDs.insert(paneID)
-            return
+            let remaining = importRefreshThrottle.remainingDelay(for: paneID)
+            if remaining > 0 {
+                scheduleRefresh(
+                    paneID: paneID,
+                    folderURL: folderURL,
+                    delay: .milliseconds(Int((remaining * 1000).rounded(.up)))
+                )
+                return
+            }
         }
 
         // Our own rating/label writes echo back as FSEvents for every photo in the batch.
@@ -262,12 +325,17 @@ final class BrowserAutoRefreshCoordinator {
         }
 
         refreshTasks[paneID] = nil
-        let started = pane.refreshCurrentFolderIfNeeded { [weak self, weak pane] modifiedURLs in
-            guard let self, let pane else { return }
-            self.refreshCompleted(for: pane, modifiedURLs: modifiedURLs)
-        }
+        let started = pane.refreshCurrentFolderIfNeeded(
+            onComplete: { [weak self, weak pane] modifiedURLs in
+                guard let self, let pane else { return }
+                self.refreshCompleted(for: pane, modifiedURLs: modifiedURLs)
+            },
+            excludingNewURLs: isImportDeferred ? unfinishedImportURLs : nil
+        )
         if !started {
             scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: deferredRetryDuration)
+        } else if isImportDeferred {
+            importRefreshThrottle.recordRefresh(for: paneID)
         }
     }
 
@@ -285,5 +353,33 @@ final class BrowserAutoRefreshCoordinator {
             folderURL: pane.currentFolderURL,
             preservingUnsavedEdits: true
         )
+    }
+}
+
+/// Rate limit for refreshing a pane whose folder an import is copying into: at most one
+/// refresh per `interval`, so arriving photos appear while the copy runs without a rescan
+/// per file. The coordinator still refreshes once more when the import ends.
+nonisolated struct ImportRefreshThrottle: Sendable {
+    static let defaultInterval: TimeInterval = 2.5
+
+    let interval: TimeInterval
+    private var lastRefresh: [ObjectIdentifier: Date] = [:]
+
+    init(interval: TimeInterval = ImportRefreshThrottle.defaultInterval) {
+        self.interval = interval
+    }
+
+    /// Seconds until `paneID` may refresh again; zero when a refresh is allowed now.
+    func remainingDelay(for paneID: ObjectIdentifier, now: Date = Date()) -> TimeInterval {
+        guard let last = lastRefresh[paneID] else { return 0 }
+        return max(0, interval - now.timeIntervalSince(last))
+    }
+
+    mutating func recordRefresh(for paneID: ObjectIdentifier, at now: Date = Date()) {
+        lastRefresh[paneID] = now
+    }
+
+    mutating func reset() {
+        lastRefresh.removeAll()
     }
 }

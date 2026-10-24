@@ -6,8 +6,12 @@ final class ThumbnailCollectionView: NSCollectionView {
     weak var viewModel: BrowserViewModel?
     weak var commandRouter: AppCommandRouter?
 
-    /// Fired on mouseDown so the split-view container can mark this pane active.
+    /// Fired on mouseDown, right-click, keyboard focus and key presses so the split-view
+    /// container can mark this pane active. App commands (ratings, labels, context-menu
+    /// actions) and the full-screen viewer act on the active pane.
     var onFocus: (() -> Void)?
+    /// Whether this grid's pane is the active split pane (kept current by the controller).
+    var isActivePane = true
     var onExtractVideoStills: ((URL) -> Void)?
     var onImproveDescriptions: (() -> Void)?
 
@@ -88,7 +92,11 @@ final class ThumbnailCollectionView: NSCollectionView {
     override var acceptsFirstResponder: Bool { true }
 
     override func becomeFirstResponder() -> Bool {
-        super.becomeFirstResponder()
+        let accepted = super.becomeFirstResponder()
+        // Keyboard focus reaching an inactive pane (Tab, accessibility) activates it, so the
+        // shortcuts typed next act on the photos this grid shows.
+        if accepted, !isActivePane { onFocus?() }
+        return accepted
     }
 
     override func resignFirstResponder() -> Bool {
@@ -238,6 +246,10 @@ final class ThumbnailCollectionView: NSCollectionView {
             super.keyDown(with: event)
             return
         }
+        // Culling keys route through the app command router to the active pane, and Space
+        // opens the full-screen viewer only for the active pane: the pane with keyboard
+        // focus must be that pane.
+        if !isActivePane { onFocus?() }
 
         let shift = event.modifierFlags.contains(.shift)
         let cmd = event.modifierFlags.contains(.command)
@@ -339,6 +351,9 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let viewModel else { return nil }
+        // Menu actions route through the command router to the active pane; activate this
+        // pane first so they never hit the other pane's selection.
+        onFocus?()
 
         let location = convert(event.locationInWindow, from: nil)
 
@@ -807,6 +822,22 @@ final class ThumbnailCollectionView: NSCollectionView {
             }
             items.append(item)
         }
+
+        // Photos dragged to Finder, Mail or another app keep their XMP sidecar (ratings,
+        // captions, Camera Raw edits). Sidecar items carry no visual of their own. In-app
+        // folder drops skip them again (`removingCompanionSidecars`): moves bring sidecars along.
+        let sidecars = PhotoDragPasteboardURLs.ownedSidecars(
+            for: urls,
+            sidecarExists: { FileManager.default.fileExists(atPath: $0.path) },
+            sidecarBelongsToRawSibling: {
+                PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: $0)
+            }
+        )
+        for sidecar in sidecars {
+            let item = NSDraggingItem(pasteboardWriter: sidecar as NSURL)
+            item.setDraggingFrame(baseFrame, contents: nil)
+            items.append(item)
+        }
         return items
     }
 
@@ -821,5 +852,44 @@ final class ThumbnailCollectionView: NSCollectionView {
         let icon = NSWorkspace.shared.icon(forFile: url.path)
         ThumbnailCollectionView.extensionIconCache[ext] = icon
         return icon
+    }
+}
+
+/// Extra file URLs for dragging photos out of the grid: the stem `.xmp` sidecar each photo
+/// owns, so a Finder/Mail copy keeps its ratings, captions and Camera Raw edits.
+nonisolated enum PhotoDragPasteboardURLs {
+    /// A RAW owns its stem sidecar. Another file owns it unless a same-stem RAW sibling does
+    /// (PhotoSidecarOwnership); that shared sidecar travels only with the RAW. A RAW+JPEG
+    /// pair dragged together therefore adds the shared `.xmp` once.
+    static func ownedSidecars(
+        for photoURLs: [URL],
+        sidecarExists: (URL) -> Bool,
+        sidecarBelongsToRawSibling: (URL) -> Bool
+    ) -> [URL] {
+        var seen: Set<String> = []
+        var sidecars: [URL] = []
+        for photoURL in photoURLs where photoURL.pathExtension.lowercased() != "xmp" {
+            let sidecar = photoURL.deletingPathExtension().appendingPathExtension("xmp")
+            let key = sidecar.standardizedFileURL.path.lowercased()
+            guard !seen.contains(key), sidecarExists(sidecar) else { continue }
+            if !SupportedImageFormats.isRaw(url: photoURL), sidecarBelongsToRawSibling(photoURL) {
+                continue
+            }
+            seen.insert(key)
+            sidecars.append(sidecar)
+        }
+        return sidecars
+    }
+
+    /// In-app folder drops move photos with their sidecars already; drop a dragged `.xmp`
+    /// whose same-stem photo (same folder) is part of the same drop so it is not moved twice.
+    static func removingCompanionSidecars(from urls: [URL]) -> [URL] {
+        func stemKey(_ url: URL) -> String {
+            url.deletingPathExtension().standardizedFileURL.path.lowercased()
+        }
+        let photoStems = Set(urls.filter { $0.pathExtension.lowercased() != "xmp" }.map(stemKey))
+        return urls.filter { url in
+            url.pathExtension.lowercased() != "xmp" || !photoStems.contains(stemKey(url))
+        }
     }
 }
