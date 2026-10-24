@@ -654,7 +654,10 @@ final class MetadataViewModel {
         selectedHasC2PA = images.contains { $0.hasC2PA }
         descriptionConflict = nil
         sidecarHistory = []
-        originalImageMetadata = nil
+        // A passive reload that keeps unsaved edits also keeps their diff baseline until the
+        // fresh one arrives: a save issued meanwhile must not see "no baseline" and treat every
+        // field — including an unchanged crs block — as changed.
+        if !preservesUnsavedEdits { originalImageMetadata = nil }
         embeddedMetadata = nil
         xmpMetadata = nil
         // Keep the displayed batch state intact across a redundant reload. Clearing it here

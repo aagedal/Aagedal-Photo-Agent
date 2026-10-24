@@ -540,6 +540,28 @@ struct MetadataBatchSelectionTests {
         #expect(model.editingMetadata.title == "Changed externally")
     }
 
+    @Test("a passive same-photo reload keeps the unsaved edits' diff baseline while it loads")
+    func sameImageReloadKeepsDiffBaselineWhileLoading() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = try makeJPEG(in: folder, name: "photo.jpg")
+        try await write(IPTCMetadata(title: "On disk"), to: url)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        try await loadSingle(model, url, in: folder)
+        model.editingMetadata.title = "Typed but unsaved"
+        model.markChanged()
+
+        model.loadMetadata(for: [ImageFile(url: url)], folderURL: folder, preservingUnsavedEdits: true)
+        #expect(model.originalImageMetadata?.title == "On disk")
+        try await loadSingle(model, url, in: folder, preservingUnsavedEdits: true)
+        #expect(model.originalImageMetadata?.title == "On disk")
+
+        // An explicit reload still starts from no baseline.
+        model.loadMetadata(for: [ImageFile(url: url)], folderURL: folder)
+        #expect(model.originalImageMetadata == nil)
+        try await loadSingle(model, url, in: folder)
+    }
+
     @Test("a single-photo save right after a batch save waits for the batch instead of cancelling it")
     func singleSaveAfterBatchSaveKeepsEveryBatchPhoto() async throws {
         let folder = try makeFolder()
