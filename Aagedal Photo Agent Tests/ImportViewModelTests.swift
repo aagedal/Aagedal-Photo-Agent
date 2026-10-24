@@ -2428,6 +2428,30 @@ private nonisolated final class ImportRecordingWriteEngine: MetadataWriteEngine,
     func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {}
 }
 
+/// Holds every metadata write until released (bounded, so a failing test cannot hang).
+private nonisolated final class ImportGatedWriteEngine: MetadataWriteEngine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+    private var writes = 0
+
+    var writeCount: Int { lock.withLock { writes } }
+    func release() { lock.withLock { released = true } }
+
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        for _ in 0..<1000 where !lock.withLock({ released }) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        lock.withLock { writes += 1 }
+    }
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {}
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {}
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws {}
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {}
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {}
+    func stripIPTCAndXMP(from urls: [URL]) async throws {}
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {}
+}
+
 private nonisolated final class ImportProbeCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
@@ -2819,25 +2843,6 @@ struct ImportWorkflowRegressionTests {
     }
 }
 
-/// Lets a test hook run an action from inside a `@Sendable` probe once the view model exists.
-private nonisolated final class ImportTestActionBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var action: (@Sendable () async -> Void)?
-    private var fired = false
-
-    func set(_ action: @escaping @Sendable () async -> Void) { lock.withLock { self.action = action } }
-
-    /// Runs the action the first time only.
-    func fireOnce() async {
-        let action: (@Sendable () async -> Void)? = lock.withLock {
-            guard !fired else { return nil }
-            fired = true
-            return self.action
-        }
-        await action?()
-    }
-}
-
 @Suite("Import data safety", .serialized)
 @MainActor
 struct ImportDataSafetyTests {
@@ -2976,28 +2981,40 @@ struct ImportDataSafetyTests {
         #expect(destinations.allSatisfy { !$0.renamedAwayFromDifferentPhoto })
     }
 
-    @Test("Skip Existing skips only the photo that is already there and renames a different one")
+    @Test("Skip Existing skips only this exposure's own files and renames when any file differs")
     func skipExistingSkipsOnlyTrueDuplicates() async throws {
         let root = try makeRoot("SkipExistingPlanning")
         defer { try? FileManager.default.removeItem(at: root) }
         let card = try folder(root, "card")
         let photos = try folder(root, "photos")
-        for name in ["same.ARW", "same.JPG", "diff.JPG", "half.ARW", "half.JPG"] {
+        let backup = try folder(root, "backup")
+        for name in ["same.ARW", "diff.JPG", "half.ARW", "export.ARW", "backed.ARW"] {
             try Data("card-\(name)".utf8).write(to: card.appendingPathComponent(name))
         }
+        for (index, name) in ["same.JPG", "half.JPG", "export.JPG"].enumerated() {
+            try writeIdentityJPEG(to: card.appendingPathComponent(name), subSecond: "5\(index)")
+        }
         try FileManager.default.copyItem(at: card.appendingPathComponent("same.ARW"), to: photos.appendingPathComponent("same.ARW"))
-        // The JPEG copy got an embedded caption after import; it is still the same photo.
-        try Data("captioned".utf8).write(to: photos.appendingPathComponent("same.JPG"))
+        // The JPEG copy got an embedded caption after import; it is still the same camera file.
+        try writeIdentityJPEG(to: photos.appendingPathComponent("same.JPG"), subSecond: "50", caption: "Caption")
         try Data("another body".utf8).write(to: photos.appendingPathComponent("diff.JPG"))
         try FileManager.default.copyItem(at: card.appendingPathComponent("half.ARW"), to: photos.appendingPathComponent("half.ARW"))
+        // An export saved beside the RAW under the original name is not the camera JPEG.
+        try FileManager.default.copyItem(at: card.appendingPathComponent("export.ARW"), to: photos.appendingPathComponent("export.ARW"))
+        try writeIdentityJPEG(to: photos.appendingPathComponent("export.JPG"), subSecond: "52", width: 8, software: "Adobe Lightroom")
+        // The primary copy is there, but the backup path holds a different file.
+        try FileManager.default.copyItem(at: card.appendingPathComponent("backed.ARW"), to: photos.appendingPathComponent("backed.ARW"))
+        try Data("someone else".utf8).write(to: backup.appendingPathComponent("backed.ARW"))
 
-        func image(_ name: String) -> ImportPreflightService.BundleDestinationRequest.File {
-            .init(source: card.appendingPathComponent(name), role: .image, primaryFolder: photos, backupFolder: nil)
+        func image(_ name: String, backupFolder: URL? = nil) -> ImportPreflightService.BundleDestinationRequest.File {
+            .init(source: card.appendingPathComponent(name), role: .image, primaryFolder: photos, backupFolder: backupFolder)
         }
         let destinations = try await resolve(ImportPreflightService(), [
             .init(stem: "same", files: [image("same.ARW"), image("same.JPG")]),
             .init(stem: "diff", files: [image("diff.JPG")]),
             .init(stem: "half", files: [image("half.ARW"), image("half.JPG")]),
+            .init(stem: "export", files: [image("export.ARW"), image("export.JPG")]),
+            .init(stem: "backed", files: [image("backed.ARW", backupFolder: backup)]),
         ], policy: .skipExisting)
 
         #expect(destinations[0].files.map(\.skipReason) == [.destinationExists, .destinationExists])
@@ -3007,6 +3024,16 @@ struct ImportDataSafetyTests {
         // The missing JPEG joins its RAW twin instead of landing on another stem.
         #expect(destinations[2].files.map(\.primary.lastPathComponent) == ["half.ARW", "half.JPG"])
         #expect(destinations[2].files.map(\.skipReason) == [.destinationExists, nil])
+        // The export must not hide the camera JPEG: the whole exposure is copied renamed.
+        #expect(destinations[3].files.map(\.primary.lastPathComponent) == ["export-1.ARW", "export-1.JPG"])
+        #expect(destinations[3].files.map(\.skipReason) == [nil, nil])
+        #expect(destinations[3].renamedAwayFromDifferentPhoto)
+        // A different file at the backup path never silently skips: renamed on both legs.
+        #expect(destinations[4].files.map(\.primary.lastPathComponent) == ["backed-1.ARW"])
+        #expect(destinations[4].files.map(\.backup?.lastPathComponent) == ["backed-1.ARW"])
+        #expect(destinations[4].files.map(\.skipReason) == [nil])
+        #expect(destinations[4].files.map(\.backupSkipReason) == [nil])
+        #expect(destinations[4].renamedAwayFromDifferentPhoto)
     }
 
     @Test("Unfrozen Skip Existing copies a different same-named file under a new name")
@@ -3155,9 +3182,8 @@ struct ImportDataSafetyTests {
             let photos = try folder(root, "photos")
             let captioned = card.appendingPathComponent("photo.jpg")
             let clashing = card.appendingPathComponent("clash.jpg")
-            try writeJPEG(to: captioned)
-            try writeJPEG(to: clashing)
-            try Data("x".utf8).append(to: clashing)
+            try writeIdentityJPEG(to: captioned, subSecond: "61")
+            try writeIdentityJPEG(to: clashing, subSecond: "62")
 
             let first = makeViewModel(card: card, photos: photos, title: "Ledger", policy: .renameWithSuffix)
             first.configuration.applyMetadata = true
@@ -3174,7 +3200,11 @@ struct ImportDataSafetyTests {
             // Professional embeds into the JPEG: the copy no longer matches the card bytes.
             #expect(try Data(contentsOf: destination.appendingPathComponent("photo.jpg")) != Data(contentsOf: captioned))
             #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("clash-1.jpg").path))
-            #expect(FileManager.default.fileExists(atPath: ImportLedger.url(forRoot: photos).path))
+            // Each copy is recorded unfinished at once and marked finished after its template
+            // (copying runs ahead of finishing, so files interleave).
+            let ledgerByFile = Dictionary(grouping: ImportLedger.load(root: photos), by: \.name)
+            #expect(ledgerByFile.count == 2)
+            #expect(ledgerByFile.values.allSatisfy { $0.map(\.finished) == [false, true] })
             try await Task.sleep(for: .milliseconds(300))
 
             let second = makeViewModel(card: card, photos: photos, title: "Ledger", policy: .renameWithSuffix)
@@ -3191,9 +3221,9 @@ struct ImportDataSafetyTests {
         }
     }
 
-    // MARK: - Cancellation
+    // MARK: - Cancellation and finishing
 
-    @Test("Cancel stops copying but every copied photo still gets its sidecar and metadata")
+    @Test("Cancel stops copying but every copied photo still gets its sidecar, metadata and ledger mark")
     func cancelFinishesCopiedFiles() async throws {
         try await withRestoredDefaults {
             AppDefaults.store.set(MetadataWritePreset.professional.rawValue, forKey: UserDefaultsKeys.metadataWritePreset)
@@ -3205,20 +3235,31 @@ struct ImportDataSafetyTests {
             for source in sources { try writeJPEG(to: source) }
             try Data("<x:xmpmeta>card</x:xmpmeta>".utf8).write(to: card.appendingPathComponent("A_1.xmp"))
 
+            // The copy is cancelled while the second file is verified.
+            let verifications = ImportProbeCounter()
+            let copyService = ImportCopyService(verificationHasher: { url in
+                verifications.increment()
+                if verifications.count >= 2 { throw CancellationError() }
+                return try HashStream.hashFileSynchronously(at: url, bypassingCache: true)
+            })
             let writer = ImportRecordingWriteEngine()
-            let cancelHook = ImportTestActionBox()
-            // The C2PA probe runs while the first copied photo is being finished: cancel there.
-            let viewModel = makeViewModel(
-                card: card, photos: photos, title: "Cancel", policy: .renameWithSuffix,
+            let viewModel = ImportViewModel(
+                readService: SwiftExifReadService(),
                 writeEngine: writer,
-                c2paDetector: { _ in
-                    await cancelHook.fireOnce()
-                    return false
-                }
+                copyService: copyService,
+                c2paDetector: { _ in false }
             )
-            cancelHook.set { await MainActor.run { viewModel.cancelImport() } }
+            viewModel.configuration.sourceURL = card
+            viewModel.configuration.destinationBaseURL = photos
+            viewModel.configuration.importTitle = "Cancel"
+            viewModel.configuration.fileTypeFilter = .jpegOnly
+            viewModel.configuration.conflictPolicy = .renameWithSuffix
+            viewModel.configuration.createSubFolders = false
+            viewModel.configuration.verificationMode = .on
+            viewModel.configuration.skipPreviouslyImported = false
             viewModel.configuration.applyMetadata = true
             viewModel.configuration.metadata.jobId = "JOB-9"
+            viewModel.sortByDate = false
             viewModel.sourceFiles = sources
             let destination = viewModel.configuration.destinationFolderURL
 
@@ -3233,9 +3274,98 @@ struct ImportDataSafetyTests {
             #expect(viewModel.metadataFailedFiles == 0)
             #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("A_1.xmp").path))
             #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("B_2.JPG").path))
+            #expect(ImportLedger.load(root: photos).map(\.finished) == [false, true])
             #expect(viewModel.lastCompletionEntry?.wasCancelled == true)
             try await Task.sleep(for: .milliseconds(300))
         }
+    }
+
+    @Test("Copying never waits on finishing, and the import completes only after finishing drains")
+    func copyingRunsAheadOfFinishing() async throws {
+        try await withRestoredDefaults {
+            AppDefaults.store.set(MetadataWritePreset.professional.rawValue, forKey: UserDefaultsKeys.metadataWritePreset)
+            let root = try makeRoot("ImportFinisher")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let card = try folder(root, "card")
+            let photos = try folder(root, "photos")
+            let sources = ["A_1.JPG", "B_2.JPG", "C_3.JPG"].map { card.appendingPathComponent($0) }
+            for source in sources { try writeJPEG(to: source) }
+
+            let writer = ImportGatedWriteEngine()
+            defer { writer.release() }
+            let viewModel = makeViewModel(
+                card: card, photos: photos, title: "Finisher", policy: .renameWithSuffix,
+                writeEngine: writer, c2paDetector: { _ in false }
+            )
+            viewModel.configuration.applyMetadata = true
+            viewModel.configuration.metadata.jobId = "JOB-3"
+            viewModel.sourceFiles = sources
+
+            viewModel.startImport()
+            // Every file is copied while the first metadata write is still held.
+            for _ in 0..<1000 where viewModel.copiedFiles < 3 {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(viewModel.copiedFiles == 3)
+            #expect(viewModel.metadataProcessedFiles == 0)
+            for _ in 0..<500 where viewModel.importPhase != .applyingMetadata {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(viewModel.importPhase == .applyingMetadata)
+            #expect(viewModel.lastCompletionEntry == nil)
+
+            writer.release()
+            try await waitForCompletion(viewModel)
+            #expect(viewModel.importPhase == .complete)
+            #expect(viewModel.metadataProcessedFiles == 3)
+            #expect(writer.writeCount == 3)
+            try await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    @Test("Place lookups are cached per ~100 m and bounded by a timeout")
+    func placeLookupCacheAndTimeout() async {
+        let calls = ImportProbeCounter()
+        let cache = ImportPlaceLookupCache(timeout: .seconds(5)) { _, _ in
+            calls.increment()
+            return GeocodingResult(city: "Oslo", country: "Norway")
+        }
+        let first = await cache.place(latitude: 59.91271, longitude: 10.74561)
+        let nearby = await cache.place(latitude: 59.91268, longitude: 10.74559)
+        let elsewhere = await cache.place(latitude: 60.39299, longitude: 5.32415)
+        #expect(first == .init(city: "Oslo", country: "Norway"))
+        #expect(nearby == first)
+        #expect(elsewhere == first)
+        #expect(calls.count == 2)
+
+        let slowCalls = ImportProbeCounter()
+        let slow = ImportPlaceLookupCache(timeout: .milliseconds(200)) { _, _ in
+            slowCalls.increment()
+            try await Task.sleep(for: .seconds(30))
+            return GeocodingResult(city: "Late", country: "Late")
+        }
+        let started = Date()
+        let timedOut = await slow.place(latitude: 1, longitude: 1)
+        let again = await slow.place(latitude: 1, longitude: 1)
+        #expect(timedOut == nil)
+        #expect(again == nil)
+        #expect(slowCalls.count == 1)
+        #expect(Date().timeIntervalSince(started) < 5)
+
+        // The interpolator leaves the tokens for a later retry when the lookup gives up.
+        var metadata = IPTCMetadata()
+        metadata.city = "{gps:city}"
+        metadata.latitude = 1
+        metadata.longitude = 1
+        let unresolved = await PresetVariableInterpolator().resolvingGPSPlaceVariables(
+            in: metadata, placeLookup: slow.lookup
+        )
+        #expect(unresolved.city == "{gps:city}")
+        let resolved = await PresetVariableInterpolator().resolvingGPSPlaceVariables(
+            in: { var m = metadata; m.latitude = 59.91271; m.longitude = 10.74561; return m }(),
+            placeLookup: cache.lookup
+        )
+        #expect(resolved.city == "Oslo")
     }
 
     // MARK: - Counting, staging files, sequencing, splitting

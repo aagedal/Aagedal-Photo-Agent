@@ -488,6 +488,15 @@ nonisolated struct ImportJobContext: Sendable, Equatable {
     let captureDate: Date?
 }
 
+/// One verified image copy waiting for the finisher.
+nonisolated struct ImportFinishItem: Sendable {
+    let result: ImportCopyService.CopyResult
+    let destination: URL
+    let context: ImportJobContext
+    let ledgerEntry: ImportLedger.Entry?
+    let sequenceIndex: Int
+}
+
 /// Results and sidecar bookkeeping shared by the sequential per-file completion steps.
 nonisolated final class ImportRunState: @unchecked Sendable {
     private let lock = NSLock()
@@ -644,7 +653,7 @@ final class ImportViewModel {
     @ObservationIgnored private var importTask: Task<Void, Never>?
     @ObservationIgnored private var importRequestID = UUID()
     @ObservationIgnored private var confirmedOverwriteSignature: [ImportOverwriteExpectation]?
-    @ObservationIgnored private let copyService = ImportCopyService()
+    @ObservationIgnored private let copyService: ImportCopyService
     @ObservationIgnored private let sourceDiscoveryService = ImportSourceDiscoveryService()
     @ObservationIgnored private let preflightService: ImportPreflightService
     @ObservationIgnored private let directoryService: ExportDirectoryService
@@ -674,8 +683,10 @@ final class ImportViewModel {
         executionSecurityScopeService: ImportExecutionSecurityScopeService = .shared,
         bookmarkDefaults: UserDefaults = AppDefaults.store,
         destinationBookmarkService: ImportDestinationBookmarkService = .shared,
+        copyService: ImportCopyService = ImportCopyService(),
         c2paDetector: (@Sendable (URL) async -> Bool)? = nil
     ) {
+        self.copyService = copyService
         self.readService = readService
         self.c2paDetector = c2paDetector ?? { url in
             ((try? await readService.readTechnicalMetadata(url: url, includeNativeImageInfo: false))?.hasC2PA) ?? false
@@ -1826,14 +1837,37 @@ final class ImportViewModel {
                             return applyMetadata ? ImportMetadataWriteModes.current : nil
                         }
 
-                        // Each copied photo is finished right after its verified copy, before the
-                        // browser can show it: record its source identity in the import ledger,
-                        // bring its XMP sidecar along, and write the template. A template applied
-                        // later could overwrite a caption typed meanwhile; a cancelled import
-                        // still leaves every copied photo complete.
+                        // Copying never waits on finishing. Each verified copy is recorded in the
+                        // import ledger at once (as unfinished) and handed to one serial finisher,
+                        // which brings its XMP sidecar along and writes the template, then marks the
+                        // ledger entry finished. The finisher is not cancelled with the import:
+                        // Cancel stops copying, and every file already copied is still finished.
+                        // Auto-refresh of the import folder waits until the import completes —
+                        // after the finisher drained — so a template never lands on a photo the
+                        // user could already be captioning.
                         let boundary = DescriptiveMetadataWriteBoundary(writeEngine: self.writeEngine)
                         let c2paDetector = self.c2paDetector
                         let runState = ImportRunState()
+                        let placeLookup = ImportPlaceLookupCache().lookup
+                        let (finisherQueue, finisherInput) = AsyncStream.makeStream(of: ImportFinishItem.self)
+                        let finisher = Task {
+                            for await item in finisherQueue {
+                                await self.finishCopiedImage(
+                                    item,
+                                    requestID: requestID,
+                                    ledgerRoot: baseURL,
+                                    policy: conflictPolicy,
+                                    runState: runState,
+                                    writeModes: writeModes,
+                                    boundary: boundary,
+                                    c2paDetector: c2paDetector,
+                                    metadata: metadata,
+                                    processVariables: processVariables,
+                                    interpolator: interpolator,
+                                    placeLookup: placeLookup
+                                )
+                            }
+                        }
                         var wasCancelled = false
                         do {
                             _ = try await copyService.run(
@@ -1847,38 +1881,42 @@ final class ImportViewModel {
                                         guard self?.importRequestID == requestID else { return }
                                         self?.applyProgress(result)
                                     }
-                                    guard let self,
-                                          let context = frozenJobContexts[result.id],
+                                    guard let context = frozenJobContexts[result.id],
                                           context.isImage,
                                           imageSources.contains(result.source),
                                           let destination = result.primaryURL else { return }
-                                    // Not cancellable: once the bytes are durable, the photo
-                                    // must not be left half-processed.
-                                    await Task {
-                                        await self.finishCopiedImage(
+                                    finisherInput.yield(ImportFinishItem(
+                                        result: result,
+                                        destination: destination,
+                                        context: context,
+                                        ledgerEntry: Self.recordCopyInLedger(
                                             result: result,
                                             destination: destination,
                                             context: context,
-                                            requestID: requestID,
-                                            ledgerRoot: baseURL,
-                                            policy: conflictPolicy,
-                                            runState: runState,
-                                            writeModes: writeModes,
-                                            boundary: boundary,
-                                            c2paDetector: c2paDetector,
-                                            metadata: metadata,
-                                            processVariables: processVariables,
-                                            interpolator: interpolator,
-                                            sequenceIndex: sequenceByExposure[context.exposureID] ?? 1
-                                        )
-                                    }.value
+                                            root: baseURL
+                                        ),
+                                        sequenceIndex: sequenceByExposure[context.exposureID] ?? 1
+                                    ))
                                 }
                             )
                         } catch is CancellationError {
-                            // Copying stops; the copied files below still get their voice-memo
-                            // links, and the import is reported as cancelled.
+                            // Copying stops; the copied files are still finished below, get their
+                            // voice-memo links, and the import is reported as cancelled.
                             wasCancelled = true
+                        } catch {
+                            finisherInput.finish()
+                            await finisher.value
+                            throw error
                         }
+                        finisherInput.finish()
+                        if applyMetadata {
+                            await MainActor.run {
+                                guard self.importRequestID == requestID,
+                                      self.metadataProcessedFiles < self.metadataTotalFiles else { return }
+                                self.importPhase = .applyingMetadata
+                            }
+                        }
+                        await finisher.value
                         let results = runState.results
                         let finishedCancelled = wasCancelled
 
@@ -1954,12 +1992,37 @@ final class ImportViewModel {
         }
     }
 
-    /// Finishes one verified image copy: ledger entry, XMP sidecar, template metadata.
-    /// Called once per copied image, in copy order, before the next file is copied.
-    nonisolated private func finishCopiedImage(
+    /// Records a verified copy in the import ledger right away, marked unfinished, so the
+    /// legacy scan never mistakes it for an older import. Returns the entry the finisher marks
+    /// finished. A ledger failure never fails the import.
+    nonisolated static func recordCopyInLedger(
         result: ImportCopyService.CopyResult,
         destination: URL,
         context: ImportJobContext,
+        root: URL
+    ) -> ImportLedger.Entry? {
+        do {
+            let entry = try ImportLedger.entry(
+                source: result.source,
+                destination: destination,
+                root: root,
+                captureDate: context.captureDate,
+                finished: false
+            )
+            try ImportLedger.append([entry], root: root)
+            return entry
+        } catch {
+            Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
+                .warning("Import ledger not updated for \(result.source.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+    }
+
+    /// Finishes one verified image copy on the serial finisher: XMP sidecar, template metadata,
+    /// then the finished ledger mark. A sidecar or metadata failure is reported for the file and
+    /// still marks it finished — the image itself is safely imported.
+    nonisolated private func finishCopiedImage(
+        _ item: ImportFinishItem,
         requestID: UUID,
         ledgerRoot: URL,
         policy: ImportConflictPolicy,
@@ -1970,21 +2033,20 @@ final class ImportViewModel {
         metadata: IPTCMetadata,
         processVariables: Bool,
         interpolator: PresetVariableInterpolator,
-        sequenceIndex: Int
+        placeLookup: @escaping PresetVariableInterpolator.PlaceLookup
     ) async {
-        // The ledger lets "Import new only" recognize this photo later, whatever happens to
-        // the copy's name or bytes. A ledger failure never fails the import.
-        do {
-            let entry = try ImportLedger.entry(
-                source: result.source,
-                destination: destination,
-                root: ledgerRoot,
-                captureDate: context.captureDate
-            )
-            try ImportLedger.append([entry], root: ledgerRoot)
-        } catch {
-            Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
-                .warning("Import ledger not updated for \(result.source.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+        let result = item.result
+        let destination = item.destination
+        let context = item.context
+        defer {
+            if let entry = item.ledgerEntry {
+                do {
+                    try ImportLedger.append([entry.markingFinished()], root: ledgerRoot)
+                } catch {
+                    Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
+                        .warning("Import ledger not marked finished for \(result.source.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+                }
+            }
         }
 
         // Bring the photo's existing XMP sidecar (captions, ratings, Camera Raw edits) along
@@ -2016,7 +2078,8 @@ final class ImportViewModel {
                 destination,
                 metadata: metadata,
                 interpolator: interpolator,
-                sequenceIndex: sequenceIndex
+                sequenceIndex: item.sequenceIndex,
+                placeLookup: placeLookup
             )
             // Coordinates read from the file only feed place variables; the file already
             // carries them.
@@ -2371,7 +2434,13 @@ final class ImportViewModel {
         return parts.joined(separator: ", ") + "."
     }
 
-    private func resolveMetadataForFile(_ url: URL, metadata: IPTCMetadata, interpolator: PresetVariableInterpolator, sequenceIndex: Int = 1) async -> IPTCMetadata {
+    private func resolveMetadataForFile(
+        _ url: URL,
+        metadata: IPTCMetadata,
+        interpolator: PresetVariableInterpolator,
+        sequenceIndex: Int = 1,
+        placeLookup: PresetVariableInterpolator.PlaceLookup? = nil
+    ) async -> IPTCMetadata {
         let filename = url.lastPathComponent
         var reference = metadata
 
@@ -2384,7 +2453,7 @@ final class ImportViewModel {
         var variableMetadata = metadata
         variableMetadata.latitude = variableMetadata.latitude ?? reference.latitude
         variableMetadata.longitude = variableMetadata.longitude ?? reference.longitude
-        let metadata = await interpolator.resolvingGPSPlaceVariables(in: variableMetadata)
+        let metadata = await interpolator.resolvingGPSPlaceVariables(in: variableMetadata, placeLookup: placeLookup)
         var resolved = metadata
         resolved.title = Self.resolveField(metadata.title, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.description = Self.resolveField(metadata.description, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
