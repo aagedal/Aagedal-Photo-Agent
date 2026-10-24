@@ -62,27 +62,35 @@ struct EditExportPipelineTests {
         )
     }
 
-    @Test("Camera Raw resolution prefers live settings and reads only missing RAW sidecars")
-    func cameraRawResolutionUsesMinimalSidecarBatch() async throws {
+    @Test("Camera Raw resolution re-reads persisted settings and lets live win only for the Develop photo")
+    func cameraRawResolutionPrefersPersistedSettings() async throws {
         let liveURL = URL(fileURLWithPath: "/virtual/live.ARW")
+        let developURL = URL(fileURLWithPath: "/virtual/develop.ARW")
         let sidecarURL = URL(fileURLWithPath: "/virtual/sidecar.CR3")
         let jpegURL = URL(fileURLWithPath: "/virtual/finished.jpg")
+        let embeddedJPEGURL = URL(fileURLWithPath: "/virtual/embedded.jpg")
         var liveSettings = CameraRawSettings()
         liveSettings.exposure2012 = 1
         var sidecarSettings = CameraRawSettings()
         sidecarSettings.exposure2012 = 2
+        var embeddedSettings = CameraRawSettings()
+        embeddedSettings.contrast2012 = 30
         let probe = ExportCameraRawResolutionProbe(settingsByURL: [
             liveURL: sidecarSettings,
+            developURL: sidecarSettings,
             sidecarURL: sidecarSettings,
             jpegURL: sidecarSettings,
         ])
         let service = ExportCameraRawResolutionService(access: probe.access)
         let requestID = UUID()
+        let urls = [liveURL, developURL, sidecarURL, jpegURL, embeddedJPEGURL]
 
         let result = await service.resolve(ExportCameraRawResolutionRequest(
             requestID: requestID,
-            imageURLs: [liveURL, sidecarURL, jpegURL],
-            liveSettingsByImageURL: [liveURL: liveSettings]
+            imageURLs: urls,
+            liveSettingsByImageURL: [liveURL: liveSettings, developURL: liveSettings, embeddedJPEGURL: liveSettings],
+            embeddedSettingsByImageURL: [embeddedJPEGURL: embeddedSettings],
+            liveAuthoritativeImageURLs: [developURL]
         ))
 
         guard case .complete(let snapshot) = result else {
@@ -90,12 +98,234 @@ struct EditExportPipelineTests {
             return
         }
         #expect(snapshot.requestID == requestID)
-        #expect(snapshot.requestedSidecarImageURLs == [sidecarURL])
-        #expect(snapshot.inspectedImageURLs == [sidecarURL])
-        #expect(snapshot.settingsByImageURL[liveURL] == liveSettings)
+        #expect(snapshot.requestedSidecarImageURLs == urls)
+        #expect(snapshot.inspectedImageURLs == urls)
+        // A browser copy never overrides what the file says, except for the photo in Develop.
+        #expect(snapshot.settingsByImageURL[liveURL] == sidecarSettings)
+        #expect(snapshot.settingsByImageURL[developURL] == liveSettings)
         #expect(snapshot.settingsByImageURL[sidecarURL] == sidecarSettings)
-        #expect(snapshot.settingsByImageURL[jpegURL] == nil)
-        #expect(probe.loadedURLs == [sidecarURL])
+        // A non-RAW file's own sidecar develop applies; otherwise its embedded block does.
+        #expect(snapshot.settingsByImageURL[jpegURL] == sidecarSettings)
+        #expect(snapshot.settingsByImageURL[embeddedJPEGURL] == embeddedSettings)
+        #expect(probe.loadedURLs == urls)
+    }
+
+    @Test("Export source policy never drops a redaction present in only one copy")
+    func exportSourcePolicyKeepsRedactions() {
+        var redacted = CameraRawSettings()
+        redacted.exposure2012 = 0.3
+        redacted.localAdjustments = [MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))]
+        var globalRedacted = CameraRawSettings()
+        globalRedacted.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        var incomplete = CameraRawSettings()
+        incomplete.exposure2012 = 0.3
+        var newerEdit = CameraRawSettings()
+        newerEdit.exposure2012 = 1.2
+
+        // The stale browser copy (masks/anonymizer missing) must not replace the file's copy.
+        #expect(ExportCameraRawSourcePolicy.resolve(live: incomplete, persisted: redacted, liveIsAuthoritative: false) == redacted)
+        #expect(ExportCameraRawSourcePolicy.resolve(live: incomplete, persisted: globalRedacted, liveIsAuthoritative: false) == globalRedacted)
+        // Even the Develop photo's live copy can't silently drop a persisted redaction.
+        #expect(ExportCameraRawSourcePolicy.resolve(live: incomplete, persisted: redacted, liveIsAuthoritative: true) == redacted)
+        // A redaction not yet on disk (save in flight) still reaches the render.
+        #expect(ExportCameraRawSourcePolicy.resolve(live: redacted, persisted: incomplete, liveIsAuthoritative: false) == redacted)
+        // Ordinary edits: Develop's live copy wins; elsewhere the file wins.
+        #expect(ExportCameraRawSourcePolicy.resolve(live: newerEdit, persisted: incomplete, liveIsAuthoritative: true) == newerEdit)
+        #expect(ExportCameraRawSourcePolicy.resolve(live: newerEdit, persisted: incomplete, liveIsAuthoritative: false) == incomplete)
+        #expect(ExportCameraRawSourcePolicy.resolve(live: nil, persisted: redacted, liveIsAuthoritative: true) == redacted)
+        #expect(ExportCameraRawSourcePolicy.resolve(live: newerEdit, persisted: nil, liveIsAuthoritative: false) == newerEdit)
+        #expect(ExportCameraRawSourcePolicy.resolve(live: CameraRawSettings(), persisted: nil, liveIsAuthoritative: true) == nil)
+    }
+
+    @MainActor
+    @Test("A JPEG's embedded redaction, watermark and global Anonymizer survive a Browser reload and reach the export render",
+          arguments: [false, true])
+    func embeddedJPEGRedactionSurvivesReloadAndExport(pairedWithRAW: Bool) async throws {
+        let dir = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("apa-embedded-redaction-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let jpeg = dir.appendingPathComponent("IMG_1.JPG")
+        try checkerboardJPEG().write(to: jpeg)
+
+        var face = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 100, blackOut: nil))
+        face.geometry = EllipseMaskGeometry(centerX: 0.5, centerY: 0.5, radiusX: 0.3, radiusY: 0.3, rotation: 0, feather: 0)
+        var embedded = CameraRawSettings()
+        embedded.hasSettings = true
+        embedded.localAdjustments = [face]
+        embedded.anonymizer = AnonymizerSettings(amount: 60, blackOut: nil)
+        embedded.watermarkLayers = [WatermarkLayer(libraryAssetID: UUID())]
+        embedded.layerOrder = embedded.resolvedLayerOrder()
+        var metadata = try SwiftMediaMetadata.readMetadata(from: jpeg)
+        var xmp = metadata.xmp ?? XMPData()
+        XMPDataBuilder.applyCameraRaw(embedded, imageAspect: nil, into: &xmp)
+        metadata.xmp = xmp
+        _ = try metadata.write(to: jpeg)
+
+        if pairedWithRAW {
+            // The RAW's stem sidecar: its develop (no redaction) must not reach the JPEG.
+            try Data("raw".utf8).write(to: dir.appendingPathComponent("IMG_1.ARW"))
+            var rawDevelop = CameraRawSettings()
+            rawDevelop.exposure2012 = 1.5
+            rawDevelop.temperature = 3200
+            var sidecar = XMPData()
+            sidecar.description = "Pair caption"
+            XMPDataBuilder.applyCameraRaw(rawDevelop, imageAspect: nil, into: &sidecar)
+            try XMPWriter.generateXML(sidecar).data(using: .utf8)!
+                .write(to: dir.appendingPathComponent("IMG_1.xmp"))
+        }
+
+        // An unrelated metadata write to the file.
+        var rewritten = try SwiftMediaMetadata.readMetadata(from: jpeg)
+        var rewrittenXMP = rewritten.xmp ?? XMPData()
+        rewrittenXMP.description = "Unrelated caption edit"
+        rewritten.xmp = rewrittenXMP
+        _ = try rewritten.write(to: jpeg)
+
+        // Browser reload. The row starts with a stale, incomplete in-memory copy (what the old
+        // Browser parser produced); a file change clears it in production.
+        let model = BrowserViewModel()
+        model.currentFolderURL = dir
+        var stale = CameraRawSettings()
+        stale.hasSettings = true
+        var row = ImageFile(url: jpeg)
+        row.cameraRawSettings = stale
+        var images = [row]
+        let dicts = try await SwiftExifReadService().readBatchBasicMetadata(urls: [jpeg])
+        let xmpMap = PhotoSidecarOwnership.applyingDevelopOwnership(
+            XMPSidecarService().loadSidecar(for: jpeg), for: jpeg
+        ).map { [jpeg: $0] } ?? [:]
+        model.applyBatchMetadataResults(dicts, to: &images, localIndex: [jpeg: 0], nativeHDRByURL: [:],
+                                        tagRevisionsAtRead: nil)
+        let reloaded = try #require(images[0].cameraRawSettings)
+        #expect(reloaded.localAdjustments?.first?.isRedaction == true)
+        #expect(reloaded.anonymizer == AnonymizerSettings(amount: 60, blackOut: nil))
+        #expect(reloaded.watermarkLayers?.count == 1)
+        #expect(reloaded.exposure2012 == nil, "the RAW's develop must not reach the paired JPEG")
+        var withSidecar = [row]
+        model.applyBatchMetadataResults(dicts, to: &withSidecar, localIndex: [jpeg: 0],
+                                        xmpMetadataMap: xmpMap, nativeHDRByURL: [:])
+        #expect(withSidecar[0].cameraRawSettings?.hasActiveRedaction == true)
+        #expect(withSidecar[0].cameraRawSettings?.exposure2012 == nil)
+
+        // Export resolution: even a stale in-memory copy can't replace the complete file copy.
+        var map = try await SwiftExifReadService().readBatchFullMetadata(urls: [jpeg])
+        try await EditExportPipeline.resolveCameraRaw(into: &map, urls: [jpeg], inMemory: { _ in stale })
+        let resolved = try #require(map[jpeg]?.cameraRaw)
+        #expect(resolved.hasActiveRedaction)
+        #expect(resolved.anonymizer == AnonymizerSettings(amount: 60, blackOut: nil))
+        #expect(resolved.watermarkLayers?.count == 1)
+        #expect(resolved.exposure2012 == nil)
+
+        // The render with the resolved settings is blurred where the face mask sits. (The
+        // watermark layer is left out of the render: its library asset would be looked up in the
+        // user's real watermark library.)
+        var renderSettings = resolved
+        renderSettings.watermarkLayers = nil
+        renderSettings.layerOrder = nil
+        let redactedDir = dir.appendingPathComponent("redacted", isDirectory: true)
+        let plainDir = dir.appendingPathComponent("plain", isDirectory: true)
+        try FileManager.default.createDirectory(at: redactedDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: plainDir, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        let redactedRender = try await EditExportPipeline.renderItem(
+            sourceURL: jpeg, cameraRaw: renderSettings, kind: .jpeg, outputFolder: redactedDir,
+            folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+        // The unedited baseline bypasses the saved-redaction check (which would refuse it).
+        let plainRender = try await EditExportPipeline.renderItem(
+            sourceURL: jpeg, cameraRaw: nil, kind: .jpeg, outputFolder: plainDir,
+            folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: tracker,
+            savedRedactionAccess: .none)
+        let redactedDeviation = try centerLuminanceDeviation(of: redactedRender)
+        let plainDeviation = try centerLuminanceDeviation(of: plainRender)
+        #expect(plainDeviation > 60, "the unedited checkerboard should be high-contrast (\(plainDeviation))")
+        #expect(redactedDeviation < plainDeviation * 0.5,
+                "the masked face region must be blurred (\(redactedDeviation) vs \(plainDeviation))")
+    }
+
+    /// 128×128 JPEG of 2-pixel black/white checks — maximal local contrast, so any blur shows.
+    private func checkerboardJPEG() throws -> Data {
+        let size = 128
+        var pixels = [UInt8](repeating: 0, count: size * size * 4)
+        for y in 0..<size {
+            for x in 0..<size where ((x / 2) + (y / 2)) % 2 == 0 {
+                let i = (y * size + x) * 4
+                pixels[i] = 255; pixels[i + 1] = 255; pixels[i + 2] = 255
+            }
+        }
+        for i in stride(from: 3, to: pixels.count, by: 4) { pixels[i] = 255 }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(
+                width: size, height: size, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: size * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        else { throw CocoaError(.fileWriteUnknown) }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil)
+        else { throw CocoaError(.fileWriteUnknown) }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 1.0] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+        return data as Data
+    }
+
+    /// Standard deviation of 8-bit luminance over the central 20% square of the image at `url`.
+    private func centerLuminanceDeviation(of url: URL) throws -> Double {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &pixels, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw CocoaError(.fileReadCorruptFile) }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var values: [Double] = []
+        for y in (height * 2 / 5)..<(height * 3 / 5) {
+            for x in (width * 2 / 5)..<(width * 3 / 5) {
+                let i = (y * width + x) * 4
+                values.append(0.299 * Double(pixels[i]) + 0.587 * Double(pixels[i + 1]) + 0.114 * Double(pixels[i + 2]))
+            }
+        }
+        let mean = values.reduce(0, +) / Double(values.count)
+        return (values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(values.count)).squareRoot()
+    }
+
+    @MainActor
+    @Test("resolveCameraRaw applies settings to files whose metadata read failed")
+    func resolveCameraRawFillsFilesMissingFromMetadataMap() async throws {
+        let readURL = URL(fileURLWithPath: "/virtual/read-ok.ARW")
+        let unreadableRAW = URL(fileURLWithPath: "/virtual/unreadable.ARW")
+        let unreadableLive = URL(fileURLWithPath: "/virtual/unreadable-live.jpg")
+        let notRequested = URL(fileURLWithPath: "/virtual/not-requested.ARW")
+        var sidecarSettings = CameraRawSettings()
+        sidecarSettings.exposure2012 = 1.5
+        var liveSettings = CameraRawSettings()
+        liveSettings.contrast2012 = 20
+        let probe = ExportCameraRawResolutionProbe(settingsByURL: [
+            readURL: sidecarSettings,
+            unreadableRAW: sidecarSettings,
+            notRequested: sidecarSettings,
+        ])
+        let service = ExportCameraRawResolutionService(access: probe.access)
+        // Only one file parsed; the other two were dropped by readBatchFullMetadata.
+        var map: [URL: IPTCMetadata] = [readURL: IPTCMetadata(title: "Kept caption")]
+
+        try await EditExportPipeline.resolveCameraRaw(
+            into: &map,
+            urls: [readURL, unreadableRAW, unreadableLive],
+            inMemory: { $0 == unreadableLive ? liveSettings : nil },
+            service: service
+        )
+
+        #expect(map[readURL]?.cameraRaw == sidecarSettings)
+        #expect(map[readURL]?.title == "Kept caption")
+        #expect(map[unreadableRAW]?.cameraRaw == sidecarSettings)
+        #expect(map[unreadableLive]?.cameraRaw == liveSettings)
+        #expect(map[notRequested] == nil)
+        #expect(map.count == 3)
     }
 
     @Test("Camera Raw resolution reports the exact prefix when cancellation follows a sidecar read")
@@ -1207,7 +1437,7 @@ private nonisolated final class ExportCameraRawResolutionProbe: @unchecked Senda
             let invocation = _loadInvocationCount
             condition.broadcast()
             while blockFirstLoad, invocation == 1, !didReleaseFirstLoad {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
             activeLoads -= 1
             condition.broadcast()
@@ -1237,7 +1467,7 @@ private nonisolated final class ExportCameraRawResolutionProbe: @unchecked Senda
             DispatchQueue.global().async { [self] in
                 condition.lock()
                 while _loadInvocationCount == 0 {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
                 condition.unlock()
                 continuation.resume()
@@ -1312,7 +1542,7 @@ private nonisolated final class ExportArtifactFinalizationProbe: @unchecked Send
                 while blockFirstVisibilityRead,
                       invocation == 1,
                       !didReleaseFirstVisibilityRead {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
                 condition.unlock()
                 endOperation()
@@ -1350,7 +1580,7 @@ private nonisolated final class ExportArtifactFinalizationProbe: @unchecked Send
             DispatchQueue.global().async { [self] in
                 condition.lock()
                 while _visibilityReadInvocationCount == 0 {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
                 condition.unlock()
                 continuation.resume()
@@ -2289,7 +2519,7 @@ nonisolated private final class RAWArchiveCleanupProbe: @unchecked Sendable {
                 while blockFirstRemoval,
                       _removalInvocationCount == 1,
                       !didReleaseFirstRemoval {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
 
                 defer {
@@ -2326,7 +2556,7 @@ nonisolated private final class RAWArchiveCleanupProbe: @unchecked Sendable {
             DispatchQueue.global().async { [self] in
                 condition.lock()
                 while _removalInvocationCount == 0 {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
                 condition.unlock()
                 continuation.resume()
@@ -2537,6 +2767,636 @@ struct FFmpegAVIFEncodingTests {
     }
 }
 
+/// Export rendering must reproduce what the grid, full screen and Develop show: the sidecar
+/// orientation (which wins over the file's tag), the SDR rendition of adaptive-HDR sources
+/// for SDR outputs, and the same pixels whether or not a resolution limit lets the source
+/// decode at reduced size.
+@Suite("Export render fidelity")
+struct ExportRenderFidelityTests {
+    private typealias RGB = (r: Int, g: Int, b: Int)
+    private static let red: RGB = (255, 0, 0)
+    private static let green: RGB = (0, 255, 0)
+    private static let blue: RGB = (0, 0, 255)
+    private static let white: RGB = (255, 255, 255)
+
+    private func pngConfiguration(_ limit: ExportResolutionLimit = .original) -> AdvancedExportConfiguration {
+        AdvancedExportConfiguration(
+            sdrFormat: .png,
+            sdrQuality: 0.92,
+            sdrGamut: .sRGB,
+            hdrFormat: .jpegGainMap,
+            hdrQuality: 0.92,
+            hdrGamut: .displayP3,
+            tiffCompression: .lzw,
+            resolutionLimit: limit,
+            locationMode: .formatSubfolder,
+            customSubfolderName: "Exports"
+        )
+    }
+
+    private func makeDirectory(_ name: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("output", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        return directory
+    }
+
+    /// 64x32 stored pixels: top-left red, top-right green, bottom-left blue, bottom-right white.
+    private func writeQuadrantJPEG(to url: URL, orientation: Int) throws {
+        let width = 64, height = 32
+        let context = try #require(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ))
+        // CGContext is y-up: the top half of the stored image is y >= height / 2.
+        let quadrants: [(CGRect, RGB)] = [
+            (CGRect(x: 0, y: 16, width: 32, height: 16), Self.red),
+            (CGRect(x: 32, y: 16, width: 32, height: 16), Self.green),
+            (CGRect(x: 0, y: 0, width: 32, height: 16), Self.blue),
+            (CGRect(x: 32, y: 0, width: 32, height: 16), Self.white),
+        ]
+        for (rect, color) in quadrants {
+            context.setFillColor(CGColor(
+                srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255,
+                blue: CGFloat(color.b) / 255, alpha: 1
+            ))
+            context.fill(rect)
+        }
+        let image = try #require(context.makeImage())
+        try writeJPEG(image, to: url, orientation: orientation)
+    }
+
+    private func writeJPEG(_ image: CGImage, to url: URL, orientation: Int) throws {
+        let destination = try #require(CGImageDestinationCreateWithURL(
+            url as CFURL, "public.jpeg" as CFString, 1, nil
+        ))
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationLossyCompressionQuality: 1.0,
+            kCGImagePropertyOrientation: orientation,
+        ] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+    }
+
+    private func writeSidecarOrientation(_ orientation: Int, for source: URL) throws {
+        var xmp = IPTCMetadata()
+        xmp.exifOrientation = orientation
+        try XMPSidecarService().saveSidecar(metadata: xmp, for: source)
+    }
+
+    private struct Pixels {
+        let width: Int
+        let height: Int
+        let bytes: [UInt8]
+
+        func rgb(_ x: Int, _ y: Int) -> RGB {
+            let index = (y * width + x) * 4
+            return (Int(bytes[index]), Int(bytes[index + 1]), Int(bytes[index + 2]))
+        }
+    }
+
+    /// Stored pixels (no orientation applied), top row first, as 8-bit sRGB.
+    private func pixels(of image: CGImage) throws -> Pixels {
+        let width = image.width, height = image.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            let context = try #require(CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        return Pixels(width: width, height: height, bytes: bytes)
+    }
+
+    private func pixels(at url: URL) throws -> Pixels {
+        let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+        return try pixels(of: try #require(CGImageSourceCreateImageAtIndex(source, 0, nil)))
+    }
+
+    private func expectColor(_ pixels: Pixels, _ x: Int, _ y: Int, _ expected: RGB,
+                             _ comment: String, sourceLocation: SourceLocation = #_sourceLocation) {
+        let actual = pixels.rgb(x, y)
+        let close = abs(actual.r - expected.r) < 70
+            && abs(actual.g - expected.g) < 70
+            && abs(actual.b - expected.b) < 70
+        #expect(close, "\(comment): pixel (\(x), \(y)) is \(actual), expected \(expected)",
+                sourceLocation: sourceLocation)
+    }
+
+    private func meanAbsoluteDifference(_ lhs: Pixels, _ rhs: Pixels, border: Int = 0) -> (mean: Double, max: Int) {
+        let width = min(lhs.width, rhs.width), height = min(lhs.height, rhs.height)
+        var total = 0, count = 0, maximum = 0
+        for y in border..<(height - border) {
+            for x in border..<(width - border) {
+                let a = lhs.rgb(x, y), b = rhs.rgb(x, y)
+                for delta in [abs(a.r - b.r), abs(a.g - b.g), abs(a.b - b.b)] {
+                    total += delta
+                    maximum = max(maximum, delta)
+                }
+                count += 3
+            }
+        }
+        return (Double(total) / Double(max(count, 1)), maximum)
+    }
+
+    private func editedSettings() -> CameraRawSettings {
+        var settings = CameraRawSettings()
+        settings.contrast2012 = 5
+        return settings
+    }
+
+    // MARK: Orientation
+
+    @Test("A sidecar-only rotation is baked into exported pixels", arguments: [6, 8], [false, true])
+    func sidecarRotationIsBakedIn(orientation: Int, edited: Bool) async throws {
+        let directory = try makeDirectory("sidecar-rotation")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        try writeQuadrantJPEG(to: source, orientation: 1)
+        try writeSidecarOrientation(orientation, for: source)
+        #expect(FullScreenImageCache.displayOrientation(for: source, fallback: 1) == orientation)
+
+        let rendered = try await EditedImageRenderer.render(
+            from: source, cameraRaw: edited ? editedSettings() : nil, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration()
+        )
+        let output = try pixels(at: rendered)
+        #expect(output.width == 32)
+        #expect(output.height == 64)
+        // 90° CW (6): stored bottom-left lands top-left. 90° CCW (8): stored top-right does.
+        let expected: [RGB] = orientation == 6
+            ? [Self.blue, Self.red, Self.white, Self.green]
+            : [Self.green, Self.white, Self.red, Self.blue]
+        expectColor(output, 8, 16, expected[0], "top-left")
+        expectColor(output, 24, 16, expected[1], "top-right")
+        expectColor(output, 8, 48, expected[2], "bottom-left")
+        expectColor(output, 24, 48, expected[3], "bottom-right")
+    }
+
+    @Test("A sidecar rotation with a crop renders the region framed in Develop")
+    func sidecarRotationWithCrop() async throws {
+        let directory = try makeDirectory("sidecar-rotation-crop")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        try writeQuadrantJPEG(to: source, orientation: 1)
+        try writeSidecarOrientation(6, for: source)
+
+        // Crops are stored in the sensor (stored-pixel) frame: keep the left half, which
+        // holds the red (top) and blue (bottom) quadrants.
+        var settings = editedSettings()
+        settings.crop = CameraRawCrop(top: 0, left: 0, bottom: 1, right: 0.5, angle: 0, hasCrop: true)
+        let rendered = try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration()
+        )
+        let output = try pixels(at: rendered)
+        #expect(output.width == 32)
+        #expect(output.height == 32)
+        // Rotated 90° CW for display: blue on the left, red on the right, nothing else.
+        expectColor(output, 6, 6, Self.blue, "top-left")
+        expectColor(output, 6, 26, Self.blue, "bottom-left")
+        expectColor(output, 26, 6, Self.red, "top-right")
+        expectColor(output, 26, 26, Self.red, "bottom-right")
+
+        // The narrower crop keeps only the sensor's top-left (red) quadrant: 32x16 stored,
+        // 16x32 displayed.
+        settings.crop = CameraRawCrop(top: 0, left: 0, bottom: 0.5, right: 0.5, angle: 0, hasCrop: true)
+        let quadrant = try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration(), collisionPolicy: .appendNumber
+        )
+        let quadrantPixels = try pixels(at: quadrant)
+        #expect(quadrantPixels.width == 16)
+        #expect(quadrantPixels.height == 32)
+        expectColor(quadrantPixels, 8, 4, Self.red, "top")
+        expectColor(quadrantPixels, 8, 28, Self.red, "bottom")
+    }
+
+    /// The browse-mode scope source must read the same frame and region full screen shows.
+    /// Its loaders bake the FILE orientation; it used to pass the sidecar orientation as the
+    /// pixels' frame without rotating, so a sidecar-rotated crop selected the wrong region
+    /// and the waveform's x axis followed the file instead of the display.
+    @Test("The browse scope source matches full screen for a sidecar-rotated photo",
+          arguments: [false, true], [false, true])
+    func browseScopeSourceMatchesFullScreen(isNativeHDR: Bool, cropped: Bool) async throws {
+        let directory = try makeDirectory("scope-sidecar-rotation")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        try writeQuadrantJPEG(to: source, orientation: 1)
+        try writeSidecarOrientation(6, for: source)
+        let displayOrientation = FullScreenImageCache.displayOrientation(for: source, fallback: 1)
+        #expect(displayOrientation == 6)
+
+        // Sensor-frame crop keeping the left half (red over blue) — see sidecarRotationWithCrop.
+        var settings: CameraRawSettings?
+        if cropped {
+            var edited = editedSettings()
+            edited.crop = CameraRawCrop(top: 0, left: 0, bottom: 1, right: 0.5, angle: 0, hasCrop: true)
+            settings = edited
+        }
+
+        let scope = try pixels(of: try #require(FullScreenImageCache.browseScopeSource(
+            for: source, isNativeHDR: isNativeHDR, settings: settings,
+            displayOrientation: displayOrientation
+        )))
+        let fullScreen = try pixels(of: try #require(await FullScreenImageCache.decodedEditedPreview(
+            for: source, settings: settings, orientation: displayOrientation, screenMaxPx: 720
+        )))
+
+        for (name, image) in [("scope", scope), ("full screen", fullScreen)] {
+            if cropped {
+                #expect(image.width == 32 && image.height == 32,
+                        "\(name): expected the 32x32 displayed crop, got \(image.width)x\(image.height)")
+                guard image.width == 32, image.height == 32 else { continue }
+                // Rotated 90° CW for display: blue on the left, red on the right.
+                expectColor(image, 6, 6, Self.blue, "\(name) top-left")
+                expectColor(image, 6, 26, Self.blue, "\(name) bottom-left")
+                expectColor(image, 26, 6, Self.red, "\(name) top-right")
+                expectColor(image, 26, 26, Self.red, "\(name) bottom-right")
+            } else {
+                #expect(image.width == 32 && image.height == 64,
+                        "\(name): expected the 32x64 display frame, got \(image.width)x\(image.height)")
+                guard image.width == 32, image.height == 64 else { continue }
+                expectColor(image, 8, 16, Self.blue, "\(name) top-left")
+                expectColor(image, 24, 16, Self.red, "\(name) top-right")
+                expectColor(image, 8, 48, Self.white, "\(name) bottom-left")
+                expectColor(image, 24, 48, Self.green, "\(name) bottom-right")
+            }
+        }
+        #expect(scope.width == fullScreen.width && scope.height == fullScreen.height)
+    }
+
+    @Test("Embedded and sidecar rotations both reach Save As JPEG upright with orientation 1")
+    func embeddedOrientationAndSaveAsJPEG() async throws {
+        let directory = try makeDirectory("embedded-rotation")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let embedded = directory.appendingPathComponent("embedded.jpg")
+        try writeQuadrantJPEG(to: embedded, orientation: 6)
+        let sidecarOnly = directory.appendingPathComponent("sidecar.jpg")
+        try writeQuadrantJPEG(to: sidecarOnly, orientation: 1)
+        try writeSidecarOrientation(6, for: sidecarOnly)
+
+        for source in [embedded, sidecarOnly] {
+            let rendered = try await EditExportPipeline.renderItem(
+                sourceURL: source, cameraRaw: editedSettings(), kind: .saveAs(.jpeg),
+                outputFolder: directory.appendingPathComponent("output"), folderURL: directory,
+                writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker()
+            )
+            let output = try pixels(at: rendered)
+            #expect(output.width == 32, "\(source.lastPathComponent)")
+            #expect(output.height == 64, "\(source.lastPathComponent)")
+            expectColor(output, 8, 16, Self.blue, "\(source.lastPathComponent) top-left")
+            expectColor(output, 24, 16, Self.red, "\(source.lastPathComponent) top-right")
+            let imageSource = try #require(CGImageSourceCreateWithURL(rendered as CFURL, nil))
+            let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+            #expect((properties?[kCGImagePropertyOrientation] as? Int ?? 1) == 1,
+                    "\(source.lastPathComponent) must not be rotated twice by a viewer")
+        }
+    }
+
+    @Test("A photo rotated by the app's own rotate exports with EXIF and XMP orientation both 1")
+    func appRotatedPhotoExportsConsistentOrientation() async throws {
+        let directory = try makeDirectory("app-rotated")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        try writeQuadrantJPEG(to: source, orientation: 1)
+        _ = try await SwiftExifWriteEngine().writeFieldMutation(
+            .orientation(expected: 1, new: 6), to: source, validatePreparedIntent: {}
+        )
+        let rotated = try SwiftMediaMetadata.readMetadata(from: source)
+        #expect(rotated.exif?.orientation == 6)
+        #expect(rotated.xmp?.tiffOrientation == "6")
+
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source, cameraRaw: editedSettings(), kind: .saveAs(.jpeg),
+            outputFolder: directory.appendingPathComponent("output"), folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker()
+        )
+        let output = try pixels(at: rendered)
+        #expect(output.width == 32)
+        #expect(output.height == 64)
+        let physical = try SwiftMediaMetadata.readMetadata(from: rendered)
+        #expect((physical.exif?.orientation ?? 1) == 1)
+        #expect((physical.xmp?.tiffOrientation ?? "1") == "1")
+        #expect((physical.xmp?.simpleValue(namespace: XMPNamespace.exif, property: "Orientation") ?? "1") == "1")
+    }
+
+    /// Classifies a pixel by its dominant channel; archive pixels are PQ-encoded, so
+    /// absolute levels after conversion to 8-bit sRGB are not meaningful.
+    private func dominant(_ pixels: Pixels, _ x: Int, _ y: Int) -> String {
+        let p = pixels.rgb(x, y)
+        if p.r > p.g + 40, p.r > p.b + 40 { return "red" }
+        if p.g > p.r + 40, p.g > p.b + 40 { return "green" }
+        if p.b > p.r + 40, p.b > p.g + 40 { return "blue" }
+        return min(p.r, p.g, p.b) > 60 ? "white" : "other"
+    }
+
+    @Test("RAW archives stay consistent with their copied sidecar's orientation")
+    func rawArchiveOrientationMatchesCopiedSidecar() async throws {
+        let directory = try makeDirectory("raw-archive-orientation")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // CIRAWFilter rejects these bytes, so the archive takes the renderer's generic
+        // CIImage fallback, which bakes the embedded orientation exactly as CIRAWFilter does.
+        func makeSource(_ name: String) throws -> URL {
+            let jpeg = directory.appendingPathComponent("\(name).jpg")
+            try writeQuadrantJPEG(to: jpeg, orientation: 6)
+            let raw = directory.appendingPathComponent("\(name).dng")
+            try FileManager.default.moveItem(at: jpeg, to: raw)
+            #expect(FullScreenImageCache.fileEXIFOrientation(at: raw) == 6)
+            return raw
+        }
+        func archive(_ source: URL) async throws -> URL {
+            let folder = directory.appendingPathComponent("archive-\(source.deletingPathExtension().lastPathComponent)")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let output = try await EditedImageRenderer.convertRAWTo16BitTIFF(
+                from: source, decodeProfile: .camera, destinationFolder: folder)
+            try RAWArchiveService.copySidecarIfPresent(from: source, to: output)
+            return output
+        }
+        func displayedOrientation(_ url: URL) -> Int {
+            FullScreenImageCache.displayOrientation(
+                for: url, fallback: FullScreenImageCache.fileEXIFOrientation(at: url))
+        }
+
+        // Sidecar with orientation: sensor-frame pixels, copied sidecar orients them.
+        let oriented = try makeSource("oriented")
+        try writeSidecarOrientation(6, for: oriented)
+        let orientedArchive = try await archive(oriented)
+        let orientedPixels = try pixels(at: orientedArchive)
+        #expect(orientedPixels.width == 64)
+        #expect(orientedPixels.height == 32)
+        #expect(dominant(orientedPixels, 8, 8) == "red")
+        #expect(dominant(orientedPixels, 56, 24) == "white")
+        #expect(displayedOrientation(orientedArchive) == displayedOrientation(oriented))
+
+        // Sidecar without orientation: the RAW's embedded tag is carried into the copy.
+        let unoriented = try makeSource("unoriented")
+        try Data("""
+            <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\
+            <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="3"/>\
+            </rdf:RDF></x:xmpmeta>
+            """.utf8).write(to: XMPSidecarService().sidecarURL(for: unoriented))
+        #expect(XMPSidecarService().sidecarOrientation(for: unoriented) == nil)
+        let unorientedArchive = try await archive(unoriented)
+        let unorientedPixels = try pixels(at: unorientedArchive)
+        #expect(unorientedPixels.width == 64)
+        #expect(XMPSidecarService().sidecarOrientation(for: unorientedArchive) == 6)
+        #expect(displayedOrientation(unorientedArchive) == displayedOrientation(unoriented))
+
+        // No sidecar: nothing else carries the orientation, so it stays baked in.
+        let bare = try makeSource("bare")
+        let bareArchive = try await archive(bare)
+        let barePixels = try pixels(at: bareArchive)
+        #expect(barePixels.width == 32)
+        #expect(barePixels.height == 64)
+        #expect(dominant(barePixels, 8, 16) == "blue")
+        #expect(dominant(barePixels, 24, 16) == "red")
+        #expect(displayedOrientation(bareArchive) == 1)
+    }
+
+    // MARK: Adaptive HDR sources
+
+    @Test("SDR exports of a gain-map JPEG use its SDR rendition instead of clipping the expansion")
+    func gainMapSDRExportUsesSDRRendition() async throws {
+        let directory = try makeDirectory("gainmap-sdr")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("adaptive.jpg")
+
+        // Neutral ramp from black to 4x SDR white in extended linear sRGB.
+        let width = 256, height = 32
+        var floats = [Float](repeating: 1, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let value = Float(x) / Float(width - 1) * 4
+                let index = (y * width + x) * 4
+                floats[index] = value
+                floats[index + 1] = value
+                floats[index + 2] = value
+            }
+        }
+        let hdr = CIImage(
+            bitmapData: floats.withUnsafeBufferPointer { Data(buffer: $0) },
+            bytesPerRow: width * 16,
+            size: CGSize(width: width, height: height),
+            format: .RGBAf,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        )
+        try EditedImageRenderer.writeHDRGainMapJPEG(
+            hdrImage: hdr, destURL: source, colorSpace: CameraRawApproximation.workingColorSpace,
+            quality: 0.95, ctx: CameraRawApproximation.ciContext
+        )
+
+        let context = CameraRawApproximation.ciContext
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        let base = try #require(CIImage(contentsOf: source, options: [.applyOrientationProperty: true]))
+        let expanded = try #require(CIImage(contentsOf: source, options: [
+            .applyOrientationProperty: true, .expandToHDR: true, .toneMapHDRtoSDR: false,
+        ]))
+        let basePixels = try pixels(of: try #require(
+            context.createCGImage(base, from: base.extent, format: .RGBA8, colorSpace: sRGB)))
+        let clippedPixels = try pixels(of: try #require(
+            context.createCGImage(expanded, from: expanded.extent, format: .RGBA8, colorSpace: sRGB)))
+        func clippedCount(_ pixels: Pixels) -> Int {
+            (0..<pixels.width).filter { pixels.rgb($0, height / 2).g >= 254 }.count
+        }
+        // The fixture must reproduce the defect: expansion clips many more highlight columns.
+        try #require(clippedCount(clippedPixels) > clippedCount(basePixels) + 20)
+
+        let exported = try pixels(at: try await EditedImageRenderer.render(
+            from: source, cameraRaw: nil, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration()
+        ))
+        let unedited = meanAbsoluteDifference(exported, basePixels)
+        #expect(unedited.mean < 2, "unedited SDR export differs from the SDR rendition: \(unedited)")
+        #expect(clippedCount(exported) <= clippedCount(basePixels) + 2)
+
+        // Save As forces SDR; HDR mode alone (Develop auto-enables it) is not a pixel edit.
+        var hdrModeOnly = CameraRawSettings()
+        hdrModeOnly.hdrEditMode = 1
+        #expect(EditedImageRenderer.sdrOutputUsesBaseRendition(of: hdrModeOnly))
+        let savedAs = try pixels(at: try await EditedImageRenderer.saveAs(
+            from: source, cameraRaw: hdrModeOnly, format: .png,
+            destinationFolder: directory.appendingPathComponent("output")
+        ))
+        let saved = meanAbsoluteDifference(savedAs, basePixels)
+        #expect(saved.mean < 3, "Save As SDR differs from the SDR rendition: \(saved)")
+        #expect(clippedCount(savedAs) <= clippedCount(basePixels) + 2)
+
+        // An edited photo keeps Develop's expanded decode: -1 EV recovers gain-map
+        // highlights exactly as the user tuned it, rather than darkening the SDR base.
+        var edited = CameraRawSettings()
+        edited.exposure2012 = -1
+        #expect(!EditedImageRenderer.sdrOutputUsesBaseRendition(of: edited))
+        func developRendition(of decoded: CIImage) throws -> Pixels {
+            let rendered = CameraRawApproximation.applyWithCrop(
+                to: decoded, settings: edited, exifOrientation: 1)
+            return try pixels(of: try #require(
+                context.createCGImage(rendered, from: rendered.extent, format: .RGBA8, colorSpace: sRGB)))
+        }
+        let developReference = try developRendition(of: expanded)
+        let baseReference = try developRendition(of: base)
+        try #require(meanAbsoluteDifference(developReference, baseReference).mean > 3,
+                     "fixture must distinguish the expanded and base decodes once edited")
+        let editedExport = try pixels(at: try await EditedImageRenderer.render(
+            from: source, cameraRaw: edited, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration(), collisionPolicy: .appendNumber
+        ))
+        let editedDifference = meanAbsoluteDifference(editedExport, developReference)
+        #expect(editedDifference.mean < 2, "edited SDR export differs from Develop's rendition: \(editedDifference)")
+    }
+
+    // MARK: Reduced-resolution decode
+
+    @Test("Resolution-limited exports decode near the needed size and match a full-size render",
+          arguments: [false, true])
+    func reducedDecodeMatchesFullResolution(croppedAndRotated: Bool) async throws {
+        let directory = try makeDirectory("reduced-decode")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("large.jpg")
+        let width = 3600, height = 2400
+        var bytes = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let blue = UInt8(255 * Double(y) / Double(height))
+            let wave = cos(Double(y) * 0.02)
+            for x in 0..<width {
+                let index = (y * width + x) * 4
+                bytes[index] = UInt8(255 * Double(x) / Double(width))
+                bytes[index + 1] = UInt8(127.5 + 127 * sin(Double(x) * 0.03) * wave)
+                bytes[index + 2] = blue
+            }
+        }
+        let image: CGImage = try bytes.withUnsafeMutableBytes { buffer in
+            let context = try #require(CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+            ))
+            return try #require(context.makeImage())
+        }
+        try writeJPEG(image, to: source, orientation: 1)
+
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.3
+        settings.contrast2012 = 10
+        var orientation = 1
+        if croppedAndRotated {
+            settings.crop = CameraRawCrop(top: 0.1, left: 0.05, bottom: 0.8, right: 0.85, angle: 0, hasCrop: true)
+            try writeSidecarOrientation(6, for: source)
+            orientation = 6
+        }
+        // The fixture must take the reduced path: crop-aware, well below native size.
+        let decodeSize = try #require(EditedImageRenderer.exportDecodeMaxPixelSize(
+            maximumOutputPixelSize: 1600, settings: settings, orientation: orientation,
+            sourcePixelSize: CGSize(width: width, height: height)
+        ))
+        #expect(decodeSize < 2200)
+        #expect(decodeSize > 1600)
+
+        let output = directory.appendingPathComponent("output")
+        let limited = try pixels(at: try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false, outputFolder: output,
+            configuration: pngConfiguration(.pixels1600)
+        ))
+        let fullURL = try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false, outputFolder: output,
+            configuration: pngConfiguration(), collisionPolicy: .appendNumber
+        )
+        let fullImage = try #require(CIImage(contentsOf: fullURL))
+        let resized = EditedImageRenderer.limitedForExport(fullImage, maximumPixelSize: 1600)
+        let reference = try pixels(of: try #require(CameraRawApproximation.ciContext.createCGImage(
+            resized, from: resized.extent, format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!
+        )))
+
+        #expect(max(limited.width, limited.height) == 1600)
+        #expect(abs(limited.width - reference.width) <= 1)
+        #expect(abs(limited.height - reference.height) <= 1)
+        if croppedAndRotated {
+            #expect(limited.width < limited.height, "the sidecar rotation must survive")
+        }
+        let difference = meanAbsoluteDifference(limited, reference, border: 3)
+        #expect(difference.mean < 2.5, "reduced decode differs from full-size render: \(difference)")
+        #expect(difference.max < 40, "reduced decode differs from full-size render: \(difference)")
+    }
+
+    @Test("Resolution-dependent effects keep the full-resolution decode")
+    func resolutionDependentEffectsDisableReducedDecode() throws {
+        let native = CGSize(width: 8000, height: 6000)
+        func decodeSize(_ settings: CameraRawSettings?, limit: Int = 2048,
+                        source: CGSize = native) -> CGFloat? {
+            EditedImageRenderer.exportDecodeMaxPixelSize(
+                maximumOutputPixelSize: limit, settings: settings, orientation: 1,
+                sourcePixelSize: source
+            )
+        }
+
+        let padded = CGFloat(2048) * 1.04 + 8
+        #expect(decodeSize(nil) == padded)
+        #expect(decodeSize(CameraRawSettings()) == padded)
+        #expect(EditedImageRenderer.exportDecodeMaxPixelSize(
+            maximumOutputPixelSize: nil, settings: nil, orientation: 1, sourcePixelSize: native
+        ) == nil)
+        // Not worth a second resample when the source is barely larger.
+        #expect(decodeSize(nil, source: CGSize(width: 3000, height: 2000)) == nil)
+
+        // A quarter-frame crop (half of each side) needs twice the decode size to fill the limit.
+        var cropped = CameraRawSettings()
+        cropped.crop = CameraRawCrop(top: 0, left: 0, bottom: 0.5, right: 0.5, angle: 0, hasCrop: true)
+        let croppedSize = try #require(decodeSize(cropped))
+        #expect(abs(croppedSize - padded * 2) < 1)
+
+        var sharpened = CameraRawSettings()
+        sharpened.sharpness = 40
+        #expect(decodeSize(sharpened) == nil)
+
+        for film in [
+            FilmEmulationSettings(grain: 20), FilmEmulationSettings(halation: 20),
+            FilmEmulationSettings(bloom: 20), FilmEmulationSettings(edgeBlur: 20),
+        ] {
+            var settings = CameraRawSettings()
+            settings.filmEmulation = film
+            #expect(decodeSize(settings) == nil, "\(film)")
+        }
+        var vignette = CameraRawSettings()
+        vignette.filmEmulation = FilmEmulationSettings(vignette: -30)
+        #expect(decodeSize(vignette) == padded)
+
+        // Clarity's pixel radius is proportional only for 1000...8000 px short sides.
+        var clarity = CameraRawSettings()
+        clarity.clarity2012 = 25
+        #expect(decodeSize(clarity) == padded)
+        #expect(decodeSize(clarity, source: CGSize(width: 12000, height: 9000)) == nil)
+        #expect(decodeSize(clarity, limit: 1600, source: CGSize(width: 8000, height: 1600)) == nil)
+
+        var watermarked = CameraRawSettings()
+        var layer = WatermarkLayer(libraryAssetID: UUID())
+        layer.geometry.sizeUnit = .pixel
+        watermarked.watermarkLayers = [layer]
+        #expect(decodeSize(watermarked) == nil)
+        layer.geometry.sizeUnit = .percent
+        layer.geometry.marginUnit = .pixel
+        watermarked.watermarkLayers = [layer]
+        #expect(decodeSize(watermarked) == nil)
+        layer.geometry.marginUnit = .percent
+        watermarked.watermarkLayers = [layer]
+        #expect(decodeSize(watermarked) == padded)
+        layer.enabled = false
+        layer.geometry.sizeUnit = .pixel
+        watermarked.watermarkLayers = [layer]
+        #expect(decodeSize(watermarked) == padded)
+    }
+}
+
 @Suite("Adaptive HDR JPEG")
 struct AdaptiveHDRJPEGTests {
     private func makeSourceJPEG(in directory: URL) throws -> URL {
@@ -2607,6 +3467,143 @@ struct AdaptiveHDRJPEGTests {
             .toneMapHDRtoSDR: false
         ]))
         #expect(expanded.contentHeadroom > 1)
+
+        // A real gain-map JPEG padded far past its header must still classify as
+        // HDR while the container preflight reads only the header region.
+        let padded = directory.appendingPathComponent("adaptive-hdr-padded.jpg")
+        var paddedData = try Data(contentsOf: destination)
+        paddedData.append(Data(count: 12_000_000))
+        try paddedData.write(to: padded)
+        let probe = SupportedImageFormats.gainMapContainerHintProbe(url: padded)
+        #expect(probe.hasHint)
+        #expect(probe.bytesRead < 300_000)
+        #expect(SupportedImageFormats.isHDR(url: padded))
+        #expect(
+            SupportedImageFormats.gainMapContainerHintProbe(url: destination).hasHint
+                == Self.legacyFullReadHint(url: destination)
+        )
+        #expect(
+            SupportedImageFormats.gainMapContainerHintProbe(url: source).hasHint
+                == Self.legacyFullReadHint(url: source)
+        )
+    }
+
+    /// Writes a synthetic JPEG: SOI, a big EXIF-like APP1, optional APP2 payload,
+    /// DQT, SOS, then `scanBytes` of entropy-coded filler and EOI.
+    private static func syntheticJPEG(
+        app2Payload: Data?,
+        scanBytes: Int,
+        scanInjection: Data? = nil
+    ) -> Data {
+        func segment(_ marker: UInt8, _ payload: Data) -> Data {
+            let length = payload.count + 2
+            var data = Data([0xFF, marker, UInt8(length >> 8), UInt8(length & 0xFF)])
+            data.append(payload)
+            return data
+        }
+        var data = Data([0xFF, 0xD8])
+        data.append(segment(0xE1, Data("Exif\0\0".utf8) + Data(repeating: 0x11, count: 60_000)))
+        if let app2Payload { data.append(segment(0xE2, app2Payload)) }
+        data.append(segment(0xDB, Data(repeating: 0x01, count: 65)))
+        data.append(segment(0xDA, Data(repeating: 0x00, count: 10)))
+        var scan = Data(repeating: 0x5A, count: scanBytes)
+        if let scanInjection {
+            scan.replaceSubrange(scanBytes / 2..<(scanBytes / 2 + scanInjection.count), with: scanInjection)
+        }
+        data.append(scan)
+        data.append(contentsOf: [0xFF, 0xD9])
+        return data
+    }
+
+    @Test("gain-map preflight reads only the JPEG header, never the whole file")
+    func gainMapPreflightIsBoundedForJPEG() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-hdr-preflight-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let scanBytes = 20_000_000
+        let cases: [(name: String, data: Data, expected: Bool)] = [
+            ("mpf.jpg", Self.syntheticJPEG(app2Payload: Data("MPF\0".utf8) + Data(count: 200), scanBytes: scanBytes), true),
+            ("iso.jpg", Self.syntheticJPEG(app2Payload: Data("urn:iso:std:iso:ts:21496:-1".utf8), scanBytes: scanBytes), true),
+            ("plain.jpg", Self.syntheticJPEG(app2Payload: nil, scanBytes: scanBytes), false),
+            // A signature buried in the compressed scan is not gain-map linkage.
+            ("scan-only.jpg", Self.syntheticJPEG(app2Payload: nil, scanBytes: scanBytes, scanInjection: Data("MPF\0".utf8)), false),
+        ]
+        for testCase in cases {
+            let url = directory.appendingPathComponent(testCase.name)
+            try testCase.data.write(to: url)
+            let probe = SupportedImageFormats.gainMapContainerHintProbe(url: url)
+            #expect(probe.hasHint == testCase.expected, "\(testCase.name)")
+            #expect(probe.hasHint == Self.legacyFullReadHint(url: url), "\(testCase.name)")
+            #expect(probe.bytesRead < 300_000, "\(testCase.name) read \(probe.bytesRead) bytes")
+        }
+
+        // Non-candidate formats are never opened.
+        let tiff = directory.appendingPathComponent("frame.tiff")
+        try Data(count: 1_000).write(to: tiff)
+        #expect(SupportedImageFormats.gainMapContainerHintProbe(url: tiff).bytesRead == 0)
+    }
+
+    @Test("gain-map preflight reads at most the HEIF prefix")
+    func gainMapPreflightIsBoundedForHEIF() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-hdr-preflight-heif-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let limit = SupportedImageFormats.heifGainMapHintPrefixLimit
+        var early = Data(count: 8_000_000)
+        early.replaceSubrange(4_096..<4_100, with: Data("tmap".utf8))
+        var late = Data(count: 8_000_000)
+        late.replaceSubrange(3_000_000..<3_000_004, with: Data("tmap".utf8))
+
+        for (name, data, expected) in [("early.heic", early, true), ("late.heic", late, false)] {
+            let url = directory.appendingPathComponent(name)
+            try data.write(to: url)
+            let probe = SupportedImageFormats.gainMapContainerHintProbe(url: url)
+            #expect(probe.hasHint == expected, "\(name)")
+            #expect(probe.hasHint == Self.legacyFullReadHint(url: url), "\(name)")
+            #expect(probe.bytesRead <= limit, "\(name) read \(probe.bytesRead) bytes")
+        }
+    }
+
+    /// The pre-3.0 whole-file implementation, kept verbatim as an oracle so the
+    /// bounded reader is proven to classify identically.
+    private static func legacyFullReadHint(url: URL) -> Bool {
+        let fileExtension = url.pathExtension.lowercased()
+        let isJPEGContainer = ["jpg", "jpeg"].contains(fileExtension)
+        guard isJPEGContainer || fileExtension == "heic" || fileExtension == "heif" else { return false }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
+        let gainMapSignatures = [
+            Data("AMPF".utf8), Data("MPF\0".utf8), Data("urn:iso:std:iso:ts:21496".utf8),
+            Data("HDRGainMap".utf8), Data("hdrgainmap".utf8), Data("tmap".utf8)
+        ]
+        if isJPEGContainer {
+            guard data.count >= 4, data[0] == 0xFF, data[1] == 0xD8 else { return false }
+            var offset = 2
+            while offset + 3 < data.count {
+                while offset < data.count, data[offset] == 0xFF { offset += 1 }
+                guard offset < data.count else { return false }
+                let marker = data[offset]
+                offset += 1
+                if marker == 0xDA || marker == 0xD9 { return false }
+                if marker == 0x01 || (0xD0...0xD7).contains(marker) { continue }
+                guard offset + 1 < data.count else { return false }
+                let length = (Int(data[offset]) << 8) | Int(data[offset + 1])
+                guard length >= 2, offset + length <= data.count else { return false }
+                let payloadStart = offset + 2
+                let payloadEnd = min(offset + length, payloadStart + 4_096)
+                if marker >= 0xE0, marker <= 0xEF, payloadStart < payloadEnd {
+                    let payload = Data(data[payloadStart..<payloadEnd])
+                    if gainMapSignatures.contains(where: { payload.range(of: $0) != nil }) { return true }
+                }
+                offset += length
+            }
+            return false
+        }
+        let prefix = Data(data.prefix(min(data.count, 1_048_576)))
+        return gainMapSignatures.contains(where: { prefix.range(of: $0) != nil })
     }
 }
 
@@ -2961,6 +3958,26 @@ struct AdvancedExportTests {
                 isHDR: false,
                 configuration: secondaryConfiguration
             ) == "Edited_Secondary_AVIF_FFmpeg"
+        )
+    }
+
+    @Test("Save As names its format sub-folder after the Save As format, not the Export format")
+    func saveAsFolderUsesSaveAsFormat() {
+        // Export is configured for JPEG; "Save as PNG" must still land in Edited_PNG.
+        let root = URL(fileURLWithPath: "/Volumes/Photos/Shoot", isDirectory: true)
+        let source = root.appendingPathComponent("IMG_1.ARW")
+        let folder = EditedImageRenderer.resolveOutputFolder(
+            sourceURL: source, rootFolder: root, isHDR: false,
+            formatPrefix: "Edited", askedFolder: nil,
+            configuration: configuration,
+            sdrFormat: EditedImageRenderer.SaveAsFormat.png.exportFormat
+        )
+        #expect(folder.lastPathComponent == "Edited_PNG")
+        #expect(
+            EditedImageRenderer.formatFolderName(
+                prefix: "Edited", isHDR: false, configuration: configuration,
+                sdrFormat: EditedImageRenderer.SaveAsFormat.jpeg.exportFormat
+            ) == "Edited_JPEG"
         )
     }
 
@@ -3336,6 +4353,32 @@ struct AdvancedExportTests {
         #expect(source.contains(".onChange(of: browserViewModel.selectedImageIDs)"))
         #expect(source.contains("cancelAdvancedExportPreparation()"))
     }
+
+    @Test("Save As and Archive RAW capture the pane and folder before their batch task")
+    func saveAsAndArchiveCaptureSourcePane() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent("Aagedal Photo Agent/ContentView.swift"),
+            encoding: .utf8
+        )
+        for (startMarker, endMarker) in [
+            ("private func saveSelectedAsAfterMetadataFlush(", "private func archiveSelectedRAW(as format"),
+            ("private func archiveSelectedRAWAfterMetadataFlush(", "private func makeC2PAArchiveSigningConfiguration()"),
+        ] {
+            let start = try #require(source.range(of: startMarker))
+            let end = try #require(source.range(of: endMarker, range: start.upperBound..<source.endIndex))
+            let functionSource = source[start.lowerBound..<end.lowerBound]
+            let task = try #require(functionSource.range(of: "renderExportTask = Task {"))
+            let beforeTask = functionSource[..<task.lowerBound]
+            let taskBody = functionSource[task.lowerBound...]
+            // `browserViewModel` is `panes.active`; reading it per item follows a pane switch.
+            #expect(beforeTask.contains("let browser = browserViewModel"))
+            #expect(beforeTask.contains("let sourceFolderURL = browser.currentFolderURL"))
+            #expect(!taskBody.contains("browserViewModel"))
+        }
+    }
 }
 
 private nonisolated final class AdvancedExportPreparationProbe: @unchecked Sendable {
@@ -3531,7 +4574,7 @@ private nonisolated final class BlockingAdvancedExportPreviewCleanupProbe: @unch
         condition.broadcast()
         if storedRemovalCount == 1 {
             while !firstRemovalReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeRemovalCount -= 1
@@ -3542,6 +4585,8 @@ private nonisolated final class BlockingAdvancedExportPreviewCleanupProbe: @unch
         let deadline = ContinuousClock.now + .seconds(30)
         while removalCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRemoval()
                 throw AdvancedExportPreviewCleanupProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -4609,5 +5654,1258 @@ private nonisolated final class GatedExportWriteEngine: MetadataWriteEngine {
     func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {
         if gate.phase == .copy { await gate.block(destination) }
         try await underlying.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
+    }
+}
+
+// MARK: - 3.0 export/saving fixes (RAW+JPEG develop ownership, GPS, IIM, partial files, FTP)
+
+@Suite("Export and saving fixes for 3.0")
+struct ExportSavingReleaseFixTests {
+
+    private func makeFolder(_ name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func imageData(_ type: NSBitmapImageRep.FileType) throws -> Data {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+            isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ), let data = rep.representation(using: type, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return data
+    }
+
+    private func writeJPEG(to url: URL) throws { try imageData(.jpeg).write(to: url) }
+    private func writePNG(to url: URL) throws { try imageData(.png).write(to: url) }
+
+    /// IMG_1.ARW (placeholder bytes — never decoded here) + IMG_1.jpg + the shared IMG_1.xmp
+    /// carrying the RAW's absolute-Kelvin WB, exposure and a caption.
+    private func makeRawJpegPair() throws -> (dir: URL, raw: URL, jpeg: URL) {
+        let dir = try makeFolder("raw-jpeg-pair")
+        let raw = dir.appendingPathComponent("IMG_1.ARW")
+        try Data("not a real raw".utf8).write(to: raw)
+        let jpeg = dir.appendingPathComponent("IMG_1.jpg")
+        try writeJPEG(to: jpeg)
+        var crs = CameraRawSettings()
+        crs.temperature = 5500
+        crs.exposure2012 = 1.25
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(title: "Shared caption", cameraRaw: crs), for: raw)
+        return (dir, raw, jpeg)
+    }
+
+    // MARK: RAW+JPEG stem sidecar (finding 2)
+
+    @Test("A RAW+JPEG pair's stem sidecar develop belongs to the RAW only")
+    func stemSidecarDevelopOwnership() throws {
+        let pair = try makeRawJpegPair()
+        defer { try? FileManager.default.removeItem(at: pair.dir) }
+
+        #expect(PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: pair.jpeg))
+        #expect(!PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: pair.raw))
+        let lone = pair.dir.appendingPathComponent("Other.jpg")
+        try writeJPEG(to: lone)
+        #expect(!PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: lone))
+
+        let service = XMPSidecarService()
+        #expect(service.loadDevelopSettings(for: pair.raw)?.exposure2012 == 1.25)
+        #expect(service.loadDevelopSettings(for: pair.jpeg) == nil)
+        #expect(ExportCameraRawSidecarAccess.system.load(pair.jpeg) == nil)
+        #expect(ExportCameraRawSidecarAccess.system.load(pair.raw)?.temperature == 5500)
+        #expect(FullScreenImagePresentationFactsAccess.system.read(pair.jpeg).sidecarCameraRaw == nil)
+        #expect(AdvancedExportPreparationAccess.live.loadCameraRawSidecar(pair.jpeg) == nil)
+        #expect(FTPUploadSidecarAccess.system.load(pair.jpeg)?.cameraRaw == nil)
+        // Descriptive fields stay shared (Photo Mechanic convention).
+        #expect(FTPUploadSidecarAccess.system.load(pair.jpeg)?.title == "Shared caption")
+
+        let facts = MetadataEditorReadAccess.systemRead(imageURL: pair.jpeg, folderURL: pair.dir,
+            embedded: nil, reconciles: false)
+        #expect(facts.xmpMetadata?.title == "Shared caption")
+        #expect(facts.xmpMetadata?.cameraRaw == nil)
+        let rawFacts = MetadataEditorReadAccess.systemRead(imageURL: pair.raw, folderURL: pair.dir,
+            embedded: nil, reconciles: false)
+        #expect(rawFacts.xmpMetadata?.cameraRaw?.exposure2012 == 1.25)
+    }
+
+    @MainActor
+    @Test("Export Camera Raw resolution never hands the RAW's settings to its JPEG")
+    func exportResolutionSkipsRawOwnedSidecar() async throws {
+        let pair = try makeRawJpegPair()
+        defer { try? FileManager.default.removeItem(at: pair.dir) }
+        var map: [URL: IPTCMetadata] = [:]
+        try await EditExportPipeline.resolveCameraRaw(into: &map, urls: [pair.raw, pair.jpeg],
+            inMemory: { _ in nil })
+        #expect(map[pair.raw]?.cameraRaw?.temperature == 5500)
+        #expect(map[pair.jpeg]?.cameraRaw == nil)
+    }
+
+    @Test("Writes made for a pair's JPEG never replace the RAW's Camera Raw block")
+    func jpegWritesPreserveRawDevelop() async throws {
+        let pair = try makeRawJpegPair()
+        defer { try? FileManager.default.removeItem(at: pair.dir) }
+        let service = XMPSidecarService()
+        var jpegCRS = CameraRawSettings()
+        jpegCRS.exposure2012 = -2
+        jpegCRS.temperature = 2000
+
+        // Full-record descriptive save (XMP-sidecar mode) for the JPEG.
+        try await service.saveSidecarSerialized(
+            metadata: IPTCMetadata(title: "Edited on JPEG", cameraRaw: jpegCRS), for: pair.jpeg)
+        var stored = try #require(service.loadSidecar(for: pair.raw))
+        #expect(stored.title == "Edited on JPEG")
+        #expect(stored.cameraRaw?.exposure2012 == 1.25)
+        #expect(stored.cameraRaw?.temperature == 5500)
+
+        // The Develop/Primary write path.
+        let before = service.sidecarDataIfExists(for: pair.jpeg)
+        _ = try await service.writeMetadataInHeldTransaction(
+            IPTCMetadata(title: "Edited on JPEG", cameraRaw: jpegCRS), for: pair.jpeg,
+            expectedSnapshot: .init(data: before), onlyIfExisting: false,
+            replaceDevelopSettings: true, replaceOrientation: false)
+        stored = try #require(service.loadSidecar(for: pair.raw))
+        #expect(stored.cameraRaw?.exposure2012 == 1.25)
+
+        // Develop-only writes: a clear is a no-op, a write is refused with a clear message.
+        try await service.saveCameraRawOnlySerialized(nil, orientation: nil, for: pair.jpeg)
+        #expect(service.loadSidecar(for: pair.raw)?.cameraRaw?.exposure2012 == 1.25)
+        await #expect(throws: StemSidecarDevelopOwnedByRawError.self) {
+            try await service.saveCameraRawOnlySerialized(jpegCRS, orientation: nil, for: pair.jpeg)
+        }
+        await #expect(throws: StemSidecarDevelopOwnedByRawError.self) {
+            try await service.pasteCameraRawSerialized(jpegCRS, includeCrop: true, for: pair.jpeg)
+        }
+        #expect(service.loadSidecar(for: pair.raw)?.cameraRaw?.temperature == 5500)
+
+        // The RAW itself still owns and replaces its block.
+        try await service.saveCameraRawOnlySerialized(jpegCRS, orientation: nil, for: pair.raw)
+        #expect(service.loadSidecar(for: pair.raw)?.cameraRaw?.exposure2012 == -2)
+    }
+
+    // MARK: Sidecar-only GPS (finding 3)
+
+    @Test("A geotagged sidecar without a caption still carries GPS onto the export")
+    func sidecarOnlyGPSReachesExport() async throws {
+        let dir = try makeFolder("gps-only")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try writeJPEG(to: source)
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(latitude: -33.8688, longitude: -70.6693), for: source)
+
+        let outDir = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source, cameraRaw: nil, kind: .jpeg, outputFolder: outDir,
+            folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        let meta = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        let lat = try #require(meta.latitude)
+        let lon = try #require(meta.longitude)
+        #expect(abs(lat - (-33.8688)) < 0.001)
+        #expect(abs(lon - (-70.6693)) < 0.001)
+    }
+
+    @Test("Overlay fields add GPS additively without descriptive authority")
+    func authoritativeFieldsIncludeGPS() {
+        let gpsOnly = SidecarIPTCOverlay.authoritativeFields(from: IPTCMetadata(latitude: 59.9, longitude: -10.75))
+        #expect(gpsOnly[.gpsLatitude] == "59.9")
+        #expect(gpsOnly[.gpsLatitudeRef] == "N")
+        #expect(gpsOnly[.gpsLongitudeRef] == "W")
+        #expect(gpsOnly[.headline] == nil)
+        #expect(SidecarIPTCOverlay.authoritativeFields(from: IPTCMetadata(rating: 3)) == [.rating: "3"])
+    }
+
+    // MARK: IIM into containers without IIM (finding 4)
+
+    private func makeIIMJPEG(at url: URL, xmpDescription: String? = nil) throws {
+        try writeJPEG(to: url)
+        var metadata = try SwiftMediaMetadata.readMetadata(from: url)
+        metadata.iptc.caption = "IIM caption"
+        metadata.iptc.credit = "IIM Agency"
+        metadata.iptc.copyright = "© IIM"
+        metadata.iptc.keywords = ["alpha", "beta"]
+        if let xmpDescription {
+            var xmp = XMPData()
+            xmp.description = xmpDescription
+            metadata.xmp = xmp
+        } else {
+            metadata.xmp = nil
+        }
+        _ = try metadata.write(to: url)
+    }
+
+    @Test("IIM-only captions, credit, copyright and keywords survive a PNG export as XMP")
+    func iimMirroredIntoPNGXMP() async throws {
+        let dir = try makeFolder("iim-png")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("agency.jpg")
+        try makeIIMJPEG(at: source)
+        let reread = try SwiftMediaMetadata.readMetadata(from: source)
+        try #require(reread.iptc.caption == "IIM caption")
+        try #require(reread.xmp?.value(namespace: XMPNamespace.dc, property: "description") == nil)
+
+        let output = dir.appendingPathComponent("agency.png")
+        try writePNG(to: output)
+        try await SwiftExifWriteEngine().copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: nil)
+
+        let xmp = try #require(try SwiftMediaMetadata.readMetadata(from: output).xmp)
+        let parsed = XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil })
+        #expect(parsed.description == "IIM caption")
+        #expect(parsed.credit == "IIM Agency")
+        #expect(parsed.copyright == "© IIM")
+        #expect(parsed.keywords == ["alpha", "beta"])
+    }
+
+    @Test("Mirroring IIM never overwrites a value the source XMP already carries")
+    func iimMirrorPreservesExistingXMP() async throws {
+        let dir = try makeFolder("iim-png-xmp")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("agency.jpg")
+        try makeIIMJPEG(at: source, xmpDescription: "XMP caption wins")
+        let output = dir.appendingPathComponent("agency.png")
+        try writePNG(to: output)
+        try await SwiftExifWriteEngine().copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: nil)
+
+        let xmp = try #require(try SwiftMediaMetadata.readMetadata(from: output).xmp)
+        let parsed = XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil })
+        #expect(parsed.description == "XMP caption wins")
+        #expect(parsed.credit == "IIM Agency")
+    }
+
+    // MARK: Partial outputs (finding 6)
+
+    @Test("A failed encode leaves no partial file under the reserved name")
+    func discardOnFailureRemovesOwnedPartialOutput() async throws {
+        let dir = try makeFolder("reservation-discard")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try writeJPEG(to: source)
+
+        // Partial bytes written in place (FFmpeg `-y` truncates and writes the same inode).
+        let owner = ExportOutputReservationOwner()
+        let reserved = try owner.reserveOutput(for: source, in: dir, extension: "jxl", collisionPolicy: .appendNumber)
+        let handle = try FileHandle(forWritingTo: reserved)
+        try handle.write(contentsOf: Data(repeating: 0xAB, count: 512))
+        try handle.close()
+        await owner.discardOnFailure()
+        #expect(!FileManager.default.fileExists(atPath: reserved.path))
+
+        // A pre-existing file claimed for replacement is never deleted.
+        let existing = dir.appendingPathComponent("photo.avif")
+        try Data("user file".utf8).write(to: existing)
+        let replaceOwner = ExportOutputReservationOwner()
+        let claimed = try replaceOwner.reserveOutput(for: source, in: dir, extension: "avif", collisionPolicy: .replaceExisting)
+        #expect(claimed.lastPathComponent == existing.lastPathComponent)
+        await replaceOwner.discardOnFailure()
+        #expect(try Data(contentsOf: existing) == Data("user file".utf8))
+
+        // A path whose identity changed after reservation is somebody else's file.
+        let swapOwner = ExportOutputReservationOwner()
+        let swapped = try swapOwner.reserveOutput(for: source, in: dir, extension: "tiff", collisionPolicy: .appendNumber)
+        try FileManager.default.removeItem(at: swapped)
+        try Data("replacement".utf8).write(to: swapped)
+        await swapOwner.discardOnFailure()
+        #expect(try Data(contentsOf: swapped) == Data("replacement".utf8))
+
+        // The success path still keeps encoded pixels.
+        let keepOwner = ExportOutputReservationOwner()
+        let kept = try keepOwner.reserveOutput(for: source, in: dir, extension: "heic", collisionPolicy: .appendNumber)
+        let keepHandle = try FileHandle(forWritingTo: kept)
+        try keepHandle.write(contentsOf: Data("pixels".utf8))
+        try keepHandle.close()
+        await keepOwner.release()
+        #expect(FileManager.default.fileExists(atPath: kept.path))
+    }
+
+    // MARK: Sign cleanup and pane capture (finding 5, low)
+
+    @Test("Sign discards a metadata-incomplete render and Export/Sign capture their pane")
+    func signAndExportContentViewContracts() throws {
+        let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: workspace.appendingPathComponent("Aagedal Photo Agent/ContentView.swift"),
+                                encoding: .utf8)
+        for (startMarker, endMarker) in [
+            ("private func renderAndSignSelectedAfterMetadataFlush(", "private func copyIPTCMetadata("),
+            ("private func renderAndSaveEditedFolderAfterMetadataFlush(", "private func handleBrowserCommand("),
+        ] {
+            let start = try #require(source.range(of: startMarker))
+            let end = try #require(source.range(of: endMarker, range: start.upperBound..<source.endIndex))
+            let functionSource = source[start.lowerBound..<end.lowerBound]
+            let task = try #require(functionSource.range(of: "renderExportTask = Task {"))
+            #expect(functionSource[..<task.lowerBound].contains("let browserViewModel = browserViewModel"))
+            if startMarker.contains("Sign") {
+                #expect(functionSource.contains("(error as? ExportMetadataIncompleteError)?.renderedURL"))
+            }
+        }
+    }
+
+    // MARK: FTP as-is uploads (finding 7)
+
+    @Test("FTP detects sidecar metadata and rotation an as-is upload would otherwise lose")
+    func ftpSidecarDifferenceDetection() {
+        let embedded = IPTCMetadata(title: "Same", description: "Caption")
+        #expect(!FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded,
+            sidecar: IPTCMetadata(title: "Same", description: "Caption")))
+        #expect(FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded,
+            sidecar: IPTCMetadata(title: "Same", description: "New caption")))
+        #expect(FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded,
+            sidecar: IPTCMetadata(latitude: 59.9, longitude: 10.7)))
+        #expect(FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded, sidecar: IPTCMetadata(rating: 4)))
+        // A develop-only sidecar is not a descriptive record.
+        var crs = CameraRawSettings()
+        crs.exposure2012 = 1
+        #expect(!FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded, sidecar: IPTCMetadata(cameraRaw: crs)))
+        #expect(UploadFileInfo(isRaw: false, hasDevelop: false, hasCrop: false, hasSidecarRotation: true).hasAnyEdit)
+    }
+
+    @MainActor
+    @Test("An as-is FTP upload sends a staged copy carrying the sidecar metadata; the original is untouched")
+    func ftpAsIsUploadAppliesSidecarOverlayToCopy() async throws {
+        let dir = try makeFolder("ftp-overlay")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let photo = dir.appendingPathComponent("photo.jpg")
+        try writeJPEG(to: photo)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.headline: "Stale embedded headline"], to: [photo])
+        let originalBytes = try Data(contentsOf: photo)
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(title: "Sidecar headline", description: "Sidecar caption"), for: photo)
+
+        let suite = "ExportSavingFTPOverlay.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let probe = FTPOverlayUploadProbe()
+        var execution = FTPUploadExecutionAccess()
+        execution.password = { _ in "fixture-only" }
+        execution.upload = { url, _, _, _ in
+            let metadata = try await SwiftExifReadService().readFullMetadata(url: url)
+            await probe.record(url: url, title: metadata.title, description: metadata.description)
+            return FTPUploadOutcome()
+        }
+        execution.render = { _, _, _, _, _, _ in
+            Issue.record("An as-is upload must not render")
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let model = FTPViewModel(fileSystem: FTPUploadFileSystemBoundary(temporaryRoot: dir),
+                                 defaults: defaults, execution: execution)
+        let connection = FTPConnection(name: "Isolated fixture", host: "fixture.invalid", port: 21, useTLS: true)
+        let started = model.uploadFiles([photo], renderURLs: [], sidecarOverlayURLs: [photo], to: connection,
+            readService: SwiftExifReadService(), writeEngine: engine, inMemoryCameraRaw: { _ in nil })
+        #expect(started)
+        await model.currentUploadCompletion()()
+
+        let uploads = await probe.uploads
+        let upload = try #require(uploads.first)
+        #expect(uploads.count == 1)
+        #expect(upload.url != photo)
+        #expect(upload.url.lastPathComponent == "photo.jpg")
+        #expect(upload.title == "Sidecar headline")
+        #expect(upload.description == "Sidecar caption")
+        #expect(try Data(contentsOf: photo) == originalBytes)
+        #expect(model.errorMessages.isEmpty)
+    }
+}
+
+@Suite("FTP as-is overlay never touches Content Credentials")
+@MainActor
+struct FTPCredentialedOverlayTests {
+    @Test("Credentialed files are excluded from the overlay and their staged copy stays byte-identical")
+    func credentialedFilesUploadSignedOriginal() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("apa-ftp-c2pa-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let signed = dir.appendingPathComponent("signed.jpg")
+        let plain = dir.appendingPathComponent("plain.jpg")
+        let rep = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let jpeg = try #require(rep.representation(using: .jpeg, properties: [:]))
+        try jpeg.write(to: signed); try jpeg.write(to: plain)
+        for url in [signed, plain] {
+            try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(title: "Sidecar headline"), for: url)
+        }
+
+        let kept = await FTPUploadView.excludingCredentialed([signed, plain]) { $0 == signed }
+        #expect(kept == [plain])
+
+        // Backstop at the write: a credentialed source's staged copy is never rewritten.
+        let staged = dir.appendingPathComponent("staged.jpg")
+        try FileManager.default.copyItem(at: signed, to: staged)
+        let before = try Data(contentsOf: staged)
+        let refused = await FTPUploadExecutionAccess.applyAsIsOverlay(source: signed, staged: staged,
+            engine: SwiftExifWriteEngine(), isCredentialed: { _ in true })
+        #expect(refused == .noPendingEdits)
+        #expect(try Data(contentsOf: staged) == before)
+
+        let plainStaged = dir.appendingPathComponent("plain-staged.jpg")
+        try FileManager.default.copyItem(at: plain, to: plainStaged)
+        let applied = await FTPUploadExecutionAccess.applyAsIsOverlay(source: plain, staged: plainStaged,
+            engine: SwiftExifWriteEngine(), isCredentialed: { _ in false })
+        #expect(applied == .applied)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: plainStaged).title == "Sidecar headline")
+
+        // An ordinary file reads as uncredentialed; an unreadable one is treated as credentialed.
+        #expect(await !FTPUploadView.mayCarryC2PA(plain))
+        #expect(await FTPUploadView.mayCarryC2PA(dir.appendingPathComponent("missing.jpg")))
+    }
+
+    @Test("Template reviews skip a RAW+JPEG pair's JPEG with a readable reason")
+    func templateReviewSkipsPairedJPEG() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("apa-template-pair-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let raw = dir.appendingPathComponent("IMG_2.Arw")
+        let jpeg = dir.appendingPathComponent("IMG_2.jpg")
+        let lone = dir.appendingPathComponent("IMG_3.jpg")
+        for url in [raw, jpeg, lone] { try Data("x".utf8).write(to: url) }
+        #expect(DevelopTemplateBatchCaptureService.pairedNonRawPhotos(in: [jpeg, lone, raw]) == [jpeg])
+        let failure: any Error = DevelopTemplateBatchCaptureService.Failure.sharedRawSidecar
+        #expect(failure.localizedDescription.contains("RAW+JPEG pair"))
+        // Mixed-case RAW extensions are found too (case-sensitive volumes).
+        #expect(PhotoSidecarOwnership.developOwningRawSibling(of: jpeg)?.lastPathComponent == "IMG_2.Arw")
+    }
+}
+
+private actor FTPOverlayUploadProbe {
+    struct Upload: Sendable { let url: URL; let title: String?; let description: String? }
+    private(set) var uploads: [Upload] = []
+    func record(url: URL, title: String?, description: String?) {
+        uploads.append(Upload(url: url, title: title, description: description))
+    }
+}
+
+/// A JPEG whose XMP packet is as large as the JPEG writer still accepts: any further metadata
+/// (a rating, a caption) makes the XMP APP1 segment exceed 65,533 bytes.
+enum NearLimitJPEGFixture {
+    static func make(at url: URL) throws {
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let data = rep.representation(using: .jpeg, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+        let base = try SwiftMediaMetadata.readMetadata(from: url)
+        func candidate(_ count: Int) -> ImageMetadata {
+            var metadata = base
+            var xmp = metadata.xmp ?? XMPData()
+            xmp.setValue(.simple(String(repeating: "a", count: count)), namespace: XMPNamespace.xmp, property: "Nickname")
+            metadata.xmp = xmp
+            return metadata
+        }
+        var low = 1_000, high = 70_000
+        while low < high {
+            let mid = (low + high + 1) / 2
+            let warnings = try candidate(mid).writeToDataWithWarnings().warnings
+            if warnings.contains(where: EmbeddedMetadataLossRefusal.isLossWarning) { high = mid - 1 } else { low = mid }
+        }
+        _ = try candidate(low).write(to: url)
+    }
+}
+
+@Suite("Embedded metadata loss refusals")
+struct EmbeddedMetadataLossRefusalTests {
+    private func makeFolder() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-loss-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func plainJPEG(at url: URL) throws {
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let data = rep.representation(using: .jpeg, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+    }
+
+    @Test("Refusal messages follow the segment kind and what the write was doing")
+    func messagesDependOnContext() {
+        let url = URL(fileURLWithPath: "/tmp/photo.jpg")
+        let drop = "Dropped oversized IPTC segment: 70000 bytes exceeds JPEG's 65533-byte per-segment limit."
+        let descriptive = EmbeddedMetadataLossRefusal(imageURL: url, detail: drop).localizedDescription
+        #expect(descriptive.contains("IPTC"))
+        #expect(descriptive.contains("XMP sidecar"))
+        #expect(descriptive.contains("nothing was lost"))
+        #expect(!descriptive.contains("brush"))
+        let develop = EmbeddedMetadataLossRefusal(imageURL: url, detail: drop, context: .develop).localizedDescription
+        #expect(develop.contains("brush strokes"))
+        let mismatch = EmbeddedMetadataLossRefusal(imageURL: url, detail: "x", isRoundTripMismatch: true).localizedDescription
+        #expect(mismatch.contains("did not read back"))
+        #expect(!mismatch.contains("too large"))
+        let export = EmbeddedMetadataLossRefusal(imageURL: url, detail: drop, context: .export).localizedDescription
+        #expect(export.contains("exported copy"))
+    }
+
+    @Test("Rating, label and list writes refuse a near-limit file without touching it and continue the batch")
+    func directWritersRefuseAndContinue() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let first = dir.appendingPathComponent("a.jpg"), full = dir.appendingPathComponent("b.jpg"),
+            last = dir.appendingPathComponent("c.jpg")
+        try plainJPEG(at: first); try NearLimitJPEGFixture.make(at: full); try plainJPEG(at: last)
+        let fullBytes = try Data(contentsOf: full)
+        let engine = SwiftExifWriteEngine()
+
+        do {
+            try await engine.writeRating(.three, to: [first, full, last])
+            Issue.record("The near-limit file must be refused")
+        } catch let batch as EmbeddedMetadataBatchRefusal {
+            #expect(batch.refusedURLs == [full])
+        }
+        #expect(try Data(contentsOf: full) == fullBytes)
+        #expect(try SwiftMediaMetadata.readMetadata(from: first).xmp?.rating == 3)
+        #expect(try SwiftMediaMetadata.readMetadata(from: last).xmp?.rating == 3)
+
+        await #expect(throws: EmbeddedMetadataBatchRefusal.self) {
+            try await engine.addRemoveListValues(add: [.subject: ["kw"]], remove: [:], to: [first, full, last])
+        }
+        #expect(try Data(contentsOf: full) == fullBytes)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: last).keywords == ["kw"])
+        await #expect(throws: EmbeddedMetadataBatchRefusal.self) {
+            try await engine.writeLabel(.red, to: [full])
+        }
+        #expect(try Data(contentsOf: full) == fullBytes)
+    }
+
+    @Test("A refused pending write reports that nothing may have been written")
+    func pendingWriteRefusalIsNotMaybeWritten() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let full = dir.appendingPathComponent("full.jpg")
+        try NearLimitJPEGFixture.make(at: full)
+        let before = try Data(contentsOf: full)
+        do {
+            _ = try await SwiftExifWriteEngine().writePendingMetadata(
+                IPTCMetadata(title: "Headline", description: String(repeating: "c", count: 500)), to: full,
+                validatePreparedIntent: {})
+            Issue.record("The oversized pending write must be refused")
+        } catch let error as MetadataFieldMutationPhysicalError {
+            #expect(error.mayHaveWritten == false)
+            #expect(error.localizedDescription.contains("XMP sidecar"))
+        }
+        #expect(try Data(contentsOf: full) == before)
+    }
+
+    @Test("A field mutation on a near-limit file is refused before the file is touched")
+    func fieldMutationRefusal() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let full = dir.appendingPathComponent("full.jpg")
+        try NearLimitJPEGFixture.make(at: full)
+        let before = try Data(contentsOf: full)
+        do {
+            _ = try await SwiftExifWriteEngine().writeFieldMutation(.rating(4), to: full, validatePreparedIntent: {})
+            Issue.record("The oversized mutation must be refused")
+        } catch let error as MetadataFieldMutationPhysicalError {
+            #expect(error.mayHaveWritten == false)
+        }
+        #expect(try Data(contentsOf: full) == before)
+    }
+
+    @Test("The export copier refuses a metadata copy the JPEG can't hold instead of dropping it silently")
+    func exportCopierRefusesOversizedCopy() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("source.jpg")
+        try NearLimitJPEGFixture.make(at: source)
+        // A large crs block pushes the copied XMP over the limit.
+        let output = dir.appendingPathComponent("render.jpg")
+        try plainJPEG(at: output)
+        var baked = CameraRawSettings()
+        baked.exposure2012 = 0.5
+        baked.localAdjustments = [MaskAdjustment(name: "Brush",
+            brush: BrushMaskGeometry(strokes: [BrushStroke(dabs: (0..<400).map {
+                BrushDab(x: Double($0) / 400, y: 0.5, flow: 0.7, hardness: 0.4) }, radius: 0.02, density: 1, erase: false)]),
+            exposure: 0.2)]
+        do {
+            try await SwiftExifWriteEngine().copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: baked)
+            Issue.record("The oversized copy must be refused")
+        } catch let refusal as EmbeddedMetadataLossRefusal {
+            #expect(refusal.context == .export)
+        }
+        // The rendered file itself is intact and readable.
+        #expect(try SwiftMediaMetadata.readMetadata(from: output).format == .jpeg)
+    }
+}
+
+@Suite("Round 6 export and RAW-sibling follow-ups")
+struct ExportRoundSixTests {
+    private func makeFolder() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-r6-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func plainJPEG(at url: URL) throws {
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let data = rep.representation(using: .jpeg, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+    }
+
+    private func setFolderModification(_ folder: URL, _ time: timespec) {
+        var times = [time, time]
+        _ = utimensat(AT_FDCWD, folder.path, &times, 0)
+    }
+
+    @Test("A write-path lookup never trusts an unsettled listing carried across our own sidecar write")
+    func unsettledListingIsNotCarriedForWrites() throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let jpeg = dir.appendingPathComponent("IMG_5.jpg")
+        try plainJPEG(at: jpeg)
+        let index = PhotoRawStemIndex()
+        // Listing taken right after the folder changed: unsettled.
+        #expect(index.rawFile(forStem: "IMG_5", in: dir, allowsUnsettledReuse: false) == nil)
+        let before = PhotoRawStemIndex.folderModification(dir)
+        try Data("<x/>".utf8).write(to: dir.appendingPathComponent("IMG_5.xmp"))
+        index.noteOwnWrite(in: dir, previousModification: before)
+        let afterOwnWrite = try #require(PhotoRawStemIndex.folderModification(dir))
+        // A RAW lands within the same timestamp tick (coarse-mtime volume simulation).
+        try Data("raw".utf8).write(to: dir.appendingPathComponent("IMG_5.ARW"))
+        setFolderModification(dir, afterOwnWrite)
+        #expect(index.rawFile(forStem: "IMG_5", in: dir, allowsUnsettledReuse: false)?.lastPathComponent == "IMG_5.ARW")
+    }
+
+    @Test("A settled listing carried across our own write serves reads but not write-path decisions")
+    func settledCarryIsReadOnly() throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try plainJPEG(at: dir.appendingPathComponent("IMG_6.jpg"))
+        let later = Date().addingTimeInterval(10)
+        let index = PhotoRawStemIndex(now: { later })
+        #expect(index.rawFile(forStem: "IMG_6", in: dir, allowsUnsettledReuse: false) == nil)  // settled listing
+        let before = PhotoRawStemIndex.folderModification(dir)
+        try Data("<x/>".utf8).write(to: dir.appendingPathComponent("IMG_6.xmp"))
+        index.noteOwnWrite(in: dir, previousModification: before)
+        let afterOwnWrite = try #require(PhotoRawStemIndex.folderModification(dir))
+        try Data("raw".utf8).write(to: dir.appendingPathComponent("IMG_6.NEF"))
+        setFolderModification(dir, afterOwnWrite)
+        // Reads may reuse the carried listing; a write-path decision relists and sees the RAW.
+        #expect(index.rawFile(forStem: "IMG_6", in: dir, allowsUnsettledReuse: true) == nil)
+        #expect(index.rawFile(forStem: "IMG_6", in: dir, allowsUnsettledReuse: false)?.lastPathComponent == "IMG_6.NEF")
+    }
+
+    @Test("An export of a heavily brush-masked edit keeps EXIF, IPTC and caption and omits only the baked develop record")
+    func exportDropsBakedDevelopBeforeDescriptive() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("source.jpg")
+        try plainJPEG(at: source)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.description: "Kept caption", .credit: "Kept credit",
+            .gpsLatitude: "59.9", .gpsLatitudeRef: "N", .gpsLongitude: "10.7", .gpsLongitudeRef: "E"], to: [source])
+        let output = dir.appendingPathComponent("render.jpg")
+        try plainJPEG(at: output)
+        var baked = CameraRawSettings()
+        baked.exposure2012 = 0.5
+        baked.localAdjustments = [MaskAdjustment(name: "Heavy brush",
+            brush: BrushMaskGeometry(strokes: [BrushStroke(dabs: (0..<6_000).map {
+                BrushDab(x: Double($0 % 97) / 97 + 0.000123, y: Double($0 % 89) / 89, flow: 0.7, hardness: 0.4) },
+                radius: 0.02, density: 1, erase: false)]),
+            exposure: 0.2)]
+        try await engine.copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: baked)
+        let written = try SwiftMediaMetadata.readMetadata(from: output)
+        let xmp = try #require(written.xmp)
+        #expect(xmp.properties(in: XMPNamespace.crs).isEmpty)
+        #expect(written.iptc.caption == "Kept caption")
+        let meta = try await SwiftExifReadService().readFullMetadata(url: output)
+        #expect(meta.description == "Kept caption")
+        #expect(meta.credit == "Kept credit")
+        #expect(meta.latitude != nil)
+    }
+}
+
+// MARK: - Redaction fail-closed rendering
+
+@Suite("Redactions reach every rendition or the render is refused")
+struct RedactionFailClosedTests {
+
+    private func makeFolder(_ name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("apa-redact-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func imageData(_ type: NSBitmapImageRep.FileType, size: Int = 32) throws -> Data {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+            isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ) else { throw CocoaError(.fileWriteUnknown) }
+        for y in 0..<size {
+            for x in 0..<size {
+                let white = ((x / 2) + (y / 2)) % 2 == 0
+                rep.setColor(white ? .white : .black, atX: x, y: y)
+            }
+        }
+        guard let data = rep.representation(using: type, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return data
+    }
+
+    private func faceMask(id: UUID = UUID(), centerX: Double = 0.5, amount: Double = 90) -> MaskAdjustment {
+        var mask = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: amount, blackOut: nil))
+        mask.id = id
+        mask.geometry = EllipseMaskGeometry(centerX: centerX, centerY: 0.5, radiusX: 0.2, radiusY: 0.2,
+                                            rotation: 0, feather: 0)
+        return mask
+    }
+
+    private func redacted() -> CameraRawSettings {
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.2
+        settings.localAdjustments = [faceMask()]
+        return settings
+    }
+
+    private func visibleFiles(in folder: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+    }
+
+    // MARK: Finding 1 — GPU failure
+
+    @Test("The CIFilter fallback may stand in only for settings it can reproduce")
+    func fallbackReproducibility() {
+        var global = CameraRawSettings()
+        global.exposure2012 = 0.5
+        #expect(CameraRawApproximation.fallbackCanReproduce(global))
+        #expect(!CameraRawApproximation.fallbackCanReproduce(redacted()))
+        var globalAnonymizer = global
+        globalAnonymizer.anonymizer = AnonymizerSettings(amount: 40, blackOut: nil)
+        #expect(!CameraRawApproximation.fallbackCanReproduce(globalAnonymizer))
+        var ordinaryMask = global
+        ordinaryMask.localAdjustments = [MaskAdjustment(name: "Sky", exposure: -0.5)]
+        #expect(!CameraRawApproximation.fallbackCanReproduce(ordinaryMask))
+        var disabledMask = ordinaryMask
+        disabledMask.localAdjustments?[0].enabled = false
+        #expect(CameraRawApproximation.fallbackCanReproduce(disabledMask))
+        var watermark = global
+        watermark.watermarkLayers = [WatermarkLayer(libraryAssetID: UUID())]
+        #expect(!CameraRawApproximation.fallbackCanReproduce(watermark))
+    }
+
+    @Test("A preview of redacted settings shows a placeholder, never the source, when the GPU fails")
+    func previewPlaceholderOnGPUFailure() async throws {
+        let input = try #require(CIImage(data: try imageData(.png)))
+        let settings = redacted()
+        let sync = GPURenderFaultInjection.$forceFailure.withValue(true) {
+            CameraRawApproximation.applyWithCrop(to: input, settings: settings)
+        }
+        let asyncOutput = await GPURenderFaultInjection.$forceFailure.withValue(true) {
+            await CameraRawApproximation.applyWithCropAsync(to: input, settings: settings)
+        }
+        for output in [sync, asyncOutput] {
+            #expect(output.extent == input.extent)
+            var px: [Float] = [0, 0, 0, 0]
+            let maxOut = output.applyingFilter("CIAreaMaximum", parameters: [kCIInputExtentKey: CIVector(cgRect: input.extent)])
+            CameraRawApproximation.ciContext.render(maxOut, toBitmap: &px, rowBytes: 16,
+                bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf,
+                colorSpace: CameraRawApproximation.workingColorSpace)
+            // The checkerboard source has white pixels; the uniform grey placeholder doesn't.
+            #expect(px[0] < 0.9 && px[1] < 0.9 && px[2] < 0.9, "\(px)")
+        }
+        #expect(throws: EditRenderRefusedError.self) {
+            try GPURenderFaultInjection.$forceFailure.withValue(true) {
+                try CameraRawApproximation.applyWithCropForOutput(to: input, settings: settings)
+            }
+        }
+    }
+
+    @MainActor
+    @Test("A GPU render failure refuses the export of a redacted photo and writes nothing",
+          arguments: [0, 1, 2])
+    func gpuFailureRefusesRedactedExport(kindIndex: Int) async throws {
+        let dir = try makeFolder("gpu-fail")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: source)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let kind: RenderKind = [RenderKind.jpeg, .saveAs(.png), .saveAs(.jpeg)][kindIndex]
+        let settings = redacted()
+
+        var refusal: (any Error)?
+        do {
+            _ = try await GPURenderFaultInjection.$forceFailure.withValue(true) {
+                try await EditExportPipeline.renderItem(
+                    sourceURL: source, cameraRaw: settings, kind: kind, outputFolder: output,
+                    folderURL: dir, writeEngine: SwiftExifWriteEngine(),
+                    failureTracker: MetadataFailureTracker(),
+                    savedRedactionAccess: .none)
+            }
+        } catch {
+            refusal = error
+        }
+        let refused = try #require(refusal as? EditRenderRefusedError)
+        #expect(refused.hasRedaction)
+        #expect(refused.errorDescription?.contains("the photo has redactions, so it wasn't exported") == true)
+        #expect(visibleFiles(in: output).isEmpty, "\(visibleFiles(in: output))")
+    }
+
+    @MainActor
+    @Test("A GPU render failure still exports global-only edits through the fallback")
+    func gpuFailureKeepsGlobalOnlyExport() async throws {
+        let dir = try makeFolder("gpu-fail-global")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: source)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        let rendered = try await GPURenderFaultInjection.$forceFailure.withValue(true) {
+            try await EditExportPipeline.renderItem(
+                sourceURL: source, cameraRaw: settings, kind: .jpeg, outputFolder: output,
+                folderURL: dir, writeEngine: SwiftExifWriteEngine(),
+                failureTracker: MetadataFailureTracker())
+        }
+        #expect(FileManager.default.fileExists(atPath: rendered.path))
+    }
+
+    // MARK: Finding 3 — merging copies only adds redactions
+
+    @Test("Reconciling sidecar and embedded develop combines redaction masks and keeps the strongest global Anonymizer")
+    func reconciliationUnionsRedactions() {
+        let maskA = faceMask(centerX: 0.3)
+        let maskB = faceMask(centerX: 0.7)
+
+        var embedded = CameraRawSettings()
+        embedded.localAdjustments = [maskA]
+        var sidecar = CameraRawSettings()
+        sidecar.exposure2012 = 0.4
+        sidecar.localAdjustments = [maskA, maskB]
+        let both = EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: sidecar, embedded: embedded)
+        #expect(Set(RedactionUnion.redactionMasks(in: both).map(\.id)) == [maskA.id, maskB.id])
+        #expect(both?.localAdjustments?.count == 2)
+
+        // The embedded copy has a redaction the sidecar's (non-empty) mask list lacks.
+        var sidecarB = CameraRawSettings()
+        sidecarB.localAdjustments = [maskB]
+        let combined = EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: sidecarB, embedded: embedded)
+        #expect(Set(RedactionUnion.redactionMasks(in: combined).map(\.id)) == [maskA.id, maskB.id])
+
+        // The same face re-created under another identity is not duplicated.
+        var sameRegion = embedded
+        sameRegion.localAdjustments = [faceMask(centerX: 0.3)]
+        let deduped = EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: sidecar, embedded: sameRegion)
+        #expect(deduped?.localAdjustments?.count == 2)
+
+        // An embedded global Anonymizer survives a sidecar with develop settings.
+        var embeddedGlobal = CameraRawSettings()
+        embeddedGlobal.anonymizer = AnonymizerSettings(amount: 60, blackOut: nil)
+        var sidecarDevelop = CameraRawSettings()
+        sidecarDevelop.exposure2012 = 0.8
+        let global = EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: sidecarDevelop, embedded: embeddedGlobal)
+        #expect(global?.anonymizer == AnonymizerSettings(amount: 60, blackOut: nil))
+        #expect(global?.exposure2012 == 0.8)
+        var weaker = sidecarDevelop
+        weaker.anonymizer = AnonymizerSettings(amount: 20, blackOut: nil)
+        #expect(EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: weaker, embedded: embeddedGlobal)?
+            .anonymizer == AnonymizerSettings(amount: 60, blackOut: nil))
+    }
+
+    @Test("The export source policy combines partial redaction sets of both copies")
+    func exportPolicyUnionsPartialRedactions() {
+        let maskA = faceMask(centerX: 0.3)
+        let maskB = faceMask(centerX: 0.7)
+        var live = CameraRawSettings()
+        live.exposure2012 = 1.0
+        live.localAdjustments = [maskA]
+        var persisted = CameraRawSettings()
+        persisted.exposure2012 = 0.2
+        persisted.localAdjustments = [maskB]
+        persisted.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+
+        for authoritative in [false, true] {
+            let resolved = ExportCameraRawSourcePolicy.resolve(
+                live: live, persisted: persisted, liveIsAuthoritative: authoritative)
+            #expect(Set(RedactionUnion.redactionMasks(in: resolved).map(\.id)) == [maskA.id, maskB.id])
+            #expect(resolved?.anonymizer?.blackOut == true)
+            #expect(resolved?.exposure2012 == (authoritative ? 1.0 : 0.2))
+            #expect(RedactionUnion.covers(render: resolved, saved: [live, persisted]))
+        }
+
+        // A redaction disabled in the preferred copy but enabled in the other is re-enabled.
+        var disabled = persisted
+        disabled.localAdjustments?[0].enabled = false
+        var liveB = CameraRawSettings()
+        liveB.localAdjustments = [maskB]
+        let reenabled = ExportCameraRawSourcePolicy.resolve(live: liveB, persisted: disabled, liveIsAuthoritative: false)
+        #expect(reenabled?.localAdjustments?.count == 1)
+        #expect(reenabled?.localAdjustments?.first?.enabled == true)
+    }
+
+    @Test("Merged redactions stay within the renderer's mask limit")
+    func unionKeepsRedactionsRenderable() {
+        var base = CameraRawSettings()
+        base.localAdjustments = (0..<DevelopLayerLimits.maxEnabledMasks).map {
+            MaskAdjustment(name: "Adjust \($0)", exposure: 0.1)
+        }
+        var other = CameraRawSettings()
+        other.localAdjustments = [faceMask()]
+        let merged = RedactionUnion.merged(base, adding: [other])
+        #expect(!RedactionUnion.redactionsExceedRenderLimit(merged))
+        #expect(RedactionUnion.covers(render: merged, saved: [other]))
+        #expect(merged.localAdjustments?.filter(\.enabled).count == DevelopLayerLimits.maxEnabledMasks)
+    }
+
+    @Test("The coverage check fails for a missing mask or global Anonymizer")
+    func coverageCheck() {
+        let saved = redacted()
+        var stale = CameraRawSettings()
+        stale.exposure2012 = 0.2
+        #expect(!RedactionUnion.covers(render: stale, saved: [saved]))
+        #expect(!RedactionUnion.covers(render: nil, saved: [saved]))
+        #expect(RedactionUnion.covers(render: saved, saved: [saved, nil]))
+        var global = CameraRawSettings()
+        global.anonymizer = AnonymizerSettings(amount: 30, blackOut: nil)
+        #expect(!RedactionUnion.covers(render: saved, saved: [global]))
+        #expect(RedactionUnion.covers(render: stale, saved: [stale, nil]))
+    }
+
+    @MainActor
+    @Test("renderItem refuses when the render settings lack a redaction saved in the photo's sidecar")
+    func renderItemRefusesMissingSavedRedaction() async throws {
+        let dir = try makeFolder("missing-saved")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: source)
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(title: "Caption", cameraRaw: redacted()), for: source)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        var stale = CameraRawSettings()
+        stale.exposure2012 = 0.2
+
+        await #expect(throws: RedactionMissingFromRenderError.self) {
+            _ = try await EditExportPipeline.renderItem(
+                sourceURL: source, cameraRaw: stale, kind: .format, outputFolder: output,
+                folderURL: dir, writeEngine: SwiftExifWriteEngine(),
+                failureTracker: MetadataFailureTracker())
+        }
+        await #expect(throws: RedactionMissingFromRenderError.self) {
+            _ = try await EditExportPipeline.renderItem(
+                sourceURL: source, cameraRaw: nil, kind: .saveAs(.jpeg), outputFolder: output,
+                folderURL: dir, writeEngine: SwiftExifWriteEngine(),
+                failureTracker: MetadataFailureTracker())
+        }
+        #expect(visibleFiles(in: output).isEmpty, "\(visibleFiles(in: output))")
+    }
+
+    // MARK: Finding 2 — source blobs
+
+    private static let blobTags: [UInt16] = [0xCD41, 0x935C, 0xC634, 0x7200, 0xC68B]
+
+    /// A TIFF source with descriptive EXIF/GPS (written by ImageIO) plus fake source blobs in
+    /// IFD0 (camera C2PA manifest, Photoshop layers, DNG private data, Sony SR2, original raw
+    /// data) and XMP thumbnails / face regions.
+    private func makeBlobbySourceTIFF(at url: URL) throws {
+        let png = try imageData(.png)
+        guard let imageSource = CGImageSourceCreateWithData(png as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil),
+              let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.tiff" as CFString, 1, nil)
+        else { throw CocoaError(.fileWriteUnknown) }
+        let properties: [CFString: Any] = [
+            kCGImagePropertyTIFFDictionary: [
+                kCGImagePropertyTIFFMake: "TestCam",
+                kCGImagePropertyTIFFModel: "Model X",
+                kCGImagePropertyTIFFDateTime: "2026:10:24 12:00:00",
+            ],
+            kCGImagePropertyExifDictionary: [
+                kCGImagePropertyExifExposureTime: 0.004,
+                kCGImagePropertyExifFNumber: 2.8,
+                kCGImagePropertyExifDateTimeOriginal: "2026:10:24 12:00:00",
+                kCGImagePropertyExifLensModel: "Test Lens 50mm",
+            ],
+            kCGImagePropertyGPSDictionary: [
+                kCGImagePropertyGPSLatitude: 59.91,
+                kCGImagePropertyGPSLatitudeRef: "N",
+                kCGImagePropertyGPSLongitude: 10.75,
+                kCGImagePropertyGPSLongitudeRef: "E",
+            ],
+        ]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+
+        var metadata = try SwiftMediaMetadata.readMetadata(from: url)
+        var exif = try #require(metadata.exif)
+        var entries = exif.ifd0?.entries ?? []
+        for tag in Self.blobTags {
+            let payload = Data(repeating: UInt8(tag & 0xFF), count: 8_192)
+            entries.append(IFDEntry(tag: tag, type: .undefined, count: UInt32(payload.count), valueData: payload))
+        }
+        exif.ifd0 = IFD(entries: entries.sorted { $0.tag < $1.tag })
+        metadata.exif = exif
+        var xmp = metadata.xmp ?? XMPData()
+        xmp.description = "Kept caption"
+        xmp.setValue(.simple("base64-thumbnail-of-the-original"), namespace: XMPNamespace.xmp, property: "Thumbnails")
+        xmp.setValue(.simple("face-region"), namespace: XMPNamespace.mwgRegions, property: "Regions")
+        metadata.xmp = xmp
+        _ = try metadata.write(to: url)
+    }
+
+    @Test("Camera C2PA, Photoshop/DNG blobs and XMP thumbnails never reach a TIFF or PNG rendition; descriptive EXIF does",
+          arguments: ["tiff", "png"])
+    func sourceBlobsStripped(format: String) async throws {
+        let dir = try makeFolder("blobs-\(format)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("camera.tif")
+        try makeBlobbySourceTIFF(at: source)
+        let sourceIFD0 = try #require(try SwiftMediaMetadata.readMetadata(from: source).exif?.ifd0)
+        for tag in Self.blobTags {
+            try #require(sourceIFD0.hasEntry(for: tag), "fixture lacks tag \(String(tag, radix: 16))")
+        }
+
+        let output = dir.appendingPathComponent("rendered.\(format)")
+        try imageData(format == "png" ? .png : .tiff).write(to: output)
+        var baked = redacted()
+        baked.localAdjustments = [faceMask()]
+        try await SwiftExifWriteEngine().copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: baked)
+
+        let written = try ImageMetadata.read(from: output)
+        let ifd0 = written.exif?.ifd0
+        for tag in Self.blobTags {
+            #expect(ifd0?.hasEntry(for: tag) != true, "tag \(String(tag, radix: 16)) survived")
+        }
+        #expect(written.c2pa == nil)
+        #expect(written.xmp?.value(namespace: XMPNamespace.xmp, property: "Thumbnails") == nil)
+        #expect(written.xmp?.value(namespace: XMPNamespace.mwgRegions, property: "Regions") == nil)
+
+        #expect(written.exif?.make == "TestCam")
+        #expect(written.exif?.model == "Model X")
+        #expect(written.exif?.exposureTime != nil)
+        #expect(written.exif?.dateTimeOriginal == "2026:10:24 12:00:00")
+        #expect(written.exif?.gpsIFD?.hasEntry(for: 0x0002) == true)
+        let meta = try await SwiftExifReadService().readFullMetadata(url: output)
+        #expect(meta.description == "Kept caption")
+        #expect(meta.latitude != nil)
+    }
+
+    @Test("A Photoshop IRB, maker note and JPEG thumbnail offsets in a source IFD0 are dropped")
+    func photoshopAndMakerNoteStripped() {
+        var exif = ExifData(byteOrder: .bigEndian)
+        let blob = Data(repeating: 0xAB, count: 64)
+        exif.ifd0 = IFD(entries: [
+            IFDEntry(tag: 0x010F, type: .ascii, count: 8, valueData: Data("TestCam\0".utf8)),
+            IFDEntry(tag: 0x0201, type: .long, count: 1, valueData: Data([0, 0, 0, 8])),
+            IFDEntry(tag: 0x0202, type: .long, count: 1, valueData: Data([0, 0, 0, 64])),
+            IFDEntry(tag: 0x014A, type: .long, count: 1, valueData: Data([0, 0, 0, 8])),
+            IFDEntry(tag: 0x02BC, type: .undefined, count: UInt32(blob.count), valueData: blob),
+            IFDEntry(tag: 0x8298, type: .ascii, count: 3, valueData: Data("C\0\0".utf8)),
+            IFDEntry(tag: 0x8649, type: .undefined, count: UInt32(blob.count), valueData: blob),
+        ])
+        exif.exifIFD = IFD(entries: [
+            IFDEntry(tag: 0x829A, type: .rational, count: 1, valueData: Data([0, 0, 0, 1, 0, 0, 0, 250])),
+            IFDEntry(tag: 0x927C, type: .undefined, count: UInt32(blob.count), valueData: blob),
+        ])
+        var metadata = ImageMetadata(exif: exif)
+        SwiftExifWriteEngine.stripSourceBlobsForRendition(&metadata, renderRedacts: false)
+        #expect(metadata.exif?.ifd0?.entries.map(\.tag) == [0x010F, 0x8298])
+        #expect(metadata.exif?.exifIFD?.hasEntry(for: 0x927C) == true, "an unredacted render keeps its maker note")
+        SwiftExifWriteEngine.stripSourceBlobsForRendition(&metadata, renderRedacts: true)
+        #expect(metadata.exif?.exifIFD?.hasEntry(for: 0x927C) == false)
+        #expect(metadata.exif?.exifIFD?.hasEntry(for: 0x829A) == true)
+    }
+
+    // MARK: Follow-ups — sidecar authority, Develop Save, placeholder caching, unreadable embed
+
+    private func embedDevelop(_ settings: CameraRawSettings, into jpeg: URL) throws {
+        var metadata = try SwiftMediaMetadata.readMetadata(from: jpeg)
+        var xmp = metadata.xmp ?? XMPData()
+        XMPDataBuilder.applyCameraRaw(settings, imageAspect: nil, into: &xmp)
+        metadata.xmp = xmp
+        _ = try metadata.write(to: jpeg)
+    }
+
+    private func readEmbedded(_ jpeg: URL) throws -> IPTCMetadata {
+        iptcMetadataFromDict(try ImageMetadata.read(from: jpeg).asMetadataDict(fileURL: jpeg))
+    }
+
+    @MainActor
+    @Test("A blur embedded in the JPEG and then disabled or deleted in Develop's sidecar stays off, in the editor and the export",
+          arguments: [false, true])
+    func sidecarRemovalOfEmbeddedBlurSticks(delete: Bool) async throws {
+        let dir = try makeFolder("embedded-blur-removed")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let jpeg = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: jpeg)
+        // Simple preset: the blur is embedded in the file.
+        let blur = faceMask()
+        var embeddedDevelop = CameraRawSettings()
+        embeddedDevelop.localAdjustments = [blur]
+        try embedDevelop(embeddedDevelop, into: jpeg)
+        let embedded = try readEmbedded(jpeg)
+        try #require(embedded.cameraRaw?.hasActiveRedaction == true)
+
+        // The editor opens the photo (no sidecar yet) and shows the blur.
+        var buffer = try #require(EffectiveMetadataResolver.physicalMetadata(
+            for: .embedded, embedded: embedded, xmp: nil, isRaw: false)?.cameraRaw)
+        #expect(buffer.hasActiveRedaction)
+        #expect(buffer.embeddedRedactionsReviewed == true)
+
+        // Writes now go to the sidecar only (Custom / a C2PA file under Professional). The user
+        // disables or deletes the blur; Develop writes its buffer to the sidecar.
+        if delete {
+            buffer.localAdjustments = []
+        } else {
+            buffer.localAdjustments?[0].enabled = false
+        }
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(cameraRaw: buffer), for: jpeg)
+
+        // Reopen: the sidecar (the app's develop destination) is authoritative.
+        let sidecar = try #require(XMPSidecarService().loadDevelopSettings(for: jpeg))
+        #expect(sidecar.embeddedRedactionsReviewed == true)
+        let reopenedEmbedded = try readEmbedded(jpeg)
+        #expect(reopenedEmbedded.cameraRaw?.hasActiveRedaction == true, "the file still embeds the blur")
+        let reconciled = EffectiveMetadataResolver.reconciledDevelopSettings(
+            sidecar: sidecar, embedded: reopenedEmbedded.cameraRaw)
+        #expect(reconciled?.hasActiveRedaction == false)
+        var xmpRecord = IPTCMetadata()
+        xmpRecord.cameraRaw = sidecar
+        for source in [MetadataReferenceSource.embedded, .xmp] {
+            let editor = EffectiveMetadataResolver.physicalMetadata(
+                for: source, embedded: reopenedEmbedded, xmp: xmpRecord, isRaw: false)?.cameraRaw
+            #expect(editor?.hasActiveRedaction == false, "editor buffer via \(source)")
+        }
+        #expect(ExportCameraRawSourcePolicy.persisted(
+            imageURL: jpeg, sidecar: sidecar, embedded: reopenedEmbedded.cameraRaw)?.hasActiveRedaction == false)
+
+        // Export resolution and Save JPEG agree with the editor and aren't refused.
+        var map = [jpeg: reopenedEmbedded]
+        let live = buffer
+        try await EditExportPipeline.resolveCameraRaw(into: &map, urls: [jpeg], inMemory: { _ in live },
+                                                      liveDevelopImageURL: jpeg)
+        #expect(map[jpeg]?.cameraRaw?.hasActiveRedaction == false)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: jpeg, cameraRaw: buffer, kind: .jpeg, outputFolder: output,
+            folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker())
+        #expect(FileManager.default.fileExists(atPath: rendered.path))
+    }
+
+    @Test("An unreviewed sidecar still gains the embedded redactions; the result is marked reviewed and round-trips")
+    func unreviewedSidecarUnionAndMarkerRoundTrip() throws {
+        var embedded = CameraRawSettings()
+        embedded.localAdjustments = [faceMask()]
+        var legacySidecar = CameraRawSettings()
+        legacySidecar.exposure2012 = 0.3
+        let reconciled = try #require(EffectiveMetadataResolver.reconciledDevelopSettings(
+            sidecar: legacySidecar, embedded: embedded))
+        #expect(reconciled.hasActiveRedaction)
+        #expect(reconciled.embeddedRedactionsReviewed == true)
+        // No embedded redaction: nothing to review, the sidecar is returned untouched.
+        #expect(EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: legacySidecar, embedded: nil) == legacySidecar)
+
+        // A reviewed record with no other edits is not empty and survives an XMP round trip.
+        var markerOnly = CameraRawSettings()
+        markerOnly.embeddedRedactionsReviewed = true
+        #expect(!markerOnly.isEmpty)
+        var xmp = XMPData()
+        XMPDataBuilder.applyCameraRaw(markerOnly, imageAspect: nil, into: &xmp)
+        let parsed = XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil })
+        #expect(parsed.cameraRaw?.embeddedRedactionsReviewed == true)
+    }
+
+    @MainActor
+    @Test("Develop Save waits for the pending Develop write and surfaces its failure instead of a redaction refusal")
+    func developSaveAwaitsPersistence() async throws {
+        let dir = try makeFolder("develop-save")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let jpeg = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: jpeg)
+        var saved = redacted()
+        saved.embeddedRedactionsReviewed = true
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(cameraRaw: saved), for: jpeg)
+
+        struct WriteFailed: LocalizedError { var errorDescription: String? { "disk full." } }
+        await #expect(throws: DevelopSaveError.developChangesNotSaved("disk full.")) {
+            _ = try await EditExportPipeline.resolveDevelopSaveSettings(
+                for: jpeg, flush: { throw WriteFailed() }, live: { nil })
+        }
+
+        // The pending write lands during the flush: the user's disabled blur is what renders.
+        var disabled = saved
+        disabled.localAdjustments?[0].enabled = false
+        var flushed = false
+        let resolved = try await EditExportPipeline.resolveDevelopSaveSettings(
+            for: jpeg,
+            flush: {
+                try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(cameraRaw: disabled), for: jpeg)
+                flushed = true
+            },
+            live: { disabled })
+        #expect(flushed)
+        #expect(resolved?.hasActiveRedaction == false)
+        try await EditExportPipeline.requireSavedRedactionsCovered(sourceURL: jpeg, cameraRaw: resolved)
+
+        #expect(DevelopSaveError.redactionMissing("photo.jpg").errorDescription?.contains("face blur") == true)
+    }
+
+    @MainActor
+    @Test("A failed-GPU placeholder preview is shown but never cached")
+    func placeholderPreviewsAreNotCached() throws {
+        let source = try #require(CIImage(data: try imageData(.png)))
+        let cgSource = try #require(CameraRawApproximation.ciContext.createCGImage(source, from: source.extent))
+        let url = URL(fileURLWithPath: "/virtual/placeholder-\(UUID().uuidString).jpg")
+        let cache = FullScreenImageCache()
+
+        let placeholder = GPURenderFaultInjection.$forceFailure.withValue(true) {
+            FullScreenImageCache.applyCameraRaw(to: cgSource, settings: redacted(), fileOrientation: 1, displayOrientation: 1)
+        }
+        #expect(RedactionPlaceholderTracking.isPlaceholder(placeholder))
+        cache.store(placeholder, for: url, orientation: 1, renderToken: "t", isEdited: true)
+        cache.storeDisplayPreview(placeholder, for: url, orientation: 1, renderToken: "t", isEdited: true)
+        #expect(cache.cachedImage(for: url, orientation: 1, renderToken: "t", isEdited: true) == nil)
+        #expect(cache.cachedDisplayPreview(for: url, orientation: 1, renderToken: "t", isEdited: true) == nil)
+
+        // A successful render of the same settings is cached as usual.
+        var global = CameraRawSettings()
+        global.exposure2012 = 0.4
+        let real = FullScreenImageCache.applyCameraRaw(to: cgSource, settings: global, fileOrientation: 1, displayOrientation: 1)
+        #expect(!RedactionPlaceholderTracking.isPlaceholder(real))
+        cache.store(real, for: url, orientation: 1, renderToken: "g", isEdited: true)
+        #expect(cache.cachedImage(for: url, orientation: 1, renderToken: "g", isEdited: true) != nil)
+    }
+
+    @Test("An unreadable embedded block refuses a redacted render but not a never-redacted one")
+    func unreadableEmbeddedBlock() async throws {
+        let url = URL(fileURLWithPath: "/virtual/unreadable.jpg")
+        let redactedSettings = redacted()
+        let failedRead = ExportSavedRedactionAccess { _ in SavedDevelopState(embeddedReadFailed: true) }
+        await #expect(throws: SavedRedactionUnreadableError.self) {
+            try await EditExportPipeline.requireSavedRedactionsCovered(
+                sourceURL: url, cameraRaw: redactedSettings, access: failedRead)
+        }
+        let sidecarRedacts = ExportSavedRedactionAccess { _ in
+            SavedDevelopState(persisted: redactedSettings, sidecar: redactedSettings, embeddedReadFailed: true)
+        }
+        await #expect(throws: SavedRedactionUnreadableError.self) {
+            try await EditExportPipeline.requireSavedRedactionsCovered(
+                sourceURL: url, cameraRaw: nil, access: sidecarRedacts)
+        }
+        var global = CameraRawSettings()
+        global.exposure2012 = 0.4
+        try await EditExportPipeline.requireSavedRedactionsCovered(
+            sourceURL: url, cameraRaw: global, access: failedRead)
     }
 }

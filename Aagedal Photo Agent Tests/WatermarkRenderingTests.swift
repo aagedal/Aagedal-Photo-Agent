@@ -3,6 +3,8 @@ import Foundation
 import CoreImage
 import ImageIO
 import AppKit
+import Metal
+import Synchronization
 @testable import Aagedal_Photo_Agent
 
 /// End-to-end GPU test for watermark compositing: builds a real watermark asset + layer,
@@ -116,6 +118,95 @@ struct WatermarkRenderingTests {
         CGImageDestinationAddImage(dest, cgImage, nil)
         guard CGImageDestinationFinalize(dest) else { throw CocoaError(.fileWriteUnknown) }
         return mutableData as Data
+    }
+
+    @Test("the process-lifetime export engine releases mask, scratch and watermark textures after each render")
+    func offscreenRenderReleasesTransientTextures() async throws {
+        let dir = makeTempDir()
+        await activateStore(dir)
+        defer { teardownStore(dir) }
+
+        let pngData = try makeSolidColorPNGData(size: 32, red: 0, green: 1, blue: 0)
+        let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
+        try pngData.write(to: pngURL)
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Green Square")
+
+        var geometry = WatermarkGeometry()
+        geometry.centerX = 0.5
+        geometry.centerY = 0.5
+        geometry.sizeDimension = .width
+        geometry.sizeUnit = .percent
+        geometry.sizeValue = 25
+        var layer = WatermarkLayer(name: "Release", libraryAssetID: asset.id, geometry: geometry)
+        layer.opacity = 1
+
+        var settings = CameraRawSettings()
+        settings.watermarkLayers = [layer]
+        settings.localAdjustments = [MaskAdjustment(
+            name: "Brush",
+            brush: BrushMaskGeometry(strokes: [BrushStroke(
+                dabs: (0..<20).map { BrushDab(x: Double($0) / 20, y: 0.5, flow: 1, hardness: 1) },
+                radius: 0.05, density: 1, erase: false
+            )]),
+            exposure: 1
+        )]
+
+        let source = CIImage(color: CIColor(red: 0.2, green: 0.2, blue: 0.2, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 160, height: 120))
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+
+        // The returned image only references the output texture: every per-render texture of
+        // the shared engine is already gone, yet the result still renders the watermark.
+        #expect(MetalEditPipeline.offscreenRetainedTransientTextureCountForTesting() == 0)
+        let center = sampleMidRow(result, nx: 0.5)
+        #expect(center.g > 0.9, "watermark must still be in the returned image, got \(center)")
+
+        // The small watermark texture stays cached: this engine also renders edited thumbnails
+        // and previews, which must not re-read the PNG every time.
+        #expect(MetalEditPipeline.offscreenHasCachedWatermarkTextureForTesting())
+        #expect(!WatermarkTextureLoadFailures.lastLoadFailed(asset.id))
+
+        // A second render with the same settings rebuilds the masks, identically.
+        let again = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+        #expect(MetalEditPipeline.offscreenRetainedTransientTextureCountForTesting() == 0)
+        let againCenter = sampleMidRow(again, nx: 0.5)
+        #expect(abs(againCenter.g - center.g) < 0.001)
+        #expect(abs(againCenter.r - center.r) < 0.001)
+
+        // Memory pressure drops the watermark cache; the next render reloads it.
+        MetalEditPipeline.evictOffscreenCachesForTesting()
+        #expect(!MetalEditPipeline.offscreenHasCachedWatermarkTextureForTesting())
+        let reloaded = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+        #expect(abs(sampleMidRow(reloaded, nx: 0.5).g - center.g) < 0.001)
+    }
+
+    @Test("a watermark whose PNG cannot be read during render is reported to export, not skipped silently")
+    func unreadableWatermarkIsReportedToExport() async throws {
+        let dir = makeTempDir()
+        await activateStore(dir)
+        defer { teardownStore(dir) }
+
+        let pngData = try makeSolidColorPNGData(size: 16, red: 1, green: 1, blue: 0)
+        let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
+        try pngData.write(to: pngURL)
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Corrupt")
+        // The file stays readable on disk but no longer decodes (a torn or mid-sync read).
+        try Data("not a png".utf8).write(to: WatermarkStore.resolvedImageURL(forAssetID: asset.id))
+
+        var geometry = WatermarkGeometry()
+        geometry.sizeDimension = .width
+        geometry.sizeUnit = .percent
+        geometry.sizeValue = 25
+        var settings = CameraRawSettings()
+        settings.watermarkLayers = [WatermarkLayer(name: "Corrupt", libraryAssetID: asset.id, geometry: geometry)]
+        let source = CIImage(color: CIColor(red: 0, green: 0, blue: 1, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        _ = MetalEditPipeline.renderOffscreen(source: source, settings: settings)
+
+        #expect(WatermarkTextureLoadFailures.lastLoadFailed(asset.id))
+        #expect(EditExportPipeline.missingWatermarkAssetIDs(in: settings) == [asset.id])
     }
 
     @Test("a fully-opaque watermark layer composites its own color inside its footprint and leaves the rest of the image untouched")
@@ -289,6 +380,278 @@ struct WatermarkRenderingTests {
         #expect(nearTop.g < 0.3, "expected red (not green) near the top — watermark may be uploaded upside down, got \(nearTop)")
         #expect(nearBottom.g > 0.7, "expected the PNG's green BOTTOM half at the bottom of the rendered watermark, got \(nearBottom)")
         #expect(nearBottom.r < 0.3, "expected green (not red) near the bottom — watermark may be uploaded upside down, got \(nearBottom)")
+    }
+
+    @Test("a deleted library asset is flagged missing for the layer card and export, and bumps the texture-cache revision")
+    func deletedAssetIsReportedMissing() async throws {
+        let dir = makeTempDir()
+        await activateStore(dir)
+        defer { teardownStore(dir) }
+
+        let pngData = try makeSolidColorPNGData(size: 20, red: 1, green: 0, blue: 0)
+        let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
+        try pngData.write(to: pngURL)
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Doomed")
+
+        var settings = CameraRawSettings()
+        var muted = WatermarkLayer(name: "Muted", libraryAssetID: UUID())
+        muted.enabled = false
+        settings.watermarkLayers = [WatermarkLayer(name: "Live", libraryAssetID: asset.id), muted]
+
+        #expect(EditExportPipeline.missingWatermarkAssetIDs(in: settings).isEmpty)
+        #expect(!WatermarkStore.shared.isAssetMissing(asset.id))
+
+        let revisionBefore = WatermarkStore.libraryRevision.load(ordering: .relaxed)
+        try await WatermarkStore.shared.delete(id: asset.id)
+
+        #expect(WatermarkStore.libraryRevision.load(ordering: .relaxed) > revisionBefore)
+        #expect(WatermarkStore.shared.isAssetMissing(asset.id))
+        // Only the enabled layer counts; the muted layer's (also missing) asset is ignored.
+        #expect(EditExportPipeline.missingWatermarkAssetIDs(in: settings) == [asset.id])
+    }
+
+    @Test("missing-watermark exports surface as a batch warning, not a failure")
+    func missingWatermarkIsABatchWarning() async throws {
+        let tracker = MetadataFailureTracker()
+        await tracker.recordMissingWatermark("IMG_0001.JPG")
+        let warnings = await tracker.missingWatermarkWarnings
+        #expect(warnings == ["IMG_0001.JPG"])
+
+        let result = BatchOperationResult(
+            title: "Export", outcome: .partial, successCount: 1, totalCount: 1,
+            failures: [], copyFailureFilenames: [], overlayFailureFilenames: [],
+            missingWatermarkFilenames: warnings, sourceFolderURL: nil
+        )
+        #expect(result.hasWarnings)
+        #expect(!result.hasFailures)
+        #expect(result.summaryLine.contains("watermark image missing for 1 image"))
+    }
+
+    // MARK: Sidecar orientation
+
+    private typealias RGB8 = (r: Int, g: Int, b: Int)
+
+    /// Top-row-first 8-bit sRGB pixels of `image`.
+    private func rgbPixels(of image: CGImage) throws -> (width: Int, height: Int, at: (Int, Int) -> RGB8) {
+        let width = image.width, height = image.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            let context = try #require(CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        let snapshot = bytes
+        return (width, height, { x, y in
+            let i = (y * width + x) * 4
+            return (Int(snapshot[i]), Int(snapshot[i + 1]), Int(snapshot[i + 2]))
+        })
+    }
+
+    /// A display-frame watermark (top half red, bottom half green) must render upright in the
+    /// displayed bottom-right on every browse path — full screen/loupe (`applyCameraRaw` over
+    /// CIImage and CGImage sources), edited thumbnails / Caption preview / prefetch
+    /// (`decodedEditedPreview`) — exactly like the export render, whether the rotation lives
+    /// only in the sidecar or in the file's own tag. Editing in the file frame and rotating
+    /// afterwards drew the artwork sideways (and sized against the wrong edge) for
+    /// sidecar-only rotations.
+    @Test("sidecar-rotated photos draw watermarks upright in full screen, previews and export alike",
+          arguments: [true, false])
+    func sidecarRotatedWatermarkMatchesExport(sidecarOnlyRotation: Bool) async throws {
+        let dir = makeTempDir()
+        await activateStore(dir)
+        defer { teardownStore(dir) }
+        let photoDir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: photoDir) }
+        try FileManager.default.createDirectory(
+            at: photoDir.appendingPathComponent("output"), withIntermediateDirectories: true
+        )
+
+        let pngData = try makeTwoToneVerticalPNGData(
+            width: 40, height: 40, topColor: (255, 0, 0), bottomColor: (0, 255, 0)
+        )
+        let pngURL = photoDir.appendingPathComponent("wm.png")
+        try pngData.write(to: pngURL)
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Two Tone")
+
+        // 128x64 stored gray pixels, displayed 64x128 (orientation 6) via either the sidecar
+        // (embedded tag 1) or the embedded tag itself (no sidecar).
+        let source = photoDir.appendingPathComponent("photo.jpg")
+        let storedWidth = 128, storedHeight = 64
+        let context = try #require(CGContext(
+            data: nil, width: storedWidth, height: storedHeight, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: storedWidth, height: storedHeight))
+        let destination = try #require(CGImageDestinationCreateWithURL(
+            source as CFURL, "public.jpeg" as CFString, 1, nil
+        ))
+        let embeddedOrientation: Int = sidecarOnlyRotation ? 1 : 6
+        CGImageDestinationAddImage(destination, try #require(context.makeImage()), [
+            kCGImageDestinationLossyCompressionQuality: 1.0,
+            kCGImagePropertyOrientation: embeddedOrientation,
+        ] as [CFString: Any] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+        if sidecarOnlyRotation {
+            var xmp = IPTCMetadata()
+            xmp.exifOrientation = 6
+            try XMPSidecarService().saveSidecar(metadata: xmp, for: source)
+        }
+        let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: source)
+        #expect(fileOrientation == (sidecarOnlyRotation ? 1 : 6))
+        let displayOrientation = FullScreenImageCache.displayOrientation(
+            for: source, fallback: fileOrientation
+        )
+        #expect(displayOrientation == 6)
+
+        // Placed in the displayed frame (y-down): 40% of the 64 px display width, centred in
+        // the bottom-right quadrant. Stored in the sensor frame, like Develop stores it.
+        var displayGeometry = WatermarkGeometry()
+        displayGeometry.centerX = 0.75
+        displayGeometry.centerY = 0.75
+        displayGeometry.sizeDimension = .width
+        displayGeometry.sizeUnit = .percent
+        displayGeometry.sizeValue = 40
+        displayGeometry.marginUnit = .percent
+        displayGeometry.marginValue = 0
+        var layer = WatermarkLayer(
+            name: "Test", libraryAssetID: asset.id,
+            geometry: displayGeometry.transformedForSensor(orientation: 6)
+        )
+        layer.opacity = 1.0
+        var settings = CameraRawSettings()
+        settings.watermarkLayers = [layer]
+
+        // Export render (already display-frame since 85e5982) — the reference.
+        let exported = try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false,
+            outputFolder: photoDir.appendingPathComponent("output"),
+            configuration: AdvancedExportConfiguration(
+                sdrFormat: .png, sdrQuality: 0.92, sdrGamut: .sRGB,
+                hdrFormat: .jpegGainMap, hdrQuality: 0.92, hdrGamut: .displayP3,
+                tiffCompression: .lzw, resolutionLimit: .original,
+                locationMode: .formatSubfolder, customSubfolderName: "Exports"
+            )
+        )
+        let exportSource = try #require(CGImageSourceCreateWithURL(exported as CFURL, nil))
+        let exportImage = try #require(CGImageSourceCreateImageAtIndex(exportSource, 0, nil))
+
+        // Edited thumbnails, Caption preview, prefetch and the full-screen foreground render.
+        let preview = try #require(await FullScreenImageCache.decodedEditedPreview(
+            for: source, settings: settings, orientation: displayOrientation, screenMaxPx: 256
+        ))
+        // Full-screen / loupe HDR (CIImage) and SDR (CGImage) source renders.
+        let hdrDecode = try #require(FullScreenImageCache.loadHDRPreviewWithOrientation(
+            from: source, maxPixelSize: 256
+        ))
+        let hdrEdited = FullScreenImageCache.applyEditsInDisplayFrame(
+            to: hdrDecode.image, settings: settings,
+            fileOrientation: hdrDecode.orientation, displayOrientation: displayOrientation
+        )
+        let fullScreenHDR = try #require(
+            CameraRawApproximation.createDisplayCGImage(hdrEdited, from: hdrEdited.extent)
+        )
+        let sdrDecode = try #require(FullScreenImageCache.loadDownsampledWithOrientation(
+            from: source, maxPixelSize: 256
+        ))
+        let fullScreenSDR = FullScreenImageCache.applyCameraRaw(
+            to: sdrDecode.image, settings: settings,
+            fileOrientation: sdrDecode.orientation, displayOrientation: displayOrientation
+        )
+
+        let reference = try rgbPixels(of: exportImage)
+        func close(_ a: RGB8, _ b: RGB8, tolerance: Int = 70) -> Bool {
+            abs(a.r - b.r) < tolerance && abs(a.g - b.g) < tolerance && abs(a.b - b.b) < tolerance
+        }
+        for (name, image) in [("export", exportImage), ("decodedEditedPreview", preview),
+                              ("full screen HDR", fullScreenHDR), ("full screen SDR", fullScreenSDR)] {
+            let pixels = try rgbPixels(of: image)
+            #expect(pixels.width == 64 && pixels.height == 128,
+                    "\(name): expected the 64x128 display frame, got \(pixels.width)x\(pixels.height)")
+            guard pixels.width == 64, pixels.height == 128 else { continue }
+            // Footprint: x 35...61, y 83...109; red top half, green bottom half on both
+            // sides (a sideways watermark splits red/green left-right instead).
+            for x in [41, 55] {
+                #expect(close(pixels.at(x, 88), (255, 0, 0)),
+                        "\(name): expected the watermark's red top half at (\(x), 88), got \(pixels.at(x, 88))")
+                #expect(close(pixels.at(x, 104), (0, 255, 0)),
+                        "\(name): expected the watermark's green bottom half at (\(x), 104), got \(pixels.at(x, 104))")
+            }
+            #expect(close(pixels.at(16, 32), (128, 128, 128), tolerance: 40),
+                    "\(name): expected untouched gray outside the footprint, got \(pixels.at(16, 32))")
+            #expect(close(pixels.at(48, 70), (128, 128, 128), tolerance: 40),
+                    "\(name): expected gray above the footprint, got \(pixels.at(48, 70))")
+            // Same pixels as the export everywhere (away from anti-aliased edges).
+            var total = 0, count = 0
+            for y in stride(from: 2, to: 126, by: 3) {
+                for x in stride(from: 2, to: 62, by: 3) {
+                    let a = pixels.at(x, y), b = reference.at(x, y)
+                    total += abs(a.r - b.r) + abs(a.g - b.g) + abs(a.b - b.b)
+                    count += 3
+                }
+            }
+            let mean = Double(total) / Double(max(count, 1))
+            #expect(mean < 8, "\(name): mean difference from the export render is \(mean)")
+        }
+    }
+}
+
+@Suite("Watermark unit conversion")
+struct WatermarkUnitConversionTests {
+    @Test("switching size units keeps the rendered size against the image")
+    func sizeConversionPreservesRenderedSize() {
+        var geometry = WatermarkGeometry()
+        geometry.sizeDimension = .width
+        geometry.sizeUnit = .percent
+        geometry.sizeValue = 20
+        let pixels = geometry.convertingSizeUnit(to: .pixel, imageWidth: 6000, imageHeight: 4000)
+        #expect(pixels.sizeUnit == .pixel)
+        #expect(pixels.sizeValue == 1200)
+        let before = geometry.renderedHalfExtentUV(assetAspect: 2, imageWidth: 6000, imageHeight: 4000)
+        let after = pixels.renderedHalfExtentUV(assetAspect: 2, imageWidth: 6000, imageHeight: 4000)
+        #expect(abs(before.halfWidthUV - after.halfWidthUV) < 1e-9)
+
+        var tall = pixels
+        tall.sizeDimension = .height
+        tall.sizeValue = 400
+        let percent = tall.convertingSizeUnit(to: .percent, imageWidth: 6000, imageHeight: 4000)
+        #expect(percent.sizeValue == 10)
+    }
+
+    @Test("converted values clamp into the slider range")
+    func conversionClamps() {
+        var geometry = WatermarkGeometry()
+        geometry.sizeUnit = .percent
+        geometry.sizeValue = 100
+        let huge = geometry.convertingSizeUnit(to: .pixel, imageWidth: 20000, imageHeight: 10000)
+        #expect(huge.sizeValue == WatermarkGeometry.sizeRange(for: .pixel).upperBound)
+
+        var tiny = WatermarkGeometry()
+        tiny.sizeUnit = .pixel
+        tiny.sizeValue = 8
+        #expect(tiny.convertingSizeUnit(to: .percent, imageWidth: 6000, imageHeight: 4000).sizeValue == 1)
+
+        var margin = WatermarkGeometry()
+        margin.marginUnit = .percent
+        margin.marginValue = 10
+        let marginPixels = margin.convertingMarginUnit(to: .pixel, imageWidth: 6000, imageHeight: 4000)
+        #expect(marginPixels.marginValue == 400) // exact on the shorter edge
+        let wide = margin.convertingMarginUnit(to: .pixel, imageWidth: 40000, imageHeight: 30000)
+        #expect(wide.marginValue == WatermarkGeometry.marginRange(for: .pixel).upperBound)
+        #expect(marginPixels.convertingMarginUnit(to: .percent, imageWidth: 6000, imageHeight: 4000).marginValue == 10)
+    }
+
+    @Test("same-unit conversion is a no-op")
+    func sameUnitIsNoOp() {
+        var geometry = WatermarkGeometry()
+        geometry.sizeValue = 33
+        #expect(geometry.convertingSizeUnit(to: geometry.sizeUnit, imageWidth: 100, imageHeight: 100) == geometry)
+        #expect(geometry.convertingMarginUnit(to: geometry.marginUnit, imageWidth: 100, imageHeight: 100) == geometry)
     }
 }
 
@@ -577,6 +940,88 @@ struct AnonymizerMultiPassRenderingTests {
             difference > 0.005,
             "Expected the global Anonymizer to sample the upstream local-color composite; mean difference was \(difference)"
         )
+    }
+
+    /// The live preview keeps one ping/pong pair per engine instead of allocating two full-size
+    /// mipmapped intermediates per drawn frame. A reused pair must produce exactly the pixels of
+    /// a first frame on a fresh engine (every pass overwrites its output; mips are regenerated).
+    @Test("live multi-pass frames reuse intermediates and match a fresh engine's pixels")
+    @MainActor
+    func liveRenderGraphReusesIntermediates() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let reused = MetalLivePreviewPipeline(device: device, commandQueue: queue),
+              let fresh = MetalLivePreviewPipeline(device: device, commandQueue: queue)
+        else { return }
+
+        var colorMask = MaskAdjustment()
+        colorMask.geometry.centerX = 0.5
+        colorMask.geometry.centerY = 0.5
+        colorMask.geometry.radiusX = 1.0
+        colorMask.geometry.radiusY = 1.0
+        colorMask.geometry.feather = 0
+        colorMask.contrast = 80
+        var anonymizerMask = MaskAdjustment()
+        anonymizerMask.geometry.centerX = 0.3
+        anonymizerMask.geometry.centerY = 0.3
+        anonymizerMask.geometry.radiusX = 0.25
+        anonymizerMask.geometry.radiusY = 0.25
+        anonymizerMask.anonymizer = AnonymizerSettings(amount: 72, blackOut: nil)
+        var settings = CameraRawSettings()
+        settings.anonymizer = AnonymizerSettings(amount: 40, blackOut: nil)
+        settings.exposure2012 = 0.3
+        settings.localAdjustments = [colorMask, anonymizerMask]
+        // Color → spatial Global → spatial mask: three passes, so both ping and pong are used.
+        settings.layerOrder = [.mask(colorMask.id), .global, .mask(anonymizerMask.id)]
+
+        let source = try checkerboard()
+        let containerSize = CGSize(width: extent.width, height: extent.height)
+        for pipeline in [reused, fresh] {
+            pipeline.uploadSourceImage(source)
+            pipeline.updateParams(settings)
+            pipeline.updateViewport(
+                zoomScale: 1,
+                offset: .zero,
+                containerSize: containerSize,
+                imageSize: containerSize
+            )
+        }
+
+        func renderFrame(_ pipeline: MetalLivePreviewPipeline) throws -> [UInt16] {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba16Float,
+                width: Int(extent.width),
+                height: Int(extent.height),
+                mipmapped: false
+            )
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            descriptor.storageMode = .shared
+            let target = try #require(device.makeTexture(descriptor: descriptor))
+            #expect(pipeline.renderLiveFrameForTesting(into: target))
+            var pixels = [UInt16](repeating: 0, count: target.width * target.height * 4)
+            pixels.withUnsafeMutableBytes { buffer in
+                target.getBytes(
+                    buffer.baseAddress!,
+                    bytesPerRow: target.width * 8,
+                    from: MTLRegionMake2D(0, 0, target.width, target.height),
+                    mipmapLevel: 0
+                )
+            }
+            return pixels
+        }
+
+        let first = try renderFrame(reused)
+        let allocationsAfterFirstFrame = reused.renderGraphIntermediateAllocationCount
+        #expect(allocationsAfterFirstFrame == 2)
+        let second = try renderFrame(reused)
+        let third = try renderFrame(reused)
+        #expect(reused.renderGraphIntermediateAllocationCount == allocationsAfterFirstFrame)
+        let baseline = try renderFrame(fresh)
+
+        #expect(Set(first).count > 16, "The frame must contain real image content")
+        #expect(second == first)
+        #expect(third == first)
+        #expect(baseline == first)
     }
 
     @Test("global Black Out remains terminal when the global tone curve lifts black")

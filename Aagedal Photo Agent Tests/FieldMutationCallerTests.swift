@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CoreGraphics
+import Observation
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -29,6 +30,7 @@ private actor FieldMutationCallerRecorder {
         case .rating(let value): metadata.rating = value
         case .label(let value): metadata.label = value
         case .addPersons(let names): metadata.personShown = names
+        case .replacePersons: request.mutation.apply(to: &metadata)
         case .orientation(_, let target): metadata.exifOrientation = target
         }
         var baseline = IPTCMetadata(title: "Original caption")
@@ -146,6 +148,263 @@ struct FieldMutationCallerTests {
         model.batchUpdate {}
         #expect(model.visibleImages.map(\.url) == [urls[0]])
         #expect(model.visibleImages.first?.metadata?.title == "Searchable caption")
+    }
+
+    @Test("Quit waits for every pane's rating/label/rotate writes and lists them in both quit prompts")
+    @MainActor
+    func quitCoversBrowserFieldWrites() async throws {
+        let flush = MetadataEditorTerminationFlush()
+        let monitor = BackgroundOperationMonitor()
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let idle = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        BrowserFieldMutationTermination.register(model, flush: flush, monitor: monitor)
+        BrowserFieldMutationTermination.register(idle, flush: flush, monitor: monitor)
+        #expect(monitor.activeOperations.isEmpty)
+        #expect(flush.pendingActivityDescription == nil)
+
+        let folder = URL(fileURLWithPath: "/virtual/quit-field-writes")
+        let urls = ["a.arw", "b.arw", "c.arw"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.selectedImageIDs = Set(urls)
+        model.batchUpdate {}
+        model.setRating(.three)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await recorder.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(await recorder.isPaused)
+        // A second, queued batch: rotation of one photo.
+        model.selectedImageIDs = [urls[0]]
+        model.batchUpdate {}
+        model.rotateClockwise()
+
+        #expect(monitor.activeOperations == ["a rating/label write"])
+        #expect(flush.pendingActivityDescription == "Ratings/labels: 4 remaining")
+
+        var flushed = false
+        let quit = Task { @MainActor in
+            try await flush.flush()
+            flushed = true
+        }
+        for _ in 0..<50 { await Task.yield() }
+        #expect(!flushed)
+        await recorder.resume()
+        try await quit.value
+        #expect(flushed)
+        #expect(await recorder.captured.count == 4)
+        #expect(model.images.map(\.starRating) == [.three, .three, .three])
+        #expect(!model.hasFieldMutationWritesInFlight)
+        #expect(monitor.activeOperations.isEmpty)
+        #expect(flush.pendingActivityDescription == nil)
+    }
+
+    @Test("Full screen rates and labels only the displayed photo of a multi-selection")
+    @MainActor
+    func fullScreenTagsOnlyDisplayedPhoto() async {
+        let recorder = FieldMutationCallerRecorder()
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/full-screen-tag")
+        let urls = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.selectedImageIDs = Set(urls)
+        model.lastClickedImageURL = urls[1]
+        model.batchUpdate {}
+        model.isFullScreen = true
+        #expect(model.fullScreenImage?.url == urls[1])
+        model.setRatingOnFullScreenImage(.four)
+        model.setLabelOnFullScreenImage(.green)
+        await model.waitForPendingFieldMutationWrites()
+        #expect(await recorder.captured.map(\.imageURL) == [urls[1], urls[1]])
+        #expect(model.images.map(\.starRating) == [.none, .four, .none])
+        #expect(model.images.map(\.colorLabel) == [.none, .green, .none])
+        #expect(model.fullScreenImage?.starRating == .four)
+        #expect(model.selectedImageIDs == Set(urls))
+    }
+
+    @Test("Grid rating out of the filter moves to the next survivor, else the previous, and keeps multi-selection survivors")
+    @MainActor
+    func gridRatingOutOfFilterMovesSelection() async {
+        let recorder = FieldMutationCallerRecorder()
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/grid-filter-survivor")
+        let urls = ["a.jpg", "b.jpg", "c.jpg", "d.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.map { var image = ImageFile(url: $0); image.starRating = .three; return image }
+        model.minimumStarRating = .three
+        model.batchUpdate {}
+        #expect(model.visibleImages.map(\.url) == urls)
+
+        // Single selection: the next photo takes over and the culling anchor moves with it.
+        model.applySelection(ids: [urls[1]], active: urls[1])
+        model.setRating(.one)
+        #expect(model.visibleImages.map(\.url) == [urls[0], urls[2], urls[3]])
+        #expect(model.selectedImageIDs == [urls[2]])
+        #expect(model.lastClickedImageURL == urls[2])
+        #expect(model.computeNextSelection()?.active == urls[3])
+
+        // Last photo: falls back to the previous one.
+        model.applySelection(ids: [urls[3]], active: urls[3])
+        model.setLabel(.red)
+        model.setRating(.two)
+        #expect(model.selectedImageIDs == [urls[2]])
+        #expect(model.lastClickedImageURL == urls[2])
+
+        // Multi-selection that partly disappears keeps its survivors.
+        model.applySelection(ids: [urls[0], urls[2]], active: urls[2])
+        model.setRating(.one, imagesToMutate: model.images.filter { $0.url == urls[2] })
+        #expect(model.visibleImages.map(\.url) == [urls[0]])
+        #expect(model.selectedImageIDs == [urls[0]])
+        #expect(model.lastClickedImageURL == urls[0])
+        await model.waitForPendingFieldMutationWrites()
+    }
+
+    @Test("Full screen opened on a multi-selection steps through it, stops at the ends and keeps the set")
+    @MainActor
+    func fullScreenStepsThroughMultiSelection() {
+        let model = BrowserViewModel()
+        let folder = URL(fileURLWithPath: "/virtual/full-screen-steps")
+        let urls = ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        let selection: Set<URL> = [urls[1], urls[3], urls[4]]
+        model.applySelection(ids: selection, active: urls[1])
+        model.isFullScreen = true
+
+        #expect(model.stepFullScreen(by: -1) == .atFirst)
+        #expect(model.fullScreenImage?.url == urls[1])
+        #expect(model.stepFullScreen(by: 1) == .moved)
+        #expect(model.fullScreenImage?.url == urls[3])
+        #expect(model.stepFullScreen(by: 1) == .moved)
+        #expect(model.fullScreenImage?.url == urls[4])
+        #expect(model.stepFullScreen(by: 1) == .atLast)
+        #expect(model.fullScreenImage?.url == urls[4])
+        #expect(model.selectedImageIDs == selection)
+
+        model.isFullScreen = false
+        #expect(model.selectedImageIDs == selection)
+        #expect(model.lastClickedImageURL == urls[4])
+
+        // A single selection steps through every visible photo.
+        model.applySelection(ids: [urls[0]], active: urls[0])
+        model.isFullScreen = true
+        #expect(model.stepFullScreen(by: 1) == .moved)
+        #expect(model.selectedImageIDs == [urls[1]])
+        #expect(model.fullScreenImage?.url == urls[1])
+    }
+
+    @Test("Deleting in full screen keeps the rest of the multi-selection and shows the next selected photo")
+    @MainActor
+    func fullScreenDeleteKeepsMultiSelection() async {
+        let model = BrowserViewModel(imageTrashHandler: ReviewDirectMutationTrash())
+        let urls = ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"].map {
+            URL(fileURLWithPath: "/virtual/full-screen-delete").appendingPathComponent($0)
+        }
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        model.applySelection(ids: [urls[1], urls[3], urls[4]], active: urls[3])
+        model.isFullScreen = true
+
+        model.confirmDeleteFullScreenImage()
+        model.deleteConfirmedImages()
+        await model.waitForPendingImageMutation()
+        #expect(model.selectedImageIDs == [urls[1], urls[4]])
+        #expect(model.fullScreenImage?.url == urls[4])
+        #expect(model.isFullScreen)
+
+        // The last selected photo goes: the viewer steps back within the selection.
+        model.confirmDeleteFullScreenImage()
+        model.deleteConfirmedImages()
+        await model.waitForPendingImageMutation()
+        #expect(model.selectedImageIDs == [urls[1]])
+        #expect(model.fullScreenImage?.url == urls[1])
+    }
+
+    @Test("A plain filter change keeps only the visible selection; Compare keeps its photo selected")
+    @MainActor
+    func filterChangeDoesNotMoveSelectionToNeighbour() async {
+        let recorder = FieldMutationCallerRecorder()
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/filter-change")
+        let urls = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.enumerated().map { index, url in
+            var image = ImageFile(url: url)
+            image.starRating = index == 1 ? .one : .four
+            return image
+        }
+        model.batchUpdate {}
+        model.applySelection(ids: [urls[1]], active: urls[1])
+        model.minimumStarRating = .three
+        model.batchUpdate {}
+        #expect(model.visibleImages.map(\.url) == [urls[0], urls[2]])
+        #expect(model.selectedImageIDs.isEmpty)
+
+        // Compare: rating its focused photo out of the filter keeps the selection on it.
+        model.applySelection(ids: [urls[0]], active: urls[0])
+        model.keepsSelectionThroughFilterChanges = true
+        model.setRating(.one, imagesToMutate: model.images.filter { $0.url == urls[0] })
+        #expect(model.visibleImages.map(\.url) == [urls[2]])
+        #expect(model.selectedImageIDs == [urls[0]])
+        #expect(model.selectedImages.map(\.url) == [urls[0]])
+        await model.waitForPendingFieldMutationWrites()
+    }
+
+    @Test("Full-screen selection commands collapse a kept multi-selection to the shown photo")
+    @MainActor
+    func fullScreenCommandsTargetShownPhoto() {
+        #expect(AppCommand.pasteIPTCMetadata.actsOnBrowserSelection)
+        #expect(AppCommand.applyTemplateShortcut(1).actsOnBrowserSelection)
+        #expect(AppCommand.renameSelected.actsOnBrowserSelection)
+        #expect(!AppCommand.setRating(.one).actsOnBrowserSelection)
+        #expect(!AppCommand.renderAll.actsOnBrowserSelection)
+        #expect(AppCommand.setRating(.one).requiresAvailableFolder)
+        #expect(!AppCommand.openFolder.requiresAvailableFolder)
+
+        let model = BrowserViewModel()
+        let urls = ["a.jpg", "b.jpg", "c.jpg"].map {
+            URL(fileURLWithPath: "/virtual/full-screen-commands").appendingPathComponent($0)
+        }
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        model.applySelection(ids: Set(urls), active: urls[1])
+        model.collapseSelectionToFullScreenImage()
+        #expect(model.selectedImageIDs == Set(urls)) // not in full screen: untouched
+        model.isFullScreen = true
+        model.collapseSelectionToFullScreenImage()
+        #expect(model.selectedImageIDs == [urls[1]])
+    }
+
+    @Test("Only user-initiated changes ask the grid to reveal the selection")
+    @MainActor
+    func revealRequestsAreUserInitiated() {
+        let model = BrowserViewModel()
+        let folder = URL(fileURLWithPath: "/virtual/reveal")
+        let urls = ["a.jpg", "b.jpg"].map { folder.appendingPathComponent($0) }
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        _ = model.consumeRevealActiveRequest()
+
+        // A background metadata re-sort is not a reason to scroll.
+        model.publishMetadataBatch(for: [urls[0]], sortKeyChanged: true)
+        #expect(!model.consumeRevealActiveRequest())
+
+        model.minimumStarRating = .one
+        #expect(model.consumeRevealActiveRequest())
+        #expect(!model.consumeRevealActiveRequest())
+        model.sortReversed.toggle()
+        #expect(model.consumeRevealActiveRequest())
+    }
+
+    @Test("Folder availability treats only a missing path as gone")
+    func folderAvailability() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("availability-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        #expect(BrowserViewModel.folderAvailabilityNow(folder) == .available)
+        try FileManager.default.removeItem(at: folder)
+        #expect(BrowserViewModel.folderAvailabilityNow(folder) == .gone)
     }
 
     @Test("Older background metadata cannot overwrite accepted ratings or labels", arguments: [false, true], ["pending", "accepted during read", "completed during read"])
@@ -636,6 +895,28 @@ struct FieldMutationCallerTests {
         #expect(protectedRequest.requestedMode == .writeToXMPSidecar)
     }
 
+    @Test("Full Screen rotation touches only the shown photo, not the hidden multi-selection")
+    @MainActor
+    func fullScreenRotationTargetsShownPhoto() async throws {
+        let recorder = FieldMutationCallerRecorder()
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) },
+            fieldMutationModeResolver: { _, _ in .historyOnly })
+        let folder = URL(fileURLWithPath: "/virtual/full-screen-rotation")
+        let photos = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = photos.map { ImageFile(url: $0) }
+        model.selectedImageIDs = Set(photos)
+        model.lastClickedImageURL = photos[1]
+        model.isFullScreen = true
+
+        model.rotateFullScreenImage(clockwise: true)
+        await model.waitForPendingFieldMutationWrites()
+
+        let requests = await recorder.captured
+        #expect(requests.map(\.imageURL) == [photos[1]])
+        #expect(model.images.map(\.exifOrientation) == [1, 6, 1])
+    }
+
     @Test("Failed rapid rotations restore their verified orientation without clearing a pending caption", arguments: [false, true])
     @MainActor
     func browserRotationDefiniteFailure(firstSucceeds: Bool) async throws {
@@ -920,7 +1201,7 @@ struct FieldMutationCallerTests {
         let recorder = FieldMutationCallerRecorder(failingNames: allFail ? ["bad.jpg", "good.jpg"] : ["bad.jpg"])
         let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
             fieldMutationWriter: { await recorder.write($0) }, fieldMutationModeResolver: { _, _ in .writeToFileAndXMPSidecar })
-        model.faceData = faceData(folder: folder, urls: urls, name: "Ada; Lin")
+        model.faceData = faceData(folder: folder, urls: urls, name: "Lovelace, Ada")
         let counter = FieldMutationNotificationCounter()
         let observer = NotificationCenter.default.addObserver(forName: .faceMetadataDidChange, object: nil, queue: nil) { _ in counter.increment() }
         defer { NotificationCenter.default.removeObserver(observer) }
@@ -937,7 +1218,8 @@ struct FieldMutationCallerTests {
         #expect(requests.count == 2)
         for request in requests {
             #expect(request.requestedMode == .writeToFileAndXMPSidecar)
-            if case .addPersons(let names) = request.mutation { #expect(names == ["Ada", "Lin"]) } else { Issue.record("Captured person names changed") }
+            // One face group is one person: a Photo Mechanic "Last, First" name stays intact.
+            if case .addPersons(let names) = request.mutation { #expect(names == ["Lovelace, Ada"]) } else { Issue.record("Captured person names changed") }
         }
     }
 
@@ -988,6 +1270,436 @@ struct FieldMutationCallerTests {
         if case .addPersons(let names) = request.mutation { #expect(names == ["Captured name"]) } else { Issue.record("Name was not captured") }
     }
 
+    @Test("A single face group named \"Last, First\" is written as one person")
+    @MainActor
+    func faceGroupNameWithCommaIsOnePerson() async throws {
+        // Single-group writes resolve content-credential status from the file, so it must exist.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("comma-name-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("face.png")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .png, properties: [:])).write(to: photo)
+        let recorder = FieldMutationCallerRecorder()
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            fieldMutationWriter: { await recorder.write($0) })
+        let data = faceData(folder: folder, urls: [photo], name: "  Doe, Jane ")
+        model.faceData = data
+        model.applyNameToMetadata(groupID: try #require(data.groups.first?.id))
+        await model.waitForPendingFieldMutationWrites()
+        let request = try #require(await recorder.captured.first)
+        if case .addPersons(let names) = request.mutation { #expect(names == ["Doe, Jane"]) } else { Issue.record("No person mutation") }
+    }
+
+    @Test("Apply All stays available for named groups from a cancelled or partially failed scan")
+    @MainActor
+    func applyAllAvailableAfterIncompleteScan() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/incomplete-scan")
+        let photo = folder.appendingPathComponent("face.jpg")
+        let recorder = FieldMutationCallerRecorder()
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            fieldMutationWriter: { await recorder.write($0) })
+        #expect(!model.canApplyAllNames)
+        var data = faceData(folder: folder, urls: [photo], name: "Partial name")
+        data.scanComplete = false
+        model.faceData = data
+        #expect(!model.scanComplete)
+        #expect(model.canApplyAllNames)
+        model.applyAllNamesToMetadata(images: [ImageFile(url: photo)], folderURL: folder)
+        await model.waitForPendingFieldMutationWrites()
+        #expect(await recorder.captured.count == 1)
+
+        var unnamed = faceData(folder: folder, urls: [photo], name: "x")
+        unnamed.groups[0].name = nil
+        model.faceData = unnamed
+        #expect(!model.canApplyAllNames)
+    }
+
+    @Test("Confirmed jersey players enable Apply All in the Sports lens without any named face group")
+    @MainActor
+    func confirmedPlayersEnableApplyInSportsLens() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/sports-apply")
+        let photo = folder.appendingPathComponent("match.jpg")
+        let recorder = FieldMutationCallerRecorder()
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            fieldMutationWriter: { await recorder.write($0) })
+        var data = faceData(folder: folder, urls: [photo], name: "x")
+        data.groups[0].name = nil
+        data.numberDetections = [NumberDetection(imageURL: photo, number: 10, numberConfidence: 0.9,
+            boundingBox: .zero, resolvedPlayerName: "Hansen, Ola", claimState: .confirmed)]
+        model.faceData = data
+        #expect(model.activeLens == .face)
+        #expect(!model.canApplyAllNames)
+        data.activeLens = .sports
+        model.faceData = data
+        try #require(model.activeLens == .sports)
+        #expect(model.canApplyAllNames)
+        model.applyAllNamesToMetadata(images: [ImageFile(url: photo)], folderURL: folder)
+        await model.waitForPendingFieldMutationWrites()
+        let request = try #require(await recorder.captured.first)
+        if case .addPersons(let names) = request.mutation { #expect(names == ["Hansen, Ola"]) } else { Issue.record("No person mutation") }
+    }
+
+    @Test("A write failure is still reported when face data is edited while the write runs")
+    @MainActor
+    func faceWriteFailureSurvivesMidWriteFaceEdit() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/mid-write-edit")
+        let photo = folder.appendingPathComponent("bad.jpg")
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true, failingNames: ["bad.jpg"])
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            fieldMutationWriter: { await recorder.write($0) })
+        var data = faceData(folder: folder, urls: [photo], name: "First name")
+        model.faceData = data
+        model.applyAllNamesToMetadata(images: [ImageFile(url: photo)], folderURL: folder)
+        try await waitForPause(recorder)
+        data.groups[0].name = "Renamed meanwhile"
+        model.faceData = data
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.fieldMutationResults.count == 1)
+        #expect(model.errorMessage?.contains("bad.jpg") == true)
+    }
+
+    @Test("Clearing the displayed folder drops the previous folder's faces")
+    @MainActor
+    func clearDisplayedFolderDropsFaces() {
+        let folder = URL(fileURLWithPath: "/virtual/previous-faces")
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.faceData = faceData(folder: folder, urls: [folder.appendingPathComponent("a.jpg")], name: "Someone")
+        #expect(!model.namedGroups.isEmpty)
+        model.clearDisplayedFolder()
+        #expect(model.faceData == nil)
+        #expect(model.namedGroups.isEmpty)
+        #expect(model.displayedFolderURL == nil)
+        #expect(!model.canApplyAllNames)
+    }
+
+    // MARK: - Browser main-thread performance invariants
+
+    @Test("The images cascade still detects same-count identity changes and publishes in-place edits")
+    @MainActor
+    func imagesCascadeTracksIdentityWithoutOldValue() {
+        let model = BrowserViewModel()
+        let folder = URL(fileURLWithPath: "/virtual/cascade-identity")
+        let (a, b, c, d) = (folder.appendingPathComponent("a.jpg"), folder.appendingPathComponent("b.jpg"),
+                            folder.appendingPathComponent("c.jpg"), folder.appendingPathComponent("d.jpg"))
+        model.currentFolderURL = folder
+        model.images = [a, b, c].map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        #expect(Set(model.sortedImages.map(\.url)) == [a, b, c])
+        #expect(model.imageCount == 3 && model.hasImages)
+
+        // Same count, different identity (rename/replacement) must force a full re-sort;
+        // reusing the previous sorted order would silently drop the new row.
+        var replaced = model.images
+        replaced[2] = ImageFile(url: d)
+        model.images = replaced
+        model.batchUpdate {}
+        #expect(Set(model.sortedImages.map(\.url)) == [a, b, d])
+        #expect(Set(model.visibleImages.map(\.url)) == [a, b, d])
+        #expect(model.urlToImageIndex == [a: 0, b: 1, d: 2])
+
+        // In-place element edits keep identity and reach the derived snapshots.
+        model.images[0].starRating = .three
+        model.batchUpdate {}
+        #expect(model.sortedImages.first { $0.url == a }?.starRating == .three)
+        #expect(model.visibleImages.first { $0.url == a }?.starRating == .three)
+
+        // Order-only change on the same URLs is still an identity change.
+        model.images = model.images.reversed()
+        model.batchUpdate {}
+        #expect(model.urlToImageIndex == [d: 0, b: 1, a: 2])
+        #expect(Set(model.sortedImages.map(\.url)) == [a, b, d])
+
+        model.images = []
+        model.batchUpdate {}
+        #expect(model.imageCount == 0 && !model.hasImages && model.sortedImages.isEmpty)
+    }
+
+    @Test("Full screen and count readers observe only their own row, not every row edit")
+    @MainActor
+    func fullScreenImageIsANarrowRead() {
+        let model = BrowserViewModel()
+        let folder = URL(fileURLWithPath: "/virtual/full-screen-narrow")
+        let (a, b) = (folder.appendingPathComponent("a.jpg"), folder.appendingPathComponent("b.jpg"))
+        model.currentFolderURL = folder
+        model.images = [a, b].map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        model.selectedImageIDs = [a]
+        model.lastClickedImageURL = a
+        model.isFullScreen = true
+        #expect(model.fullScreenImage?.url == a)
+
+        let fullScreenChanges = FieldMutationNotificationCounter()
+        let countChanges = FieldMutationNotificationCounter()
+        withObservationTracking { _ = model.fullScreenImage } onChange: { fullScreenChanges.increment() }
+        withObservationTracking { _ = model.hasImages } onChange: { countChanges.increment() }
+        model.images[1].starRating = .five
+        #expect(fullScreenChanges.value == 0)
+        #expect(countChanges.value == 0)
+        #expect(model.fullScreenImage?.starRating == StarRating.none)
+
+        model.images[0].exifOrientation = 6
+        #expect(fullScreenChanges.value == 1)
+        #expect(model.fullScreenImage?.exifOrientation == 6)
+
+        // Active row outside the selection falls back to the first selected row, as before.
+        model.selectedImageIDs = [b]
+        #expect(model.fullScreenImage?.url == b)
+        model.lastClickedImageURL = b
+        #expect(model.fullScreenImage?.starRating == .five)
+        model.isFullScreen = false
+    }
+
+    @Test("Pending-status refresh updates only its rows in place and keeps the order")
+    @MainActor
+    func pendingStatusRefreshIsInPlace() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = ["c.jpg", "a.jpg", "b.jpg"].map { folder.appendingPathComponent($0) }
+        for url in urls { try Data("x".utf8).write(to: url) }
+        _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: "a.jpg", pendingChanges: true,
+            metadata: IPTCMetadata(title: "New headline"), imageMetadataSnapshot: IPTCMetadata(title: "Old"),
+            history: []), for: urls[1], in: folder)
+
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        let order = model.sortedImages.map(\.url)
+        let index = model.urlToImageIndex
+
+        model.refreshPendingStatusBatch(for: [urls[1], urls[2]])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(model.visibleImages.first { $0.url == urls[1] }?.hasPendingMetadataChanges ?? false),
+              ContinuousClock.now < deadline { await Task.yield() }
+
+        for snapshot in [model.images, model.sortedImages, model.visibleImages] {
+            let pending = try #require(snapshot.first { $0.url == urls[1] })
+            #expect(pending.hasPendingMetadataChanges)
+            #expect(!pending.pendingFieldNames.isEmpty)
+            #expect(snapshot.first { $0.url == urls[2] }?.hasPendingMetadataChanges == false)
+        }
+        #expect(model.sortedImages.map(\.url) == order)
+        #expect(model.urlToImageIndex == index)
+    }
+
+    @Test("Overlapping pending-status refreshes coalesce and never drop queued photos")
+    @MainActor
+    func pendingStatusRefreshesCoalesce() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        for url in urls { try Data("x".utf8).write(to: url) }
+        let service = MetadataSidecarService()
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+
+        func markPending(_ index: Int) throws {
+            _ = try service.saveSidecar(MetadataSidecar(sourceFile: urls[index].lastPathComponent,
+                pendingChanges: true, metadata: IPTCMetadata(title: "New \(index)"),
+                imageMetadataSnapshot: IPTCMetadata(title: "Old"), history: []), for: urls[index], in: folder)
+        }
+        func settle(until condition: () -> Bool) async {
+            let deadline = ContinuousClock.now + .seconds(10)
+            while (!condition() || model.isPendingStatusRefreshInFlight), ContinuousClock.now < deadline {
+                await Task.yield()
+            }
+        }
+        func isPending(_ index: Int) -> Bool {
+            model.images.first { $0.url == urls[index] }?.hasPendingMetadataChanges == true
+        }
+
+        // A burst of whole-folder requests (one per save) collapses into a single read.
+        try markPending(0)
+        for _ in 0..<8 { model.refreshPendingStatus() }
+        await settle { isPending(0) }
+        #expect(isPending(0))
+        #expect(model.pendingStatusFullRefreshCount == 1)
+
+        // Requests landing while a pass is in flight are served by exactly one follow-up.
+        model.refreshPendingStatus()
+        #expect(model.isPendingStatusRefreshInFlight)
+        try markPending(1)
+        for _ in 0..<5 { model.refreshPendingStatus() }
+        await settle { isPending(1) }
+        #expect(isPending(1))
+        #expect(model.pendingStatusFullRefreshCount == 2)
+
+        // Successive targeted refreshes for different photos are both applied: a later
+        // batch no longer cancels an earlier in-flight one.
+        let fullCount = model.pendingStatusFullRefreshCount
+        try markPending(2)
+        try service.deleteSidecar(for: urls[0], in: folder)
+        model.refreshPendingStatusBatch(for: [urls[2]])
+        for _ in 0..<3 { await Task.yield() }
+        model.refreshPendingStatusBatch(for: [urls[0]])
+        await settle { isPending(2) && !isPending(0) }
+        #expect(isPending(2))
+        #expect(!isPending(0))
+        #expect(model.pendingStatusFullRefreshCount == fullCount)
+    }
+
+    @Test("Sidecar writes are journaled after they land and reported only for written photos")
+    func sidecarWriteJournalReportsLateWrites() throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let written = folder.appendingPathComponent("journal-\(UUID().uuidString).jpg")
+        let untouched = folder.appendingPathComponent("journal-\(UUID().uuidString).jpg")
+        let journal = MetadataSidecarWriteJournal.shared
+        let service = MetadataSidecarService()
+
+        let beforeSave = journal.generation
+        try service.saveSidecar(MetadataSidecar(sourceFile: written.lastPathComponent, pendingChanges: true,
+            metadata: IPTCMetadata(title: "New"), imageMetadataSnapshot: IPTCMetadata(title: "Old"),
+            history: []), for: written, in: folder)
+        #expect(journal.urlsWritten(since: beforeSave, among: [written, untouched]) == [written])
+
+        let beforeDelete = journal.generation
+        #expect(journal.urlsWritten(since: beforeDelete, among: [written]).isEmpty)
+        try service.deleteSidecar(for: written, in: folder)
+        #expect(journal.urlsWritten(since: beforeDelete, among: [written, untouched]) == [written])
+    }
+
+    @Test("An authoritative batch read yields to sidecars written after its listing and to pending rows")
+    @MainActor
+    func authoritativeBatchSidecarsYieldToLateWrites() throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("late.jpg")
+        try Data("x".utf8).write(to: url)
+        // A historyOnly-style pending draft (rating 5) that landed after the batch's listing.
+        var draft = IPTCMetadata()
+        draft.rating = 5
+        _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: "late.jpg",
+            pendingChanges: true, metadata: draft, imageMetadataSnapshot: IPTCMetadata(), history: []),
+            for: url, in: folder)
+
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        let embedded: [[String: Any]] = [[MetadataDictKey.sourceFile: url.path, MetadataDictKey.rating: 0]]
+        func apply(to row: ImageFile, stale: Set<URL>) -> ImageFile {
+            var images = [row]
+            model.applyBatchMetadataResults(embedded, to: &images, localIndex: [url: 0],
+                cachedSidecars: [:], sidecarsAreAuthoritative: true, staleSidecarURLs: stale,
+                nativeHDRByURL: [:])
+            return images[0]
+        }
+
+        // A clean row the batch's read covered: absent means none, no fallback read.
+        #expect(apply(to: ImageFile(url: url), stale: []).starRating == StarRating.none)
+        // Written after the listing (journaled): re-read from disk at apply time.
+        #expect(apply(to: ImageFile(url: url), stale: [url]).starRating == .five)
+        // The row already shows pending state the read missed: re-read from disk.
+        var pendingRow = ImageFile(url: url)
+        pendingRow.hasPendingMetadataChanges = true
+        #expect(apply(to: pendingRow, stale: []).starRating == .five)
+    }
+
+    @Test("A folder refresh keeps unchanged rows' metadata and derived search text")
+    @MainActor
+    func folderRefreshReusesUnchangedRows() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for name in ["a.jpg", "b.jpg"] { try Data("x".utf8).write(to: folder.appendingPathComponent(name)) }
+        // Use the scanner's spelling of the paths (/private/var vs /var) so rows match by URL.
+        let listed = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        let a = try #require(listed.first { $0.lastPathComponent == "a.jpg" })
+        let b = try #require(listed.first { $0.lastPathComponent == "b.jpg" })
+        let c = a.deletingLastPathComponent().appendingPathComponent("c.jpg")
+        let model = BrowserViewModel(refreshSidecarLoader: { _ in [:] })
+        model.currentFolderURL = folder
+        model.images = [a, b].map { url in
+            var image = ImageFile(url: url)
+            image.starRating = .four
+            image.metadata = IPTCMetadata(title: "Kept Caption")
+            image.keywords = ["Alpha"]
+            return image
+        }
+        model.batchUpdate {}
+        try Data("x".utf8).write(to: c)
+
+        await withCheckedContinuation { continuation in
+            let started = model.refreshCurrentFolderIfNeeded { _ in continuation.resume() }
+            #expect(started)
+            if !started { continuation.resume() }
+        }
+        #expect(Set(model.images.map(\.url)) == [a, b, c])
+        for url in [a, b] {
+            let row = try #require(model.images.first { $0.url == url })
+            #expect(row.starRating == .four)
+            #expect(row.metadata?.title == "Kept Caption")
+            #expect(row.metadataSearchLowercased.contains("kept caption"))
+            #expect(row.keywordsLowercased == ["alpha"])
+        }
+    }
+
+    @Test("Browser field writes report in-flight state until the queue drains")
+    @MainActor
+    func fieldWritesReportInFlight() async throws {
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/in-flight")
+        let photo = folder.appendingPathComponent("photo.jpg")
+        model.currentFolderURL = folder
+        model.images = [ImageFile(url: photo)]
+        model.selectedImageIDs = [photo]
+        #expect(!model.hasFieldMutationWritesInFlight)
+        model.setRating(.three)
+        model.setLabel(.red)
+        #expect(model.hasFieldMutationWritesInFlight)
+        try await waitForPause(recorder)
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(!model.hasFieldMutationWritesInFlight)
+    }
+
+    @Test("Key-index sorts reproduce the original comparator orders, ties included")
+    @MainActor
+    func sortHelpersMatchOriginalComparators() {
+        let folder = URL(fileURLWithPath: "/virtual/sort-identity")
+        let names = ["img10.jpg", "IMG2.jpg", "img2.JPG", "a.cr3", "b.jpg", "Ä.jpg", "img1.jpg",
+                     "A.CR3", "z.tif", "img02.jpg", "photo.heic", "Photo.HEIC", "b.cr3"]
+        let ratings: [StarRating] = [.two, .five, .two, .none, .five, .one, .two, .none, .three, .two, .five, .one, .two]
+        let rows = zip(names, ratings).map { name, rating in
+            var image = ImageFile(url: folder.appendingPathComponent(name))
+            image.starRating = rating
+            return image
+        }
+        for input in [rows, rows.reversed(), rows.shuffled()] {
+            let byName = input.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+            let permutation = BrowserViewModel.filenameSortPermutation(input)
+            #expect(permutation.map { input[$0].url } == byName.map(\.url))
+
+            let byRating = input.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
+            #expect(BrowserViewModel.reordered(input, by: \.starRating.rawValue, >).map(\.url) == byRating.map(\.url))
+
+            let byType = input.sorted {
+                let ext0 = $0.url.pathExtension.lowercased()
+                let ext1 = $1.url.pathExtension.lowercased()
+                if ext0 != ext1 { return ext0.localizedStandardCompare(ext1) == .orderedAscending }
+                return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
+            }
+            var rank = [Int](repeating: 0, count: input.count)
+            for (position, index) in permutation.enumerated() { rank[index] = position }
+            #expect(BrowserViewModel.fileTypeSorted(input, nameRank: rank).map(\.url) == byType.map(\.url))
+        }
+    }
+
     @MainActor
     private func waitForPause(_ recorder: FieldMutationCallerRecorder) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
@@ -1004,4 +1716,623 @@ struct FieldMutationCallerTests {
             faceIDs: faces.map(\.id))
         return FolderFaceData(folderURL: folder, faces: faces, groups: [group], lastScanDate: Date(), scanComplete: true)
     }
+}
+
+private actor PersonShownScanGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private(set) var entered = false
+    func wait() async {
+        entered = true
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+/// Face edits after Apply must never leave a wrong name in Person Shown: only the exact name the
+/// app applied is replaced or removed, through the field-mutation write path.
+@Suite("Person Shown corrections after face edits", .serialized)
+struct PersonShownCorrectionTests {
+    private struct GroupSpec {
+        var name: String?
+        var applied: String?
+        var photos: [URL]
+        var knownPersonID: UUID? = nil
+    }
+
+    private func makeFolder(_ label: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("person-shown-\(label)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private func makeData(folder: URL, _ specs: [GroupSpec]) -> FolderFaceData {
+        var faces: [DetectedFace] = []
+        var groups: [FaceGroup] = []
+        for spec in specs {
+            let groupID = UUID()
+            let groupFaces = spec.photos.map { DetectedFace(id: UUID(), imageURL: $0, faceRect: .zero,
+                featurePrintData: Data(), groupID: groupID, detectedAt: Date(timeIntervalSince1970: 1)) }
+            faces += groupFaces
+            groups.append(FaceGroup(id: groupID, name: spec.name, representativeFaceID: groupFaces.first?.id ?? UUID(),
+                faceIDs: groupFaces.map(\.id), knownPersonID: spec.knownPersonID,
+                appliedPersonShownNames: spec.applied.map { name in
+                    Dictionary(spec.photos.map { ($0.lastPathComponent, name) }, uniquingKeysWith: { first, _ in first })
+                }))
+        }
+        return FolderFaceData(folderURL: folder, faces: faces, groups: groups,
+            lastScanDate: Date(timeIntervalSince1970: 1), scanComplete: true)
+    }
+
+    @MainActor
+    private func makeModel(_ data: FolderFaceData, recorder: FieldMutationCallerRecorder,
+                           scanDetector: (@Sendable (URL, FaceDetectionService.DetectionConfig) async throws -> FaceDetectionService.DetectionResult)? = nil
+    ) throws -> FaceRecognitionViewModel {
+        try FaceDataStorageService().saveFaceData(data)
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            faceModelAvailability: .available, scanDetector: scanDetector,
+            fieldMutationWriter: { await recorder.write($0) },
+            fieldMutationModeResolver: { _, isRaw in isRaw ? .writeToXMPSidecar : .writeToFileAndXMPSidecar })
+        model.faceData = data
+        return model
+    }
+
+    @Test("Exact replacement never touches manual names, keeps comma names whole and is not diacritic-folded")
+    func replacementSemantics() {
+        let names = ["Store", "Hansen, Ola", "Manual Entry"]
+        func replace(_ replacements: [MetadataPersonReplacement], in existing: [String]) -> [String] {
+            MetadataPhysicalFieldMutation.replace(replacements, in: existing)
+        }
+        #expect(replace([.init(old: "Store", new: "Støre")], in: names) == ["Støre", "Hansen, Ola", "Manual Entry"])
+        // A photo without the applied name (removed or typed differently by hand) is left alone.
+        #expect(replace([.init(old: "Ann", new: "Anne")], in: names) == names)
+        #expect(replace([.init(old: "store", new: "Anything")], in: names) == names)
+        #expect(replace([.init(old: "Hansen, Ola", new: nil)], in: names) == ["Store", "Manual Entry"])
+        #expect(replace([.init(old: "Store", new: "Støre", keepsOld: true)], in: names)
+            == ["Store", "Støre", "Hansen, Ola", "Manual Entry"])
+        #expect(replace([.init(old: nil, new: "Støre")], in: ["Store"]) == ["Store", "Støre"])
+        #expect(replace([.init(old: "Store", new: "Hansen, Ola")], in: names) == ["Hansen, Ola", "Manual Entry"])
+        // Sequential corrections compose (Store → Støre → Stoere).
+        #expect(replace([.init(old: "Store", new: "Støre"), .init(old: "Støre", new: "Stoere")], in: names)
+            == ["Stoere", "Hansen, Ola", "Manual Entry"])
+    }
+
+    @Test("Renaming an applied group offers an exact replacement; RAW photos are written to the XMP sidecar")
+    @MainActor
+    func renameAppliedGroup() async throws {
+        let folder = try makeFolder("rename")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let jpegA = folder.appendingPathComponent("a.jpg")
+        let jpegB = folder.appendingPathComponent("b.jpg")
+        let raw = folder.appendingPathComponent("c.NEF")
+        let data = makeData(folder: folder, [GroupSpec(name: "Store", applied: "Store", photos: [jpegA, jpegB, raw])])
+        let recorder = FieldMutationCallerRecorder()
+        let model = try makeModel(data, recorder: recorder)
+        let groupID = data.groups[0].id
+
+        model.nameGroup(groupID, name: "Støre")
+        let proposal = try #require(model.pendingPersonShownUpdate)
+        #expect(proposal.photoCount == 3)
+        #expect(proposal.summary.contains("Replace “Store” with “Støre”"))
+        #expect(await recorder.captured.isEmpty)
+
+        model.confirmPersonShownUpdate(knownC2PA: [jpegA: false, jpegB: false, raw: false])
+        await model.waitForPendingFieldMutationWrites()
+        let requests = await recorder.captured
+        #expect(requests.count == 3)
+        for request in requests {
+            #expect(request.mutation == .replacePersons([.init(old: "Store", new: "Støre")]))
+            #expect(request.requestedMode == (request.imageURL == raw ? .writeToXMPSidecar : .writeToFileAndXMPSidecar))
+        }
+        let written = ["a.jpg": "Støre", "b.jpg": "Støre", "c.NEF": "Støre"]
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == written)
+        #expect(model.pendingPersonShownUpdate == nil)
+        await model.waitForCurrentFaceDataPersistence()
+        #expect(FaceDataStorageService().loadFaceData(for: folder)?.groups.first?.appliedPersonShownNames == written)
+    }
+
+    @Test("Declining leaves photos and the applied name unchanged; unapplied groups never prompt")
+    @MainActor
+    func declineAndUnapplied() async throws {
+        let folder = try makeFolder("decline")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let other = folder.appendingPathComponent("b.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Store", applied: "Store", photos: [photo]),
+                                             GroupSpec(name: "Typed", applied: nil, photos: [other])])
+        let recorder = FieldMutationCallerRecorder()
+        let model = try makeModel(data, recorder: recorder)
+        model.nameGroup(data.groups[0].id, name: "Støre")
+        #expect(model.pendingPersonShownUpdate != nil)
+        model.declinePersonShownUpdate()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(await recorder.captured.isEmpty)
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Store"])
+        // Renaming a never-applied group has nothing of ours to correct.
+        model.nameGroup(data.groups[1].id, name: "Typed Again")
+        #expect(model.pendingPersonShownUpdate == nil)
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("An unanswered rename offer is re-offered after a relaunch; a declined one only after the next rename")
+    @MainActor
+    func unansweredOfferSurvivesRelaunch() async throws {
+        let folder = try makeFolder("reoffer")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let a = folder.appendingPathComponent("a.jpg")
+        let b = folder.appendingPathComponent("b.NEF")
+        let other = folder.appendingPathComponent("c.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Store", applied: "Store", photos: [a, b]),
+                                             GroupSpec(name: "Ola", applied: "Ola", photos: [other])])
+        let groupID = data.groups[0].id
+        let recorder = FieldMutationCallerRecorder()
+
+        // Session 1: rename, then quit with the prompt still open.
+        let first = try makeModel(data, recorder: recorder)
+        first.nameGroup(groupID, name: "Støre")
+        #expect(first.pendingPersonShownUpdate?.isReoffer == false)
+        await first.waitForCurrentFaceDataPersistence()
+
+        func relaunch() async throws -> FaceRecognitionViewModel {
+            let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+                faceModelAvailability: .available, fieldMutationWriter: { await recorder.write($0) },
+                fieldMutationModeResolver: { _, isRaw in isRaw ? .writeToXMPSidecar : .writeToFileAndXMPSidecar })
+            model.loadFaceData(for: folder, cleanupPolicy: .never)
+            await model.waitForCurrentFaceDataLoad()
+            return model
+        }
+
+        // Session 2: the same correction is offered again, for exactly the photos still wrong.
+        let second = try await relaunch()
+        let reoffer = try #require(second.pendingPersonShownUpdate)
+        #expect(reoffer.isReoffer)
+        #expect(reoffer.replacementsByURL.keys.map(\.lastPathComponent).sorted() == ["a.jpg", "b.NEF"])
+        #expect(reoffer.replacementsByURL.values.allSatisfy { $0 == [.init(old: "Store", new: "Støre")] })
+        second.declinePersonShownUpdate()
+        await second.waitForCurrentFaceDataPersistence()
+        #expect(await recorder.captured.isEmpty)
+        #expect(FaceDataStorageService().loadFaceData(for: folder)?.groups.first { $0.id == groupID }?
+            .declinedPersonShownName == "Støre")
+
+        // Session 3: a real decline is not re-offered; renaming again offers from what the
+        // photos carry ("Store"), and an unanswered offer then comes back once more.
+        let third = try await relaunch()
+        #expect(third.pendingPersonShownUpdate == nil)
+        third.nameGroup(groupID, name: "Stoere")
+        let renamed = try #require(third.pendingPersonShownUpdate)
+        #expect(renamed.summary == "Replace “Store” with “Stoere”")
+        await third.waitForCurrentFaceDataPersistence()
+        let fourth = try await relaunch()
+        #expect(fourth.pendingPersonShownUpdate?.summary == "Replace “Store” with “Stoere”")
+
+        // Accepting resolves it for good.
+        fourth.confirmPersonShownUpdate(knownC2PA: [a: false, b: false])
+        await fourth.waitForPendingFieldMutationWrites()
+        await fourth.waitForCurrentFaceDataPersistence()
+        #expect(await recorder.captured.count == 2)
+        #expect(try await relaunch().pendingPersonShownUpdate == nil)
+    }
+
+    @Test("Moving a face removes the old name only when no face of that group remains; the target's applied name is added")
+    @MainActor
+    func moveBetweenGroups() async throws {
+        let folder = try makeFolder("move")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let p1 = folder.appendingPathComponent("p1.jpg")
+        let p2 = folder.appendingPathComponent("p2.jpg")
+        let p3 = folder.appendingPathComponent("p3.jpg")
+        let data = makeData(folder: folder, [
+            GroupSpec(name: "Ann", applied: "Ann", photos: [p1, p2, p2]),
+            GroupSpec(name: "Bob", applied: "Bob", photos: [p3]),
+            GroupSpec(name: "Cy", applied: nil, photos: [p3]),
+        ])
+        let ann = data.groups[0], bob = data.groups[1], cy = data.groups[2]
+        let recorder = FieldMutationCallerRecorder()
+        let model = try makeModel(data, recorder: recorder)
+
+        model.moveFace(ann.faceIDs[0], toGroup: bob.id)
+        var proposal = try #require(model.pendingPersonShownUpdate)
+        #expect(proposal.replacementsByURL == [p1: [.init(old: "Ann", new: nil), .init(old: nil, new: "Bob")]])
+        model.declinePersonShownUpdate()
+
+        // Another Ann face is still in p2: Ann stays, Bob is added.
+        model.moveFace(ann.faceIDs[1], toGroup: bob.id)
+        proposal = try #require(model.pendingPersonShownUpdate)
+        #expect(proposal.replacementsByURL == [p2: [.init(old: nil, new: "Bob")]])
+        model.declinePersonShownUpdate()
+
+        // The last Ann face in p2 moves to a never-applied group: only the removal is offered.
+        model.moveFace(ann.faceIDs[2], toGroup: cy.id)
+        proposal = try #require(model.pendingPersonShownUpdate)
+        #expect(proposal.replacementsByURL == [p2: [.init(old: "Ann", new: nil)]])
+        model.confirmPersonShownUpdate(knownC2PA: [p2: false])
+        await model.waitForPendingFieldMutationWrites()
+        let requests = await recorder.captured
+        #expect(requests.map(\.imageURL) == [p2])
+        #expect(requests.first?.mutation == .replacePersons([.init(old: "Ann", new: nil)]))
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Deleting a false-positive face offers to remove its applied name from that photo only")
+    @MainActor
+    func deleteFalsePositive() async throws {
+        let folder = try makeFolder("delete")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let p1 = folder.appendingPathComponent("p1.jpg")
+        let p2 = folder.appendingPathComponent("p2.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Ann", applied: "Ann", photos: [p1, p1, p2])])
+        let recorder = FieldMutationCallerRecorder()
+        let model = try makeModel(data, recorder: recorder)
+        let faces = data.groups[0].faceIDs
+        model.deleteFaces([faces[0], faces[2]])
+        await model.waitForCurrentFaceDataPersistence()
+        let proposal = try #require(model.pendingPersonShownUpdate)
+        #expect(proposal.replacementsByURL == [p2: [.init(old: "Ann", new: nil)]])
+    }
+
+    @Test("Apply records the applied name per photo; a rename during the write is planned against it once")
+    @MainActor
+    func applyRecordsAppliedName() async throws {
+        let folder = try makeFolder("apply")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Ann", applied: nil, photos: [photo])])
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = try makeModel(data, recorder: recorder)
+        model.applyAllNamesToMetadata(images: [ImageFile(url: photo)], folderURL: folder)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await recorder.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        #expect(await recorder.isPaused)
+        // The in-flight Apply is overlaid: the rename is planned from "Ann" right away.
+        model.nameGroup(data.groups[0].id, name: "Anne")
+        let proposal = try #require(model.pendingPersonShownUpdate)
+        #expect(proposal.replacementsByURL == [photo: [.init(old: "Ann", new: "Anne")]])
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Ann"])
+        // Completion records the name without a second prompt.
+        #expect(model.pendingPersonShownUpdate == proposal)
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Renames during a running update are planned from the name the photos will carry")
+    @MainActor
+    func renameDuringInFlightUpdate() async throws {
+        let folder = try makeFolder("chain")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Alice", applied: "Alice", photos: [photo])])
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = try makeModel(data, recorder: recorder)
+        let groupID = data.groups[0].id
+        model.nameGroup(groupID, name: "Alicia")
+        model.confirmPersonShownUpdate(knownC2PA: [photo: false])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await recorder.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        #expect(await recorder.isPaused)
+
+        model.nameGroup(groupID, name: "Alicja")
+        let proposal = try #require(model.pendingPersonShownUpdate)
+        #expect(proposal.replacementsByURL == [photo: [.init(old: "Alicia", new: "Alicja")]])
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Alicia"])
+        #expect(model.pendingPersonShownUpdate == proposal)
+
+        model.confirmPersonShownUpdate(knownC2PA: [photo: false])
+        await model.waitForPendingFieldMutationWrites()
+        let requests = await recorder.captured
+        #expect(requests.map(\.mutation) == [.replacePersons([.init(old: "Alice", new: "Alicia")]),
+                                             .replacePersons([.init(old: "Alicia", new: "Alicja")])])
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Alicja"])
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Declining a correction planned during a running update keeps later corrections exact")
+    @MainActor
+    func declineDuringInFlightUpdate() async throws {
+        let folder = try makeFolder("chain-decline")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Alice", applied: "Alice", photos: [photo])])
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = try makeModel(data, recorder: recorder)
+        let groupID = data.groups[0].id
+        model.nameGroup(groupID, name: "Alicia")
+        model.confirmPersonShownUpdate(knownC2PA: [photo: false])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await recorder.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        model.nameGroup(groupID, name: "Alicja")
+        model.declinePersonShownUpdate()
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.pendingPersonShownUpdate == nil)
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Alicia"])
+        // The photos carry "Alicia": the next rename targets exactly that.
+        model.nameGroup(groupID, name: "Ali")
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [photo: [.init(old: "Alicia", new: "Ali")]])
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Consecutive renames before answering collapse into one correction; renaming back clears it")
+    @MainActor
+    func pendingProposalIsReplanned() async throws {
+        let folder = try makeFolder("replan")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Alice", applied: "Alice", photos: [photo])])
+        let model = try makeModel(data, recorder: FieldMutationCallerRecorder())
+        let groupID = data.groups[0].id
+        model.nameGroup(groupID, name: "Alicia")
+        model.nameGroup(groupID, name: "Alicja")
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [photo: [.init(old: "Alice", new: "Alicja")]])
+        model.nameGroup(groupID, name: "Alice")
+        #expect(model.pendingPersonShownUpdate == nil)
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Corrections touch only photos this app wrote the name to; merges inherit only matching records")
+    @MainActor
+    func perPhotoAppliedRecords() async throws {
+        let folder = try makeFolder("per-photo")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let applied = folder.appendingPathComponent("applied.jpg")
+        let typed = folder.appendingPathComponent("typed.jpg")
+        let other = folder.appendingPathComponent("other.jpg")
+        var data = makeData(folder: folder, [
+            GroupSpec(name: "Ann", applied: nil, photos: [applied, typed]),
+            GroupSpec(name: "Ann", applied: nil, photos: [other]),
+            GroupSpec(name: "Bob", applied: nil, photos: [folder.appendingPathComponent("bob.jpg")]),
+        ])
+        // Apply wrote "Ann" only to applied.jpg; typed.jpg's face joined later (hand-typed name).
+        data.groups[0].appliedPersonShownNames = ["applied.jpg": "Ann"]
+        data.groups[1].appliedPersonShownNames = ["other.jpg": "Ann"]
+        let model = try makeModel(data, recorder: FieldMutationCallerRecorder())
+        model.nameGroup(data.groups[0].id, name: "Anne")
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [applied: [.init(old: "Ann", new: "Anne")]])
+        model.declinePersonShownUpdate()
+
+        // A never-applied target named differently inherits nothing; it offers removal instead.
+        model.mergeGroups(sourceID: data.groups[1].id, into: data.groups[2].id)
+        #expect(model.faceData?.groups.first { $0.id == data.groups[2].id }?.appliedPersonShownNames == nil)
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [other: [.init(old: "Ann", new: nil)]])
+        model.declinePersonShownUpdate()
+        await model.waitForCurrentFaceDataPersistence()
+
+        var inheritor = FaceGroup(id: UUID(), name: "Ann", representativeFaceID: UUID(), faceIDs: [])
+        inheritor.inheritAppliedName(from: data.groups[1])
+        #expect(inheritor.appliedPersonShownNames == ["other.jpg": "Ann"])
+    }
+
+    @Test("Known People renames, merges and deletions update linked folder groups")
+    @MainActor
+    func knownPeopleChangesReachFolderGroups() async throws {
+        let folder = try makeFolder("known")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let p1 = folder.appendingPathComponent("p1.jpg")
+        let p2 = folder.appendingPathComponent("p2.jpg")
+        let p3 = folder.appendingPathComponent("p3.jpg")
+        let renamed = UUID(), source = UUID(), target = UUID(), deleted = UUID()
+        let data = makeData(folder: folder, [
+            GroupSpec(name: "Old Name", applied: "Old Name", photos: [p1], knownPersonID: renamed),
+            GroupSpec(name: "Merged Away", applied: "Merged Away", photos: [p2], knownPersonID: source),
+            GroupSpec(name: "Kept Name", applied: nil, photos: [p3], knownPersonID: deleted),
+        ])
+        let recorder = FieldMutationCallerRecorder()
+        let model = try makeModel(data, recorder: recorder)
+        func group(_ index: Int) -> FaceGroup? { model.faceData?.groups.first { $0.id == data.groups[index].id } }
+
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+            userInfo: KnownPeopleIdentityChange.renamed(personID: renamed, newName: "New Name").userInfo)
+        #expect(group(0)?.name == "New Name")
+        #expect(group(0)?.knownPersonID == renamed)
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [p1: [.init(old: "Old Name", new: "New Name")]])
+        model.declinePersonShownUpdate()
+
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+            userInfo: KnownPeopleIdentityChange.merged(sourceID: source, targetID: target, targetName: "Target").userInfo)
+        #expect(group(1)?.knownPersonID == target)
+        #expect(group(1)?.name == "Target")
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [p2: [.init(old: "Merged Away", new: "Target")]])
+        model.declinePersonShownUpdate()
+
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+            userInfo: KnownPeopleIdentityChange.deleted(personID: deleted).userInfo)
+        #expect(group(2)?.knownPersonID == nil)
+        #expect(group(2)?.name == "Kept Name")
+        #expect(model.pendingPersonShownUpdate == nil)
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("An inline rename keeps the Known People link only while the name is unchanged")
+    @MainActor
+    func inlineRenameKeepsLink() async throws {
+        let folder = try makeFolder("link")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let person = UUID(), picked = UUID()
+        let data = makeData(folder: folder, [GroupSpec(name: "Støre, Jonas Gahr", applied: nil,
+            photos: [folder.appendingPathComponent("a.jpg")], knownPersonID: person)])
+        let model = try makeModel(data, recorder: FieldMutationCallerRecorder())
+        let groupID = data.groups[0].id
+        model.nameGroup(groupID, name: "Støre, Jonas Gahr")
+        #expect(model.faceData?.groups.first?.knownPersonID == person)
+        model.nameGroup(groupID, name: "Someone Else")
+        #expect(model.faceData?.groups.first?.knownPersonID == nil)
+        model.nameGroup(groupID, name: "Picked Person", knownPersonID: picked)
+        #expect(model.faceData?.groups.first?.knownPersonID == picked)
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Face edits, Apply and deletion are refused while the folder is scanning instead of being lost")
+    @MainActor
+    func editsRefusedDuringScan() async throws {
+        let folder = try makeFolder("scanning")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        try Data([1]).write(to: photo)
+        let data = makeData(folder: folder, [GroupSpec(name: "Ann", applied: nil, photos: [photo])])
+        let gate = PersonShownScanGate()
+        let recorder = FieldMutationCallerRecorder()
+        let model = try makeModel(data, recorder: recorder, scanDetector: { _, _ in
+            await gate.wait()
+            return .init(faces: [])
+        })
+        let groupID = data.groups[0].id
+        let submission = model.scheduleFolderScan(imageURLs: [photo], folderURL: folder)
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !(await gate.entered), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(await gate.entered)
+        #expect(model.faceEditingPausedForScan(folderURL: folder))
+
+        model.nameGroup(groupID, name: "Lost Edit")
+        #expect(model.faceData?.groups.first?.name == "Ann")
+        #expect(model.errorMessage == FaceRecognitionViewModel.scanInProgressEditRefusal)
+        var completions = 0
+        model.applyAllNamesToMetadata(images: [ImageFile(url: photo)], folderURL: folder) { completions += 1 }
+        #expect(completions == 1)
+        let deletion = await model.deleteGroup(groupID, includePhotos: false)
+        if case .failed(let message) = deletion.faceDataDisposition {
+            #expect(message == FaceRecognitionViewModel.scanInProgressEditRefusal)
+        } else { Issue.record("Deletion during a scan must be refused") }
+
+        await gate.release()
+        _ = await submission.completion()
+        #expect(!model.faceEditingPausedForScan(folderURL: folder))
+        #expect(await recorder.captured.isEmpty)
+    }
+
+    @Test("A copied or moved folder's face data is rebased; edits and Apply target the open folder")
+    @MainActor
+    func movedAndCopiedFoldersAreRebased() async throws {
+        let parent = try makeFolder("relocate")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let original = parent.appendingPathComponent("Original", isDirectory: true)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let photoName = "p.jpg"
+        try Data([1]).write(to: original.appendingPathComponent(photoName))
+        var data = makeData(folder: original, [GroupSpec(name: "Ann", applied: nil,
+            photos: [original.appendingPathComponent(photoName)])])
+        data.scannedFiles = [original.appendingPathComponent(photoName).path:
+            FileSignature(modificationDate: Date(timeIntervalSince1970: 5), fileSize: 1)]
+        try FaceDataStorageService().saveFaceData(data)
+
+        // Copy: the copy adopts its own location; the original document is untouched.
+        let copy = parent.appendingPathComponent("Copy", isDirectory: true)
+        try FileManager.default.copyItem(at: original, to: copy)
+        let loaded = try await FaceDataFolderLoadService().loadWithFolderReservation(folderURL: copy, cleanupPolicy: .never)
+        guard case .complete(let evidence) = loaded, let rebased = evidence.faceData else {
+            Issue.record("The copied folder's face data must load")
+            return
+        }
+        let copyPhoto = copy.appendingPathComponent(photoName)
+        #expect(rebased.folderURL.standardizedFileURL.path == copy.standardizedFileURL.path)
+        #expect(rebased.faces.map(\.imageURL.path) == [copyPhoto.path])
+        #expect(Array(rebased.scannedFiles.keys) == [copyPhoto.path])
+        #expect(FaceDataStorageService().loadFaceData(for: copy)?.folderURL.standardizedFileURL.path == copy.standardizedFileURL.path)
+        #expect(FaceDataStorageService().loadFaceData(for: original)?.folderURL.standardizedFileURL.path == original.standardizedFileURL.path)
+
+        // Move: edits persist in the new folder and Apply writes the new folder's photo.
+        let moved = parent.appendingPathComponent("Moved", isDirectory: true)
+        try FileManager.default.moveItem(at: original, to: moved)
+        let recorder = FieldMutationCallerRecorder()
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            fieldMutationWriter: { await recorder.write($0) })
+        model.loadFaceData(for: moved, cleanupPolicy: .never)
+        await model.waitForCurrentFaceDataLoad()
+        #expect(model.faceData?.folderURL.standardizedFileURL.path == moved.standardizedFileURL.path)
+        model.nameGroup(data.groups[0].id, name: "Anne")
+        await model.waitForCurrentFaceDataPersistence()
+        #expect(model.errorMessage == nil)
+        #expect(FaceDataStorageService().loadFaceData(for: moved)?.groups.first?.name == "Anne")
+        #expect(!FileManager.default.fileExists(atPath: original.path))
+        let movedPhoto = moved.appendingPathComponent(photoName)
+        model.applyAllNamesToMetadata(images: [ImageFile(url: movedPhoto)], folderURL: moved)
+        await model.waitForPendingFieldMutationWrites()
+        let requests = await recorder.captured
+        #expect(requests.map(\.imageURL.path) == [movedPhoto.path])
+        #expect(requests.first?.folderURL.standardizedFileURL.path == moved.standardizedFileURL.path)
+    }
+
+    @Test("Review list cells join and split person names on semicolons so \"Last, First\" stays one person")
+    @MainActor
+    func reviewPersonShownSeparator() async throws {
+        var metadata = IPTCMetadata()
+        metadata.personShown = ["Støre, Jonas Gahr", "Hansen, Ola"]
+        #expect(MetadataFieldID.personShown.reviewTextValue(in: metadata) == "Støre, Jonas Gahr; Hansen, Ola")
+        var unchanged = metadata
+        MetadataFieldID.personShown.setReviewTextValue("Støre, Jonas Gahr; Hansen, Ola", in: &unchanged)
+        #expect(unchanged.personShown == metadata.personShown)
+        var edited = metadata
+        MetadataFieldID.personShown.setReviewTextValue("Støre, Jonas Gahr; Hansen, Ola; Brundtland, Gro Harlem", in: &edited)
+        #expect(edited.personShown == ["Støre, Jonas Gahr", "Hansen, Ola", "Brundtland, Gro Harlem"])
+        #expect(MetadataFieldID.personShown.reviewNameListHint(for: "Alice, Bob, Carol") != nil)
+        #expect(MetadataFieldID.personShown.reviewNameListHint(for: "Støre, Jonas Gahr; Hansen, Ola") == nil)
+        #expect(MetadataFieldID.personShown.reviewNameListHint(for: "Ann") == nil)
+        #expect(MetadataFieldID.keywords.reviewNameListHint(for: "a, b") == nil)
+        // Keywords keep the established comma syntax.
+        var keywords = IPTCMetadata()
+        MetadataFieldID.keywords.setReviewTextValue("a, b", in: &keywords)
+        #expect(keywords.keywords == ["a", "b"])
+
+        let photo = URL(fileURLWithPath: "/virtual/review-names-\(UUID().uuidString)/photo.jpg")
+        let queue = CaptionDraftPersistenceQueue(label: "review.names")
+        queue.enqueue(operation: { throw CaptionWorkspaceFlushError.persistenceFailed("Hold queued work") })
+        let baseline = metadata
+        let model = BrowserViewModel(metadataReviewBaselineLoader: { image, _ in
+            .init(metadata: baseline, sidecar: MetadataSidecar(sourceFile: image.lastPathComponent,
+                pendingChanges: true, metadata: baseline, imageMetadataSnapshot: nil))
+        }, metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator(persistenceQueue: queue))
+        model.currentFolderURL = photo.deletingLastPathComponent()
+        model.images = [ImageFile(url: photo)]
+        await model.prepareMetadataReviewEditor(for: photo)
+        let editor = try #require(model.metadataReviewEditor(for: photo))
+        #expect(model.metadataReviewText(for: .personShown, imageURL: photo) == "Støre, Jonas Gahr; Hansen, Ola")
+        model.updateMetadataReviewText("Støre, Jonas Gahr; Hansen, Ola; Solberg, Erna",
+            field: .personShown, for: photo, editorID: editor.id)
+        #expect(model.metadataReviewEditor(for: photo)?.draft.personShown
+            == ["Støre, Jonas Gahr", "Hansen, Ola", "Solberg, Erna"])
+    }
+
+    @Test("A lazy Review row reappearing reuses its clean editor; explicit reloads still re-read")
+    @MainActor
+    func reviewRowsReuseCleanEditors() async throws {
+        let photo = URL(fileURLWithPath: "/virtual/review-reuse-\(UUID().uuidString)/photo.jpg")
+        let loads = FieldMutationLoadCounter()
+        let model = BrowserViewModel(metadataReviewBaselineLoader: { image, _ in
+            loads.increment()
+            return .init(metadata: IPTCMetadata(title: "Saved"), sidecar: nil)
+        }, metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator())
+        model.currentFolderURL = photo.deletingLastPathComponent()
+        var image = ImageFile(url: photo)
+        image.metadata = IPTCMetadata(title: "Saved")
+        model.images = [image]
+        await model.prepareMetadataReviewEditor(for: photo, reloadClean: false)
+        let first = try #require(model.metadataReviewEditor(for: photo)?.id)
+        await model.prepareMetadataReviewEditor(for: photo, reloadClean: false)
+        #expect(model.metadataReviewEditor(for: photo)?.id == first)
+        #expect(loads.value == 1)
+        await model.prepareMetadataReviewEditor(for: photo)
+        let second = try #require(model.metadataReviewEditor(for: photo)?.id)
+        #expect(second != first)
+        #expect(loads.value == 2)
+        // Caption, a template or face Apply changed the record while Review was away: a
+        // reappearing row must not keep showing the old clean draft.
+        model.images[0].metadata = IPTCMetadata(title: "Changed in Caption")
+        await model.prepareMetadataReviewEditor(for: photo, reloadClean: false)
+        #expect(model.metadataReviewEditor(for: photo)?.id != second)
+        #expect(loads.value == 3)
+    }
+}
+
+private nonisolated final class FieldMutationLoadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
 }

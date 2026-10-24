@@ -40,7 +40,9 @@ struct AnalysisWorkspaceView: View {
     @State private var isVerificationToolsPresented = false
     @State private var selectedFindingID: String?
     @State private var isLoupeEnabled = true
-    @State private var pixelInspectionSample: ImageInspectionSample?
+    /// Hover sample, read only by the readout and the loupe/crosshair layers so pointer moves
+    /// do not re-evaluate the whole workspace body.
+    @State private var pixelInspection = AnalysisPixelInspectionState()
     @State private var displayedScopeImage: CGImage?
     @State private var scopeSourceMode: AnalysisScopeSourceMode = .fullImage
     @State private var selectedScopeRegion: CGRect?
@@ -80,6 +82,8 @@ struct AnalysisWorkspaceView: View {
     @State private var reportExportRequestID: UUID?
     @State private var evidenceExportRequestID: UUID?
     @State private var projectArchiveTask: Task<Void, Never>?
+    @State private var projectArchiveStatus: String?
+    @State private var exportConfirmation: AnalysisExportConfirmation?
     @State private var copiedPhotoAnnotations: [AnalysisAnnotation] = []
     @State private var copiedAnnotationSourceName: String?
     @State private var annotationPasteError: String?
@@ -170,6 +174,38 @@ struct AnalysisWorkspaceView: View {
             Text(reportExportError ?? "The export could not be completed.")
         }
         .alert(
+            exportConfirmation?.title ?? "Exported",
+            isPresented: Binding(
+                get: { exportConfirmation != nil },
+                set: { if !$0 { exportConfirmation = nil } }
+            ),
+            presenting: exportConfirmation
+        ) { confirmation in
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([confirmation.url])
+                exportConfirmation = nil
+            }
+            Button("OK", role: .cancel) { exportConfirmation = nil }
+        } message: { confirmation in
+            Text("Saved “\(confirmation.url.lastPathComponent)”.")
+        }
+        .alert(
+            "Analysis Changes Not Saved",
+            isPresented: Binding(
+                get: { model.pendingUnsavedChangesExit != nil },
+                set: { if !$0 { model.dismissUnsavedChangesPrompt() } }
+            ),
+            presenting: model.pendingUnsavedChangesExit
+        ) { exit in
+            Button("Retry Save") { completeUnsavedChangesExit(exit, retryingSave: true) }
+            Button("Discard Changes", role: .destructive) {
+                completeUnsavedChangesExit(exit, retryingSave: false)
+            }
+            Button("Cancel", role: .cancel) { model.cancelUnsavedChangesExit() }
+        } message: { _ in
+            Text("The latest case or map edits could not be saved. Retry the save before leaving this photo, or discard the unsaved edits.")
+        }
+        .alert(
             "Annotations Could Not Be Pasted",
             isPresented: Binding(
                 get: { annotationPasteError != nil },
@@ -184,6 +220,8 @@ struct AnalysisWorkspaceView: View {
             reportExportTask?.cancel()
             evidenceExportTask?.cancel()
             projectArchiveTask?.cancel()
+            // Up to four 2,048 px RGBAh previews (~256 MB) are only useful inside Analysis.
+            AnalysisSourcePreviewCache.shared.removeAll()
         }
     }
 
@@ -233,17 +271,17 @@ struct AnalysisWorkspaceView: View {
 
     private var workspaceWithSourceObservers: some View {
         workspaceContent
-        .onChange(of: model.sourceURL) {
+        .onChange(of: model.sourceURL) { oldURL, newURL in
             resetForSourceChange()
+            prefetchNextPreview(leaving: oldURL, opening: newURL)
         }
         .onChange(of: model.analysisCase?.id) {
             metadataNoteRequest = nil
             selectedAnnotationID = nil
             selectedMapAnnotationID = nil
-            cancelRenderedExports()
         }
         .onChange(of: model.displayPreference) {
-            pixelInspectionSample = nil
+            pixelInspection.update(nil)
             displayedScopeImage = nil
             selectedScopeRegion = nil
             selectedAnnotationID = nil
@@ -266,17 +304,26 @@ struct AnalysisWorkspaceView: View {
                 Divider()
             }
 
+            if let saveError = model.saveError {
+                saveErrorBanner(saveError)
+                Divider()
+            }
+
             workspaceBody
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background {
+            AnalysisEscapeKeyMonitor(onEscape: handleEscapeKey)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Image Analysis workspace")
         .accessibilityIdentifier("analysis.workspace")
     }
 
+    /// Running PDF/JPEG exports captured their case, source, and annotations when they started,
+    /// so selecting another photo must not abort them; only Cancel or closing the workspace does.
     private func resetForSourceChange() {
-        cancelRenderedExports()
-        pixelInspectionSample = nil
+        pixelInspection.update(nil)
         displayedScopeImage = nil
         selectedScopeRegion = nil
         scopeSourceMode = .fullImage
@@ -289,17 +336,77 @@ struct AnalysisWorkspaceView: View {
         photoPolygonCancelRequestID += 1
     }
 
-    /// Invalidates main-actor publication immediately. A write already inside Foundation's
-    /// synchronous atomic commit may still finish, and its immutable result continues to report
-    /// that durable outcome without clearing or overwriting state belonging to a newer request.
-    private func cancelRenderedExports() {
-        reportExportTask?.cancel()
-        evidenceExportTask?.cancel()
-        reportExportTask = nil
-        evidenceExportTask = nil
-        reportExportRequestID = nil
-        evidenceExportRequestID = nil
-        reportExportProgress = nil
+    /// Decodes the original preview of the next rail photo in the direction of travel, so
+    /// stepping through the rail shows each photo at once. A later navigation replaces it.
+    private func prefetchNextPreview(leaving oldURL: URL?, opening newURL: URL?) {
+        guard let newURL,
+              let newIndex = folderImages.firstIndex(where: { $0.url == newURL }) else { return }
+        let oldIndex = oldURL.flatMap { old in folderImages.firstIndex { $0.url == old } }
+        let step = (oldIndex.map { $0 > newIndex } ?? false) ? -1 : 1
+        let nextIndex = newIndex + step
+        guard folderImages.indices.contains(nextIndex) else { return }
+        let next = folderImages[nextIndex]
+        guard SupportedImageFormats.isSupported(url: next.url) else { return }
+        // A newly opened photo shows its original until its case says otherwise.
+        AnalysisSourcePreviewCache.shared.prefetch(
+            SourcePreviewIdentity(
+                url: next.url,
+                representation: .original,
+                sourceOrientation: next.exifOrientation,
+                renderToken: nil
+            ),
+            settings: nil
+        )
+    }
+
+    /// Escape cancels the narrowest active state first: an in-progress draft, then a
+    /// non-select markup tool, then the annotation selection; with nothing left to cancel it
+    /// closes the workspace (asking first after a failed save). Returns false while an export
+    /// is running so the event continues normally.
+    private func handleEscapeKey() -> Bool {
+        if photoPolygonDraftCount > 0 {
+            photoPolygonCancelRequestID += 1
+            return true
+        }
+        let showsMapMarkup = model.workspaceMode == .osint
+        if showsMapMarkup, mapDraftCoordinateCount > 0 {
+            mapCancelDraftRequestID += 1
+            return true
+        }
+        if photoAnnotationTool != .select {
+            photoAnnotationTool = .select
+            return true
+        }
+        if showsMapMarkup, mapAnnotationTool != .select {
+            mapAnnotationTool = .select
+            return true
+        }
+        if selectedAnnotationID != nil || selectedMapAnnotationID != nil {
+            selectedAnnotationID = nil
+            selectedMapAnnotationID = nil
+            return true
+        }
+        // Closing cancels running exports, so Escape only closes an otherwise idle workspace.
+        guard reportExportTask == nil, evidenceExportTask == nil, projectArchiveTask == nil else {
+            return false
+        }
+        requestClose()
+        return true
+    }
+
+    private func requestClose() {
+        if model.requestClose() { onClose() }
+    }
+
+    private func completeUnsavedChangesExit(
+        _ exit: AnalysisUnsavedChangesExit,
+        retryingSave: Bool
+    ) {
+        Task { @MainActor in
+            if await model.completeUnsavedChangesExit(exit, retryingSave: retryingSave) {
+                onClose()
+            }
+        }
     }
 
     private func updateSelectedAnnotationStyle() {
@@ -396,6 +503,24 @@ struct AnalysisWorkspaceView: View {
 
             externalVerificationLinks
 
+            if evidenceExportTask != nil {
+                backgroundJobIndicator(
+                    "Exporting JPEG…",
+                    cancelHelp: "Cancel the annotated JPEG export"
+                ) {
+                    evidenceExportTask?.cancel()
+                }
+            }
+
+            if let projectArchiveStatus {
+                backgroundJobIndicator(
+                    projectArchiveStatus,
+                    cancelHelp: "Cancel the Image Analysis Project operation"
+                ) {
+                    projectArchiveTask?.cancel()
+                }
+            }
+
             if let reportExportProgress {
                 ProgressView(value: reportExportProgress)
                     .frame(width: 90)
@@ -409,26 +534,34 @@ struct AnalysisWorkspaceView: View {
                     Button("PDF Report…", systemImage: "doc.richtext") {
                         isReportOptionsPresented = true
                     }
-                    .disabled(model.sourceChanged)
+                    .disabled(model.analysisCase == nil || model.sourceChanged)
 
                     Divider()
 
                     Button("Annotated Image (JPEG)…", systemImage: "photo") {
                         chooseAnnotatedImageDestinationAndExport()
                     }
-                    .disabled(model.sourceChanged || evidenceExportTask != nil)
+                    .disabled(model.analysisCase == nil || model.sourceChanged || evidenceExportTask != nil)
 
-                    Button("Annotated Map (JPEG)…", systemImage: "map") {
+                    Button(
+                        model.mapState.viewport == nil
+                            ? "Annotated Map (JPEG) — Show the OSINT Map First"
+                            : "Annotated Map (JPEG)…",
+                        systemImage: "map"
+                    ) {
                         chooseAnnotatedMapDestinationAndExport()
                     }
                     .disabled(model.mapState.viewport == nil || evidenceExportTask != nil)
+                    .help(model.mapState.viewport == nil
+                        ? "Show this photo's map in the OSINT tab once to choose the area to export"
+                        : "Export the annotated OSINT map as a JPEG")
 
                     Divider()
 
                     Button("Image Analysis Project (.pint)…", systemImage: "archivebox") {
                         chooseProjectDestinationAndExport()
                     }
-                    .disabled(projectArchiveTask != nil)
+                    .disabled(model.sourceURL == nil || projectArchiveTask != nil)
 
                     Button("Import Image Analysis Project…", systemImage: "square.and.arrow.down") {
                         chooseProjectArchiveAndImport()
@@ -437,7 +570,6 @@ struct AnalysisWorkspaceView: View {
                 } label: {
                     Label("Export…", systemImage: "square.and.arrow.up")
                 }
-                .disabled(model.analysisCase == nil)
                 .help("Export evidence, or export and import a portable Image Analysis Project")
             }
 
@@ -460,9 +592,10 @@ struct AnalysisWorkspaceView: View {
             .disabled(model.analysisCase == nil)
             .help("Choose which version is displayed; findings based on the source file remain tied to the original")
 
-            Button("Close", action: onClose)
-                .keyboardShortcut(.cancelAction)
-                .help("Return to the browser workspace")
+            // Escape cancels the current draft, tool, or selection first and closes only when
+            // nothing is left to cancel (see handleEscapeKey).
+            Button("Close", action: requestClose)
+                .help("Return to the browser workspace (Esc when nothing is selected or being drawn)")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -487,14 +620,16 @@ struct AnalysisWorkspaceView: View {
     @ViewBuilder
     private var workspaceDetail: some View {
         switch model.loadState {
-        case .idle, .loading:
-            VStack(spacing: 12) {
-                ProgressView()
-                Text("Validating source revision…")
-                    .foregroundStyle(.secondary)
+        case .idle:
+            // Reached when the open case was invalidated (for example by a failed rename);
+            // nothing is loading, so offer a way out instead of an endless spinner.
+            ContentUnavailableView {
+                Label("No Photo Selected", systemImage: "photo")
+            } description: {
+                Text("Choose a photo in the rail to analyze it, or close Image Analysis.")
+            } actions: {
+                Button("Close", action: requestClose)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityLabel("Validating source revision")
 
         case .failed(let message):
             ContentUnavailableView {
@@ -505,13 +640,56 @@ struct AnalysisWorkspaceView: View {
                 Button("Try Again") { model.retry() }
             }
 
-        case .ready:
+        // One branch for loading and ready keeps the source preview mounted across photo
+        // changes: it decodes while the case is resolved and keeps its decoded image. Only the
+        // case-dependent panels show the loading placeholder and are rebuilt when ready.
+        case .loading, .ready:
             if model.workspaceMode == .pixelAnalysis {
                 pixelAnalysisBody
             } else {
                 osintBody
             }
         }
+    }
+
+    private var isCaseReady: Bool { model.loadState == .ready }
+
+    /// The preview decodes while the case loads. A photo with develop edits waits for its case,
+    /// which decides between the original and developed version, so it never flashes the wrong one.
+    private var previewSourceURL: URL? {
+        guard isCaseReady || !model.hasDevelopedRepresentation else { return nil }
+        return model.sourceURL
+    }
+
+    private var analysisLoadingPlaceholder: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Validating source revision…")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Validating source revision")
+    }
+
+    private func backgroundJobIndicator(
+        _ status: String,
+        cancelHelp: String,
+        cancel: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+            Text(status)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            Button("Cancel", role: .cancel, action: cancel)
+                .buttonStyle(.borderless)
+                .help(cancelHelp)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(status)
     }
 
     private var sourceChangedBanner: some View {
@@ -558,10 +736,50 @@ struct AnalysisWorkspaceView: View {
         .accessibilityIdentifier("analysis.storage-portability-warning")
     }
 
+    private func saveErrorBanner(_ message: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Analysis changes not saved")
+                    .font(.headline)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Discard Changes", role: .destructive) {
+                model.discardFailedSaves()
+            }
+            .help("Forget the unsaved Analysis changes; nothing is written")
+            Button("Retry Save") {
+                model.retryFailedSave()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.red.opacity(0.10))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("analysis.save-error")
+    }
+
+    /// Whether the photo under analysis has Anonymizer redactions (in-memory copy, or its
+    /// sidecar defensively). Analysis exports embed the original pixels by forensic design.
+    private func sourcePhotoRedacts(_ sourceURL: URL) -> Bool {
+        if let image = folderImages.first(where: { $0.url == sourceURL }) {
+            return RedactionPrivacyGuard.redactsIncludingSidecar(image)
+        }
+        return XMPSidecarService().loadDevelopSettings(for: sourceURL)?.hasActiveRedaction == true
+    }
+
     private func chooseReportDestinationAndExport(options: AnalysisReportExportOptions) {
         guard let analysisCase = model.analysisCase,
               let sourceURL = model.sourceURL,
               reportExportTask == nil else { return }
+        guard RedactionPrivacyPrompt.confirmAnalysisExport(
+            containsRedactedPhoto: sourcePhotoRedacts(sourceURL)
+        ) else { return }
 
         let panel = NSSavePanel()
         panel.title = "Export Analysis Report"
@@ -581,6 +799,7 @@ struct AnalysisWorkspaceView: View {
         let evidenceCropRect = options.includeSelectedEvidenceCrop
             ? reportEvidenceCropRect
             : nil
+        let folderMapAnnotations = model.globalMapAnnotations.map(\.annotation)
         let requestID = UUID()
         reportExportRequestID = requestID
         reportExportProgress = 0
@@ -598,7 +817,8 @@ struct AnalysisWorkspaceView: View {
                     sourceURL: sourceURL,
                     appVersion: appVersion,
                     appBuild: appBuild,
-                    originalDisplayEvidenceCrop: evidenceCropRect
+                    originalDisplayEvidenceCrop: evidenceCropRect,
+                    folderMapAnnotations: folderMapAnnotations
                 )
                 try Task.checkCancellation()
                 reportExportProgress = 0.08
@@ -619,6 +839,10 @@ struct AnalysisWorkspaceView: View {
                 guard reportExportRequestID == requestID else { return }
                 guard case .committed = result else { return }
                 reportExportProgress = 1
+                exportConfirmation = AnalysisExportConfirmation(
+                    title: "Analysis Report Exported",
+                    url: outputURL
+                )
             } catch is CancellationError {
                 return
             } catch AnalysisPDFReportError.cancelled {
@@ -660,6 +884,9 @@ struct AnalysisWorkspaceView: View {
         guard let analysisCase = model.analysisCase,
               let sourceURL = model.sourceURL,
               evidenceExportTask == nil else { return }
+        guard RedactionPrivacyPrompt.confirmAnalysisExport(
+            containsRedactedPhoto: sourcePhotoRedacts(sourceURL)
+        ) else { return }
         guard let outputURL = chooseJPEGDestination(
             title: "Export Annotated Image",
             suggestedName: "\(analysisCase.title) Annotated.jpg"
@@ -680,11 +907,17 @@ struct AnalysisWorkspaceView: View {
                     annotations: analysisCase.annotations
                 )
                 try Task.checkCancellation()
-                _ = try await AnalysisExportFileService.shared.write(
+                let result = try await AnalysisExportFileService.shared.write(
                     data,
                     to: outputURL,
                     requestID: requestID
                 )
+                if case .committed = result, evidenceExportRequestID == requestID {
+                    exportConfirmation = AnalysisExportConfirmation(
+                        title: "Annotated Image Exported",
+                        url: outputURL
+                    )
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -700,6 +933,7 @@ struct AnalysisWorkspaceView: View {
         guard let analysisCase = model.analysisCase,
               let evidence = AnalysisReportMapEvidence(
                   state: analysisCase.mapState,
+                  folderMapAnnotations: model.globalMapAnnotations.map(\.annotation),
                   capturedAt: Date()
               ), evidenceExportTask == nil else { return }
         guard let outputURL = chooseJPEGDestination(
@@ -719,11 +953,17 @@ struct AnalysisWorkspaceView: View {
             do {
                 let data = try await AnalysisEvidenceJPEGRenderer.mapJPEG(evidence: evidence)
                 try Task.checkCancellation()
-                _ = try await AnalysisExportFileService.shared.write(
+                let result = try await AnalysisExportFileService.shared.write(
                     data,
                     to: outputURL,
                     requestID: requestID
                 )
+                if case .committed = result, evidenceExportRequestID == requestID {
+                    exportConfirmation = AnalysisExportConfirmation(
+                        title: "Annotated Map Exported",
+                        url: outputURL
+                    )
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -748,6 +988,11 @@ struct AnalysisWorkspaceView: View {
 
     private func chooseProjectDestinationAndExport() {
         guard let sourceURL = model.sourceURL, projectArchiveTask == nil else { return }
+        // The project archive carries every photo in the folder as its original file.
+        let folderRedacts = folderImages.contains { RedactionPrivacyGuard.knowledge(for: $0) == .redacts }
+        guard RedactionPrivacyPrompt.confirmAnalysisExport(
+            containsRedactedPhoto: folderRedacts || sourcePhotoRedacts(sourceURL)
+        ) else { return }
         let sourceFolder = sourceURL.deletingLastPathComponent()
         let panel = NSSavePanel()
         panel.title = "Export Image Analysis Project"
@@ -763,17 +1008,38 @@ struct AnalysisWorkspaceView: View {
         let appBuild = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleVersion"
         ) as? String ?? "unknown"
+        projectArchiveStatus = "Exporting project…"
         projectArchiveTask = Task { @MainActor in
-            defer { projectArchiveTask = nil }
+            defer {
+                projectArchiveTask = nil
+                projectArchiveStatus = nil
+            }
             do {
-                await model.flushPendingSaves()
+                // A failed save would leave stale case data on disk: retry it, and refuse to
+                // export anything older than what the workspace shows.
+                guard await model.savePendingChanges() else {
+                    reportExportError = "The project was not exported because the latest Analysis changes could not be saved. \(model.saveError ?? "")"
+                    return
+                }
+                try Task.checkCancellation()
+                // Read-only folders keep their cases and folder map in Application Support, so
+                // export what the repository holds rather than only the folder's own files.
+                let analysisDocuments = await model.persistedDocumentsForProjectExport()
+                try Task.checkCancellation()
                 _ = try await ImageAnalysisProjectArchive.export(
                     sourceFolderURL: sourceFolder,
                     imageURLs: folderImages.map(\.url),
                     title: sourceFolder.lastPathComponent,
                     destinationURL: destination,
                     appVersion: appVersion,
-                    appBuild: appBuild
+                    appBuild: appBuild,
+                    analysisCases: analysisDocuments.cases,
+                    folderMapDocument: analysisDocuments.folderMap
+                )
+                // The archive is committed; report it even if Cancel arrived during the final move.
+                exportConfirmation = AnalysisExportConfirmation(
+                    title: "Image Analysis Project Exported",
+                    url: destination
                 )
             } catch is CancellationError {
                 return
@@ -796,11 +1062,16 @@ struct AnalysisWorkspaceView: View {
         openPanel.allowsMultipleSelection = false
         guard openPanel.runModal() == .OK, let archiveURL = openPanel.url else { return }
 
+        projectArchiveStatus = "Reading project…"
         projectArchiveTask = Task { @MainActor in
-            defer { projectArchiveTask = nil }
+            defer {
+                projectArchiveTask = nil
+                projectArchiveStatus = nil
+            }
             do {
                 let preview = try await ImageAnalysisProjectArchive.inspect(archiveURL)
                 try Task.checkCancellation()
+                projectArchiveStatus = nil
 
                 let savePanel = NSSavePanel()
                 savePanel.title = "Choose Imported Project Folder"
@@ -810,11 +1081,12 @@ struct AnalysisWorkspaceView: View {
                 savePanel.nameFieldStringValue = sanitizedProjectFolderName(preview.title)
                 guard savePanel.runModal() == .OK, let destination = savePanel.url else { return }
 
+                projectArchiveStatus = "Importing project…"
                 _ = try await ImageAnalysisProjectArchive.importProject(
                     from: archiveURL,
                     to: destination
                 )
-                try Task.checkCancellation()
+                // The project is installed; open it even if Cancel arrived during the final move.
                 onOpenImportedProject(destination)
             } catch is CancellationError {
                 return
@@ -858,8 +1130,14 @@ struct AnalysisWorkspaceView: View {
                 .frame(minWidth: 520, minHeight: 360)
                 .layoutPriority(1)
 
-            pixelAnalysisInspector
-                .frame(minWidth: 350, idealWidth: 410, maxWidth: .infinity)
+            Group {
+                if isCaseReady {
+                    pixelAnalysisInspector
+                } else {
+                    analysisLoadingPlaceholder
+                }
+            }
+            .frame(minWidth: 350, idealWidth: 410, maxWidth: .infinity)
         }
     }
 
@@ -926,72 +1204,89 @@ struct AnalysisWorkspaceView: View {
                 sourcePreview(showMarkupToolbar: false)
                     .frame(minHeight: 260)
 
-                AnalysisTimelineView(
-                    evidence: model.timestampEvidence,
-                    observations: model.observations,
-                    conflicts: model.timestampConflicts,
-                    isReadOnly: model.sourceChanged,
-                    onAddTimed: { isTimestampEditorPresented = true },
-                    onAddNote: { isObservationEditorPresented = true },
-                    onDeleteTimestamp: model.removeTimestampEvidence,
-                    onDeleteObservation: model.removeObservation
-                )
-                .frame(minHeight: 170, idealHeight: 280)
+                if isCaseReady {
+                    AnalysisTimelineView(
+                        evidence: model.timestampEvidence,
+                        observations: model.observations,
+                        conflicts: model.timestampConflicts,
+                        isReadOnly: model.sourceChanged,
+                        onAddTimed: { isTimestampEditorPresented = true },
+                        onAddNote: { isObservationEditorPresented = true },
+                        onDeleteTimestamp: model.removeTimestampEvidence,
+                        onDeleteObservation: model.removeObservation
+                    )
+                    .frame(minHeight: 170, idealHeight: 280)
+                } else {
+                    analysisLoadingPlaceholder
+                        .frame(minHeight: 170, idealHeight: 280)
+                }
             }
             .frame(minWidth: 400, idealWidth: 620, maxWidth: 760)
 
-            VSplitView {
-                AnalysisMapEvidenceView(
-                    mapState: model.mapState,
-                    embeddedLocation: model.embeddedLocation,
-                    photoAnnotationToLocate: selectedPhotoAnnotation,
-                    currentSourceURL: model.sourceURL,
-                    folderAnnotations: model.workingFolderMapAnnotations,
-                    globalAnnotations: model.globalMapAnnotations,
-                    isReadOnly: model.sourceChanged,
-                    onSetStyle: model.setMapStyle,
-                    onSetTrafficVisible: model.setMapTrafficVisible,
-                    onSet3DContentVisible: model.setMap3DContentVisible,
-                    onSetViewport: model.setMapViewport,
-                    onSetInvestigationLocation: model.setInvestigationLocation,
-                    timestampEvidence: model.timestampEvidence,
-                    onSetSolarOverlay: model.setSolarOverlay,
-                    onClearSolarOverlay: model.clearSolarOverlay,
-                    onSetAnnotation: model.setGlobalMapAnnotation,
-                    onSetLocalAnnotation: model.setMapAnnotation,
-                    onDeleteAnnotation: model.removeGlobalMapAnnotation,
-                    annotationTool: $mapAnnotationTool,
-                    sharedAnnotationStyle: $annotationStyle,
-                    selectedAnnotationID: $selectedMapAnnotationID,
-                    primaryActionRequestID: mapPrimaryActionRequestID,
-                    finishShapeRequestID: mapFinishShapeRequestID,
-                    cancelDraftRequestID: mapCancelDraftRequestID,
-                    onDraftCountChanged: { mapDraftCoordinateCount = $0 }
-                )
-                .frame(minWidth: 520, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
+            if isCaseReady {
+                VSplitView {
+                    AnalysisMapEvidenceView(
+                        mapState: model.mapState,
+                        embeddedLocation: model.embeddedLocation,
+                        photoAnnotationToLocate: selectedPhotoAnnotation,
+                        currentSourceURL: model.sourceURL,
+                        folderAnnotations: model.workingFolderMapAnnotations,
+                        globalAnnotations: model.globalMapAnnotations,
+                        isReadOnly: model.sourceChanged,
+                        onSetStyle: model.setMapStyle,
+                        onSetTrafficVisible: model.setMapTrafficVisible,
+                        onSet3DContentVisible: model.setMap3DContentVisible,
+                        onSetViewport: model.setMapViewport,
+                        onSetInvestigationLocation: { model.setInvestigationLocation($0) },
+                        caseID: model.analysisCase?.id,
+                        onSetLookedUpInvestigationLocation: {
+                            model.setInvestigationLocation($0, requestedForCaseID: $1)
+                        },
+                        onApplyReverseGeocodedPlaceName: {
+                            model.applyReverseGeocodedPlaceName($0, at: $1, requestedForCaseID: $2)
+                        },
+                        timestampEvidence: model.timestampEvidence,
+                        onSetSolarOverlay: model.setSolarOverlay,
+                        onClearSolarOverlay: model.clearSolarOverlay,
+                        onSetAnnotation: model.setGlobalMapAnnotation,
+                        onSetLocalAnnotation: model.setMapAnnotation,
+                        onDeleteAnnotation: model.removeGlobalMapAnnotation,
+                        annotationTool: $mapAnnotationTool,
+                        sharedAnnotationStyle: $annotationStyle,
+                        selectedAnnotationID: $selectedMapAnnotationID,
+                        primaryActionRequestID: mapPrimaryActionRequestID,
+                        finishShapeRequestID: mapFinishShapeRequestID,
+                        cancelDraftRequestID: mapCancelDraftRequestID,
+                        onDraftCountChanged: { mapDraftCoordinateCount = $0 }
+                    )
+                    .frame(minWidth: 520, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
 
-                AnalysisMapLayersView(
-                    globalAnnotations: model.globalMapAnnotations,
-                    photoAnnotations: model.annotations,
-                    folderAnnotations: model.workingFolderMapAnnotations,
-                    currentCaseID: model.analysisCase?.id,
-                    selectedPhotoAnnotationID: $selectedAnnotationID,
-                    selectedAnnotationID: $selectedMapAnnotationID,
-                    isReadOnly: model.sourceChanged,
-                    onSetPhotoVisible: model.setPhotoAnnotationVisible,
-                            onSetAllPhotosVisible: model.setAllPhotoAnnotationsVisible,
-                            onSetPhotoGroupVisible: { model.setPhotoAnnotationsVisible(ids: $0, isVisible: $1) },
-                    onEditPhotoAnnotation: presentPhotoAnnotationEditor,
-                    onDeletePhotoAnnotation: model.removeAnnotation,
-                    onSetGlobalVisible: model.setGlobalMapAnnotationVisible,
-                    onSetAllGlobalsVisible: model.setAllGlobalMapAnnotationsVisible,
-                    onEditGlobalAnnotation: presentMapAnnotationEditor,
-                    onDeleteGlobalAnnotation: model.removeGlobalMapAnnotation,
-                    onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink
-                )
-                .frame(minHeight: 220, idealHeight: 360, maxHeight: .infinity)
+                    AnalysisMapLayersView(
+                        globalAnnotations: model.globalMapAnnotations,
+                        photoAnnotations: model.annotations,
+                        folderAnnotations: model.workingFolderMapAnnotations,
+                        currentCaseID: model.analysisCase?.id,
+                        selectedPhotoAnnotationID: $selectedAnnotationID,
+                        selectedAnnotationID: $selectedMapAnnotationID,
+                        isReadOnly: model.sourceChanged,
+                        onSetPhotoVisible: model.setPhotoAnnotationVisible,
+                                onSetAllPhotosVisible: model.setAllPhotoAnnotationsVisible,
+                                onSetPhotoGroupVisible: { model.setPhotoAnnotationsVisible(ids: $0, isVisible: $1) },
+                        onEditPhotoAnnotation: presentPhotoAnnotationEditor,
+                        onDeletePhotoAnnotation: model.removeAnnotation,
+                        onSetGlobalVisible: model.setGlobalMapAnnotationVisible,
+                        onSetAllGlobalsVisible: model.setAllGlobalMapAnnotationsVisible,
+                        onEditGlobalAnnotation: presentMapAnnotationEditor,
+                        onDeleteGlobalAnnotation: model.removeGlobalMapAnnotation,
+                        onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink
+                    )
+                    .frame(minHeight: 220, idealHeight: 360, maxHeight: .infinity)
+                }
+                .frame(minWidth: 520, maxWidth: .infinity)
+            } else {
+                analysisLoadingPlaceholder
+                    .frame(minWidth: 520, maxWidth: .infinity)
             }
-            .frame(minWidth: 520, maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: photoAnnotationTool) {
@@ -1357,7 +1652,7 @@ struct AnalysisWorkspaceView: View {
             }
 
             AnalysisSourceThumbnail(
-                url: model.sourceURL,
+                url: previewSourceURL,
                 representation: model.displayPreference,
                 pixelViewMode: pixelViewMode,
                 pixelChannel: pixelChannel,
@@ -1372,7 +1667,8 @@ struct AnalysisWorkspaceView: View {
                 sourceOrientation: model.sourceOrientation,
                 displayTransform: model.displayTransform,
                 annotationTransform: model.annotationTransform,
-                inspectionSample: $pixelInspectionSample,
+                inspection: pixelInspection,
+                developedRenderToken: model.developedRenderToken,
                 isLoupeEnabled: $isLoupeEnabled,
                 scopeSourceMode: scopeSourceMode,
                 selectedScopeRegion: $selectedScopeRegion,
@@ -1425,7 +1721,7 @@ struct AnalysisWorkspaceView: View {
                 )
             }
 
-            PixelInspectionReadout(sample: pixelInspectionSample)
+            PixelInspectionReadout(inspection: pixelInspection)
         }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -3044,6 +3340,7 @@ private struct AnalysisRailThumbnail: View {
     let isSelected: Bool
     let thumbnailService: ThumbnailService
     @State private var thumbnail: NSImage?
+    @State private var thumbnailUnavailable = false
 
     var body: some View {
         ZStack {
@@ -3054,6 +3351,10 @@ private struct AnalysisRailThumbnail: View {
                 Image(nsImage: thumbnail)
                     .resizable()
                     .scaledToFill()
+            } else if thumbnailUnavailable {
+                Image(systemName: "photo")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -3069,10 +3370,13 @@ private struct AnalysisRailThumbnail: View {
                 )
         }
         .task(id: image.url) {
+            thumbnailUnavailable = false
             if let cached = thumbnailService.thumbnail(for: image.url) {
                 thumbnail = cached
             } else {
                 thumbnail = await thumbnailService.loadThumbnail(for: image.url)
+                // A failed load shows a placeholder instead of spinning forever.
+                thumbnailUnavailable = thumbnail == nil && !Task.isCancelled
             }
         }
     }
@@ -3680,7 +3984,9 @@ private struct AnalysisSourceThumbnail: View {
     let sourceOrientation: Int
     let displayTransform: DisplayImageTransform?
     let annotationTransform: DisplayImageTransform?
-    @Binding var inspectionSample: ImageInspectionSample?
+    let inspection: AnalysisPixelInspectionState
+    /// `model.developedRenderToken`; computed once per settings change.
+    let developedRenderToken: String?
     @Binding var isLoupeEnabled: Bool
     let scopeSourceMode: AnalysisScopeSourceMode
     @Binding var selectedScopeRegion: CGRect?
@@ -3725,7 +4031,9 @@ private struct AnalysisSourceThumbnail: View {
     @State private var panOffset: CGSize = .zero
     @State private var panDragStartOffset: CGSize?
     @State private var viewportSize: CGSize = .zero
-    @State private var pointerLocationInViewport: CGPoint?
+    /// Read only by the event monitors, never by `body`; a reference box keeps per-move
+    /// pointer updates from re-rendering this view.
+    @State private var pointer = AnalysisPointerLocation()
     @State private var loupeCorner: ImageInspectionLoupePlacement.Corner = .topTrailing
     @State private var eventWindow = WorkspaceEventWindowReference()
     @State private var scrollEventMonitor: Any?
@@ -3746,23 +4054,14 @@ private struct AnalysisSourceThumbnail: View {
                     pixelImageContent(image)
 
 
-                    if let inspectionSample {
-                        ForEach(
-                            Array(
-                                inspectionGeometries(
-                                    image: image,
-                                    containerSize: geometry.size
-                                ).enumerated()
-                            ),
-                            id: \.offset
-                        ) { _, inspectionGeometry in
-                            PixelInspectionCrosshair(
-                                position: inspectionGeometry.viewPoint(
-                                    fromNormalizedDisplay: inspectionSample.normalizedDisplayPoint
-                                ),
-                                imageRect: inspectionGeometry.imageRectInView
+                    if inspection.hasSample {
+                        PixelInspectionCrosshairLayer(
+                            inspection: inspection,
+                            geometries: inspectionGeometries(
+                                image: image,
+                                containerSize: geometry.size
                             )
-                        }
+                        )
                     }
 
                     if let region = selectionDraft ?? selectedScopeRegion {
@@ -3889,35 +4188,23 @@ private struct AnalysisSourceThumbnail: View {
                           let point = inspectionGeometry.normalizedDisplayPoint(
                               fromViewPoint: location
                           ) else {
-                        inspectionSample = nil
+                        inspection.update(nil)
                         return
                     }
-                    inspectionSample = ImageInspectionSample(
-                        normalizedDisplayPoint: point,
-                        transform: displayTransform,
-                        rgba16: sourceCGImage.flatMap {
-                            SourcePixelSampler.rgba16(
-                                in: $0,
-                                atDisplayPoint: point
-                            )
-                        }
-                    )
+                    inspection.update(makeInspectionSample(
+                        at: point,
+                        transform: displayTransform
+                    ))
                 case .ended:
-                    inspectionSample = nil
+                    inspection.update(nil)
                 }
             }
             .accessibilityAction(named: "Inspect center pixel") {
                 guard let displayTransform else { return }
-                inspectionSample = ImageInspectionSample(
-                    normalizedDisplayPoint: CGPoint(x: 0.5, y: 0.5),
-                    transform: displayTransform,
-                    rgba16: sourceCGImage.flatMap {
-                        SourcePixelSampler.rgba16(
-                            in: $0,
-                            atDisplayPoint: CGPoint(x: 0.5, y: 0.5)
-                        )
-                    }
-                )
+                inspection.update(makeInspectionSample(
+                    at: CGPoint(x: 0.5, y: 0.5),
+                    transform: displayTransform
+                ))
             }
             .accessibilityAction(named: "Select center region for scopes") {
                 selectedScopeRegion = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
@@ -3943,15 +4230,15 @@ private struct AnalysisSourceThumbnail: View {
                 .scaleEffect(zoomScale)
                 .offset(panOffset)
 
-                if isLoupeEnabled, let inspectionSample {
-                    AnalysisTruePixelLoupe(
+                if isLoupeEnabled, inspection.hasSample {
+                    AnalysisTruePixelLoupeLayer(
+                        inspection: inspection,
                         sourceImage: loupeViewImage,
-                        isUnavailable: loupeLoadFailedIdentity == loupeLoadIdentity
+                        isUnavailable: (loupeLoadFailedIdentity != nil
+                            && loupeLoadFailedIdentity == loupeLoadIdentity)
                             || (inspectionRenderFailedIdentity != nil && inspectionRenderFailedIdentity == zoomedPreviewIdentity),
                         viewLabel: pixelViewLabel(pixelViewMode, channel: pixelChannel),
                         isBoundedPreview: [.compressionResidual, .noiseResidual, .levelSweep, .cloneDetection].contains(pixelViewMode),
-                        normalizedDisplayPoint: inspectionSample.normalizedDisplayPoint,
-                        sourcePixel: inspectionSample.sourcePixel,
                         representation: representation,
                         displaySize: loupeDisplaySize
                     )
@@ -4011,12 +4298,14 @@ private struct AnalysisSourceThumbnail: View {
                 .onContinuousHover(coordinateSpace: .local) { phase in
                     switch phase {
                     case .active(let location):
-                        pointerLocationInViewport = location
-                        loupeCorner = ImageInspectionLoupePlacement.corner(
+                        pointer.location = location
+                        let corner = ImageInspectionLoupePlacement.corner(
                             avoiding: location, in: geometry.size, retaining: loupeCorner
                         )
+                        // Only a corner change should re-render the source view.
+                        if corner != loupeCorner { loupeCorner = corner }
                     case .ended:
-                        pointerLocationInViewport = nil
+                        pointer.location = nil
                     }
                 }
                 .onAppear {
@@ -4076,10 +4365,7 @@ private struct AnalysisSourceThumbnail: View {
                 levelSweepCenter: pixelViewMode == .levelSweep ? levelSweepCenter : 128,
                 isLevelSweepEditing: pixelViewMode == .levelSweep && isLevelSweepEditing,
                 sourceOrientation: sourceOrientation,
-                renderToken: FullScreenImageCache.renderToken(
-                    settings: developSettings,
-                    isEdited: representation == .developed
-                )
+                renderToken: renderToken
             )
         ) {
             previewFailed = false
@@ -4088,10 +4374,7 @@ private struct AnalysisSourceThumbnail: View {
                 url: url,
                 representation: representation,
                 sourceOrientation: sourceOrientation,
-                renderToken: FullScreenImageCache.renderToken(
-                    settings: developSettings,
-                    isEdited: representation == .developed
-                )
+                renderToken: renderToken
             )
             if loadedSourceIdentity != sourceIdentity {
                 image = nil
@@ -4112,11 +4395,9 @@ private struct AnalysisSourceThumbnail: View {
                 sourceCGImage = nil
                 loadedSourceIdentity = nil
                 let settings = representation == .developed ? developSettings : nil
-                if let decoded = await FullScreenImageCache.decodedEditedPreview(
-                    for: url,
-                    settings: settings,
-                    orientation: sourceOrientation,
-                    screenMaxPx: 2_048
+                if let decoded = await AnalysisSourcePreviewCache.shared.image(
+                    for: sourceIdentity,
+                    settings: settings
                 ), !Task.isCancelled {
                     source = decoded
                     loadedImage = NSImage(
@@ -4190,11 +4471,27 @@ private struct AnalysisSourceThumbnail: View {
             comparisonImage = NSImage(cgImage: rendered, size: NSSize(width: rendered.width, height: rendered.height))
             loadedComparisonKey = key
         }
+        .onChange(of: url) {
+            // The native-resolution decode can be hundreds of megabytes; never carry it to
+            // another photo.
+            releaseLoupeSource()
+        }
         .task(id: loupeLoadIdentity) {
             guard let identity = loupeLoadIdentity,
-                  let displayTransform else { return }
+                  let displayTransform else {
+                if loupeSourceIdentity != nil, loupeSourceIdentity != currentSourceIdentity {
+                    releaseLoupeSource()
+                }
+                return
+            }
             if loupeSourceIdentity == identity, loupeSourceCGImage != nil {
                 return
+            }
+            // A pointer passing over the image must not start a full-resolution decode; wait
+            // for it to dwell. Zoom needs the pixels immediately.
+            if zoomScale <= 1 {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
             }
 
             loupeSourceCGImage = nil
@@ -4247,24 +4544,63 @@ private struct AnalysisSourceThumbnail: View {
         }
     }
 
-    // Keep the bounded preview for initial display and scopes, but use the loupe's
-    // original-resolution decode for the zoomed canvas and selected-view loupe.
-    // Zoom must request it even without a hover sample (for example with a trackpad pinch).
-    private var loupeLoadIdentity: SourcePreviewIdentity? {
-        guard inspectionSample != nil || zoomScale > 1, let url else { return nil }
+    /// Reads RGBA from the full-resolution decode once it is loaded for the displayed source;
+    /// until then the bounded preview is sampled and the readout labels it as a preview value.
+    private func makeInspectionSample(
+        at point: CGPoint,
+        transform: DisplayImageTransform
+    ) -> ImageInspectionSample {
+        let selected = ImageInspectionColorSource.select(
+            fullResolution: loupeSourceCGImage,
+            fullResolutionMatchesSource: loupeSourceIdentity != nil
+                && loupeSourceIdentity == currentSourceIdentity,
+            preview: sourceCGImage
+        )
+        return ImageInspectionSample(
+            normalizedDisplayPoint: point,
+            transform: transform,
+            rgba16: selected.flatMap {
+                SourcePixelSampler.rgba16(in: $0.image, atDisplayPoint: point)
+            },
+            rgbaSource: selected?.source
+        )
+    }
+
+    private var currentSourceIdentity: SourcePreviewIdentity? {
+        guard let url else { return nil }
         return SourcePreviewIdentity(
             url: url,
             representation: representation,
             sourceOrientation: sourceOrientation,
-            renderToken: FullScreenImageCache.renderToken(
-                settings: developSettings,
-                isEdited: representation == .developed
-            )
+            renderToken: renderToken
         )
     }
 
+    private var renderToken: String? {
+        representation == .developed ? developedRenderToken : nil
+    }
+
+    private func releaseLoupeSource() {
+        loupeSourceCGImage = nil
+        loupeSourceIdentity = nil
+        loupeLoadFailedIdentity = nil
+        zoomedImage = nil
+        inspectionViewCGImage = nil
+        inspectionRenderFailedIdentity = nil
+        loadedZoomedPreviewIdentity = nil
+    }
+
+    // Keep the bounded preview for initial display, scopes and the pixel readout, but use the
+    // loupe's original-resolution decode for the zoomed canvas and the visible loupe. Hovering
+    // with the loupe off reads preview pixels (labelled as such) and never decodes natively.
+    // Zoom must request it even without a hover sample (for example with a trackpad pinch).
+    private var loupeLoadIdentity: SourcePreviewIdentity? {
+        guard (isLoupeEnabled && inspection.hasSample) || zoomScale > 1 else { return nil }
+        return currentSourceIdentity
+    }
+
     private var zoomedPreviewIdentity: PreviewIdentity? {
-        guard zoomScale > 1 || (isLoupeEnabled && inspectionSample != nil),
+        guard zoomScale > 1 || (isLoupeEnabled && inspection.hasSample),
               let source = loupeSourceIdentity,
               source == loupeLoadIdentity,
               loupeSourceCGImage != nil else { return nil }
@@ -4440,7 +4776,7 @@ private struct AnalysisSourceThumbnail: View {
                 resetTransientInput()
                 return event
             }
-            guard let pointerLocationInViewport,
+            guard let pointerLocationInViewport = pointer.location,
                   viewportSize.width > 0,
                   viewportSize.height > 0 else {
                 return event
@@ -4486,7 +4822,7 @@ private struct AnalysisSourceThumbnail: View {
         isSpaceHandToolActive = false
         panDragStartOffset = nil
         zoomGestureStartScale = nil
-        pointerLocationInViewport = nil
+        pointer.location = nil
     }
 
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
@@ -4510,7 +4846,7 @@ private struct AnalysisSourceThumbnail: View {
 
         let responder = event.window?.firstResponder
         let textEditorOwnsInput = responder is NSText || responder is NSTextView
-        guard pointerLocationInViewport != nil, !textEditorOwnsInput else {
+        guard pointer.location != nil, !textEditorOwnsInput else {
             return event
         }
 
@@ -4964,6 +5300,194 @@ private struct SourcePreviewIdentity: Hashable {
     }
 }
 
+/// The 2,048 px source previews of the last few photos, so returning to a photo or opening the
+/// prefetched next one shows it at once. A decode that only cancelled waiters (and no prefetch)
+/// still want is cancelled, so rapid navigation does not pile up decodes.
+@MainActor
+private final class AnalysisSourcePreviewCache {
+    static let shared = AnalysisSourcePreviewCache()
+
+    /// 2,048 px previews are 16–64 MB each depending on bit depth; keep the set small.
+    private let capacity = 4
+    private let screenMaxPixelSize: CGFloat = 2_048
+    private var entries: [(identity: SourcePreviewIdentity, image: CGImage)] = []
+    private var inFlight: [SourcePreviewIdentity: Decode] = [:]
+    private var prefetchIdentity: SourcePreviewIdentity?
+    /// This fixed-size cache sits outside the proportional budget; it still yields on memory
+    /// pressure (alongside the other derived analysis rasters, at the warning tier).
+    private var pressureRegistration: ImageMemoryCoordinator.Registration?
+
+    private init() {
+        pressureRegistration = ImageMemoryCoordinator.shared.registerPressureEviction(
+            level: .warning
+        ) { [weak self] in
+            Task { @MainActor in self?.evictForMemoryPressure() }
+        }
+    }
+
+    /// Memory pressure: drop cached previews and the speculative prefetch, but keep decodes a
+    /// visible view is still waiting for.
+    private func evictForMemoryPressure() {
+        entries.removeAll()
+        if let prefetch = prefetchIdentity {
+            prefetchIdentity = nil
+            cancelIfUnwanted(prefetch)
+        }
+    }
+
+    /// Drops every cached preview and the prefetch (an Analysis workspace closed). The cache is
+    /// shared by every window, so decodes another Analysis window is still waiting for keep
+    /// running; only decodes nobody waits for are cancelled.
+    func removeAll() {
+        entries.removeAll()
+        prefetchIdentity = nil
+        for identity in Array(inFlight.keys) {
+            cancelIfUnwanted(identity)
+        }
+    }
+
+    private final class Decode {
+        let task: Task<CGImage?, Never>
+        var waiters = 0
+
+        init(task: Task<CGImage?, Never>) {
+            self.task = task
+        }
+    }
+
+    /// The preview for `identity`, from the cache, an in-flight decode, or a new decode.
+    func image(
+        for identity: SourcePreviewIdentity,
+        settings: CameraRawSettings?
+    ) async -> CGImage? {
+        if let cached = cachedImage(for: identity) { return cached }
+        let decode = inFlight[identity] ?? startDecode(identity, settings: settings, priority: .userInitiated)
+        decode.waiters += 1
+        let image = await withTaskCancellationHandler {
+            await decode.task.value
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.releaseWaiter(of: identity, decode: decode) }
+        }
+        if !Task.isCancelled {
+            decode.waiters -= 1
+        }
+        return image
+    }
+
+    /// Decodes the photo the user is likely to open next. A newer prefetch replaces this one.
+    func prefetch(_ identity: SourcePreviewIdentity, settings: CameraRawSettings?) {
+        let previous = prefetchIdentity
+        prefetchIdentity = identity
+        if let previous, previous != identity { cancelIfUnwanted(previous) }
+        guard cachedImage(for: identity) == nil, inFlight[identity] == nil else { return }
+        _ = startDecode(identity, settings: settings, priority: .utility)
+    }
+
+    private func cachedImage(for identity: SourcePreviewIdentity) -> CGImage? {
+        guard let index = entries.firstIndex(where: { $0.identity == identity }) else { return nil }
+        let entry = entries.remove(at: index)
+        entries.append(entry)
+        return entry.image
+    }
+
+    private func insert(_ image: CGImage, for identity: SourcePreviewIdentity) {
+        entries.removeAll { $0.identity == identity }
+        entries.append((identity, image))
+        if entries.count > capacity {
+            entries.removeFirst(entries.count - capacity)
+        }
+    }
+
+    private func startDecode(
+        _ identity: SourcePreviewIdentity,
+        settings: CameraRawSettings?,
+        priority: TaskPriority
+    ) -> Decode {
+        let screenMaxPixelSize = screenMaxPixelSize
+        let task = Task(priority: priority) {
+            await FullScreenImageCache.decodedEditedPreview(
+                for: identity.url,
+                settings: settings,
+                orientation: identity.sourceOrientation,
+                screenMaxPx: screenMaxPixelSize
+            )
+        }
+        let decode = Decode(task: task)
+        inFlight[identity] = decode
+        Task { [weak self] in
+            let image = await task.value
+            guard let self else { return }
+            if self.inFlight[identity] === decode { self.inFlight[identity] = nil }
+            if self.prefetchIdentity == identity { self.prefetchIdentity = nil }
+            if let image, !task.isCancelled { self.insert(image, for: identity) }
+        }
+        return decode
+    }
+
+    private func releaseWaiter(of identity: SourcePreviewIdentity, decode: Decode) {
+        decode.waiters -= 1
+        if inFlight[identity] === decode { cancelIfUnwanted(identity) }
+    }
+
+    private func cancelIfUnwanted(_ identity: SourcePreviewIdentity) {
+        guard identity != prefetchIdentity,
+              let decode = inFlight[identity],
+              decode.waiters <= 0 else { return }
+        decode.task.cancel()
+        inFlight[identity] = nil
+    }
+}
+
+/// The pointer position inside the source viewport, for the scroll and key monitors.
+private final class AnalysisPointerLocation {
+    var location: CGPoint?
+}
+
+/// Reads the per-move sample so only this layer re-renders while the pointer moves.
+private struct PixelInspectionCrosshairLayer: View {
+    let inspection: AnalysisPixelInspectionState
+    let geometries: [ImageInspectionGeometry]
+
+    var body: some View {
+        if let sample = inspection.sample {
+            ForEach(Array(geometries.enumerated()), id: \.offset) { _, inspectionGeometry in
+                PixelInspectionCrosshair(
+                    position: inspectionGeometry.viewPoint(
+                        fromNormalizedDisplay: sample.normalizedDisplayPoint
+                    ),
+                    imageRect: inspectionGeometry.imageRectInView
+                )
+            }
+        }
+    }
+}
+
+/// Reads the per-move sample so only the loupe re-renders while the pointer moves.
+private struct AnalysisTruePixelLoupeLayer: View {
+    let inspection: AnalysisPixelInspectionState
+    let sourceImage: CGImage?
+    let isUnavailable: Bool
+    let viewLabel: String
+    let isBoundedPreview: Bool
+    let representation: AnalysisSourceRepresentation
+    let displaySize: CGFloat
+
+    var body: some View {
+        if let sample = inspection.sample {
+            AnalysisTruePixelLoupe(
+                sourceImage: sourceImage,
+                isUnavailable: isUnavailable,
+                viewLabel: viewLabel,
+                isBoundedPreview: isBoundedPreview,
+                normalizedDisplayPoint: sample.normalizedDisplayPoint,
+                sourcePixel: sample.sourcePixel,
+                representation: representation,
+                displaySize: displaySize
+            )
+        }
+    }
+}
+
 private struct AnalysisTruePixelLoupe: View {
     let sourceImage: CGImage?
     let isUnavailable: Bool
@@ -5177,8 +5701,24 @@ private struct ScopeRegionOverlay: View {
     }
 }
 
+/// The pointer's pixel sample. Only the readout, crosshair and loupe layers read `sample`; the
+/// source view reads just `hasSample`, which changes when the pointer enters or leaves the image.
+@Observable
+final class AnalysisPixelInspectionState {
+    private(set) var sample: ImageInspectionSample?
+    private(set) var hasSample = false
+
+    func update(_ newSample: ImageInspectionSample?) {
+        if sample != newSample { sample = newSample }
+        let present = newSample != nil
+        if hasSample != present { hasSample = present }
+    }
+}
+
 private struct PixelInspectionReadout: View {
-    let sample: ImageInspectionSample?
+    let inspection: AnalysisPixelInspectionState
+
+    private var sample: ImageInspectionSample? { inspection.sample }
 
     var body: some View {
         Color.clear
@@ -5194,6 +5734,11 @@ private struct PixelInspectionReadout: View {
                         if let rgba = sample.rgba16 {
                             Divider()
                                 .frame(height: 14)
+                            if sample.rgbaSource == .preview {
+                                Text("Preview pixel")
+                                    .foregroundStyle(.secondary)
+                                    .help("Values come from the downsampled preview; turn on the Loupe or zoom in to read full-resolution values")
+                            }
                             Text(
                                 "R: \(rgba.red)  |  G: \(rgba.green)  |  "
                                     + "B: \(rgba.blue)  |  A: \(rgba.alpha)"
@@ -5230,8 +5775,9 @@ private struct PixelInspectionReadout: View {
             return "Pixel inspector. Hover over the image to inspect a source pixel."
         }
         if let rgba = sample.rgba16 {
+            let origin = sample.rgbaSource == .preview ? "Preview pixel " : ""
             return "Source pixel x \(sample.sourcePixel.x), y \(sample.sourcePixel.y). "
-                + "16-bit red \(rgba.red), green \(rgba.green), "
+                + "\(origin)16-bit red \(rgba.red), green \(rgba.green), "
                 + "blue \(rgba.blue), alpha \(rgba.alpha)"
         }
         return "Source pixel x \(sample.sourcePixel.x), y \(sample.sourcePixel.y)"
@@ -5246,7 +5792,6 @@ private enum SourcePixelSampler {
         guard image.width > 0, image.height > 0 else { return nil }
         let x = min(image.width - 1, max(0, Int(point.x * CGFloat(image.width))))
         let displayY = min(image.height - 1, max(0, Int(point.y * CGFloat(image.height))))
-        let quartzY = image.height - 1 - displayY
         var components = [UInt16](repeating: 0, count: 4)
         let bitmapInfo = CGBitmapInfo.byteOrder16Little.rawValue
             | CGImageAlphaInfo.premultipliedLast.rawValue
@@ -5260,11 +5805,17 @@ private enum SourcePixelSampler {
             bitmapInfo: bitmapInfo
         ) else { return nil }
         context.interpolationQuality = .none
-        context.translateBy(x: -CGFloat(x), y: -CGFloat(quartzY))
-        context.draw(
-            image,
-            in: CGRect(x: 0, y: 0, width: image.width, height: image.height)
-        )
+        // Crop first (CGImage cropping uses a top-left origin and shares pixel storage) so a
+        // full-resolution source costs one pixel per hover rather than a full-image draw.
+        if let pixel = image.cropping(to: CGRect(x: x, y: displayY, width: 1, height: 1)) {
+            context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        } else {
+            context.translateBy(x: -CGFloat(x), y: -CGFloat(image.height - 1 - displayY))
+            context.draw(
+                image,
+                in: CGRect(x: 0, y: 0, width: image.width, height: image.height)
+            )
+        }
 
         let alpha = components[3]
         guard alpha > 0, alpha < UInt16.max else {
@@ -5284,5 +5835,60 @@ private enum SourcePixelSampler {
             blue: unpremultiply(components[2]),
             alpha: alpha
         )
+    }
+}
+
+/// Window-scoped Escape handling for the Analysis workspace. Escape is left alone while a text
+/// field is editing, a sheet, alert, or modal panel is up, or the workspace is hidden.
+private struct AnalysisExportConfirmation {
+    let title: String
+    let url: URL
+}
+
+private struct AnalysisEscapeKeyMonitor: NSViewRepresentable {
+    let onEscape: () -> Bool
+
+    func makeNSView(context: Context) -> MonitorView {
+        MonitorView()
+    }
+
+    func updateNSView(_ view: MonitorView, context: Context) {
+        view.onEscape = onEscape
+    }
+
+    static func dismantleNSView(_ view: MonitorView, coordinator: ()) {
+        view.removeMonitor()
+    }
+
+    final class MonitorView: NSView {
+        var onEscape: (() -> Bool)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            removeMonitor()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      event.keyCode == 53, !event.isARepeat,
+                      let window = self.window,
+                      event.window === window, window.isKeyWindow,
+                      window.attachedSheet == nil, NSApp.modalWindow == nil,
+                      !self.isHiddenOrHasHiddenAncestor,
+                      !(window.firstResponder is NSText),
+                      !(window.firstResponder is NSTextField),
+                      event.modifierFlags.isDisjoint(with: [.command, .control, .option, .shift]),
+                      self.onEscape?() == true else {
+                    return event
+                }
+                return nil
+            }
+        }
+
+        func removeMonitor() {
+            guard let monitor else { return }
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
     }
 }

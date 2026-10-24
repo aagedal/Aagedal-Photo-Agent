@@ -10,6 +10,7 @@ struct StructuredKeywordLibrarySettings: View {
     @State private var feedback: String?
     @State private var importing = false
     @State private var importTask: Task<Void, Never>?
+    @State private var listPendingDeletion: StructuredKeywordLibraryDocument.List?
 
     private var unavailable: Bool { library.isLoading || library.isSaving || library.hasReadFailure || importing }
 
@@ -66,10 +67,7 @@ struct StructuredKeywordLibrarySettings: View {
                     Spacer()
                     Button("Edit…") { editing = list }
                     Button(role: .destructive) {
-                        commit { document in
-                            document.lists.removeAll { $0.id == list.id }
-                            document.activeIDs.removeAll { $0 == list.id }
-                        }
+                        listPendingDeletion = list
                     } label: { Image(systemName: "trash") }
                     .help("Remove \(list.name)")
                 }
@@ -115,6 +113,24 @@ struct StructuredKeywordLibrarySettings: View {
         .onDisappear {
             importTask?.cancel()
             importTask = nil
+        }
+        .alert(
+            "Delete \u{201C}\(listPendingDeletion?.name ?? "")\u{201D}?",
+            isPresented: Binding(
+                get: { listPendingDeletion != nil },
+                set: { if !$0 { listPendingDeletion = nil } }
+            ),
+            presenting: listPendingDeletion
+        ) { list in
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                commit { document in
+                    document.lists.removeAll { $0.id == list.id }
+                    document.activeIDs.removeAll { $0 == list.id }
+                }
+            }
+        } message: { _ in
+            Text("The list and all its keywords are removed. Keywords already saved to photos are not changed. Export the list first if you may need it again.")
         }
         .sheet(isPresented: $editingLegacy) {
             StructuredKeywordEditor(service: .legacy, title: "My Keywords")

@@ -250,7 +250,7 @@ struct MCPNativeFaceScanReviewModelTests {
         let f = try fixture(schedule: refuse, preflightCheckpoint: {
             #expect(!Thread.isMainThread)
             Task { await entered.open() }
-            release.wait()
+            release.waitBounded()
         })
         defer { try? FileManager.default.removeItem(at: f.root) }
         let (requests, record) = try durableRequest(f)
@@ -273,7 +273,7 @@ struct MCPNativeFaceScanReviewModelTests {
                     #expect(Context.marker == marker)
                     Task { await entered.open() }
                     // Avoid trapping the main actor if executor ownership regresses.
-                    if !Thread.isMainThread { release.wait() }
+                    if !Thread.isMainThread { release.waitBounded() }
                     return true
                 }
             }
@@ -293,7 +293,7 @@ struct MCPNativeFaceScanReviewModelTests {
         let f = try fixture(schedule: refuse, preflightCheckpoint: {
             #expect(!Thread.isMainThread)
             Task { await entered.open() }
-            if !Thread.isMainThread { release.wait() }
+            if !Thread.isMainThread { release.waitBounded() }
             #expect(Task.isCancelled == cancel)
         })
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -323,7 +323,7 @@ struct MCPNativeFaceScanReviewModelTests {
         }, readReceipt: { receipts, id in
             #expect(!Thread.isMainThread)
             Task { await entered.open() }
-            if !Thread.isMainThread { release.wait() }
+            if !Thread.isMainThread { release.waitBounded() }
             return try receipts.receipts().first { $0.operationID == id }
         })
         defer { try? FileManager.default.removeItem(at: f.root) }

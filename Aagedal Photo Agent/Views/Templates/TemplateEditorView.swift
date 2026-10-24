@@ -22,6 +22,14 @@ struct TemplateEditorView: View {
     }
 
     /// Returns fields available for a picker, including the current field's key plus all unused fields
+    /// `{…}` tokens no variable expands. Structured JSON values (suppliers, vocabularies) are
+    /// skipped: their braces are data, not variables.
+    static func unrecognizedVariableTokens(in value: String) -> [String] {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("[") || trimmed.hasPrefix("{\"") { return [] }
+        return MetadataTemplatePlaceholderDetector.unrecognizedTokens(in: value)
+    }
+
     private func availableFieldsForPicker(currentKey: String) -> [(key: String, label: String)] {
         TemplateField.availableFields.filter { field in
             field.key == currentKey || !usedFieldKeys.contains(field.key)
@@ -42,7 +50,7 @@ struct TemplateEditorView: View {
                 Picker("Keyboard Shortcut", selection: $viewModel.editingTemplate.shortcutSlot) {
                     Text("None").tag(nil as Int?)
                     ForEach(1...9, id: \.self) { slot in
-                        Text("Ctrl+\(slot)").tag(slot as Int?)
+                        Text(KeyboardShortcutProfileRegistry.shared.templateShortcutDisplayName(slot: slot)).tag(slot as Int?)
                     }
                 }
                 .frame(width: 240)
@@ -166,6 +174,16 @@ struct TemplateEditorView: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                             .padding(.leading, 128)
+                    }
+                    let unknownTokens = Self.unrecognizedVariableTokens(in: field.templateValue)
+                    if !unknownTokens.isEmpty {
+                        Label(
+                            "Not a known variable, so it will be written as text: \(unknownTokens.joined(separator: ", "))",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.leading, 128)
                     }
                 }
             }

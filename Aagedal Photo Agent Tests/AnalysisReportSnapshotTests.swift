@@ -99,6 +99,56 @@ struct AnalysisReportSnapshotTests {
         #expect(try JSONDecoder().decode(AnalysisReportSnapshot.self, from: encoded) == snapshot)
     }
 
+    @Test("map exports include the visible folder-map annotations drawn on the live map")
+    func mapEvidenceIncludesFolderMapAnnotations() async throws {
+        let fixture = try AnalysisReportFixture(contents: "folder map report source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "case-build")
+        analysisCase.setMapViewport(AnalysisMapViewport(
+            center: AnalysisGeoCoordinate(latitude: 59.9139, longitude: 10.7522),
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.06
+        ))
+        let caseMarker = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.914, longitude: 10.753)),
+            text: "Case marker"
+        )
+        analysisCase.setMapAnnotation(caseMarker)
+        let drawnOnFolderMap = AnalysisMapAnnotation(
+            kind: .label,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.912, longitude: 10.751)),
+            text: "Drawn on the map"
+        )
+        let hiddenOnFolderMap = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.913, longitude: 10.752)),
+            isVisible: false
+        )
+        // A duplicate ID (the same annotation in both documents) is frozen once.
+        let folderMapAnnotations = [drawnOnFolderMap, hiddenOnFolderMap, caseMarker]
+
+        // PDF report path.
+        let snapshot = try await AnalysisReportSnapshot.capture(
+            from: analysisCase,
+            sourceURL: fixture.fileURL,
+            appVersion: "3.0",
+            appBuild: "test",
+            folderMapAnnotations: folderMapAnnotations
+        )
+        let reportMap = try #require(snapshot.mapEvidence)
+        #expect(reportMap.visibleAnnotations.map(\.id) == [caseMarker.id, drawnOnFolderMap.id])
+
+        // Annotated Map (JPEG) path.
+        let jpegEvidence = try #require(AnalysisReportMapEvidence(
+            state: analysisCase.mapState,
+            folderMapAnnotations: folderMapAnnotations,
+            capturedAt: Date()
+        ))
+        #expect(jpegEvidence.visibleAnnotations.map(\.id) == [caseMarker.id, drawnOnFolderMap.id])
+    }
+
     @Test("freezes and independently reproduces saved solar evidence")
     func freezesReproducibleSolarEvidence() async throws {
         let fixture = try AnalysisReportFixture(contents: "solar report source")

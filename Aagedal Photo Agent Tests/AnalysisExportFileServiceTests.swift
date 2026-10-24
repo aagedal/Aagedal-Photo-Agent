@@ -542,7 +542,7 @@ private nonisolated final class BlockingTextFileImportReaderProbe: @unchecked Se
         condition.broadcast()
         if readCount == 1 {
             while !firstReadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeReads -= 1
@@ -554,6 +554,8 @@ private nonisolated final class BlockingTextFileImportReaderProbe: @unchecked Se
         let deadline = ContinuousClock.now + .seconds(5)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw TextFileImportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -724,7 +726,7 @@ private nonisolated final class BlockingAnalysisExportWriter: @unchecked Sendabl
         condition.broadcast()
         if writeCount == 1 {
             while !firstWriteReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeWrites -= 1
@@ -735,6 +737,8 @@ private nonisolated final class BlockingAnalysisExportWriter: @unchecked Sendabl
         let deadline = ContinuousClock.now + .seconds(2)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstWrite()
                 throw AnalysisExportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1090,7 +1094,7 @@ private nonisolated final class BlockingExportDirectoryWriterProbe: @unchecked S
         condition.broadcast()
         if count == 1 {
             while !firstCreationReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeCreations -= 1
@@ -1102,6 +1106,8 @@ private nonisolated final class BlockingExportDirectoryWriterProbe: @unchecked S
         let deadline = ContinuousClock.now + .seconds(2)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstCreation()
                 throw ExportDirectoryProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1284,7 +1290,7 @@ struct QuickListFileCreationServiceTests {
         #expect(try Data(contentsOf: destination).isEmpty)
     }
 
-    @Test("MetadataPanel owns request lifetime and performs no direct file creation")
+    @Test("MetadataPanel owns request lifetime and creates first-use quick lists in the managed store")
     func metadataPanelSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -1295,28 +1301,30 @@ struct QuickListFileCreationServiceTests {
             ),
             encoding: .utf8
         )
-        let functionStart = try #require(source.range(of: "private func createQuickListFile("))
+        let functionStart = try #require(source.range(
+            of: "private func appendToQuickList(type: QuickListType, values: [String]) {"
+        ))
         let functionSuffix = source[functionStart.lowerBound...]
         let functionEnd = try #require(functionSuffix.range(
-            of: "\n    private func completeQuickListAddition("
+            of: "\n    private func completeQuickListMutation("
         ))
         let functionSource = String(functionSuffix[..<functionEnd.lowerBound])
-        let promptStart = try #require(source.range(of: "private func promptForQuickListFile("))
-        let promptSuffix = source[promptStart.lowerBound...]
-        let promptEnd = try #require(promptSuffix.range(of: "\n    private func createQuickListFile("))
-        let promptSource = String(promptSuffix[..<promptEnd.lowerBound])
 
         #expect(source.contains("@State private var quickListCreationTask: Task<Void, Never>?"))
         #expect(source.contains("@State private var quickListCreationRequestID: UUID?"))
         #expect(functionSource.contains("cancelQuickListCreation()"))
-        #expect(functionSource.contains("try await QuickListFileCreationService.shared.createIfNeeded("))
+        // The managed file is created on first use once the storage route is settled.
+        #expect(functionSource.contains("createDestinationIfMissing: KeywordListsStore.shared.isSettledRoute(destinationURL)"))
         #expect(functionSource.contains("guard quickListCreationRequestID == requestID else { return }"))
+        // Failures are surfaced to the user, not only logged.
+        #expect(functionSource.contains("viewModel.notice = MetadataPanelNotice("))
         #expect(source.range(of: #"\.onDisappear\s*\{[^}]*\bcancelQuickListCreation\(\)"#,
             options: .regularExpression) != nil)
         #expect(source.contains("private func cancelQuickListCreation()"))
         #expect(source.contains("quickListCreationTask?.cancel()"))
-        #expect(!promptSource.contains("FileManager.default.fileExists"))
-        #expect(!promptSource.contains(".write(to:"))
+        // No external save panel or direct file creation on first use.
+        #expect(!source.contains("NSSavePanel()"))
+        #expect(!source.contains("FileManager.default.fileExists"))
     }
 }
 
@@ -1381,7 +1389,7 @@ private nonisolated final class BlockingQuickListFileAccessProbe: @unchecked Sen
         condition.broadcast()
         if checkCount == 1 {
             while !firstCheckReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeChecks -= 1

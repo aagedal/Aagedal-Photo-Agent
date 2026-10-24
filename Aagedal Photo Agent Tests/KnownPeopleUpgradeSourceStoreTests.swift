@@ -19,13 +19,13 @@ struct KnownPeopleUpgradeSourceStoreTests {
     @Test func oldICloudConsentDoesNotUploadNewCrops() async throws {
         let retainKey = UserDefaultsKeys.knownPeopleRetainUpgradeSources
         let consentKey = UserDefaultsKeys.knownPeopleICloudConsentVersion
-        let oldRetain = UserDefaults.standard.object(forKey: retainKey)
-        let oldConsent = UserDefaults.standard.object(forKey: consentKey)
+        let oldRetain = AppDefaults.store.object(forKey: retainKey)
+        let oldConsent = AppDefaults.store.object(forKey: consentKey)
         defer {
-            if let oldRetain { UserDefaults.standard.set(oldRetain, forKey: retainKey) }
-            else { UserDefaults.standard.removeObject(forKey: retainKey) }
-            if let oldConsent { UserDefaults.standard.set(oldConsent, forKey: consentKey) }
-            else { UserDefaults.standard.removeObject(forKey: consentKey) }
+            if let oldRetain { AppDefaults.store.set(oldRetain, forKey: retainKey) }
+            else { AppDefaults.store.removeObject(forKey: retainKey) }
+            if let oldConsent { AppDefaults.store.set(oldConsent, forKey: consentKey) }
+            else { AppDefaults.store.removeObject(forKey: consentKey) }
         }
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
             "CropConsent-\(UUID().uuidString)/\(AppPaths.iCloudContainerID)/Documents",
@@ -34,8 +34,8 @@ struct KnownPeopleUpgradeSourceStoreTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent.deletingLastPathComponent().deletingLastPathComponent()) }
         let id = UUID()
-        UserDefaults.standard.set(true, forKey: retainKey)
-        UserDefaults.standard.set(1, forKey: consentKey)
+        AppDefaults.store.set(true, forKey: retainKey)
+        AppDefaults.store.set(1, forKey: consentKey)
         #expect(try await KnownPeopleUpgradeSourceStore().saveIfEnabled(
             [id: cropJPEG()], admittedIDs: [id], knownPeopleRoot: root) == 0)
         #expect(!FileManager.default.fileExists(atPath:
@@ -59,10 +59,10 @@ struct KnownPeopleUpgradeSourceStoreTests {
 
     @Test func optInIsRequiredAndRemovalKeepsTheManagedGallery() async throws {
         let key = UserDefaultsKeys.knownPeopleRetainUpgradeSources
-        let oldValue = UserDefaults.standard.object(forKey: key)
+        let oldValue = AppDefaults.store.object(forKey: key)
         defer {
-            if let oldValue { UserDefaults.standard.set(oldValue, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let oldValue { AppDefaults.store.set(oldValue, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "UpgradeSourcesTest-\(UUID().uuidString)", isDirectory: true)
@@ -77,12 +77,12 @@ struct KnownPeopleUpgradeSourceStoreTests {
         let imageURL = KnownPeopleUpgradeSourceStore.imageURL(for: id, knownPeopleRoot: root)
         #expect(imageURL.path != root.appendingPathComponent("upgrade_sources/\(id.uuidString).jpg").path)
 
-        UserDefaults.standard.set(false, forKey: key)
+        AppDefaults.store.set(false, forKey: key)
         #expect(try await store.saveIfEnabled([id: data], admittedIDs: [id],
             knownPeopleRoot: root) == 0)
         #expect(!FileManager.default.fileExists(atPath: imageURL.path))
 
-        UserDefaults.standard.set(true, forKey: key)
+        AppDefaults.store.set(true, forKey: key)
         #expect(try await store.saveIfEnabled([id: data, excluded: data], admittedIDs: [id],
             knownPeopleRoot: root) == 1)
         #expect(try Data(contentsOf: imageURL) == data)
@@ -98,7 +98,7 @@ struct KnownPeopleUpgradeSourceStoreTests {
         #expect(FileManager.default.fileExists(atPath: root.path))
 
         _ = try await store.saveIfEnabled([id: data], admittedIDs: [id], knownPeopleRoot: root)
-        UserDefaults.standard.set(false, forKey: key)
+        AppDefaults.store.set(false, forKey: key)
         try await store.clear(knownPeopleRoot: root)
         #expect(!FileManager.default.fileExists(atPath: imageURL.path))
         #expect(try await store.read(id, knownPeopleRoot: root) == nil)
@@ -107,10 +107,10 @@ struct KnownPeopleUpgradeSourceStoreTests {
 
     @Test func replacementPrunesOnlyUnreferencedOwnedCrops() async throws {
         let key = UserDefaultsKeys.knownPeopleRetainUpgradeSources
-        let oldValue = UserDefaults.standard.object(forKey: key)
+        let oldValue = AppDefaults.store.object(forKey: key)
         defer {
-            if let oldValue { UserDefaults.standard.set(oldValue, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let oldValue { AppDefaults.store.set(oldValue, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "UpgradePruneTest-\(UUID().uuidString)", isDirectory: true)
@@ -122,7 +122,7 @@ struct KnownPeopleUpgradeSourceStoreTests {
         let store = KnownPeopleUpgradeSourceStore()
         let retained = UUID(), removed = UUID()
         let data = try cropJPEG()
-        UserDefaults.standard.set(true, forKey: key)
+        AppDefaults.store.set(true, forKey: key)
         _ = try await store.saveIfEnabled([retained: data, removed: data],
             admittedIDs: [retained, removed], knownPeopleRoot: root)
         try await store.pruneUnreferenced(admittedIDs: [retained], knownPeopleRoot: root)
@@ -133,10 +133,10 @@ struct KnownPeopleUpgradeSourceStoreTests {
 
     @Test func clearingOneStorageRouteKeepsAnotherRoutesCrops() async throws {
         let key = UserDefaultsKeys.knownPeopleRetainUpgradeSources
-        let oldValue = UserDefaults.standard.object(forKey: key)
+        let oldValue = AppDefaults.store.object(forKey: key)
         defer {
-            if let oldValue { UserDefaults.standard.set(oldValue, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let oldValue { AppDefaults.store.set(oldValue, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
             "UpgradeRoutesTest-\(UUID().uuidString)", isDirectory: true)
@@ -151,7 +151,7 @@ struct KnownPeopleUpgradeSourceStoreTests {
         }
         let store = KnownPeopleUpgradeSourceStore()
         let id = UUID(), data = try cropJPEG()
-        UserDefaults.standard.set(true, forKey: key)
+        AppDefaults.store.set(true, forKey: key)
         _ = try await store.saveIfEnabled([id: data], admittedIDs: [id], knownPeopleRoot: first)
         _ = try await store.saveIfEnabled([id: data], admittedIDs: [id], knownPeopleRoot: second)
         try await store.clear(knownPeopleRoot: first)

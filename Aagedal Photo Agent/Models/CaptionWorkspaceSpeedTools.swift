@@ -4,6 +4,7 @@ import Foundation
 nonisolated struct CaptionConfirmedPerson: Identifiable, Equatable, Sendable {
     let id: UUID
     let name: String
+    /// Vision-normalized, in the display-oriented (sidecar-first) frame of the full photo.
     let normalizedFaceRect: CGRect
 }
 
@@ -11,10 +12,15 @@ nonisolated struct CaptionConfirmedPerson: Identifiable, Equatable, Sendable {
 /// Unnamed clusters, suggestion-only matches, number-only detections, and malformed rectangles
 /// are intentionally absent: the caption UI must never imply certainty that the face system did
 /// not persist.
+///
+/// Stored face rects are in the file-tag frame; `orientation` maps them into the displayed
+/// (sidecar-first) frame *before* ordering, so "left to right" means left to right as the
+/// user sees the photo, and the returned `normalizedFaceRect`s are display-oriented.
 nonisolated enum CaptionConfirmedPersonOrdering {
     static func people(
         for imageURL: URL,
-        in faceData: FolderFaceData?
+        in faceData: FolderFaceData?,
+        orientation: FaceDisplayOrientation
     ) -> [CaptionConfirmedPerson] {
         guard let faceData else { return [] }
         let namesByGroup = Dictionary(uniqueKeysWithValues: faceData.groups.compactMap { group in
@@ -31,7 +37,7 @@ nonisolated enum CaptionConfirmedPersonOrdering {
             return CaptionConfirmedPerson(
                 id: face.id,
                 name: name,
-                normalizedFaceRect: face.faceRect
+                normalizedFaceRect: orientation.displayRect(forFileRect: face.faceRect)
             )
         }
         .sorted { lhs, rhs in
@@ -165,6 +171,63 @@ nonisolated enum CaptionPreviewGeometry {
             width: size.width,
             height: size.height
         )
+    }
+
+    /// Maps a face rect (Vision-normalized, bottom-left origin, in the full display-oriented
+    /// image) into the frame of a preview rendered with `crop`, replicating the crop + straighten
+    /// geometry `CameraRawApproximation.applyCrop` bakes into the pixels (the same math as the
+    /// full-screen face overlay). A straightened face becomes the bounding box of its rotated
+    /// corners. Returns nil when the face's centre falls outside the crop.
+    static func croppedVisionRect(
+        _ rect: CGRect,
+        crop: CameraRawCrop?,
+        displayOrientation: Int,
+        renderedSize: CGSize
+    ) -> CGRect? {
+        guard let crop, crop.isEffectiveCrop,
+              renderedSize.width > 0, renderedSize.height > 0 else { return rect }
+        let dc = crop.transformedForDisplay(orientation: displayOrientation)
+        let left = min(dc.left ?? 0, dc.right ?? 1)
+        let right = max(dc.left ?? 0, dc.right ?? 1)
+        let top = min(dc.top ?? 0, dc.bottom ?? 1)
+        let bottom = max(dc.top ?? 0, dc.bottom ?? 1)
+        let fracW = right - left
+        let fracH = bottom - top
+        guard fracW > 0.0001, fracH > 0.0001 else { return rect }
+
+        // The renderer outputs fracW·Wf × fracH·Hf pixels, so the full-image size follows
+        // from the rendered (cropped) size; only the aspect ratio matters.
+        let cropW = renderedSize.width
+        let cropH = renderedSize.height
+        let wf = cropW / fracW
+        let hf = cropH / fracH
+        let cx = wf / 2, cy = hf / 2
+        let theta = (dc.angle ?? 0) * .pi / 180.0
+        let cosT = cos(theta), sinT = sin(theta)
+        let cropCenterX = (left * wf) + cropW / 2
+        let cropCenterY = ((1 - bottom) * hf) + cropH / 2
+        let rcx = cropCenterX - cx, rcy = cropCenterY - cy
+        let cropOriginX = cx + rcx * cosT - rcy * sinT - cropW / 2
+        let cropOriginY = cy + rcx * sinT + rcy * cosT - cropH / 2
+
+        let corners = [
+            CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.maxX, y: rect.minY), CGPoint(x: rect.minX, y: rect.minY),
+        ].map { p -> CGPoint in
+            let dx = p.x * wf - cx, dy = p.y * hf - cy
+            let rx = cx + dx * cosT - dy * sinT
+            let ry = cy + dx * sinT + dy * cosT
+            return CGPoint(x: (rx - cropOriginX) / cropW, y: (ry - cropOriginY) / cropH)
+        }
+        let xs = corners.map(\.x), ys = corners.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minY = ys.min(), let maxY = ys.max() else { return nil }
+        let bounds = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
+        guard unit.contains(CGPoint(x: bounds.midX, y: bounds.midY)) else { return nil }
+        let clipped = bounds.intersection(unit)
+        guard !clipped.isNull, clipped.width > 0, clipped.height > 0 else { return nil }
+        return clipped
     }
 
     static func displayRect(forVisionRect rect: CGRect, in imageRect: CGRect) -> CGRect {

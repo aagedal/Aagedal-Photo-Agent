@@ -96,10 +96,42 @@ extension C2PAAction {
             }
         }
 
+        // Anonymizer redaction (face blur / Black Out). Recorded as an edit with a description:
+        // `c2pa.redacted` is reserved for removing assertions from an ingredient manifest.
+        if settings.hasActiveRedaction {
+            actions.append(C2PAAction(
+                action: "c2pa.edited",
+                softwareAgent: claimGenerator,
+                description: C2PAAction.redactionDescription
+            ))
+        }
+
         // General edited action
         actions.append(C2PAAction(action: "c2pa.edited", softwareAgent: claimGenerator))
 
         return actions
+    }
+}
+
+extension C2PAAction {
+    nonisolated static let redactionDescription =
+        "Regions redacted (Anonymizer blur/black-out); the unredacted source credential is not embedded"
+}
+
+/// How a rendered photo is signed. A camera-signed source is normally linked as the parent
+/// ingredient (preserving its provenance chain), but that embeds the source's manifest and claim
+/// thumbnail — the unredacted original. When the render redacts anything, the parent is omitted.
+nonisolated enum C2PARenderSigningMode: Equatable, Sendable {
+    /// No prior credential: plain first-time signing.
+    case sign
+    /// Camera-signed source and no redaction: link the source credential as parent ingredient.
+    case signWithParentIngredient
+    /// Camera-signed source whose render redacts pixels: plain signing, parent never embedded.
+    case signOmittingRedactedParent
+
+    static func forRender(sourceHasC2PA: Bool, renderedSettings: CameraRawSettings?) -> Self {
+        guard sourceHasC2PA else { return .sign }
+        return renderedSettings?.hasActiveRedaction == true ? .signOmittingRedactedParent : .signWithParentIngredient
     }
 }
 
@@ -434,12 +466,11 @@ nonisolated enum C2PASigningService {
         let imagePath = imageURL.path(percentEncoded: false)
 
         // c2patool <input> -m <manifest.json> -o <output> -f
-        let arguments = [
-            imagePath,
-            "-m", manifestFile.path(percentEncoded: false),
-            "-o", outputFile.path(percentEncoded: false),
-            "-f",
-        ]
+        let arguments = signArguments(
+            imagePath: imagePath,
+            manifestPath: manifestFile.path(percentEncoded: false),
+            outputPath: outputFile.path(percentEncoded: false)
+        )
 
         logger.info("Signing: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
 
@@ -552,13 +583,12 @@ nonisolated enum C2PASigningService {
 
         // Step 3: Sign with parent ingredient
         // c2patool <input> -m <manifest.json> -p <ingredient_dir> -o <output> -f
-        let signArguments = [
-            imagePath,
-            "-m", manifestFile.path(percentEncoded: false),
-            "-p", ingredientDir.path(percentEncoded: false),
-            "-o", outputFile.path(percentEncoded: false),
-            "-f",
-        ]
+        let signArguments = Self.signArguments(
+            imagePath: imagePath,
+            manifestPath: manifestFile.path(percentEncoded: false),
+            outputPath: outputFile.path(percentEncoded: false),
+            parentIngredientDirectoryPath: ingredientDir.path(percentEncoded: false)
+        )
 
         logger.info("Re-signing with history: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
 
@@ -639,7 +669,10 @@ nonisolated enum C2PASigningService {
         do {
             _ = try await Process.run(
                 executableURL: URL(fileURLWithPath: toolPath),
-                arguments: [parentURL.path(percentEncoded: false), "--ingredient", "-o", ingredientDir.path(percentEncoded: false)]
+                arguments: ingredientExtractionArguments(
+                    parentPath: parentURL.path(percentEncoded: false),
+                    ingredientDirectoryPath: ingredientDir.path(percentEncoded: false)
+                )
             )
         } catch {
             let message = error.localizedDescription
@@ -668,13 +701,12 @@ nonisolated enum C2PASigningService {
 
         // Step 3: Sign rendered output with parent ingredient
         let imagePath = imageURL.path(percentEncoded: false)
-        let signArguments = [
-            imagePath,
-            "-m", manifestFile.path(percentEncoded: false),
-            "-p", ingredientDir.path(percentEncoded: false),
-            "-o", outputFile.path(percentEncoded: false),
-            "-f",
-        ]
+        let signArguments = Self.signArguments(
+            imagePath: imagePath,
+            manifestPath: manifestFile.path(percentEncoded: false),
+            outputPath: outputFile.path(percentEncoded: false),
+            parentIngredientDirectoryPath: ingredientDir.path(percentEncoded: false)
+        )
 
         logger.info("Signing rendered image with parent ingredient: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
 
@@ -718,6 +750,33 @@ nonisolated enum C2PASigningService {
         }
 
         logger.info("Signed with parent ingredient: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
+    }
+
+    // MARK: - c2patool arguments
+
+    /// `c2patool <input> -m <manifest> [-p <parent ingredient dir>] -o <output> -f`. Only the
+    /// parent-ingredient path passes `-p`; plain signing never references another file.
+    nonisolated static func signArguments(
+        imagePath: String,
+        manifestPath: String,
+        outputPath: String,
+        parentIngredientDirectoryPath: String? = nil
+    ) -> [String] {
+        var arguments = [imagePath, "-m", manifestPath]
+        if let parentIngredientDirectoryPath {
+            arguments += ["-p", parentIngredientDirectoryPath]
+        }
+        arguments += ["-o", outputPath, "-f"]
+        return arguments
+    }
+
+    /// `c2patool <parent> --ingredient -o <dir>`: extracts the parent's manifest store and
+    /// thumbnail so a new signature can embed them.
+    nonisolated static func ingredientExtractionArguments(
+        parentPath: String,
+        ingredientDirectoryPath: String
+    ) -> [String] {
+        [parentPath, "--ingredient", "-o", ingredientDirectoryPath]
     }
 
     // MARK: - Manifest Builder

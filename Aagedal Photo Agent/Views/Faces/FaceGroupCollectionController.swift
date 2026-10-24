@@ -62,6 +62,18 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         }
     }
 
+    /// Set once SwiftUI dismantles the hosting representable; stops observation immediately.
+    private(set) var isTornDown = false
+
+    func tearDown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+        for task in observationTasks {
+            task.cancel()
+        }
+        observationTasks.removeAll()
+    }
+
     // MARK: - View Lifecycle
 
     override func loadView() {
@@ -151,21 +163,17 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
 
     private func startObservation() {
         // 1. Data loop — watch sortedGroups and faceData
+        // Capture the view model, not `self`, across the suspension so a dismantled controller
+        // can deallocate instead of being pinned until the next face-data change.
+        let viewModel = self.viewModel
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                _ = await withCheckedContinuation { continuation in
-                    withObservationTracking {
-                        _ = self.viewModel.sortedGroups
-                        _ = self.viewModel.faceData
-                        _ = self.viewModel.sortMode
-                    } onChange: {
-                        Task { @MainActor in
-                            continuation.resume(returning: ())
-                        }
-                    }
+                await awaitObservationChange {
+                    _ = viewModel.sortedGroups
+                    _ = viewModel.faceData
+                    _ = viewModel.sortMode
                 }
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, let self, !self.isTornDown else { return }
                 self.applyDataUpdate()
             }
         })
@@ -187,7 +195,7 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
             _ = self.selectionState.draggedFaceIDs
         } onChange: { [weak self] in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, !self.isTornDown else { return }
                 self.collectionView.refreshVisibleSelections()
                 self.observeSelection()
             }
@@ -200,7 +208,7 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         } onChange: { [weak self] in
             // Delay slightly to let any popover dismissal finish before scrolling
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                guard let self else { return }
+                guard let self, !self.isTornDown else { return }
                 if let groupID = self.selectionState.scrollToGroupID {
                     self.selectionState.scrollToGroupID = nil
                     self.scrollToGroup(groupID)

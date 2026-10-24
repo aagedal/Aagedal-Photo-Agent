@@ -14,9 +14,11 @@ struct ColorLabelFilterBar: View {
     var body: some View {
         HStack(spacing: circleSpacing) {
             ForEach(allLabels, id: \.self) { label in
-                colorCircle(for: label)
+                accessibilityChip(for: label)
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Color label filter")
         .contentShape(Rectangle())
         .coordinateSpace(name: "colorBar")
         .gesture(
@@ -60,19 +62,34 @@ struct ColorLabelFilterBar: View {
                 )
                 .help(label.displayName)
         } else {
-            // "None" label — hollow circle
+            // "None" label — hollow circle. Semantic colour so it shows in light mode too.
             Circle()
-                .fill(isActive ? Color.white : Color.clear)
+                .fill(isActive ? Color.primary : Color.clear)
                 .frame(width: circleSize, height: circleSize)
                 .overlay(
                     Circle()
                         .strokeBorder(
-                            isActive ? Color.white : Color.white.opacity(0.4),
+                            isActive ? Color.primary : Color.primary.opacity(0.4),
                             lineWidth: isActive ? 0 : 1
                         )
                 )
                 .help("None")
         }
+    }
+
+    /// The drag gesture is pointer-only; expose each chip as a toggle for VoiceOver.
+    private func accessibilityChip(for label: ColorLabel) -> some View {
+        colorCircle(for: label)
+            .accessibilityElement()
+            .accessibilityLabel("\(label.displayName) label filter")
+            .accessibilityAddTraits(selectedLabels.contains(label) ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction {
+                if selectedLabels.contains(label) {
+                    selectedLabels.remove(label)
+                } else {
+                    selectedLabels.insert(label)
+                }
+            }
     }
 
     private func labelAt(x: CGFloat) -> ColorLabel? {

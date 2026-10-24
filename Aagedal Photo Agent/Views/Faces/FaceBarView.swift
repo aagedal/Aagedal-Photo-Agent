@@ -5,7 +5,8 @@ struct FaceBarView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     @ObservedObject private var auraFaceComponent = AuraFaceComponentManager.shared
     let folderURL: URL?
-    let images: [ImageFile]
+    /// Read lazily (only by actions) so the bar does not depend on every row edit.
+    let images: () -> [ImageFile]
     let settingsViewModel: SettingsViewModel
     var isExpanded: Bool = false
     var selectionState: FaceSelectionState?  // Passed from expanded view for drag detection
@@ -35,7 +36,7 @@ struct FaceBarView: View {
     private let barHeight: CGFloat = 100
 
     private var imageURLs: [URL] {
-        images.map(\.url)
+        images().map(\.url)
     }
 
     private var isScanningCurrentFolder: Bool {
@@ -131,7 +132,7 @@ struct FaceBarView: View {
     private var expandedBar: some View {
         let namedGroups = viewModel.namedGroups
         let unnamedGroups = viewModel.unnamedGroups
-        let canApplyAllNames = viewModel.scanComplete && !namedGroups.isEmpty && !isApplyingAllNames
+        let canApplyAllNames = viewModel.canApplyAllNames && !isScanningCurrentFolder && !isApplyingAllNames
 
         HStack(spacing: 6) {
             // Scan button (rescan/reset lives in its context menu and the expanded view's overflow menu)
@@ -552,7 +553,10 @@ struct FaceBarView: View {
         .buttonStyle(.plain)
         .onHover { isHoveringDone = $0 }
         .accessibilityIdentifier("face.scanComplete")
-        .help("Scan faces in new images without jersey OCR. Option+click to force a full face rescan.")
+        .disabled(viewModel.isScanning)
+        .help(viewModel.isScanning
+              ? "Another folder is being face-scanned. Follow or cancel it in Activity."
+              : "Scan faces in new images without jersey OCR. Option+click to force a full face rescan.")
         .contextMenu { rescanMenuItems }
     }
 
@@ -566,6 +570,7 @@ struct FaceBarView: View {
             guard let folderURL else { return }
             viewModel.scanFolder(imageURLs: imageURLs.filter { SupportedImageFormats.isSupported(url: $0) }, folderURL: folderURL, forceFullScan: true)
         }
+        .disabled(viewModel.isScanning)
         Button("Delete Face Data", role: .destructive) {
             guard let folderURL else { return }
             viewModel.deleteFaceData(for: folderURL)
@@ -595,7 +600,7 @@ struct FaceBarView: View {
     private func applyAllNamesToMetadata() {
         guard !isApplyingAllNames else { return }
         isApplyingAllNames = true
-        viewModel.applyAllNamesToMetadata(images: images, folderURL: folderURL) {
+        viewModel.applyAllNamesToMetadata(images: images(), folderURL: folderURL) {
             isApplyingAllNames = false
         }
     }

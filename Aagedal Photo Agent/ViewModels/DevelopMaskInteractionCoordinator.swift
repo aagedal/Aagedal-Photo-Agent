@@ -10,6 +10,10 @@ struct DevelopLayerGeometryProjection: Equatable {
     var displayImageSize: CGSize
     var crop: NormalizedCropRegion
     var straightenAngle: Double
+    /// Display-UV point the preview rotates the straighten angle around. A confirmed crop renders
+    /// through the Metal crop viewport, whose shader pivots on the viewport centre (the crop
+    /// centre, shifted by any pan); the frame centre is used where no crop viewport applies.
+    var straightenPivot: CGPoint
     var zoomScale: CGFloat
 
     init(
@@ -17,12 +21,14 @@ struct DevelopLayerGeometryProjection: Equatable {
         displayImageSize: CGSize = .zero,
         crop: NormalizedCropRegion = .full,
         straightenAngle: Double = 0,
+        straightenPivot: CGPoint = CGPoint(x: 0.5, y: 0.5),
         zoomScale: CGFloat = 1
     ) {
         self.orientation = orientation
         self.displayImageSize = displayImageSize
         self.crop = crop
         self.straightenAngle = straightenAngle
+        self.straightenPivot = straightenPivot
         self.zoomScale = zoomScale
     }
 
@@ -204,7 +210,8 @@ final class DevelopLayerGeometryInteractionCoordinator {
         }
         return result.rotatedInDisplay(
             byDegrees: -projection.straightenAngle,
-            aspect: projection.displayAspect
+            aspect: projection.displayAspect,
+            around: projection.straightenPivot
         )
     }
 
@@ -215,7 +222,8 @@ final class DevelopLayerGeometryInteractionCoordinator {
     ) -> EllipseMaskGeometry {
         var result = geometry.rotatedInDisplay(
             byDegrees: projection.straightenAngle,
-            aspect: projection.displayAspect
+            aspect: projection.displayAspect,
+            around: projection.straightenPivot
         )
         if projection.orientation > 1 {
             result = result.transformedForSensor(
@@ -284,7 +292,8 @@ final class DevelopLayerGeometryInteractionCoordinator {
         marker.centerY = Double(point.y)
         marker = marker.rotatedInDisplay(
             byDegrees: projection.straightenAngle,
-            aspect: projection.displayAspect
+            aspect: projection.displayAspect,
+            around: projection.straightenPivot
         )
         return CGPoint(
             x: min(max(marker.centerX, 0), 1),

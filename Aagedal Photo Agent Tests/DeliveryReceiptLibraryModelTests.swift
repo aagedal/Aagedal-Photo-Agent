@@ -399,7 +399,7 @@ private nonisolated final class BlockingReceiptSummaryWriter: @unchecked Sendabl
         condition.broadcast()
         if writeCount == 1 {
             while !firstWriteReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeWrites -= 1
@@ -411,6 +411,8 @@ private nonisolated final class BlockingReceiptSummaryWriter: @unchecked Sendabl
         let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstWrite()
                 throw ReceiptSummaryWriterProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -626,9 +628,9 @@ private func makeActivityReceipt(
     switch remoteStatus {
     case .notRequested:
         remoteAcknowledgement = DeliveryRemoteStatAcknowledgement(status: .notRequested)
-    case .unavailable:
+    case .unavailable, .notVisibleAfterUpload:
         remoteAcknowledgement = DeliveryRemoteStatAcknowledgement(
-            status: .unavailable,
+            status: remoteStatus,
             checkedAt: completedAt.addingTimeInterval(-4)
         )
     case .matchesDeliveredByteSize:

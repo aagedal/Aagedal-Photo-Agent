@@ -25,8 +25,28 @@ nonisolated struct DevelopTemplateBatchCapture: Sendable {
 /// caller must separately retain this exact intent and authenticate consent before execution.
 /// Synchronous parsing/decoding should run off the main actor.
 nonisolated struct DevelopTemplateBatchCaptureService: Sendable {
-    enum Failure: Error, Equatable, Sendable {
+    enum Failure: LocalizedError, Equatable, Sendable {
         case invalidSelection, invalidTemplateRevision, metadataConflict, pendingOrientation, byteLimit
+        /// The non-RAW half of a RAW+JPEG pair: its stem `.xmp` develop block belongs to the RAW.
+        case sharedRawSidecar
+
+        var errorDescription: String? {
+            switch self {
+            case .sharedRawSidecar:
+                return DevelopTemplateBatchCaptureService.sharedRawSidecarMessage
+            case .invalidSelection, .invalidTemplateRevision, .metadataConflict, .pendingOrientation, .byteLimit:
+                return nil
+            }
+        }
+    }
+
+    static let sharedRawSidecarMessage = "The JPEG of a RAW+JPEG pair keeps its Develop settings in the file itself, "
+        + "while template reviews write the shared XMP sidecar, whose develop settings belong to the RAW. "
+        + "Apply the template to the RAW, or edit the JPEG in Develop."
+
+    /// The paired JPEGs among `photos`; the native review skips and reports them.
+    static func pairedNonRawPhotos(in photos: [URL]) -> [URL] {
+        photos.filter { PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: $0) }
     }
     typealias Decoder = @Sendable (Data, URL) throws -> MCPDevelopTemplatePreview.DecoderState
     let facade: MCPAutomationFacade
@@ -52,6 +72,11 @@ nonisolated struct DevelopTemplateBatchCaptureService: Sendable {
         for photo in photos {
             let key = photo.standardizedFileURL.resolvingSymlinksInPath().deletingPathExtension().path.lowercased()
             guard identities.insert(key).inserted else { throw DevelopTemplateBatchFailure.duplicatePhoto }
+            // The rooted writer publishes the stem `.xmp`; for a RAW+JPEG pair's JPEG that would
+            // overwrite the RAW's Camera Raw settings (Adobe: the JPEG's develop is embedded).
+            guard !PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: photo) else {
+                throw Failure.sharedRawSidecar
+            }
         }
         try Task.checkCancellation()
         let authorizationConfiguration = try facade.authorizationStore.load()

@@ -6,12 +6,21 @@ final class ThumbnailCollectionView: NSCollectionView {
     weak var viewModel: BrowserViewModel?
     weak var commandRouter: AppCommandRouter?
 
-    /// Fired on mouseDown so the split-view container can mark this pane active.
+    /// Fired on mouseDown, right-click, keyboard focus and key presses so the split-view
+    /// container can mark this pane active. App commands (ratings, labels, context-menu
+    /// actions) and the full-screen viewer act on the active pane.
     var onFocus: (() -> Void)?
+    /// Whether this grid's pane is the active split pane (kept current by the controller).
+    var isActivePane = true
     var onExtractVideoStills: ((URL) -> Void)?
     var onImproveDescriptions: (() -> Void)?
 
     private var isDragging = false
+    /// Set at drag start when the dragged photos may not leave the app as original files
+    /// (Anonymizer redactions, settings not loaded yet, or the unredacted JPEG of a redacted
+    /// RAW). Drops onto other apps are refused; in-app moves stay allowed.
+    private var outsideDragBlockMessage: String?
+    private var outsideDragWasRefused = false
     private var mouseDownLocation: NSPoint?
     private var dropIndicatorLayer: CALayer?
     private var pendingReorderTarget: URL?
@@ -88,7 +97,11 @@ final class ThumbnailCollectionView: NSCollectionView {
     override var acceptsFirstResponder: Bool { true }
 
     override func becomeFirstResponder() -> Bool {
-        super.becomeFirstResponder()
+        let accepted = super.becomeFirstResponder()
+        // Keyboard focus reaching an inactive pane (Tab, accessibility) activates it, so the
+        // shortcuts typed next act on the photos this grid shows.
+        if accepted, !isActivePane { onFocus?() }
+        return accepted
     }
 
     override func resignFirstResponder() -> Bool {
@@ -147,12 +160,18 @@ final class ThumbnailCollectionView: NSCollectionView {
         guard !urls.isEmpty else { return }
         isDragging = true
 
-        // Switch to manual sort on first drag
-        if viewModel.sortOrder != .manual {
-            viewModel.initializeManualOrder(from: viewModel.sortedImages)
-            viewModel.sortOrder = .manual
-        }
+        // Sort switches to Manual only when the drop actually reorders inside the grid
+        // (see reorderDraggedItems); drags to Finder, Mail, or a sidebar folder keep it.
         viewModel.draggedImageURLs = Set(urls)
+        outsideDragBlockMessage = RedactionPrivacyGuard.outsideDragDecision(
+            for: urls.compactMap { viewModel.image(at: $0) },
+            candidates: viewModel.images
+        ).message
+        outsideDragWasRefused = false
+        if outsideDragBlockMessage == RedactionPrivacyGuard.dragPendingMessage {
+            // Settings not read yet: this drag is refused, but read them now so the next works.
+            viewModel.ensureDevelopSettingsLoaded(for: urls, limit: 200)
+        }
 
         let items = makeDraggingItems(for: urls)
         beginDraggingSession(with: items, event: event, source: self)
@@ -207,7 +226,7 @@ final class ThumbnailCollectionView: NSCollectionView {
                 newIDs = updated
                 newActive = url
             } else if modifiers.contains(.shift) {
-                let anchor = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first
+                let anchor = viewModel.shiftSelectionAnchorURL
                 if let anchor,
                    let anchorIndex = viewModel.urlToVisibleIndex[anchor],
                    let currentIndex = viewModel.urlToVisibleIndex[url] {
@@ -226,9 +245,10 @@ final class ThumbnailCollectionView: NSCollectionView {
                 newActive = url
             }
 
+            let extending = modifiers.contains(.shift) && !modifiers.contains(.command)
             refreshVisibleSelections(selectedIDs: newIDs, activeURL: newActive)
             DispatchQueue.main.async { [weak viewModel] in
-                viewModel?.applySelection(ids: newIDs, active: newActive)
+                viewModel?.applySelection(ids: newIDs, active: newActive, extending: extending)
             }
         }
     }
@@ -240,6 +260,10 @@ final class ThumbnailCollectionView: NSCollectionView {
             super.keyDown(with: event)
             return
         }
+        // Culling keys route through the app command router to the active pane, and Space
+        // opens the full-screen viewer only for the active pane: the pane with keyboard
+        // focus must be that pane.
+        if !isActivePane { onFocus?() }
 
         let shift = event.modifierFlags.contains(.shift)
         let cmd = event.modifierFlags.contains(.command)
@@ -269,7 +293,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
-            viewModel.applySelection(ids: sel.ids, active: sel.active)
+            viewModel.applySelection(ids: sel.ids, active: sel.active, extending: shift)
         case 124: // Right arrow
             guard let sel = viewModel.computeNextSelection(extending: shift) else { break }
             if !shift, let newActive = sel.active {
@@ -277,7 +301,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
-            viewModel.applySelection(ids: sel.ids, active: sel.active)
+            viewModel.applySelection(ids: sel.ids, active: sel.active, extending: shift)
         case 125: // Down arrow
             guard let sel = viewModel.computeDownSelection(columns: columnCount, extending: shift) else { break }
             if !shift, let newActive = sel.active {
@@ -285,7 +309,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
-            viewModel.applySelection(ids: sel.ids, active: sel.active)
+            viewModel.applySelection(ids: sel.ids, active: sel.active, extending: shift)
         case 126: // Up arrow
             guard let sel = viewModel.computeUpSelection(columns: columnCount, extending: shift) else { break }
             if !shift, let newActive = sel.active {
@@ -293,7 +317,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
-            viewModel.applySelection(ids: sel.ids, active: sel.active)
+            viewModel.applySelection(ids: sel.ids, active: sel.active, extending: shift)
         case 49: // Space
             // Only handle when no text field is focused
             guard viewModel.firstSelectedImage != nil else {
@@ -341,6 +365,9 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let viewModel else { return nil }
+        // Menu actions route through the command router to the active pane; activate this
+        // pane first so they never hit the other pane's selection.
+        onFocus?()
 
         let location = convert(event.locationInWindow, from: nil)
 
@@ -355,7 +382,9 @@ final class ThumbnailCollectionView: NSCollectionView {
             }
         }
 
+        // Items carry explicit enablement; AppKit auto-validation would ignore isEnabled.
         let menu = NSMenu()
+        menu.autoenablesItems = false
 
         // Reveal in Finder
         let revealItem = NSMenuItem(title: "Reveal in Finder", action: #selector(contextRevealInFinder(_:)), keyEquivalent: "")
@@ -374,7 +403,7 @@ final class ThumbnailCollectionView: NSCollectionView {
         }
 
         // Open in External Editor
-        if let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
+        if let editorPath = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor),
            !editorPath.isEmpty {
             let editorItem = NSMenuItem(title: "Open in External Editor", action: #selector(contextOpenInExternalEditor(_:)), keyEquivalent: "")
             editorItem.target = self
@@ -416,6 +445,7 @@ final class ThumbnailCollectionView: NSCollectionView {
 
         // Rating submenu
         let ratingMenu = NSMenu()
+        ratingMenu.autoenablesItems = false
         for rating in StarRating.allCases {
             let title = rating == .none ? "No Rating" : rating.displayString
             let ratingItem = NSMenuItem(title: title, action: #selector(contextSetRating(_:)), keyEquivalent: "")
@@ -429,6 +459,7 @@ final class ThumbnailCollectionView: NSCollectionView {
 
         // Label submenu
         let labelMenu = NSMenu()
+        labelMenu.autoenablesItems = false
         for label in ColorLabel.allCases {
             let labelItem = NSMenuItem(title: label.displayName, action: #selector(contextSetLabel(_:)), keyEquivalent: "")
             labelItem.target = self
@@ -463,6 +494,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             .count
         if rawSelectionCount > 0 {
             let archiveMenu = NSMenu()
+            archiveMenu.autoenablesItems = false
             let discovery = AdobeDNGDiscoveryStore.shared
             discovery.refreshInBackground()
             // Unknown availability remains actionable; the action awaits a fresh probe.
@@ -543,6 +575,12 @@ final class ThumbnailCollectionView: NSCollectionView {
         deleteItem.target = self
         menu.addItem(deleteItem)
 
+        // Every grid action works on the selection; a right-click on empty space with
+        // nothing selected shows the menu disabled rather than offering no-op actions.
+        if viewModel.selectedImageIDs.isEmpty {
+            for item in menu.items { item.isEnabled = false }
+        }
+
         return menu
     }
 
@@ -576,9 +614,11 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     @objc private func contextOpenInExternalEditor(_ sender: Any?) {
         guard let viewModel,
-              let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
+              let editorPath = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor),
               !editorPath.isEmpty else { return }
-        let urls = viewModel.selectedImages.map(\.url)
+        let images = viewModel.selectedImages
+        guard RedactionPrivacyPrompt.confirmExternalEditor(for: images) else { return }
+        let urls = images.map(\.url)
         NSWorkspace.shared.open(urls, withApplicationAt: URL(fileURLWithPath: editorPath), configuration: NSWorkspace.OpenConfiguration())
     }
 
@@ -673,7 +713,14 @@ final class ThumbnailCollectionView: NSCollectionView {
     // MARK: - NSDraggingSource
 
     override func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        context == .outsideApplication ? .copy : .move
+        guard context == .outsideApplication else { return .move }
+        // Privacy: Finder, Mail, Slack… would receive the original file, which never carries
+        // the face blurs (they are app-only Develop settings).
+        if outsideDragBlockMessage != nil {
+            outsideDragWasRefused = true
+            return []
+        }
+        return .copy
     }
 
     override func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
@@ -681,15 +728,19 @@ final class ThumbnailCollectionView: NSCollectionView {
         let windowPoint = window.convertPoint(fromScreen: screenPoint)
         let localPoint = convert(windowPoint, from: nil)
 
+        // No indicator means no reorder target: a drop elsewhere must not reuse the
+        // last item the drag passed over.
         guard let viewModel,
               let indexPath = indexPathForItem(at: localPoint),
               indexPath.item < viewModel.visibleImages.count else {
+            pendingReorderTarget = nil
             hideDropIndicator()
             return
         }
 
         let targetURL = viewModel.visibleImages[indexPath.item].url
         guard !viewModel.draggedImageURLs.contains(targetURL) else {
+            pendingReorderTarget = nil
             hideDropIndicator()
             return
         }
@@ -709,6 +760,16 @@ final class ThumbnailCollectionView: NSCollectionView {
     override func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         hideDropIndicator()
 
+        // Explain a refused drop on another app (not a drop that merely ended over our own windows).
+        if operation.isEmpty, outsideDragWasRefused, let message = outsideDragBlockMessage,
+           !NSApp.windows.contains(where: { $0.isVisible && $0.frame.contains(screenPoint) }) {
+            viewModel?.fileOperationNotice = FileOperationNotice(
+                message: message, systemImage: "eye.slash"
+            )
+        }
+        outsideDragBlockMessage = nil
+        outsideDragWasRefused = false
+
         // Only reorder if the drop ended within the collection view
         if let window = self.window, let target = pendingReorderTarget {
             let windowPoint = window.convertPoint(fromScreen: screenPoint)
@@ -725,20 +786,11 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     private func reorderDraggedItems(to targetURL: URL, insertBefore: Bool) {
         guard let viewModel else { return }
-        let draggedURLs = viewModel.draggedImageURLs
-        guard !draggedURLs.isEmpty, !draggedURLs.contains(targetURL) else { return }
-
-        // Collect dragged items in their current order
-        let draggedItems = viewModel.manualOrder.filter { draggedURLs.contains($0) }
-        guard !draggedItems.isEmpty else { return }
-
-        // Remove dragged items
-        viewModel.manualOrder.removeAll { draggedURLs.contains($0) }
-
-        // Insert at the indicated position
-        guard let targetIndex = viewModel.manualOrder.firstIndex(of: targetURL) else { return }
-        let insertionIndex = insertBefore ? targetIndex : targetIndex + 1
-        viewModel.manualOrder.insert(contentsOf: draggedItems, at: insertionIndex)
+        viewModel.reorderManually(
+            viewModel.draggedImageURLs,
+            to: targetURL,
+            insertBefore: insertBefore
+        )
     }
 
     // MARK: - Drop Indicator
@@ -803,6 +855,19 @@ final class ThumbnailCollectionView: NSCollectionView {
             }
             items.append(item)
         }
+
+        // RAW files dragged to Finder or another app keep their XMP sidecar (ratings,
+        // captions, Camera Raw edits). Sidecar items carry no visual of their own. In-app
+        // folder drops skip them again (`removingCompanionSidecars`): moves bring sidecars along.
+        let sidecars = PhotoDragPasteboardURLs.ownedSidecars(
+            for: urls,
+            hasSidecar: { [weak viewModel] url in viewModel?.image(at: url)?.sidecarModified != nil }
+        )
+        for sidecar in sidecars {
+            let item = NSDraggingItem(pasteboardWriter: sidecar as NSURL)
+            item.setDraggingFrame(baseFrame, contents: nil)
+            items.append(item)
+        }
         return items
     }
 
@@ -817,5 +882,42 @@ final class ThumbnailCollectionView: NSCollectionView {
         let icon = NSWorkspace.shared.icon(forFile: url.path)
         ThumbnailCollectionView.extensionIconCache[ext] = icon
         return icon
+    }
+}
+
+/// Extra file URLs for dragging photos out of the grid: the stem `.xmp` sidecar of each RAW,
+/// so a Finder copy keeps its ratings, captions and Camera Raw edits.
+nonisolated enum PhotoDragPasteboardURLs {
+    /// Only RAW files take their stem sidecar along: a RAW owns it (PhotoSidecarOwnership) and
+    /// has nowhere else to keep ratings, captions or Camera Raw edits. JPEG/HEIC/TIFF carry
+    /// embedded metadata, and extra `.xmp` items on every drag break Mail/Slack attachments,
+    /// web uploaders and Photoshop. A RAW+JPEG pair therefore adds the shared `.xmp` once.
+    /// `hasSidecar` answers from the folder scan, so a drag never stats per photo.
+    static func ownedSidecars(
+        for photoURLs: [URL],
+        hasSidecar: (URL) -> Bool
+    ) -> [URL] {
+        var seen: Set<String> = []
+        var sidecars: [URL] = []
+        for photoURL in photoURLs where SupportedImageFormats.isRaw(url: photoURL) {
+            let sidecar = photoURL.deletingPathExtension().appendingPathExtension("xmp")
+            let key = sidecar.standardizedFileURL.path.lowercased()
+            guard !seen.contains(key), hasSidecar(photoURL) else { continue }
+            seen.insert(key)
+            sidecars.append(sidecar)
+        }
+        return sidecars
+    }
+
+    /// In-app folder drops move photos with their sidecars already; drop a dragged `.xmp`
+    /// whose same-stem photo (same folder) is part of the same drop so it is not moved twice.
+    static func removingCompanionSidecars(from urls: [URL]) -> [URL] {
+        func stemKey(_ url: URL) -> String {
+            url.deletingPathExtension().standardizedFileURL.path.lowercased()
+        }
+        let photoStems = Set(urls.filter { $0.pathExtension.lowercased() != "xmp" }.map(stemKey))
+        return urls.filter { url in
+            url.pathExtension.lowercased() != "xmp" || !photoStems.contains(stemKey(url))
+        }
     }
 }

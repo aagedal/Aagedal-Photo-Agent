@@ -9,6 +9,9 @@ struct BrowserPaneContainer: View {
     /// inactive pane shows no face badges.
     var activeFaceCount: Int = 0
     var activeFaceGroupCount: Int = 0
+    /// Forwarded to each pane so its empty-state "Show Videos & Other Media" updates the
+    /// app-wide setting instead of only that pane.
+    var selectFileVisibility: ((BrowserFileVisibility) -> Void)? = nil
 
     /// Width/height the divider occupies (and grab area). The visible line is 1px.
     private let dividerThickness: CGFloat = 7
@@ -108,10 +111,14 @@ struct BrowserPaneContainer: View {
                 viewModel: pane,
                 faceCount: isActive ? activeFaceCount : 0,
                 faceGroupCount: isActive ? activeFaceGroupCount : 0,
-                onFocus: { panes.activePaneIndex = index },
+                onFocus: {
+                    if panes.activePaneIndex != index { panes.activePaneIndex = index }
+                },
+                isActivePane: isActive,
                 // Only the active pane contributes toolbar items, else split view
                 // shows them twice and overflows into the "»" menu.
-                providesToolbar: isActive
+                providesToolbar: isActive,
+                selectFileVisibility: selectFileVisibility
             )
             // Bind identity to the pane instance, not the slot. In tabs mode one slot
             // shows different panes over time; without this the AppKit grid controller

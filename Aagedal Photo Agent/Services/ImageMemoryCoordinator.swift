@@ -73,6 +73,9 @@ nonisolated final class ImageMemoryCoordinator: @unchecked Sendable {
         deinit { cancel() }
     }
 
+    /// Upper bound of the process image budget (reached at 32 GB of RAM).
+    static let maximumTotalBudget = 4 * 1_024 * 1_024 * 1_024
+
     private struct Participant: Sendable {
         let kind: CacheKind
         let cancelSpeculativeWork: (@Sendable () -> Void)?
@@ -83,6 +86,15 @@ nonisolated final class ImageMemoryCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private let availableMemory: @Sendable () -> UInt64
     private var participants: [UUID: Participant] = [:]
+    private var pressureHandlers: [UUID: PressureHandler] = [:]
+
+    /// A store outside the proportional budget (fixed-size preview pipelines, loaded models,
+    /// Core Image caches) that must still release memory under pressure. It never affects the
+    /// per-kind participant split.
+    private struct PressureHandler: Sendable {
+        let level: PressureLevel
+        let evict: @Sendable () -> Void
+    }
     private var pressureSource: DispatchSourceMemoryPressure?
 
     init(
@@ -111,12 +123,15 @@ nonisolated final class ImageMemoryCoordinator: @unchecked Sendable {
         pressureSource?.cancel()
     }
 
-    /// The process image budget is one eighth of available physical memory, bounded so small
-    /// machines retain OS headroom and large machines do not turn caches into an unbounded sink.
+    /// The process image budget is one eighth of physical memory, bounded so small machines
+    /// retain OS headroom and large machines do not turn caches into an unbounded sink. The
+    /// ceiling scales with RAM up to 4 GiB: a fixed 1 GiB cap left a 5K/6K full-screen cache
+    /// room for barely one or two screen-resolution HDR images on 32-64 GB Macs. An 8 GB Mac
+    /// (and anything smaller) gets the same budget as before.
     func policy() -> Policy {
         let mebibyte = 1_024 * 1_024
         let available = Int(clamping: availableMemory())
-        let total = min(max(available / 8, 256 * mebibyte), 1_024 * mebibyte)
+        let total = min(max(available / 8, 256 * mebibyte), Self.maximumTotalBudget)
 
         // Shares total 100%. Full-screen and Develop receive most of the budget, but neither can
         // independently claim the entire process allowance as they did before coordination.
@@ -203,6 +218,25 @@ nonisolated final class ImageMemoryCoordinator: @unchecked Sendable {
         }
     }
 
+    /// Registers an eviction callback that runs on memory pressure without joining the shared
+    /// cache budget. `.warning` handlers run on every pressure event (after the warning-tier
+    /// caches); `.critical` handlers run only on critical pressure, after every cache tier.
+    @discardableResult
+    func registerPressureEviction(
+        level: PressureLevel,
+        evict: @escaping @Sendable () -> Void
+    ) -> Registration {
+        let id = UUID()
+        lock.withLock { pressureHandlers[id] = PressureHandler(level: level, evict: evict) }
+        return Registration { [weak self] in
+            self?.removePressureHandler(id: id)
+        }
+    }
+
+    private func removePressureHandler(id: UUID) {
+        _ = lock.withLock { pressureHandlers.removeValue(forKey: id) }
+    }
+
     private func participantDivisor(for kind: CacheKind) -> Int {
         lock.withLock {
             max(1, participants.values.lazy.filter { $0.kind == kind }.count)
@@ -224,7 +258,9 @@ nonisolated final class ImageMemoryCoordinator: @unchecked Sendable {
     }
 
     func handleMemoryPressure(_ level: PressureLevel) {
-        let snapshot = lock.withLock { Array(participants.values) }
+        let (snapshot, handlers) = lock.withLock {
+            (Array(participants.values), Array(pressureHandlers.values))
+        }
 
         // Cancellation always precedes eviction so completed speculative work cannot repopulate
         // a cache immediately after it was purged.
@@ -242,6 +278,14 @@ nonisolated final class ImageMemoryCoordinator: @unchecked Sendable {
         for kind in evictionOrder {
             for participant in snapshot where participant.kind == kind {
                 participant.evict()
+            }
+        }
+        for handler in handlers where handler.level == .warning {
+            handler.evict()
+        }
+        if level == .critical {
+            for handler in handlers where handler.level == .critical {
+                handler.evict()
             }
         }
     }

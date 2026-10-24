@@ -21,7 +21,8 @@ struct SettingsView: View {
 
     // Known People state
     @State private var interchangePresenterID = UUID()
-    @State private var knownPeopleStats: (peopleCount: Int, embeddingCount: Int) = (0, 0)
+    /// Nil until the first off-main count finishes; the tab shows "Loading…" meanwhile.
+    @State private var knownPeopleStats: (peopleCount: Int, embeddingCount: Int)?
     @State private var upgradeSourceInventory: KnownPeopleUpgradeSourceInventory?
     @State private var isLegacyImporting = false
     @State private var isLegacyExporting = false
@@ -48,20 +49,41 @@ struct SettingsView: View {
     @State private var approvedKeywordsImportTask: Task<Void, Never>?
     @State private var approvedKeywordsImportRequestID: UUID?
     @State private var editingApprovedKeywords = false
+    @State private var showClearApprovedKeywordsConfirmation = false
+    @State private var pendingApprovedKeywordsImportURL: URL?
 
     // Structured Person Shown state
     @State private var structuredPersonShownErrorMessage: String?
     @State private var structuredPersonShownImportTask: Task<Void, Never>?
     @State private var structuredPersonShownImportRequestID: UUID?
     @State private var editingStructuredPersonShown = false
+    @State private var showClearStructuredPersonShownConfirmation = false
     @AppStorage(UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) private var structuredPersonShownCategoriesAsKeywords = false
 
     // Quick Lists state
     @State private var editingQuickList: QuickListType?
-    @State private var quickListsArchiveMessage: String?
+    /// Import/export outcome per tab, so a Keywords result never shows on Quick Lists.
+    @State private var keywordListsArchiveStatus: ListArchiveStatus?
+    @State private var quickListsArchiveStatus: ListArchiveStatus?
     @State private var showingExportSheet = false
     @State private var importSource: ImportSource?
     @State private var showingBackupsSheet = false
+
+    private struct ListArchiveStatus {
+        let text: String
+        let isError: Bool
+
+        init(_ result: Result<Int, Error>, action: String) {
+            switch result {
+            case .success(let count):
+                text = "\(action)ed \(count) \(count == 1 ? "list" : "lists")"
+                isError = false
+            case .failure(let error):
+                text = "\(action) failed: \(error.localizedDescription)"
+                isError = true
+            }
+        }
+    }
 
     /// Wrapper so we can drive `.sheet(item:)` from a URL, which is not
     /// Identifiable on its own.
@@ -168,9 +190,9 @@ struct SettingsView: View {
             switch self {
             case .general: ["External Editor", "Command+E", "Default Editor", "Browser", "File visibility", "Preview", "Always show original thumbnails"]
             case .rawDecoding: ["Decode Profile", "Dynamic Range", "Render RAW images as HDR", "Apple RAW Decoder", "Decoder version"]
-            case .transcription: ["Transcription provider", "Voice memo", "Whisper model", "Download models", "Custom FFmpeg Whisper", "Transcription language", "Translate speech into English", "Request GPU acceleration"]
+            case .transcription: ["Transcription provider", "Voice memo", "Whisper model", "Download models", "Remove Downloaded Model", "Custom FFmpeg Whisper", "Transcription language", "Translate speech into English", "Request GPU acceleration"]
             case .descriptionAssistant: ["AI caption", "Local language model", "Description generation", "Description Model", "Provider", "Installed model", "Description Presets", "Preset name", "Model setup", "GPU acceleration"]
-            case .descriptionModels: ["Download models", "Local language model", "GGUF", "Model storage", "Remove models"]
+            case .descriptionModels: ["Download models", "Local language model", "GGUF", "MLX folder", "Models Already on This Mac", "Remove Downloaded Model"] + DescriptionAssistantDownloadModel.allCases.map(\.title)
             case .developControls: ["Develop Controls", "Exposure", "White balance", "Crop", "Show All", "Reset Order"] + DevelopPanelSection.allCases.map(\.title) + DevelopSlider.allCases.map(\.displayName)
             case .metadata: ["Multi-Select Behavior", "Visible and required fields", "Write Behavior", "XMP sidecars", "C2PA-Protected Images", "Variable Processing", "Initials", "Reverse Geocoding", "Place-name language", "Work offline", "Metadata Fields", "Headline minimum length", "Description minimum length", "Reset Layout to Defaults"] + MetadataFieldID.userSelectable.map(\.displayName)
             case .keywordLists: ["Approved Keywords", "Structured Keyword Lists", "IPTC Media Topics", "Automatically update IPTC Media Topics", "IPTC language", "My Keywords", "Structured Person Shown", "Add category names as keywords", "Import / Export"]
@@ -179,18 +201,27 @@ struct SettingsView: View {
             case .knownPeople: ["Known People Database", "People Library", "Import / Export", "Clear Database", "Future Face Model Upgrades", "Keep reusable face crops", "Data Management", "Stored size", "Privacy"]
             case .teams: ["Sports Tagging", "Team roster", "Players", "Jersey numbers", "Team colors", "Import / Export"]
             case .locations: ["Export Location", "Save Exported Files", "Sub-folder Name", "RAW Archive Location", "Main Ingest Folder", "Separate Archive Root"]
-            case .format: ["SDR Format", "HDR Format", "Default Format", "JPEG", "HEIF", "TIFF", "PNG", "JPEG XL", "Quality", "Color Gamut", "Output Resolution", "Maximum Long Edge", "TIFF Options", "Compression"]
-            case .templates: ["Template Type", "Metadata templates", "Develop templates", "Import / Export", "Move to Trash"]
-            case .watermarks: ["Watermark image", "Export", "Opacity", "Position", "Size"]
+            case .format: Self.uniqued(["SDR Format", "HDR Format", "Default Format", "Quality", "Color Gamut", "Output Resolution", "Maximum Long Edge", "TIFF Options", "Compression"]
+                + ExportFormatSDR.allCases.map(\.displayName)
+                + ExportFormatHDR.allCases.map(\.displayName)
+                + TargetColorGamut.allCases.map(\.displayName))
+            case .templates: ["Storage", "Templates folder", "Choose folder", "iCloud Drive", "Template Type", "Metadata templates", "Develop templates", "Import / Export", "Export All", "Move to Trash"]
+            case .watermarks: ["Watermark image", "PNG watermark", "Text watermark", "Create Text", "Default Placement", "Dimension", "Width", "Height", "Size", "Margin", "Percent", "Pixels"]
             case .ftp: ["FTP connections", "Server", "Upload", "Credentials", "Always render RAW files to JPEG before upload"]
             case .signing: ["Signing Certificate", "C2PA", "Content Credentials", "Claim Defaults", "Default Author", "Signer Trust", "Identity"]
             case .sync: ["Sync everything", "App preferences", "Keyword lists", "Templates", "Known People database", "Teams", "Watermarks", "iCloud Drive"]
             case .updates: ["Current Version", "Automatic Updates", "Automatically check for updates", "Check frequency"]
-            case .webDownloads: ["Web Download Tools", "yt-dlp", "FFmpeg", "Browser media import"]
+            case .webDownloads: ["Web Download Tools", "gallery-dl", "yt-dlp", "Instagram and X post import", "Check for Updates", "Update Packages", "Restore Bundled Versions"]
             case .automation: ["Local MCP Server", "Allow team creation", "Authorized Folders", "Client Setup", "Proofreading Plan Review", "Transcription Intent Review", "Operation History", "Develop Template Review", "Prepare Develop Review", "Develop Capture History", "Review Cancelled Capture Cleanup", "Retire Cancelled Captures", "Develop Batch Recovery", "Face Scan Receipts", "Interrupted XMP Publication", "Privacy and activity", "Codex"]
             case .shortcuts: ["Keyboard shortcuts", "Culling shortcut profile", "Rating & Label", "Caption Workspace", "Key bindings"]
             case .licenses: ["Third-party licenses", "Open source", "Acknowledgments"]
             }
+        }
+
+        /// Format names repeat across the SDR and HDR pickers; list each match hint once.
+        private static func uniqued(_ terms: [String]) -> [String] {
+            var seen = Set<String>()
+            return terms.filter { seen.insert($0).inserted }
         }
 
         private static func tokens(for query: String) -> [String] {
@@ -377,6 +408,7 @@ struct SettingsView: View {
         switch destination {
         case .metadata: showDestination(.metadata)
         case .transcription: showDestination(.transcription)
+        case .descriptionAssistant: showDestination(.descriptionAssistant)
         }
         settingsViewModel.requestedDestination = nil
     }
@@ -865,11 +897,13 @@ struct SettingsView: View {
 
                     LabeledContent("Database") {
                         HStack {
-                            if knownPeopleStats.peopleCount == 0 {
-                                Text("Empty")
+                            if let knownPeopleStats {
+                                Text(knownPeopleStats.peopleCount == 0
+                                     ? "Empty"
+                                     : "\(knownPeopleStats.peopleCount) people, \(knownPeopleStats.embeddingCount) samples")
                                     .foregroundStyle(.secondary)
                             } else {
-                                Text("\(knownPeopleStats.peopleCount) people, \(knownPeopleStats.embeddingCount) samples")
+                                Text("Loading…")
                                     .foregroundStyle(.secondary)
                             }
 
@@ -877,7 +911,7 @@ struct SettingsView: View {
                                 NSApp.activate(ignoringOtherApps: true)
                                 commandRouter.send(.showKnownPeopleDatabase)
                             }
-                            .disabled(knownPeopleStats.peopleCount == 0)
+                            .disabled((knownPeopleStats?.peopleCount ?? 0) == 0)
                         }
                     }
 
@@ -905,7 +939,7 @@ struct SettingsView: View {
                         Button("Clear Database", role: .destructive) {
                             showClearConfirmation = true
                         }
-                        .disabled(isLibraryOperationBusy || knownPeopleStats.peopleCount == 0)
+                        .disabled(isLibraryOperationBusy || (knownPeopleStats?.peopleCount ?? 0) == 0)
                     }
 
                     Text("People Library import replaces the complete local library after confirmation. Legacy ZIP import only adds unseen UUIDs and does not restore renames or removals.")
@@ -947,7 +981,7 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                 }
                 LabeledContent("Retained crops") {
-                    if let upgradeSourceInventory {
+                    if let upgradeSourceInventory, let knownPeopleStats {
                         Text("\(upgradeSourceInventory.retainedCount) of \(knownPeopleStats.embeddingCount) examples · \(ByteCountFormatter.string(fromByteCount: upgradeSourceInventory.retainedBytes, countStyle: .file))")
                             .monospacedDigit()
                     } else {
@@ -992,7 +1026,7 @@ struct SettingsView: View {
                 clearKnownPeopleDatabase()
             }
         } message: {
-            Text("This will permanently delete all \(knownPeopleStats.peopleCount) known people and their reference images. This cannot be undone.")
+            Text("This will permanently delete all \(knownPeopleStats?.peopleCount ?? 0) known people and their reference images. This cannot be undone.")
         }
         .alert("Delete Reusable Face Crops?", isPresented: $showUpgradeSourceClearConfirmation) {
             Button("Cancel", role: .cancel) { }
@@ -1028,7 +1062,8 @@ struct SettingsView: View {
     private var knownPeopleDataManagementSection: some View {
         Section("Data Management") {
             LabeledContent("Known People") {
-                Text("\(knownPeopleDataSummary.peopleCount) people, \(knownPeopleDataSummary.sampleCount) face samples")
+                Text(knownPeopleStats == nil ? "Loading…" :
+                    "\(knownPeopleDataSummary.peopleCount) people, \(knownPeopleDataSummary.sampleCount) face samples")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
@@ -1319,7 +1354,7 @@ struct SettingsView: View {
                     }
                 }
 
-                Text("The aspect ratio is preserved, and smaller images are never enlarged.")
+                Text("Applies to Export, Develop Save and signed renders. Save As and FTP uploads keep the full resolution. The aspect ratio is preserved, and smaller images are never enlarged.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1494,11 +1529,7 @@ struct SettingsView: View {
                 }
                 if listConfigured {
                     Button(role: .destructive) {
-                        cancelApprovedKeywordsImport()
-                        Task { @MainActor in
-                            await service.clearList(for: field)
-                            approvedKeywordsErrorMessage = service.loadError
-                        }
+                        showClearApprovedKeywordsConfirmation = true
                     } label: {
                         Image(systemName: "xmark.circle")
                     }
@@ -1507,6 +1538,35 @@ struct SettingsView: View {
                 }
             }
             .disabled(!enabled)
+            .alert("Clear Approved Keywords?", isPresented: $showClearApprovedKeywordsConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Clear", role: .destructive) {
+                    cancelApprovedKeywordsImport()
+                    Task { @MainActor in
+                        await service.clearList(for: field)
+                        approvedKeywordsErrorMessage = service.loadError
+                    }
+                }
+            } message: {
+                Text(count > 0
+                     ? "All \(count.formatted()) approved keywords will be removed. Export the list first if you may need it again."
+                     : "The approved keywords list will be removed.")
+            }
+            .alert(
+                "Replace Approved Keywords?",
+                isPresented: Binding(
+                    get: { pendingApprovedKeywordsImportURL != nil },
+                    set: { if !$0 { pendingApprovedKeywordsImportURL = nil } }
+                ),
+                presenting: pendingApprovedKeywordsImportURL
+            ) { url in
+                Button("Cancel", role: .cancel) {}
+                Button("Replace", role: .destructive) {
+                    importApprovedKeywords(from: url)
+                }
+            } message: { url in
+                Text("The \(count.formatted()) existing approved keywords will be replaced with the contents of \u{201C}\(url.lastPathComponent)\u{201D}. To add entries instead, use Edit\u{2026} \u{2192} Import from File\u{2026}.")
+            }
 
             if listConfigured, count > 0 {
                 Text("\(count.formatted()) entries")
@@ -1568,6 +1628,16 @@ struct SettingsView: View {
         panel.allowedContentTypes = [.plainText, .commaSeparatedText]
         panel.message = "Choose an approved keywords list (.txt or .csv)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        // The approved list is an authoritative vocabulary, so a file import replaces it.
+        // Confirm before discarding existing entries.
+        if settingsViewModel.approvedLists.entryCount(for: .keywords) > 0 {
+            pendingApprovedKeywordsImportURL = url
+        } else {
+            importApprovedKeywords(from: url)
+        }
+    }
+
+    private func importApprovedKeywords(from url: URL) {
         cancelApprovedKeywordsImport()
         let requestID = UUID()
         approvedKeywordsImportRequestID = requestID
@@ -1631,20 +1701,30 @@ struct SettingsView: View {
                 }
                 if isLoaded {
                     Button(role: .destructive) {
-                        Task {
-                            do {
-                                try await service.clearList()
-                                structuredPersonShownErrorMessage = nil
-                            } catch {
-                                structuredPersonShownErrorMessage = error.localizedDescription
-                            }
-                        }
+                        showClearStructuredPersonShownConfirmation = true
                     } label: {
                         Image(systemName: "xmark.circle")
                     }
                     .buttonStyle(.borderless)
                     .help("Clear structured Person Shown")
                 }
+            }
+            .alert("Clear Structured Person Shown?", isPresented: $showClearStructuredPersonShownConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Clear", role: .destructive) {
+                    Task {
+                        do {
+                            try await service.clearList()
+                            structuredPersonShownErrorMessage = nil
+                        } catch {
+                            structuredPersonShownErrorMessage = error.localizedDescription
+                        }
+                    }
+                }
+            } message: {
+                Text(nameCount > 0
+                     ? "The structured Person Shown tree (\(nameCount.formatted()) names) will be removed. Export it first if you may need it again."
+                     : "The structured Person Shown tree will be removed.")
             }
 
             if isLoaded, nameCount > 0 {
@@ -1733,15 +1813,9 @@ struct SettingsView: View {
                     Button("Restore from Backup…") {
                         showingBackupsSheet = true
                     }
-                    if let quickListsArchiveMessage {
-                        Text(quickListsArchiveMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
                     Spacer()
                 }
+                listArchiveStatusText(keywordListsArchiveStatus)
                 Text("Bundles your approved keywords and structured keyword/Person Shown trees into a single .zip with a manifest. On import you can replace or append per list — useful for merging collaborators' lists or restoring from a backup. Quick lists have their own Import / Export on the Quick Lists tab.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1763,22 +1837,12 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showingExportSheet) {
             KeywordListsExportSheet(scope: .keywords) { result in
-                switch result {
-                case .success(let count):
-                    quickListsArchiveMessage = "Exported \(count) \(count == 1 ? "list" : "lists")"
-                case .failure(let error):
-                    quickListsArchiveMessage = "Export failed: \(error.localizedDescription)"
-                }
+                keywordListsArchiveStatus = ListArchiveStatus(result, action: "Export")
             }
         }
         .sheet(item: $importSource) { source in
             KeywordListsImportSheet(source: source.url, scope: .keywords) { result in
-                switch result {
-                case .success(let count):
-                    quickListsArchiveMessage = "Imported \(count) \(count == 1 ? "list" : "lists")"
-                case .failure(let error):
-                    quickListsArchiveMessage = "Import failed: \(error.localizedDescription)"
-                }
+                keywordListsArchiveStatus = ListArchiveStatus(result, action: "Import")
             }
         }
     }
@@ -1811,15 +1875,9 @@ struct SettingsView: View {
                     Button("Import Lists…") {
                         chooseImportSource()
                     }
-                    if let quickListsArchiveMessage {
-                        Text(quickListsArchiveMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
                     Spacer()
                 }
+                listArchiveStatusText(quickListsArchiveStatus)
                 Text("Bundles the selected quick lists into a single .zip with a manifest. On import you can replace or append per list — useful for merging collaborators' lists or restoring from a backup.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1835,23 +1893,24 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showingExportSheet) {
             KeywordListsExportSheet(scope: .quickLists) { result in
-                switch result {
-                case .success(let count):
-                    quickListsArchiveMessage = "Exported \(count) \(count == 1 ? "list" : "lists")"
-                case .failure(let error):
-                    quickListsArchiveMessage = "Export failed: \(error.localizedDescription)"
-                }
+                quickListsArchiveStatus = ListArchiveStatus(result, action: "Export")
             }
         }
         .sheet(item: $importSource) { source in
             KeywordListsImportSheet(source: source.url, scope: .quickLists) { result in
-                switch result {
-                case .success(let count):
-                    quickListsArchiveMessage = "Imported \(count) \(count == 1 ? "list" : "lists")"
-                case .failure(let error):
-                    quickListsArchiveMessage = "Import failed: \(error.localizedDescription)"
-                }
+                quickListsArchiveStatus = ListArchiveStatus(result, action: "Import")
             }
+        }
+    }
+
+    @ViewBuilder
+    private func listArchiveStatusText(_ status: ListArchiveStatus?) -> some View {
+        if let status {
+            Text(status.text)
+                .font(.caption)
+                .foregroundStyle(status.isError ? .red : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
 
@@ -2002,22 +2061,24 @@ struct SettingsView: View {
     // MARK: - Known People Actions
 
     private func refreshKnownPeopleStats() {
-        let statistics = KnownPeopleService.shared.getStatistics()
         upgradeSourceInventory = nil
         let coordinator = ICloudSyncCoordinator.shared
-        let syncEnabled = coordinator.knownPeopleEnabled
-        knownPeopleStats = statistics
-        knownPeopleDataSummary = KnownPeopleDataSummary(
-            peopleCount: statistics.peopleCount,
-            sampleCount: statistics.embeddingCount,
-            storedBytes: nil,
-            syncEnabled: syncEnabled
-        )
 
         knownPeopleDataSummaryTask?.cancel()
         let requestID = UUID()
         knownPeopleDataSummaryRequestID = requestID
         knownPeopleDataSummaryTask = Task {
+            // Counting must not run `loadDatabase()` on the main actor: a cold load decodes
+            // every embedding, runs migrations and coordinated iCloud reads.
+            let statistics = await KnownPeopleService.shared.statisticsForDisplay()
+            guard knownPeopleDataSummaryRequestID == requestID, !Task.isCancelled else { return }
+            knownPeopleStats = statistics
+            knownPeopleDataSummary = KnownPeopleDataSummary(
+                peopleCount: statistics.peopleCount,
+                sampleCount: statistics.embeddingCount,
+                storedBytes: nil,
+                syncEnabled: coordinator.knownPeopleEnabled
+            )
             let storage = await coordinator.knownPeopleStorageSnapshot()
             guard knownPeopleDataSummaryRequestID == requestID, !Task.isCancelled else { return }
             let evidence = await KnownPeopleDataSummaryService.shared.summarize(
@@ -2182,6 +2243,7 @@ struct SettingsView: View {
     @State private var isImportingCertificate = false
     @State private var p12Password = ""
     @State private var showP12PasswordPrompt = false
+    @State private var showC2PARemovalConfirmation = false
     @State private var pendingP12URL: URL?
     @State private var signingMessage: String?
     @State private var c2paTrustListStatus: C2PATrustListStatus?
@@ -2243,8 +2305,8 @@ struct SettingsView: View {
                             isImportingCertificate = true
                         }
                         Spacer()
-                        Button("Remove", role: .destructive) {
-                            removeC2PACertificate()
+                        Button("Remove…", role: .destructive) {
+                            showC2PARemovalConfirmation = true
                         }
                         .disabled(c2paOperationTask != nil)
                     }
@@ -2361,6 +2423,14 @@ struct SettingsView: View {
             }
         } message: {
             Text("Enter the password for the PKCS#12 file.")
+        }
+        .alert("Remove Signing Certificate?", isPresented: $showC2PARemovalConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                removeC2PACertificate()
+            }
+        } message: {
+            Text("The app’s copy of the certificate and its private key in the macOS Keychain are deleted from this Mac. This cannot be undone; you will need the original .pem or .p12 file to sign again.")
         }
     }
 
@@ -2580,13 +2650,18 @@ struct SettingsView: View {
                                 )
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(conn.transportSecurity.isInsecure ? .orange : .green)
+                                if conn.useSFTP {
+                                    Label("SFTP isn't available with macOS's built-in curl. Edit to switch to FTPS.", systemImage: "exclamationmark.triangle.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.red)
+                                }
                             }
                             Spacer()
                             Button("Edit") {
                                 ftpViewModel.startEditingConnection(conn)
                             }
                             Button("Delete", role: .destructive) {
-                                ftpViewModel.deleteConnection(conn)
+                                ftpViewModel.pendingConnectionDeletion = conn
                             }
                         }
                     }
@@ -2606,6 +2681,22 @@ struct SettingsView: View {
         .sheet(isPresented: $ftpViewModel.isShowingServerForm) {
             FTPServerForm(viewModel: ftpViewModel)
         }
+        .alert(
+            "Delete “\(ftpViewModel.pendingConnectionDeletion?.name ?? "")”?",
+            isPresented: Binding(
+                get: { ftpViewModel.pendingConnectionDeletion != nil },
+                set: { if !$0 { ftpViewModel.pendingConnectionDeletion = nil } }
+            )
+        ) {
+            Button("Delete", role: .destructive) {
+                ftpViewModel.confirmPendingConnectionDeletion()
+            }
+            Button("Cancel", role: .cancel) {
+                ftpViewModel.pendingConnectionDeletion = nil
+            }
+        } message: {
+            Text("The server and its saved password are removed from this Mac. This can't be undone.")
+        }
     }
 
     // MARK: - Templates Tab
@@ -2614,27 +2705,38 @@ struct SettingsView: View {
     private var templatesTab: some View {
         VStack(alignment: .leading, spacing: 12) {
             GroupBox("Storage") {
+                // iCloud Templates sync overrides any chosen folder (AppPaths.templatesDirectory).
+                let iCloudTemplates = ICloudSyncCoordinator.shared.templatesEnabled
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text(settingsViewModel.templatesFolderPath.isEmpty
+                        Text(iCloudTemplates
+                             ? "iCloud Drive (sync on)"
+                             : settingsViewModel.templatesFolderPath.isEmpty
                              ? "Default (Application Support)"
                              : settingsViewModel.templatesFolderPath)
                             .font(.callout)
-                            .foregroundStyle(settingsViewModel.templatesFolderPath.isEmpty ? .secondary : .primary)
+                            .foregroundStyle(!iCloudTemplates && !settingsViewModel.templatesFolderPath.isEmpty ? .primary : .secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Button("Choose…") {
                             chooseTemplatesFolder()
                         }
+                        .disabled(iCloudTemplates)
                         if !settingsViewModel.templatesFolderPath.isEmpty {
                             Button("Reset") {
                                 settingsViewModel.clearTemplatesFolder()
                                 templateViewModel.loadTemplates()
                                 developTemplateViewModel.loadTemplates()
                             }
+                            .disabled(iCloudTemplates)
                         }
                     }
+                    Text(iCloudTemplates
+                         ? "Templates are stored in iCloud Drive while Templates sync is on. Turn it off in iCloud Sync to use a local or custom folder."
+                         : "Choosing a folder switches to the templates in that folder. Existing templates are not moved or copied.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
             }
@@ -2645,6 +2747,18 @@ struct SettingsView: View {
                 }
             }
             .pickerStyle(.segmented)
+
+            if templateViewModel.isCloudStorageUnavailable {
+                Label(
+                    "iCloud Drive is unavailable — changes can't be saved until it's back. The templates shown are this Mac's local copy and are read-only for now.",
+                    systemImage: "icloud.slash"
+                )
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+            }
 
             if selectedTemplateKind == .metadata {
                 TemplateListView(viewModel: templateViewModel)

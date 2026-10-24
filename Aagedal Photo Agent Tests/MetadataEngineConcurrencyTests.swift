@@ -574,10 +574,10 @@ struct XMPSidecarMaskTests {
         #expect(service.loadSidecar(for: url)?.cameraRaw?.localAdjustments == nil)
     }
 
-    /// Disabled masks are not corrections ACR should apply — they stay out of
-    /// the sidecar just like the embedded write path leaves them out.
-    @Test("disabled masks are not written to the sidecar")
-    func disabledMaskSkipped() throws {
+    /// Muted masks are written with CorrectionActive=false (ACR and the renderer skip them), so
+    /// muting survives a reload instead of deleting the mask.
+    @Test("disabled masks are written inactive to the sidecar")
+    func disabledMaskWrittenInactive() throws {
         let service = XMPSidecarService()
         let url = try makeTempJPEG()
         defer {
@@ -593,6 +593,9 @@ struct XMPSidecarMaskTests {
         try service.saveCameraRawOnly(settings, orientation: 1, for: url)
 
         let xml = try String(contentsOf: service.sidecarURL(for: url), encoding: .utf8)
-        #expect(!xml.contains("MaskGroupBasedCorrections"))
+        #expect(xml.contains("MaskGroupBasedCorrections"))
+        let reloaded = try #require(service.loadSidecar(for: url)?.cameraRaw?.localAdjustments)
+        #expect(reloaded.map(\.name) == ["Off"])
+        #expect(reloaded.first?.enabled == false)
     }
 }

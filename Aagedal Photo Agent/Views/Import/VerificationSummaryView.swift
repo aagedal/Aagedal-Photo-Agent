@@ -20,11 +20,14 @@ struct VerificationSummaryView: View {
     let failureRecords: [ImportFailureRecord]
     let summaryLine: String
     let cancelled: Bool
+    var cancelledTitle = "Import Cancelled"
+    /// The run stopped with an error before finishing; `title` should say so.
+    var failed = false
 
     var body: some View {
         VStack(spacing: 14) {
             heroIcon
-            Text(cancelled ? "Import Cancelled" : title)
+            Text(cancelled ? cancelledTitle : title)
                 .font(.title2.bold())
 
             heroLine
@@ -56,7 +59,7 @@ struct VerificationSummaryView: View {
             Image(systemName: "xmark.circle.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
-        } else if mismatchedFiles > 0 || failedFiles > 0 {
+        } else if failed || mismatchedFiles > 0 || failedFiles > 0 {
             Image(systemName: "exclamationmark.shield.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(.red)
@@ -158,13 +161,15 @@ struct VerificationSummaryView: View {
         case .copyFailed: return "xmark.circle.fill"
         case .verificationMismatch: return "exclamationmark.shield.fill"
         case .backupFailed: return "externaldrive.badge.exclamationmark"
+        case .metadataFailed: return "doc.badge.ellipsis"
+        case .renamedConflict: return "doc.on.doc"
         }
     }
 
     private func color(for kind: ImportFailureRecord.Kind) -> Color {
         switch kind {
         case .copyFailed, .verificationMismatch: return .red
-        case .backupFailed: return .orange
+        case .backupFailed, .metadataFailed, .renamedConflict: return .orange
         }
     }
 }

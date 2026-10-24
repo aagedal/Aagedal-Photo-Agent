@@ -1,4 +1,5 @@
 import Foundation
+import SwiftMediaMetadata
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -410,6 +411,157 @@ struct RenameExecutionServiceTests {
         #expect(residual.currentURL == nil)
     }
 
+    @Test("A RAW+JPEG pair renamed together keeps one name and moves its shared XMP once")
+    func pairRenamedTogetherMovesSharedXMPOnce() async throws {
+        let raw = root.appendingPathComponent("IMG_1.ARW")
+        let jpeg = root.appendingPathComponent("IMG_1.JPG")
+        let other = root.appendingPathComponent("IMG_2.ARW")
+        let pairXMP = root.appendingPathComponent("IMG_1.xmp")
+        let otherXMP = root.appendingPathComponent("IMG_2.xmp")
+        let sources = [raw, jpeg, other]
+        let recipe = BatchRenameEditorState(sourceFilenames: sources.map(\.lastPathComponent)).recipe
+        let plan = RenamePlanningService().makePlan(
+            items: sources.map { RenamePlanningItem(sourceImageURL: $0) },
+            recipe: recipe,
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseInsensitive,
+                existingURLs: Set(sources + [pairXMP, otherXMP])
+            )
+        )
+        #expect(plan.canExecute)
+        let stems = plan.entries.compactMap { $0.plannedDestinationImageURL?.deletingPathExtension().lastPathComponent }
+        #expect(stems.count == 3)
+        #expect(stems[0] == stems[1])
+        #expect(stems[0].hasPrefix("IMG_1-") && stems[2].hasPrefix("IMG_2-"))
+        #expect(stems[2].dropFirst("IMG_2-".count) != stems[0].dropFirst("IMG_1-".count))
+        let pairStem = try #require(stems.first)
+        let otherStem = try #require(stems.last)
+        let xmpActions = plan.entries.flatMap(\.plannedArtifactActions).filter { $0.identifier == "xmp" }
+        #expect(xmpActions.count == 2)
+        #expect(xmpActions.allSatisfy { !$0.preservesSource })
+
+        let original: [URL: Data] = [
+            raw: Data("raw".utf8), jpeg: Data("jpeg".utf8), other: Data("other".utf8),
+            pairXMP: Data("pair-xmp".utf8), otherXMP: Data("other-xmp".utf8),
+        ]
+        let fileSystem = MemoryRenameFileSystem(original)
+        let result = await service(fileSystem).execute(plan)
+
+        #expect(result.succeeded)
+        #expect(fileSystem.dataIfPresent(at: root.appendingPathComponent("\(pairStem).xmp")) == original[pairXMP])
+        #expect(fileSystem.dataIfPresent(at: root.appendingPathComponent("\(otherStem).xmp")) == original[otherXMP])
+        #expect(!fileSystem.exists(pairXMP))
+    }
+
+    @Test("Renaming one image of a RAW+JPEG pair copies the shared XMP and leaves the partner's")
+    func pairPartnerLeftBehindKeepsSharedXMP() async throws {
+        let raw = root.appendingPathComponent("IMG_3.ARW")
+        let jpeg = root.appendingPathComponent("IMG_3.JPG")
+        let xmp = root.appendingPathComponent("IMG_3.xmp")
+        let plan = RenamePlanningService().makePlan(
+            items: [RenamePlanningItem(sourceImageURL: jpeg)],
+            recipe: BatchRenameRecipe(name: "Desk", components: [.literal("desk.JPG")]),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseInsensitive,
+                existingURLs: [raw, jpeg, xmp]
+            )
+        )
+        #expect(plan.canExecute)
+        let xmpAction = try #require(plan.entries.first?.plannedArtifactActions.first { $0.identifier == "xmp" })
+        #expect(xmpAction.preservesSource)
+
+        let original: [URL: Data] = [
+            raw: Data("raw".utf8), jpeg: Data("jpeg".utf8), xmp: Data("xmp".utf8),
+        ]
+        let fileSystem = MemoryRenameFileSystem(original)
+        let result = await service(fileSystem).execute(plan)
+
+        #expect(result.succeeded)
+        #expect(fileSystem.dataIfPresent(at: xmp) == original[xmp])
+        #expect(fileSystem.dataIfPresent(at: root.appendingPathComponent("desk.xmp")) == original[xmp])
+        #expect(fileSystem.dataIfPresent(at: root.appendingPathComponent("desk.JPG")) == original[jpeg])
+        #expect(fileSystem.dataIfPresent(at: raw) == original[raw])
+    }
+
+    @Test("Rolling back a copied shared XMP deletes only the copy")
+    func copiedSharedXMPRollsBackByDeletingCopy() async throws {
+        let raw = root.appendingPathComponent("IMG_4.ARW")
+        let jpeg = root.appendingPathComponent("IMG_4.JPG")
+        let xmp = root.appendingPathComponent("IMG_4.xmp")
+        let plan = RenamePlanningService().makePlan(
+            items: [RenamePlanningItem(sourceImageURL: jpeg)],
+            recipe: BatchRenameRecipe(name: "Desk", components: [.literal("desk.JPG")]),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseInsensitive,
+                existingURLs: [raw, jpeg, xmp]
+            )
+        )
+        let original: [URL: Data] = [
+            raw: Data("raw".utf8), jpeg: Data("jpeg".utf8), xmp: Data("xmp".utf8),
+        ]
+        let fileSystem = MemoryRenameFileSystem(original)
+        let sequence = LockedTokenSequence()
+        let result = await RenameExecutionService(
+            fileSystem: fileSystem,
+            temporaryNameToken: { sequence.next() },
+            afterMove: { move in
+                move.phase == .commit && move.artifactIdentifier == "xmp" ? "injected" : nil
+            }
+        ).execute(plan)
+
+        #expect(result.status == .failed)
+        #expect(result.rollbackStatus == .succeeded)
+        #expect(fileSystem.snapshot() == original)
+    }
+
+    @Test("Splitting a RAW+JPEG pair by renaming one half leaves the RAW's develop only beside the RAW",
+          arguments: ["JPG", "ARW"])
+    func splitPairKeepsRawDevelopWithRaw(renamedExtension: String) async throws {
+        let raw = root.appendingPathComponent("IMG_5.ARW")
+        let jpeg = root.appendingPathComponent("IMG_5.JPG")
+        let xmp = root.appendingPathComponent("IMG_5.xmp")
+        let renamed = renamedExtension == "ARW" ? raw : jpeg
+        let plan = RenamePlanningService().makePlan(
+            items: [RenamePlanningItem(sourceImageURL: renamed)],
+            recipe: BatchRenameRecipe(name: "Desk", components: [.literal("desk.\(renamedExtension)")]),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseInsensitive,
+                existingURLs: [raw, jpeg, xmp]
+            )
+        )
+        #expect(plan.canExecute)
+        let sharedXMP = Self.pairSidecarXMP()
+        let fileSystem = MemoryRenameFileSystem([
+            raw: Data("raw".utf8), jpeg: Data("jpeg".utf8), xmp: sharedXMP,
+        ])
+        let result = await service(fileSystem).execute(plan)
+
+        #expect(result.succeeded)
+        #expect(result.issues.isEmpty)
+        let copied = try #require(fileSystem.dataIfPresent(at: root.appendingPathComponent("desk.xmp")))
+        let left = try #require(fileSystem.dataIfPresent(at: xmp))
+        let (besideJPEG, besideRAW) = renamedExtension == "JPG" ? (copied, left) : (left, copied)
+        // The JPEG's half keeps the shared caption but not the RAW's develop block, so the JPEG
+        // goes on rendering (and redacting) with its own embedded develop.
+        let jpegSide = try #require(XMPMetadataReader.read(besideJPEG))
+        #expect(jpegSide.cameraRaw == nil)
+        #expect(jpegSide.description == "Pair caption")
+        // The RAW's half is untouched.
+        #expect(besideRAW == sharedXMP)
+    }
+
+    /// A RAW+JPEG stem sidecar: a shared caption plus the RAW's develop (incl. a redaction).
+    static func pairSidecarXMP() -> Data {
+        var xmp = XMPData()
+        xmp.description = "Pair caption"
+        var develop = CameraRawSettings()
+        develop.exposure2012 = 1.25
+        develop.temperature = 3200
+        develop.anonymizer = AnonymizerSettings(amount: 50, blackOut: nil)
+        XMPDataBuilder.applyCameraRaw(develop, imageAspect: nil, into: &xmp)
+        return Data(XMPWriter.generateXML(xmp).utf8)
+    }
+
     private func service(_ fileSystem: MemoryRenameFileSystem) -> RenameExecutionService {
         let sequence = LockedTokenSequence()
         return RenameExecutionService(
@@ -590,6 +742,26 @@ private nonisolated final class MemoryRenameFileSystem: RenameExecutionFileSyste
             }
             files.removeValue(forKey: source)
             files[destination] = data
+        }
+    }
+
+    func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
+        try lock.withLock {
+            guard let data = files[sourceURL.standardizedFileURL.path] else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            guard files[destinationURL.standardizedFileURL.path] == nil else {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            files[destinationURL.standardizedFileURL.path] = data
+        }
+    }
+
+    func removeItem(at url: URL) throws {
+        try lock.withLock {
+            guard files.removeValue(forKey: url.standardizedFileURL.path) != nil else {
+                throw CocoaError(.fileNoSuchFile)
+            }
         }
     }
 

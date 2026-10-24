@@ -53,6 +53,26 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(resolver.resolve(sourceURL: jpeg, requestedMode: .writeToFileAndXMPSidecar) == .embeddedAndXMPSidecar)
     }
 
+    @Test("embedded boundary keeps commas inside keywords, people and organisations")
+    func embeddedListItemsWithCommasSurvive() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let boundary = DescriptiveMetadataWriteBoundary(writeEngine: SwiftExifWriteEngine())
+        var record = IPTCMetadata()
+        record.keywords = ["Støre, Jonas Gahr", "politikk"]
+        record.personShown = ["Støre, Jonas Gahr"]
+        record.organisationsShownNames = ["Arbeiderpartiet, Oslo"]
+
+        for semantics in [DescriptiveMetadataWriteSemantics.merge, .replace] {
+            _ = try await boundary.write(metadata: record, for: source,
+                                         requestedMode: .writeToFile, semantics: semantics)
+            let read = try await SwiftExifReadService().readFullMetadata(url: source)
+            #expect(read.keywords == record.keywords)
+            #expect(read.personShown == record.personShown)
+            #expect(read.organisationsShownNames == record.organisationsShownNames)
+        }
+    }
+
     @Test("embedded boundary replaces and clears authoritative localized Titles")
     func embeddedLocalizedTitleWrite() async throws {
         let (directory, source) = try makeJPEGWorkspace()
@@ -663,6 +683,171 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(merged.crop == target.crop)
         #expect(merged.toneCurve == target.toneCurve)
         #expect(merged.hasSettings == true)
+    }
+
+    @Test("Embedded Develop paste appends to the file's own masks and is idempotent")
+    func embeddedDevelopPasteAppendsMasks() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = SwiftExifWriteEngine()
+
+        var ownBlur = MaskAdjustment(name: "Face B", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        ownBlur.geometry.centerX = 0.7
+        _ = try await engine.writeDevelopFields(
+            [.crsExposure2012: "+0.30"], to: [source],
+            structuredData: StructuredWriteData(masks: [ownBlur]), allowsCredentialedEmbed: false
+        )
+
+        var pastedBlur = MaskAdjustment(name: "Face A", anonymizer: AnonymizerSettings(amount: 60, blackOut: nil))
+        pastedBlur.geometry.centerX = 0.2
+        for _ in 0..<2 {
+            let report = try await engine.writeDevelopFields(
+                [:], to: [source],
+                structuredData: StructuredWriteData(masks: [pastedBlur], mergesLayersForPaste: true),
+                allowsCredentialedEmbed: false
+            )
+            #expect(report.isEmpty)
+        }
+
+        let masks = try #require(try await SwiftExifReadService().readFullMetadata(url: source).cameraRaw?.localAdjustments)
+        #expect(masks.count == 2)
+        #expect(masks.contains { $0.anonymizer?.amount == 90 && abs($0.geometry.centerX - 0.7) < 1e-4 })
+        #expect(masks.contains { $0.anonymizer?.amount == 60 && abs($0.geometry.centerX - 0.2) < 1e-4 })
+    }
+
+    @Test("Embedded Develop paste replaces ordinary masks, keeps the file's redactions and Anonymizer")
+    func embeddedDevelopPasteReplacesOrdinaryMasks() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = SwiftExifWriteEngine()
+
+        var ownMask = MaskAdjustment(name: "Own", exposure: 0.5)
+        ownMask.geometry.centerX = 0.3
+        var ownBlur = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        ownBlur.geometry.centerX = 0.7
+        _ = try await engine.writeDevelopFields(
+            [.crsExposure2012: "+0.30"], to: [source],
+            structuredData: StructuredWriteData(masks: [ownMask, ownBlur],
+                                                anonymizer: AnonymizerSettings(amount: 80, blackOut: nil)),
+            allowsCredentialedEmbed: false
+        )
+
+        var sky = MaskAdjustment(name: "Sky", exposure: -1)
+        sky.geometry.centerY = 0.2
+        let report = try await engine.writeDevelopFields(
+            [:], to: [source],
+            structuredData: StructuredWriteData(masks: [sky],
+                                                anonymizer: AnonymizerSettings(amount: 20, blackOut: nil),
+                                                mergesLayersForPaste: true),
+            allowsCredentialedEmbed: false
+        )
+        #expect(report.isEmpty)
+
+        let settings = try #require(try await SwiftExifReadService().readFullMetadata(url: source).cameraRaw)
+        let names = Set(settings.localAdjustments?.map(\.name) ?? [])
+        #expect(names == ["Face", "Sky"])
+        #expect(settings.anonymizer?.amount == 80)
+    }
+
+    @Test("Embedded Develop paste carries the source's ACR-only masks and matches the in-memory paste")
+    func embeddedDevelopPasteCarriesACROnlyMasks() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = SwiftExifWriteEngine()
+
+        var ownMask = MaskAdjustment(name: "Own", exposure: 0.5)
+        ownMask.geometry.centerX = 0.3
+        _ = try await engine.writeDevelopFields(
+            [.crsExposure2012: "+0.30"], to: [source],
+            structuredData: StructuredWriteData(masks: [ownMask]), allowsCredentialedEmbed: false
+        )
+        let before = try #require(try await SwiftExifReadService().readFullMetadata(url: source).cameraRaw)
+
+        let crs = XMPNamespace.crs
+        let lightroomOnly = try #require(parseMaskGroupBasedCorrections([[
+            "\(crs)CorrectionActive": "true",
+            "\(crs)CorrectionName": "Lightroom erase brush",
+            "\(crs)LocalExposure2012": "0.2",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/Aggregate",
+                "\(crs)MaskName": "Brush 1",
+                "\(crs)MaskValue": "1",
+                "\(crs)MaskBrushTable": "9F8737DEECAFF5C8FE6BB4B9D438EAF2",
+                "\(crs)MaskBrushUncompressedBytes": "13258",
+            ]],
+        ]])?.preserved.first)
+        var copied = CameraRawSettings(exposure2012: 0.6)
+        copied.unparsedMaskCorrections = [lightroomOnly]
+
+        let report = try await engine.writeDevelopFields(
+            copied.developWriteFields(), to: [source],
+            structuredData: .developPaste(copied), allowsCredentialedEmbed: false
+        )
+        #expect(report.isEmpty)
+
+        let expected = CameraRawSettings.pasted(copied, onto: before, includeCrop: false)
+        let written = try #require(try await SwiftExifReadService().readFullMetadata(url: source).cameraRaw)
+        #expect(written.unparsedMaskCorrections?.count == 1)
+        #expect(written.unparsedMaskCorrections == expected.unparsedMaskCorrections)
+        #expect(written.localAdjustments == expected.localAdjustments)
+        #expect(written.exposure2012 == expected.exposure2012)
+    }
+
+    @Test("Sidecar paste onto a JPEG keeps its embedded redaction instead of hiding it")
+    func sidecarPasteCarriesEmbeddedRedaction() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var faceBlur = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        faceBlur.geometry.centerX = 0.6
+        _ = try await SwiftExifWriteEngine().writeDevelopFields(
+            [.crsExposure2012: "+0.10"], to: [source],
+            structuredData: StructuredWriteData(masks: [faceBlur],
+                                                anonymizer: AnonymizerSettings(amount: 75, blackOut: nil)),
+            allowsCredentialedEmbed: false
+        )
+        // A descriptive-only sidecar: the photo displays its embedded develop.
+        let service = XMPSidecarService()
+        try service.saveSidecar(metadata: IPTCMetadata(title: "Caption only"), for: source)
+        #expect(service.loadSidecar(for: source)?.cameraRaw?.isEmpty ?? true)
+
+        var sky = MaskAdjustment(name: "Sky", exposure: -0.7)
+        sky.geometry.centerY = 0.2
+        var copied = CameraRawSettings(exposure2012: 0.9)
+        copied.localAdjustments = [sky]
+        try await service.pasteCameraRawSerialized(copied, includeCrop: false, for: source)
+
+        let settings = try #require(service.loadSidecar(for: source)?.cameraRaw)
+        #expect(settings.exposure2012 == 0.9)
+        #expect(Set(settings.localAdjustments?.map(\.name) ?? []) == ["Face", "Sky"])
+        #expect(settings.anonymizer?.amount == 75)
+        #expect(service.loadSidecar(for: source)?.title == "Caption only")
+    }
+
+    @Test("Sidecar Develop paste appends to the RAW's own masks and is idempotent")
+    func sidecarDevelopPasteAppendsMasks() async throws {
+        let (directory, source) = try makeWorkspace(extension: "arw")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = XMPSidecarService()
+
+        var ownBlur = MaskAdjustment(name: "Face B", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        ownBlur.geometry.centerX = 0.7
+        var own = CameraRawSettings(exposure2012: 0.3)
+        own.localAdjustments = [ownBlur]
+        try await service.pasteCameraRawSerialized(own, includeCrop: false, for: source)
+
+        var pastedBlur = MaskAdjustment(name: "Face A", anonymizer: AnonymizerSettings(amount: 60, blackOut: nil))
+        pastedBlur.geometry.centerX = 0.2
+        var copied = CameraRawSettings(exposure2012: 1.0)
+        copied.localAdjustments = [pastedBlur]
+        try await service.pasteCameraRawSerialized(copied, includeCrop: false, for: source)
+        try await service.pasteCameraRawSerialized(copied, includeCrop: false, for: source)
+
+        let settings = try #require(service.loadSidecar(for: source)?.cameraRaw)
+        #expect(settings.exposure2012 == 1.0)
+        let masks = try #require(settings.localAdjustments)
+        #expect(masks.count == 2)
+        #expect(masks.contains { $0.anonymizer?.amount == 90 })
+        #expect(masks.contains { $0.anonymizer?.amount == 60 })
     }
 
     @Test("Direct SwiftExif writes refuse RAW loudly instead of silently succeeding")

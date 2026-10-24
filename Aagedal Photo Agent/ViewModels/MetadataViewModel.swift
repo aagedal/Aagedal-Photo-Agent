@@ -74,6 +74,61 @@ nonisolated enum MetadataCommitResult: Sendable, Equatable {
     case failed(message: String)
 }
 
+/// Outcome of saving the photos the Browser editor is leaving (selection change, folder switch,
+/// workspace exit). The editor has usually moved on by the time it arrives, so the caller shows
+/// `attentionMessage` somewhere that survives the change of selection.
+nonisolated enum EditorBoundaryCommitOutcome: Sendable, Equatable {
+    case nothingToCommit
+    case saved
+    /// A newer save of the same photo replaced this one; it carries these edits, so this is
+    /// neither a failure nor a reason to write a fallback draft.
+    case superseded
+    /// The configured write failed; the edit was kept as a pending metadata draft instead.
+    case keptAsDraft(message: String)
+    /// Neither the write nor a pending draft succeeded (for example a read-only card). The edit
+    /// exists only in the editor. `message` reads "Couldn't save your metadata edits to …: …".
+    case failed(message: String)
+
+    var preservesEdits: Bool {
+        if case .failed = self { return false }
+        return true
+    }
+
+    var attentionMessage: String? {
+        switch self {
+        case .nothingToCommit, .saved, .superseded: nil
+        case .keptAsDraft(let message), .failed(let message): message
+        }
+    }
+
+    static func failureMessage(files: String, reason: String) -> String {
+        "Couldn't save your metadata edits to \(files): \(reason)"
+    }
+}
+
+/// What a boundary that is leaving the Browser editor's photos does with a save outcome.
+nonisolated enum EditorBoundaryDecision: Equatable {
+    /// Continue the transition; show `attention` (if any) once it has happened.
+    case proceed(attention: String?)
+    /// Nothing durable holds the edit. Ask: discard the edits and continue, or stay.
+    case askToDiscard(message: String)
+
+    /// A selection change has already happened, so it cannot ask; a failed save there is
+    /// reported as discarded. Folder, workspace and close transitions can still ask.
+    static func resolve(_ outcome: EditorBoundaryCommitOutcome, canStay: Bool) -> EditorBoundaryDecision {
+        switch outcome {
+        case .nothingToCommit, .saved, .superseded:
+            return .proceed(attention: nil)
+        case .keptAsDraft(let message):
+            return .proceed(attention: message)
+        case .failed(let message):
+            return canStay
+                ? .askToDiscard(message: message)
+                : .proceed(attention: message + " The edits were discarded.")
+        }
+    }
+}
+
 /// Batch-specific presentation stays separate from the current editor's error state.
 nonisolated struct PendingMetadataWriteBatchAttention: Identifiable, Sendable {
     let id: UUID
@@ -228,11 +283,23 @@ final class MetadataViewModel {
     var variableProcessingStatus: String?
     var variableProcessingHadFailures = false
     var selectedHasC2PA = false
+    /// The loaded photos known to carry Content Credentials. Automatic saves resolve their write
+    /// mode from this editor-owned fact: by the time a selection or folder change saves, the
+    /// browser's arrays may already describe the next selection (or be empty).
+    private(set) var selectedC2PAURLs: Set<URL> = []
+    /// The folder the editor's current photos were loaded from. A folder switch can publish the
+    /// next folder into `currentFolderURL` before the departing photos' save is admitted.
+    private(set) var editorFolderURL: URL?
     var descriptionConflict: DescriptionConflict?
     /// Non-blocking notice rendered as a dismissible banner in the metadata panel.
     /// Set by bulk-add paths (template apply, partial promotion, Quick List pick)
     /// when entries are rejected or canonicalised against the approved list.
-    var notice: MetadataPanelNotice?
+    /// Notices describe the photos they were raised for, so loading another selection clears
+    /// them (except a navigation-boundary notice, which must survive its own navigation).
+    var notice: MetadataPanelNotice? {
+        didSet { noticeSurvivesNextSelectionLoad = false }
+    }
+    @ObservationIgnored private var noticeSurvivesNextSelectionLoad = false
 
     var originalImageMetadata: IPTCMetadata?
     var embeddedMetadata: IPTCMetadata?
@@ -252,14 +319,23 @@ final class MetadataViewModel {
     /// Incremented after every metadata load completes. Observed by EditWorkspaceView
     /// to force re-render even when editingMetadata.cameraRaw hasn't changed.
     var metadataLoadGeneration: Int = 0
+    /// Incremented whenever the editor's develop settings are replaced from outside Develop
+    /// (Reset All Edits). Develop ends its undo history on it: Undo must not resurrect them.
+    private(set) var developSettingsReplacementGeneration: Int = 0
     /// Identity used to reject UI buffers registered for a previous load of the same photo.
     var editorBufferLoadID: UUID? { metadataLoadRequestID }
 
     var hasXmpMetadata: Bool { xmpMetadata != nil }
     var hasEmbeddedCropNotLoaded: Bool {
-        guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
-              embeddedCrop.hasCrop == true else { return false }
+        guard embeddedCropForImport != nil else { return false }
         return editingMetadata.cameraRaw?.crop?.hasCrop != true
+    }
+    /// The file-embedded crop "Load Embedded Crop" applies. Develop routes it through its own
+    /// undoable, version-aware settings mutation instead of `importEmbeddedCrop()`.
+    var embeddedCropForImport: CameraRawCrop? {
+        guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
+              embeddedCrop.hasCrop == true else { return nil }
+        return embeddedCrop
     }
     var referenceMetadata: IPTCMetadata? {
         referenceMetadata(
@@ -269,13 +345,26 @@ final class MetadataViewModel {
             imageURL: selectedURLs.count == 1 ? selectedURLs.first : nil
         )
     }
-    var canWriteMetadataToImage: Bool {
+    var canWriteMetadataToImage: Bool { canWriteMetadataToImage() }
+
+    func canWriteMetadataToImage(knownC2PAURLs: Set<URL> = []) -> Bool {
         if isSaving { return false }
-        if hasChanges { return true }
-        if selectedCount == 1, let embedded = embeddedMetadata {
+        if hasChanges || selectedHavePendingSidecars { return true }
+        // The editor can show values the file itself lacks (for example an XMP reference copy
+        // of a JPEG). Only a mode that embeds can write those into the file; a sidecar-mode save
+        // never updates `embeddedMetadata`, so comparing it there kept Write enabled forever.
+        if selectedCount == 1, let embedded = embeddedMetadata,
+           let url = selectedURLs.first, !SupportedImageFormats.isRaw(url: url),
+           editorWriteMode(knownC2PAURLs: knownC2PAURLs).writesEmbedded {
             return editingMetadata != embedded
         }
-        return selectedHavePendingSidecars
+        return false
+    }
+
+    /// The write mode for the photos this editor holds. `knownC2PAURLs` adds Content Credentials
+    /// a caller learned after the load (the browser detects C2PA asynchronously).
+    func editorWriteMode(knownC2PAURLs: Set<URL> = []) -> MetadataWriteMode {
+        MetadataWriteMode.current(forURLs: selectedURLs, c2paURLs: selectedC2PAURLs.union(knownC2PAURLs))
     }
 
     // Batch metadata state - stores common values across selected images
@@ -285,6 +374,17 @@ final class MetadataViewModel {
     var batchPartialPersonShown: [String] = []
     var batchListSelectionSummary = BatchMetadataListSelectionSummary.empty
     private(set) var batchFieldMutations: [MetadataFieldID: MetadataFieldMutation] = [:]
+    /// The editor value each scalar text intent in `batchFieldMutations` was recorded against.
+    /// Typing into the field afterwards replaces the template's intent with the typed value.
+    @ObservationIgnored private var batchTextIntentEditorValues: [MetadataFieldID: String?] = [:]
+    /// Identity of each pending `.appendText` intent. A later template append that extends a
+    /// still-pending intent keeps its token, so `textAppendLedger` can tell which part of it
+    /// each photo's records already received.
+    @ObservationIgnored private var batchTextAppendTokens: [MetadataFieldID: UUID] = [:]
+    /// Which template text appends each photo's records already received. Shared by reference
+    /// with captured batch mutations, which consult it when they are applied, so a save queued
+    /// behind (or retried after) a partial save, or a dual-write XMP phase, never appends twice.
+    @ObservationIgnored private let textAppendLedger = BatchTextAppendLedger()
     private(set) var batchLocationsShownMutation: BatchLocationsShownMutation = .untouched
     private(set) var batchImageSupplierMutation: EditorialImageSupplierMutation = .untouched
     var isLoadingBatchMetadata = false
@@ -338,9 +438,20 @@ final class MetadataViewModel {
         return originalImageMetadata
     }
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
+    /// Selection loaded ahead of the debounced selection load (a template shortcut pressed
+    /// right after navigating). That debounced load must not replace the applied template.
+    @ObservationIgnored private var eagerSelectionLoadURLs: Set<URL>?
     @ObservationIgnored private var metadataLoadRequestID: UUID? {
         didSet { if oldValue != metadataLoadRequestID { editorXMPWriteBaseline = nil; primaryDevelopSourceBaseline = nil } }
     }
+    /// The selection the current (or most recent) metadata load is for. Set before the load
+    /// publishes `selectedURLs`, so picks made while waiting key to the photos being loaded.
+    @ObservationIgnored private var loadingSelection: (urls: [URL], folderURL: URL?)?
+    /// Keyword / Person Shown picks made while the editor was still loading. The empty
+    /// placeholder editor cannot be saved and the load replaces it, so these run once the
+    /// load for the same selection completes (and are dropped if the selection changes).
+    @ObservationIgnored private var deferredLoadActions: (urls: [URL], folderURL: URL?,
+        actions: [@MainActor () -> Bool], commit: @MainActor () -> Void)?
     @ObservationIgnored private var writeTask: Task<Void, Never>? {
         willSet {
             historyRestoreRequestID = nil
@@ -348,6 +459,11 @@ final class MetadataViewModel {
         }
     }
     @ObservationIgnored private var writeTaskGeneration = 0
+    /// The single-photo save that currently owns `writeTask`, if any (see `priorWriteForSingleSave`).
+    @ObservationIgnored private var supersedableSingleSave: (generation: Int, imageURL: URL, loadID: UUID?)?
+    /// Failures of embedded writes keyed by their write generation, so a caller chained behind
+    /// other writes reads its own outcome instead of the shared, overwritable `saveError`.
+    @ObservationIgnored private var embeddedWriteFailures: [Int: String] = [:]
     @ObservationIgnored private var primaryDevelopSourceBaseline: (imageURL: URL, loadID: UUID, revision: SourceImageRevision)?
     private(set) var retainedPrimaryDevelopWrites: [PrimaryDevelopWriteRequest] = []
     @ObservationIgnored private var primaryDevelopResults: [UUID: PrimaryDevelopWriteResult] = [:]
@@ -449,11 +565,11 @@ final class MetadataViewModel {
     private func multiSelectMode(for field: String) -> MultiSelectFieldMode {
         switch field {
         case "keywords":
-            let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode)
+            let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode)
                 ?? MultiSelectFieldMode.add.rawValue
             return MultiSelectFieldMode(rawValue: raw) ?? .add
         case "personShown":
-            let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode)
+            let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode)
                 ?? MultiSelectFieldMode.add.rawValue
             return MultiSelectFieldMode(rawValue: raw) ?? .add
         default:
@@ -532,12 +648,62 @@ final class MetadataViewModel {
         return true
     }
 
-    func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
+    /// The debounced browser-selection load. Skipped when `loadSelectionMetadataNow` already
+    /// loaded exactly this selection, so edits applied since then survive.
+    func loadSelectionMetadata(for images: [ImageFile], folderURL: URL?) {
+        let urls = Set(images.map(\.url))
+        if let held = heldSelectionURL?.standardizedFileURL,
+           selectedURLs.count == 1, selectedURLs[0].standardizedFileURL == held {
+            // Caption is holding this photo open until its draft is captured. Any selection
+            // load — the browser dropping it from the filter, or reselecting it when it comes
+            // back — would replace the uncaptured draft.
+            return
+        }
+        if let eager = eagerSelectionLoadURLs, eager == urls, Set(selectedURLs) == urls {
+            eagerSelectionLoadURLs = nil
+            return
+        }
+        loadMetadata(for: images, folderURL: folderURL)
+    }
+
+    /// A photo Caption keeps open after it left the browser's filtered list, until its draft has
+    /// been captured. Only the debounced browser-selection load honours it.
+    @ObservationIgnored private(set) var heldSelectionURL: URL?
+
+    func holdSelection(on imageURL: URL) { heldSelectionURL = imageURL }
+
+    func releaseSelectionHold() { heldSelectionURL = nil }
+
+    /// Loads a new browser selection immediately, ahead of its debounced selection load.
+    func loadSelectionMetadataNow(for images: [ImageFile], folderURL: URL?) {
+        loadMetadata(for: images, folderURL: folderURL)
+        eagerSelectionLoadURLs = Set(images.map(\.url))
+    }
+
+    /// Waits until the current metadata load (including one it hands over to) has finished.
+    func waitForMetadataLoad() async {
+        while let task = metadataLoadTask {
+            await task.value
+            if metadataLoadTask == task { return }
+        }
+    }
+
+    /// `preservingUnsavedEdits`: a passive refresh of the same photo/batch (folder auto-refresh)
+    /// keeps edits the user has not persisted yet and only advances their baseline. Explicit
+    /// reloads (discard, recovery) leave it false and replace the editor.
+    func loadMetadata(for images: [ImageFile], folderURL: URL? = nil, preservingUnsavedEdits: Bool = false) {
+        if let eager = eagerSelectionLoadURLs, eager != Set(images.map(\.url)) { eagerSelectionLoadURLs = nil }
         metadataLoadTask?.cancel()
         metadataLoadTask = nil
         // The replacement request owns both flags, including single/batch transitions.
         isLoading = false
         isLoadingBatchMetadata = false
+        let loadFolderURL = folderURL ?? currentFolderURL
+        loadingSelection = (images.map(\.url), loadFolderURL)
+        if let deferred = deferredLoadActions,
+           deferred.urls != images.map(\.url) || deferred.folderURL != loadFolderURL {
+            deferredLoadActions = nil
+        }
         if images.count == 1,
            let image = images.first,
            let phase = captionCleanupOwners[MetadataIOKey.key(for: image.url)] {
@@ -546,7 +712,7 @@ final class MetadataViewModel {
                 await phase.waitUntilFinished()
                 guard !Task.isCancelled else { return }
                 metadataLoadTask = nil
-                loadMetadata(for: images, folderURL: folderURL)
+                loadMetadata(for: images, folderURL: folderURL, preservingUnsavedEdits: preservingUnsavedEdits)
             }
             return
         }
@@ -565,17 +731,35 @@ final class MetadataViewModel {
         let isReloadingSameBatch = images.count > 1
             && selectionSnapshot == Set(previousSelectedURLs)
             && batchCommonMetadata != nil
+        let isReloadingSameImage = images.count == 1 && previousSelectedURLs.count == 1
+            && previousSelectedURLs.first == images[0].url && metadata != nil
+        // A passive reload of the same photo/batch (folder auto-refresh) must not replace edits
+        // the user has not persisted yet; the load then refreshes only their baselines.
+        let preservesUnsavedEdits = preservingUnsavedEdits
+            && (isReloadingSameBatch || isReloadingSameImage)
+            && hasUnpersistedEditorChanges
 
         selectedCount = images.count
         selectedURLs = images.map(\.url)
-        hasChanges = false
+        hasChanges = preservesUnsavedEdits
         selectedHavePendingSidecars = false
         saveError = nil
         variableProcessingStatus = nil
         selectedHasC2PA = images.contains { $0.hasC2PA }
+        selectedC2PAURLs = Set(images.filter(\.hasC2PA).map(\.url))
         descriptionConflict = nil
         sidecarHistory = []
-        originalImageMetadata = nil
+        if !isReloadingSameBatch && !isReloadingSameImage {
+            if noticeSurvivesNextSelectionLoad {
+                noticeSurvivesNextSelectionLoad = false
+            } else if notice != nil {
+                notice = nil
+            }
+        }
+        // A passive reload that keeps unsaved edits also keeps their diff baseline until the
+        // fresh one arrives: a save issued meanwhile must not see "no baseline" and treat every
+        // field — including an unchanged crs block — as changed.
+        if !preservesUnsavedEdits { originalImageMetadata = nil }
         embeddedMetadata = nil
         xmpMetadata = nil
         // Keep the displayed batch state intact across a redundant reload. Clearing it here
@@ -591,12 +775,19 @@ final class MetadataViewModel {
             batchLocationsShownMutation = .untouched
             batchImageSupplierMutation = .untouched
             batchMetadataByURL = [:]
+        } else if !preservesUnsavedEdits {
+            // This reload replaces the editor with the files' values, so explicit list changes
+            // it no longer shows must not ride along into the next save.
+            batchFieldMutations = [:]
+            batchLocationsShownMutation = .untouched
+            batchImageSupplierMutation = .untouched
         }
 
         if let folderURL {
             currentFolderURL = folderURL
         }
         let folderSnapshot = currentFolderURL
+        editorFolderURL = folderSnapshot
 
         guard !images.isEmpty else {
             metadata = nil
@@ -607,6 +798,7 @@ final class MetadataViewModel {
             isLoading = false
             isLoadingBatchMetadata = false
             batchMetadataByURL = [:]
+            deferredLoadActions = nil
             return
         }
 
@@ -616,7 +808,6 @@ final class MetadataViewModel {
 
             // When reloading the same image (e.g. auto-refresh after external edit),
             // skip the synchronous reset to avoid flashing the preview to unedited state.
-            let isReloadingSameImage = previousSelectedURLs.count == 1 && previousSelectedURLs.first == imageURL && metadata != nil
             if !isReloadingSameImage {
                 metadata = nil
                 editingMetadata = IPTCMetadata()
@@ -625,9 +816,27 @@ final class MetadataViewModel {
             isLoading = true
 
             metadataLoadTask = Task {
+                var loaded = false
+                defer {
+                    // Several guards below return early without reaching the tail that ends the
+                    // load. When that happens to the still-current request (not one cancelled or
+                    // superseded by a newer owner), end the load here: otherwise the editor stays
+                    // loading forever and queued picks block every Caption flush.
+                    if !Task.isCancelled, self.metadataLoadRequestID == requestID, self.isLoading {
+                        self.isLoading = false
+                        self.deferredLoadActions = nil
+                        if self.metadata == nil, self.saveError == nil {
+                            self.saveError = "The photo's metadata could not be loaded. Select it again to retry."
+                        }
+                    }
+                }
                 let loadStart = ContinuousClock.now
                 self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
                 do {
+                    if self.isPendingBatchWrite(imageURL) {
+                        await self.waitForPendingWrites()
+                        guard !Task.isCancelled, self.metadataLoadRequestID == requestID else { return }
+                    }
                     let sourceBefore = try? await SourceImageRevision.capture(at: imageURL)
                     // A cancelled capture is intentionally optional evidence, but must not
                     // enqueue an obsolete metadata read ahead of the next selected photo.
@@ -653,6 +862,7 @@ final class MetadataViewModel {
                     if let recovery = self.primaryDevelopRecoveryLoadGuard, recovery.loadID == requestID,
                        self.editingMetadata != recovery.edited {
                         self.isLoading = false
+                        self.deferredLoadActions = nil
                         return
                     }
                     if let sourceBefore, let sourceAfter, sourceBefore.canonicalURL == sourceAfter.canonicalURL,
@@ -692,7 +902,13 @@ final class MetadataViewModel {
                           self.selectedURLs.count == 1,
                           self.selectedURLs.first == imageURL else { return }
                     self.embeddedMetadata = embedded
-                    self.descriptionConflict = conflict
+                    // A sidecar-only photo whose XMP sidecar carries the description is not
+                    // affected by its file's internal disagreement — resolving it saves to the
+                    // sidecar, so showing the banner would bring it back on every load.
+                    let sidecarOwnsDescription = referenceSource == .xmp && xmpMeta?.description != nil
+                        && !MetadataWriteMode.current(forC2PA: images[0].hasC2PA,
+                            isRaw: SupportedImageFormats.isRaw(url: imageURL)).writesEmbedded
+                    self.descriptionConflict = sidecarOwnsDescription ? nil : conflict
                     self.xmpMetadata = xmpMeta
                     self.editorXMPWriteBaseline = (imageURL, folderSnapshot, requestID,
                         sourceFacts.xmpWriteSnapshot, sourceFacts.xmpReadFailure)
@@ -709,13 +925,22 @@ final class MetadataViewModel {
                             newEditingMetadata = EffectiveMetadataResolver.applyingPendingDraft(
                                 sidecar, to: newEditingMetadata)
                             self.hasChanges = true
+                            // A loaded draft still needs an explicit Write (and offers Discard),
+                            // as it does for a batch.
+                            self.selectedHavePendingSidecars = true
                         }
                     }
-                    // Always update on first load; optimize on reloads only.
-                    if !isReloadingSameImage || self.editingMetadata != newEditingMetadata {
-                        self.editingMetadata = newEditingMetadata
+                    // Always update on first load. A same-photo reload keeps unsaved edits and
+                    // only advances the baseline they will be saved (and diffed) against.
+                    if preservesUnsavedEdits, self.hasUnpersistedEditorChanges {
+                        self.previousEditingMetadata = newEditingMetadata
+                        self.hasChanges = true
+                    } else {
+                        if self.editingMetadata != newEditingMetadata {
+                            self.editingMetadata = newEditingMetadata
+                        }
+                        self.previousEditingMetadata = self.editingMetadata
                     }
-                    self.previousEditingMetadata = self.editingMetadata
                     self.metadataLoadGeneration += 1
                     let totalMs = loadStart.elapsedMilliseconds()
                     self.perfLog.info("[MetadataVM] loadMetadata DONE — \(imageURL.lastPathComponent, privacy: .private(mask: .hash)) total \(totalMs)ms")
@@ -723,6 +948,7 @@ final class MetadataViewModel {
                     if self.metadataReferenceSource == .xmp, self.xmpMetadata == nil {
                         self.metadataReferenceSource = .embedded
                     }
+                    loaded = true
                 } catch {
                     guard self.metadataLoadRequestID == requestID,
                           self.currentFolderURL == folderSnapshot,
@@ -738,6 +964,7 @@ final class MetadataViewModel {
                       self.currentFolderURL == folderSnapshot,
                       self.selectedURLs == [imageURL] else { return }
                 self.isLoading = false
+                if loaded { self.runDeferredLoadActions() } else { self.deferredLoadActions = nil }
             }
         } else {
             // Batch mode: load metadata for all selected images and find common values
@@ -761,7 +988,7 @@ final class MetadataViewModel {
                 await loadBatchMetadata(
                     for: images,
                     selectionSnapshot: selectionSnapshot,
-                    isReload: isReloadingSameBatch,
+                    isReload: preservesUnsavedEdits,
                     requestID: requestID,
                     folderURL: folderSnapshot
                 )
@@ -770,6 +997,7 @@ final class MetadataViewModel {
                       self.currentFolderURL == folderSnapshot,
                       self.selectedURLs == images.map(\.url) else { return }
                 self.isLoadingBatchMetadata = false
+                self.runDeferredLoadActions()
             }
         }
     }
@@ -847,6 +1075,9 @@ final class MetadataViewModel {
                 allMetadata.append(meta)
                 metadataByURL[image.url] = meta
             }
+        } catch is CancellationError {
+            // Superseded by a newer selection; its load owns the editor now.
+            return
         } catch {
             logger.error("Failed to load batch metadata: \(error.localizedDescription)")
         }
@@ -947,14 +1178,15 @@ final class MetadataViewModel {
 
         self.batchCommonMetadata = common
         self.batchDifferingFields = differing
-        // Pre-populate editing metadata with common values.
-        // On redundant reloads (same batch, e.g. auto-refresh), skip the
-        // update when the loaded values match what's already displayed to
-        // avoid overwriting the user's in-progress edits.
-        if !isReload || self.editingMetadata != common {
-            self.editingMetadata = common
-            self.previousEditingMetadata = common
+        // Pre-populate editing metadata with common values. A redundant reload of the same
+        // batch (e.g. auto-refresh) keeps the user's in-progress edits and their diff baseline.
+        if isReload, hasChanges {
+            return
         }
+        if self.editingMetadata != common {
+            self.editingMetadata = common
+        }
+        self.previousEditingMetadata = common
     }
 
     private func compareOptionalField<T: Equatable>(
@@ -1214,6 +1446,19 @@ final class MetadataViewModel {
         return result
     }
 
+    /// Applies the explicit scalar text intents a batch template recorded, per photo.
+    nonisolated static func applyingBatchTextMutations(
+        _ mutations: [MetadataFieldID: MetadataFieldMutation],
+        to metadata: IPTCMetadata
+    ) throws -> IPTCMetadata {
+        var result = metadata
+        for field in MetadataFieldID.allCases where !field.isRepeatable {
+            guard let mutation = mutations[field] else { continue }
+            try result.apply(mutation, to: field)
+        }
+        return result
+    }
+
     private func copyBatchLists(from source: IPTCMetadata, into target: inout IPTCMetadata) {
         target.keywords = source.keywords
         target.personShown = source.personShown
@@ -1260,10 +1505,53 @@ final class MetadataViewModel {
 
     /// Returns the placeholder text for a batch field that has differing values
     func batchPlaceholder(for field: String) -> String {
+        switch batchTextIntent(for: field) {
+        case .appendText(let text)?:
+            return "Will append “\(text)” to each of \(selectedCount) photos"
+        case .clear?:
+            return "Will be cleared on all \(selectedCount) photos"
+        default:
+            break
+        }
         if batchDifferingFields.contains(field) {
             return "Multiple values"
         }
+        // Emptying a value every selected photo shared clears it on save (Photo Mechanic).
+        if let path = MetadataEditorFieldPaths.scalarText(for: field),
+           let common = previousEditingMetadata?[keyPath: path], !common.isEmpty,
+           (editingMetadata[keyPath: path] ?? "").isEmpty {
+            return "Will be cleared on all \(selectedCount) photos"
+        }
         return "Leave empty to skip"
+    }
+
+    /// Partial keywords not yet added to every photo by the editor. A partial value the user
+    /// typed (or picked) is now common, so it must not also show as a partial chip.
+    var visibleBatchPartialKeywords: [String] {
+        let common = Set(editingMetadata.keywords)
+        return batchPartialKeywords.filter { !common.contains($0) }
+    }
+
+    var visibleBatchPartialPersonShown: [String] {
+        let common = Set(editingMetadata.personShown)
+        return batchPartialPersonShown.filter { !common.contains($0) }
+    }
+
+    /// After a batch save, values written to every photo are no longer partial. Overwrite mode
+    /// replaced each photo's list, so nothing remains partial.
+    private func reconcileBatchPartials(afterSaving saved: IPTCMetadata) {
+        if multiSelectMode(for: "keywords") == .overwrite, !saved.keywords.isEmpty {
+            batchPartialKeywords = []
+        } else {
+            let common = Set(saved.keywords)
+            batchPartialKeywords.removeAll { common.contains($0) }
+        }
+        if multiSelectMode(for: "personShown") == .overwrite, !saved.personShown.isEmpty {
+            batchPartialPersonShown = []
+        } else {
+            let common = Set(saved.personShown)
+            batchPartialPersonShown.removeAll { common.contains($0) }
+        }
     }
 
     /// Returns true if a field has differing values across the batch selection
@@ -1273,6 +1561,57 @@ final class MetadataViewModel {
 
     func markChanged() {
         hasChanges = true
+    }
+
+    /// True while a single-photo or batch metadata load still owns the editor.
+    var isEditorLoading: Bool { isLoading || isLoadingBatchMetadata }
+
+    /// The editor shows the empty placeholder of an in-flight load (not a same-selection
+    /// reload, which keeps the loaded fields). It has no verified baseline to save against.
+    var isShowingLoadPlaceholder: Bool {
+        (isLoading && metadata == nil) || (isLoadingBatchMetadata && batchCommonMetadata == nil)
+    }
+
+    /// Runs `action` now, or — while the editor is still loading — once the load for the
+    /// photos being loaded completes. Picks made against the empty placeholder editor would
+    /// otherwise fail the save's XMP evidence check and then be replaced by the load.
+    /// `action` returns whether it changed the editor; `commit` runs once afterwards if any
+    /// deferred action did (the latest caller's commit wins).
+    func performAfterEditorLoad(
+        commit: @escaping @MainActor () -> Void,
+        _ action: @escaping @MainActor () -> Bool
+    ) {
+        // Only the empty placeholder of an in-flight load defers: a same-selection reload or a
+        // load waiting on caption cleanup still shows a real, saveable editor for its photos.
+        guard isShowingLoadPlaceholder, let selection = loadingSelection else {
+            if action() { commit() }
+            return
+        }
+        if let deferred = deferredLoadActions,
+           deferred.urls == selection.urls, deferred.folderURL == selection.folderURL {
+            deferredLoadActions?.actions.append(action)
+            deferredLoadActions?.commit = commit
+        } else {
+            deferredLoadActions = (selection.urls, selection.folderURL, [action], commit)
+        }
+    }
+
+    /// Keyword/person picks made against the load placeholder that are still queued for the
+    /// in-flight load. They live outside `editingMetadata` until the load finishes, so a flush
+    /// barrier must treat them as edits: replacing this load would drop them.
+    var hasDeferredEditorActions: Bool {
+        guard let deferred = deferredLoadActions, let selection = loadingSelection,
+              !deferred.actions.isEmpty else { return false }
+        return deferred.urls == selection.urls && deferred.folderURL == selection.folderURL
+    }
+
+    private func runDeferredLoadActions() {
+        guard let deferred = deferredLoadActions else { return }
+        deferredLoadActions = nil
+        guard deferred.urls == selectedURLs, deferred.folderURL == currentFolderURL else { return }
+        var changed = false
+        for action in deferred.actions where action() { changed = true }
+        if changed { deferred.commit() }
     }
 
     /// Append `incoming` to `editingMetadata.keywords`, skipping empties and entries
@@ -1319,10 +1658,21 @@ final class MetadataViewModel {
         return addedCount
     }
 
+    /// Picks one of the file's disagreeing descriptions. The choice must then be saved so both
+    /// containers agree — call `commitEdits` afterwards. When the chosen text is what the editor
+    /// already shows, nothing would look changed and the save would be skipped (bringing the
+    /// banner back on the next load), so the baseline records the losing container's text: that
+    /// is literally what one of the containers still holds.
     func resolveDescriptionConflict(keepXMP: Bool) {
         guard let conflict = descriptionConflict else { return }
-        editingMetadata.description = keepXMP ? conflict.xmpDescription : conflict.iptcCaptionAbstract
+        let chosen = keepXMP ? conflict.xmpDescription : conflict.iptcCaptionAbstract
+        let losing = keepXMP ? conflict.iptcCaptionAbstract : conflict.xmpDescription
+        let chosenValue: String? = chosen.isEmpty ? nil : chosen
+        editingMetadata.description = chosenValue
         descriptionConflict = nil
+        if selectedCount == 1, previousEditingMetadata?.description == chosenValue {
+            previousEditingMetadata?.description = losing.isEmpty ? nil : losing
+        }
         markChanged()
     }
 
@@ -1337,12 +1687,12 @@ final class MetadataViewModel {
         originalImageMetadata?.cameraRaw = nil
         metadata?.cameraRaw = nil
         previousEditingMetadata?.cameraRaw = nil
+        developSettingsReplacementGeneration += 1
         metadataLoadGeneration += 1
     }
 
     func importEmbeddedCrop() {
-        guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
-              embeddedCrop.hasCrop == true else { return }
+        guard let embeddedCrop = embeddedCropForImport else { return }
         if editingMetadata.cameraRaw == nil {
             editingMetadata.cameraRaw = CameraRawSettings()
         }
@@ -1389,8 +1739,46 @@ final class MetadataViewModel {
         }
     }
 
+    /// The JPEG (any non-RAW) half of a RAW+JPEG pair shares the stem `.xmp` whose Camera Raw
+    /// block belongs to the RAW, so its Develop settings live in its own embedded XMP (Adobe
+    /// convention; an atomic metadata-only rewrite, no pixel recompression). A sidecar-bound
+    /// request becomes embedded + sidecar: the embedded half carries only Camera Raw settings
+    /// (`embedsDevelopOnly`), the sidecar half keeps receiving the descriptive record as before
+    /// and never touches the RAW's crs block.
+    nonisolated static func primaryDevelopMode(_ mode: MetadataWriteMode, pairedWithRAW: Bool) -> MetadataWriteMode {
+        guard pairedWithRAW else { return mode }
+        switch mode {
+        case .writeToXMPSidecar: return .writeToFileAndXMPSidecar
+        case .writeToFile, .writeToFileAndXMPSidecar, .historyOnly: return mode
+        }
+    }
+
+    /// Restores only the Develop part of the editing buffer to its last persisted state, keeping
+    /// any descriptive edits; `hasChanges` follows the buffer instead of being forced off.
+    func revertPrimaryDevelopToPersisted() {
+        guard let previous = previousEditingMetadata else { return }
+        editingMetadata.cameraRaw = previous.cameraRaw
+        editingMetadata.exifOrientation = previous.exifOrientation
+        hasChanges = selectedHavePendingSidecars || editingMetadata != previous
+    }
+
+    /// Why the selected photo's Primary Develop edit has no destination, or nil. A paired JPEG
+    /// carrying Content Credentials can't be embedded into without breaking them, and its
+    /// stem sidecar's develop block belongs to the RAW.
+    func primaryDevelopRefusal(for image: URL) -> String? {
+        // Simple deliberately ignores Content Credentials for every embedded write.
+        guard selectedHasC2PA, MetadataWritePreset.current != .simple, let raw = PhotoSidecarOwnership.developOwningRawSibling(of: image) else { return nil }
+        return "\(image.lastPathComponent) has Content Credentials and shares its XMP sidecar with \(raw.lastPathComponent). "
+            + "Develop edits can't be saved into the JPEG without breaking its credentials, and the shared sidecar's "
+            + "develop settings belong to the RAW. Edit \(raw.lastPathComponent) instead."
+    }
+
+    /// The last persisted Primary Develop settings of the selected photo (what a refused edit
+    /// reverts to).
+    var persistedPrimaryDevelopSettings: CameraRawSettings? { previousEditingMetadata?.cameraRaw }
+
     /// Develop uses its own retained queue: generic metadata writes cannot cancel its only copy.
-    func commitPrimaryDevelopEdits(mode: MetadataWriteMode, onComplete: @escaping (MetadataCommitResult) -> Void) {
+    func commitPrimaryDevelopEdits(mode requestedMode: MetadataWriteMode, onComplete: @escaping (MetadataCommitResult) -> Void) {
         guard primaryDevelopReviewOwner == nil else {
             let message = "Finish the Primary Develop recovery review before accepting another edit."
             saveError = message; onComplete(.failed(message: message)); return
@@ -1400,6 +1788,14 @@ final class MetadataViewModel {
             let message = "Wait for one photo to finish loading before saving its Primary Develop edit."
             saveError = message; onComplete(.failed(message: message)); return
         }
+        // Refuse before anything is retained, so a refusal never blocks later edits.
+        if let refusal = primaryDevelopRefusal(for: image) {
+            revertPrimaryDevelopToPersisted()
+            saveError = refusal; onComplete(.failed(message: refusal)); return
+        }
+        let pairedWithRAW = !SupportedImageFormats.isRaw(url: image)
+            && PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: image, requiringFreshListing: true)
+        let mode = Self.primaryDevelopMode(requestedMode, pairedWithRAW: pairedWithRAW)
         let edited = editingMetadata
         if let existing = retainedPrimaryDevelopWrites.last(where: {
             $0.imageURL == image && $0.folderURL == folder && $0.loadID == loadID
@@ -1432,7 +1828,8 @@ final class MetadataViewModel {
             xmpBaseline: xmpMetadata, embeddedBaseline: embeddedMetadata,
             expectedRecord: currentWriteExpectedRecord, expectedXMP: token,
             sourceRevision: source, captureFailure: captureFailure, history: sidecarHistory,
-            timestamp: Date(), predecessor: predecessor, watermarkDependencies: watermarkDependencies))
+            timestamp: Date(), predecessor: predecessor, watermarkDependencies: watermarkDependencies,
+            embedsDevelopOnly: pairedWithRAW, allowsCredentialedEmbed: MetadataWritePreset.current == .simple))
         retainedPrimaryDevelopWrites.append(request)
         schedulePrimaryDevelop(request, onComplete: onComplete)
     }
@@ -1469,9 +1866,7 @@ final class MetadataViewModel {
                     cleanupBaseline = (request.imageURL, request.folderURL, installed)
                     sidecarHistory = installed.history
                     previousEditingMetadata = request.edited
-                    if result.wroteEmbedded {
-                        embeddedMetadata = request.edited; originalImageMetadata = request.edited; metadata = request.edited
-                    }
+                    if result.wroteEmbedded { adoptEmbeddedPrimaryDevelop(request) }
                     capturedCaptionWriteExpectation = nil
                     if completion.wroteXMPSidecar { xmpMetadata = completion.writtenXMPMetadata ?? request.edited }
                     editorXMPWriteBaseline = (request.imageURL, request.folderURL, request.loadID,
@@ -1487,11 +1882,29 @@ final class MetadataViewModel {
                     if let source = result.sourceRevision { primaryDevelopSourceBaseline = (request.imageURL, request.loadID, source) }
                     editingMetadata.cameraRaw = completion.writtenXMPMetadata?.cameraRaw ?? request.edited.cameraRaw
                     previousEditingMetadata = editingMetadata
-                    if result.wroteEmbedded { embeddedMetadata = request.edited; originalImageMetadata = request.edited; metadata = request.edited }
+                    if result.wroteEmbedded { adoptEmbeddedPrimaryDevelop(request) }
                     else if metadataReferenceSource == .xmp { metadata = xmpMetadata; originalImageMetadata = xmpMetadata }
                     hasChanges = false; selectedHavePendingSidecars = false; saveError = nil
                 }
                 synchronizePrimaryDevelopRetention(); onComplete(.succeeded)
+            } else if result.refusedForContentCredentials || result.refusedBeforeWrite {
+                // Nothing was written (Content Credentials, or develop metadata too large for the
+                // file): drop this photo's queued edits instead of retaining work that can never
+                // be saved, and revert only the Develop part of the editor.
+                let message = result.failure ?? "This photo's Develop edit could not be saved safely and was not written."
+                retainedPrimaryDevelopWrites.removeAll {
+                    $0.imageURL == request.imageURL && $0.folderURL == request.folderURL && $0.loadID == request.loadID
+                }
+                if metadataLoadRequestID == request.loadID, selectedURLs == [request.imageURL] {
+                    if result.refusedForContentCredentials {
+                        selectedHasC2PA = true
+                        selectedC2PAURLs.insert(request.imageURL)
+                    }
+                    revertPrimaryDevelopToPersisted()
+                    saveError = message
+                }
+                synchronizePrimaryDevelopRetention()
+                onComplete(.failed(message: message))
             } else {
                 let message = primaryDevelopFailureMessage(result)
                 if matches { saveError = message }
@@ -1500,6 +1913,18 @@ final class MetadataViewModel {
             }
         }
     }
+    /// A develop-only embed (RAW+JPEG pair's JPEG) changed only the file's Camera Raw block;
+    /// its descriptive record is untouched, so only the develop part of the baselines moves.
+    private func adoptEmbeddedPrimaryDevelop(_ request: PrimaryDevelopWriteRequest) {
+        guard request.embedsDevelopOnly else {
+            embeddedMetadata = request.edited; originalImageMetadata = request.edited; metadata = request.edited
+            return
+        }
+        embeddedMetadata?.cameraRaw = request.edited.cameraRaw
+        originalImageMetadata?.cameraRaw = request.edited.cameraRaw
+        metadata?.cameraRaw = request.edited.cameraRaw
+    }
+
     private func primaryDevelopFailureMessage(_ result: PrimaryDevelopWriteResult) -> String {
         let prefix = result.requiresRecovery
             ? "Primary Develop metadata may be partly written. Its complete captured edit remains retained; export and review it before discarding."
@@ -1630,8 +2055,8 @@ final class MetadataViewModel {
     }
 
     /// Reports the result of the exact commit request to an external lifecycle owner.
-    /// `historyOnly` retains its established fire-and-forget contract; Develop uses the two
-    /// durable modes whose completions occur only after their metadata/history work finishes.
+    /// Every mode completes only after its metadata/history work finishes (History Only once
+    /// its pending draft is durable), so boundaries never race a save they believe is done.
     func commitEditsReportingResult(
         mode: MetadataWriteMode,
         onComplete: @escaping (MetadataCommitResult) -> Void
@@ -1642,13 +2067,145 @@ final class MetadataViewModel {
         catch { saveError = error.localizedDescription; onComplete(.failed(message: error.localizedDescription)); return }
         switch mode {
         case .historyOnly:
-            saveToSidecar()
-            onComplete(.succeeded)
+            // Report when the draft is durable, so a boundary waits for it instead of racing it.
+            saveToSidecar { failure in
+                onComplete(failure.map { .failed(message: $0) } ?? .succeeded)
+            }
         case .writeToXMPSidecar:
             writeXMPSidecarAndPreserveHistory(onComplete: onComplete)
         case .writeToFile, .writeToFileAndXMPSidecar:
             writeMetadataAndPreserveHistory(alsoWriteXMPSidecar: mode.writesXMPSidecar, onComplete: onComplete)
         }
+    }
+
+    /// Saves the photos the editor holds before it moves on, using the editor's own write mode
+    /// and load folder — never the browser's current arrays, which a folder or pane switch has
+    /// already replaced. A failed write keeps a single photo's edit as a pending JSON draft so
+    /// navigating away never silently drops it; the outcome names the photo and the reason.
+    func commitDepartingEditor(
+        knownC2PAURLs: Set<URL> = [],
+        onComplete: @escaping (EditorBoundaryCommitOutcome) -> Void
+    ) {
+        guard hasUnpersistedEditorChanges else { onComplete(.nothingToCommit); return }
+        let names = selectedURLs.map(\.lastPathComponent).joined(separator: ", ")
+        let mode = editorWriteMode(knownC2PAURLs: knownC2PAURLs)
+        withEditorFolder {
+            let fallback = boundaryDraftFallback()
+            let edited = editingMetadata
+            let loadID = metadataLoadRequestID
+            let folder = currentFolderURL
+            commitEditsReportingResult(mode: mode) { [weak self] result in
+                switch result {
+                case .succeeded:
+                    onComplete(.saved)
+                case .cancelled:
+                    // Superseded by a newer save of this photo, which carries these edits.
+                    onComplete(.superseded)
+                case .failed(let message):
+                    guard let fallback else {
+                        onComplete(.failed(message: EditorBoundaryCommitOutcome.failureMessage(
+                            files: names, reason: message)))
+                        return
+                    }
+                    guard let self else {
+                        onComplete(.failed(message: EditorBoundaryCommitOutcome.failureMessage(
+                            files: names, reason: message)))
+                        return
+                    }
+                    self.enqueueBoundaryDraftFallback(fallback) { failure in
+                        if let failure {
+                            onComplete(.failed(message: EditorBoundaryCommitOutcome.failureMessage(
+                                files: names, reason: "\(message) A pending draft could not be kept either: \(failure)")))
+                            return
+                        }
+                        self.adoptBoundaryDraft(fallback, edited: edited, loadID: loadID, folderURL: folder)
+                        onComplete(.keptAsDraft(message: "Metadata for \(names) could not be written and was kept as a pending draft. Use Write to retry. \(message)"))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Persists a boundary's fallback draft as part of the write chain, so `waitForPendingWrites`
+    /// (quit, rename, Paste IPTC, the next boundary) returns only once it is durable, and a later
+    /// save of the photo queues behind it instead of racing it.
+    private func enqueueBoundaryDraftFallback(
+        _ fallback: CaptionDraftPersistence,
+        onComplete: @escaping @MainActor (String?) -> Void
+    ) {
+        let priorWrite = writeTask
+        let generation = writeTaskGeneration + 1
+        isSaving = true
+        let write = Task { @MainActor in
+            defer { if writeTaskGeneration == generation { isSaving = false } }
+            await priorWrite?.value
+            do {
+                try await fallback.persistAsync()
+                onComplete(nil)
+            } catch {
+                onComplete(error.localizedDescription)
+            }
+        }
+        writeTask = Task { await write.value }
+    }
+
+    /// Runs `body` with `currentFolderURL` set to the folder the editor's photos were loaded
+    /// from. Saves capture the folder synchronously, so restoring it afterwards is safe.
+    private func withEditorFolder<T>(_ body: () -> T) -> T {
+        guard let editorFolderURL, currentFolderURL != editorFolderURL else { return body() }
+        let published = currentFolderURL
+        currentFolderURL = editorFolderURL
+        defer { if currentFolderURL == editorFolderURL { currentFolderURL = published } }
+        return body()
+    }
+
+    /// The pending draft a failed boundary save falls back to: the editor's field changes,
+    /// replayed onto the photo's latest JSON record. Captured before the write is attempted,
+    /// because the editor may hold another photo by the time the write reports its failure.
+    private func boundaryDraftFallback() -> CaptionDraftPersistence? {
+        guard selectedCount == 1, let imageURL = selectedURLs.first,
+              let folderURL = currentFolderURL else { return nil }
+        let now = Date()
+        let previous = previousEditingMetadata ?? IPTCMetadata()
+        let changes = MetadataHistoryEntry.changes(from: previous, to: editingMetadata, timestamp: now)
+        guard !changes.isEmpty else { return nil }
+        var history = sidecarHistory + changes
+        history.trimToHistoryLimit()
+        let sidecar = MetadataSidecar(sourceFile: imageURL.lastPathComponent, lastModified: now,
+            pendingChanges: true, metadata: editingMetadata,
+            imageMetadataSnapshot: pendingDraftImageMetadataSnapshot, history: history)
+        return CaptionDraftPersistence(request: MetadataSidecarReplayRequest(
+            sidecar: sidecar, baselineMetadata: previous, baselineHistory: sidecarHistory,
+            baselineRecordExisted: currentWriteExpectedRecord != nil,
+            changes: changes, imageURL: imageURL, folderURL: folderURL))
+    }
+
+    /// When the editor still shows the photo whose save fell back to a draft, reload it: the
+    /// photo now holds a pending draft (Write enabled), and the reload refreshes the JSON and XMP
+    /// baselines the next save is checked against — keeping the old ones would make that save
+    /// fail as an ownership or stale-sidecar conflict.
+    private func adoptBoundaryDraft(_ draft: CaptionDraftPersistence, edited: IPTCMetadata,
+                                    loadID: UUID?, folderURL: URL?) {
+        guard selectedURLs == [draft.imageURL], metadataLoadRequestID == loadID,
+              editingMetadata == edited else { return }
+        var image = ImageFile(url: draft.imageURL)
+        image.hasC2PA = selectedC2PAURLs.contains(draft.imageURL)
+        loadMetadata(for: [image], folderURL: folderURL ?? draft.folderURL)
+    }
+
+    /// "Discard Edits and Continue" at a boundary whose save failed: drop the editor's unsaved
+    /// changes (pending drafts on disk are untouched) so the transition can go ahead.
+    func discardUnsavedEditorChanges() {
+        if let previous = previousEditingMetadata { editingMetadata = previous }
+        if isBatchEdit {
+            batchFieldMutations = [:]
+            batchLocationsShownMutation = .untouched
+            batchImageSupplierMutation = .untouched
+            hasChanges = false
+        } else {
+            hasChanges = selectedHavePendingSidecars
+        }
+        saveError = nil
     }
 
     func writeMetadata() {
@@ -1658,6 +2215,7 @@ final class MetadataViewModel {
         catch { saveError = error.localizedDescription; return }
         let urls = selectedURLs
         guard !urls.isEmpty else { return }
+        pruneStaleBatchTextIntents()
         let selectionSnapshot = Set(urls)
         let writeFolderURL = currentFolderURL
         let edited = editingMetadata
@@ -1667,24 +2225,45 @@ final class MetadataViewModel {
         let explicitBatchMutations = batchFieldMutations
         let explicitLocationsShownMutation = batchLocationsShownMutation
         let resolvedBatchSnapshot = batchMetadataByURL
+        let draftMutation = isBatch
+            ? (mutation: capturedBatchMutation(), overridesSuppliers: batchImageSupplierMutation != .untouched)
+            : nil
+        let generation = writeTaskGeneration + 1
         isSaving = true
         saveError = nil
 
-        writeTask?.cancel()
-        writeTask = Task {
+        // Serialize behind any running write instead of cancelling it, and keep the write itself
+        // out of reach of a later `writeTask?.cancel()`: a cancelled batch write stops partway
+        // through the selection and leaves photos half-updated.
+        let priorWrite = writeTask
+        let batchTracking = isBatch ? beginBatchWriteTracking(urls) : nil
+        let write = Task {
+            defer { if let batchTracking { self.endBatchWriteTracking(batchTracking) } }
+            await priorWrite?.value
             do {
                 if let writeFolderURL {
                     for url in urls {
                         try await sidecarService.requireNoPendingOrientation(for: url, in: writeFolderURL)
                     }
                 }
+                // Never embed into a RAW container: RAW photos in the selection get their complete
+                // per-photo record in the XMP sidecar below, the rest are written in place.
+                let embedURLs = urls.filter { !SupportedImageFormats.isRaw(url: $0) }
+                let rawURLs = urls.filter { SupportedImageFormats.isRaw(url: $0) }
                 var fields: [MetadataFieldKey: String] = [:]
+                // Files refused because their metadata wouldn't fit a JPEG segment are left
+                // untouched; every later phase continues with the files that were written.
+                var lossRefusals: [EmbeddedMetadataLossRefusal] = []
+                func writableEmbedURLs() -> [URL] {
+                    let refused = Set(lossRefusals.map(\.imageURL))
+                    return embedURLs.filter { !refused.contains($0) }
+                }
 
                 if isBatch {
-                    // Batch: only write non-empty fields
-                    if let v = edited.title, !v.isEmpty { fields[.headline] = v }
-                    if let v = edited.description, !v.isEmpty { fields[.description] = v }
-                    if let v = edited.extendedDescription, !v.isEmpty { fields[.extendedDescription] = v }
+                    // Batch: write non-empty fields; emptying a value common to the selection clears it
+                    if let v = Self.batchScalarWriteValue(edited.title, previous: prevEditing?.title) { fields[.headline] = v }
+                    if let v = Self.batchScalarWriteValue(edited.description, previous: prevEditing?.description) { fields[.description] = v }
+                    if let v = Self.batchScalarWriteValue(edited.extendedDescription, previous: prevEditing?.extendedDescription) { fields[.extendedDescription] = v }
 
                     // Keywords — check add vs overwrite mode
                     let keywordsMode = self.multiSelectMode(for: "keywords")
@@ -1704,33 +2283,40 @@ final class MetadataViewModel {
                     }
                     // Add mode personShown handled below via addRemoveListValues
 
-                    if let v = edited.digitalSourceType { fields[.digitalSourceType] = v.newsCodeURI }
-                    if let v = edited.urgency { fields[.urgency] = String(v) }
+                    if let v = Self.batchScalarWriteValue(edited.digitalSourceType?.newsCodeURI,
+                        previous: prevEditing?.digitalSourceType?.newsCodeURI) { fields[.digitalSourceType] = v }
+                    if let v = Self.batchScalarWriteValue(edited.urgency.map(String.init),
+                        previous: prevEditing?.urgency.map(String.init)) { fields[.urgency] = v }
                     if let lat = edited.latitude, let lon = edited.longitude {
                         fields[.gpsLatitude] = String(abs(lat))
                         fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
                         fields[.gpsLongitude] = String(abs(lon))
                         fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+                    } else if Self.batchClearsGPS(edited: edited, previous: prevEditing) {
+                        fields[.gpsLatitude] = ""
+                        fields[.gpsLatitudeRef] = ""
+                        fields[.gpsLongitude] = ""
+                        fields[.gpsLongitudeRef] = ""
                     }
                     if let v = edited.creatorTransportValue { fields[.creator] = v }
-                    if let v = edited.creatorJobTitle, !v.isEmpty { fields[.creatorJobTitle] = v }
-                    if let v = edited.descriptionWriter, !v.isEmpty { fields[.descriptionWriter] = v }
-                    if let v = edited.credit, !v.isEmpty { fields[.credit] = v }
-                    if let v = edited.copyright, !v.isEmpty { fields[.rights] = v }
-                    if let v = edited.rightsUsageTerms, !v.isEmpty { fields[.rightsUsageTerms] = v }
-                    if let v = edited.webStatementOfRights, !v.isEmpty { fields[.webStatementOfRights] = v }
-                    if let v = edited.digitalImageGUID, !v.isEmpty { fields[.digitalImageGUID] = v }
-                    if let v = edited.imageSupplierImageID, !v.isEmpty { fields[.imageSupplierImageID] = v }
-                    if let v = edited.jobId, !v.isEmpty { fields[.transmissionReference] = v }
-                    if let v = edited.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
-                    if let v = edited.city, !v.isEmpty { fields[.city] = v }
-                    if let v = edited.sublocation, !v.isEmpty { fields[.sublocation] = v }
-                    if let v = edited.provinceState, !v.isEmpty { fields[.provinceState] = v }
-                    if let v = edited.country, !v.isEmpty { fields[.country] = v }
-                    if let v = edited.countryCode, !v.isEmpty { fields[.countryCode] = v }
-                    if let v = edited.event, !v.isEmpty { fields[.event] = v }
-                    if let v = edited.instructions, !v.isEmpty { fields[.instructions] = v }
-                    if let v = edited.source, !v.isEmpty { fields[.source] = v }
+                    if let v = Self.batchScalarWriteValue(edited.creatorJobTitle, previous: prevEditing?.creatorJobTitle) { fields[.creatorJobTitle] = v }
+                    if let v = Self.batchScalarWriteValue(edited.descriptionWriter, previous: prevEditing?.descriptionWriter) { fields[.descriptionWriter] = v }
+                    if let v = Self.batchScalarWriteValue(edited.credit, previous: prevEditing?.credit) { fields[.credit] = v }
+                    if let v = Self.batchScalarWriteValue(edited.copyright, previous: prevEditing?.copyright) { fields[.rights] = v }
+                    if let v = Self.batchScalarWriteValue(edited.rightsUsageTerms, previous: prevEditing?.rightsUsageTerms) { fields[.rightsUsageTerms] = v }
+                    if let v = Self.batchScalarWriteValue(edited.webStatementOfRights, previous: prevEditing?.webStatementOfRights) { fields[.webStatementOfRights] = v }
+                    if let v = Self.batchScalarWriteValue(edited.digitalImageGUID, previous: prevEditing?.digitalImageGUID) { fields[.digitalImageGUID] = v }
+                    if let v = Self.batchScalarWriteValue(edited.imageSupplierImageID, previous: prevEditing?.imageSupplierImageID) { fields[.imageSupplierImageID] = v }
+                    if let v = Self.batchScalarWriteValue(edited.jobId, previous: prevEditing?.jobId) { fields[.transmissionReference] = v }
+                    if let v = Self.batchScalarWriteValue(edited.dateCreated, previous: prevEditing?.dateCreated) { fields[.dateCreated] = v }
+                    if let v = Self.batchScalarWriteValue(edited.city, previous: prevEditing?.city) { fields[.city] = v }
+                    if let v = Self.batchScalarWriteValue(edited.sublocation, previous: prevEditing?.sublocation) { fields[.sublocation] = v }
+                    if let v = Self.batchScalarWriteValue(edited.provinceState, previous: prevEditing?.provinceState) { fields[.provinceState] = v }
+                    if let v = Self.batchScalarWriteValue(edited.country, previous: prevEditing?.country) { fields[.country] = v }
+                    if let v = Self.batchScalarWriteValue(edited.countryCode, previous: prevEditing?.countryCode) { fields[.countryCode] = v }
+                    if let v = Self.batchScalarWriteValue(edited.event, previous: prevEditing?.event) { fields[.event] = v }
+                    if let v = Self.batchScalarWriteValue(edited.instructions, previous: prevEditing?.instructions) { fields[.instructions] = v }
+                    if let v = Self.batchScalarWriteValue(edited.source, previous: prevEditing?.source) { fields[.source] = v }
                 } else {
                     // Single: write all changed fields
                     if edited.title != original?.title { fields[.headline] = edited.title ?? "" }
@@ -1818,13 +2404,18 @@ final class MetadataViewModel {
                         || Set(edited.mediaTopics) != Set(original?.mediaTopics ?? [])
                         || Set(edited.genres) != Set(original?.genres ?? [])
                 )
-                if !fields.isEmpty || structuredEditorialChanged {
+                if !embedURLs.isEmpty, !fields.isEmpty || structuredEditorialChanged {
                     let structuredData = StructuredWriteData(
                         editorial: structuredEditorialChanged
                             ? EditorialStructuredWriteData(metadata: edited)
-                            : nil
+                            : nil,
+                        listValues: EditorialListWriteData(metadata: edited)
                     )
-                    try await writeEngine.writeFields(fields, to: urls, structuredData: structuredData)
+                    do {
+                        try await writeEngine.writeFields(fields, to: embedURLs, structuredData: structuredData)
+                    } catch let batch as EmbeddedMetadataBatchRefusal {
+                        lossRefusals += batch.refusals
+                    }
                 }
 
                 // Handle additive list fields via += / -=
@@ -1834,17 +2425,46 @@ final class MetadataViewModel {
                         previous: prev,
                         explicitMutations: explicitBatchMutations
                     )
-                    if !diffs.add.isEmpty || !diffs.remove.isEmpty {
-                        try await writeEngine.addRemoveListValues(
-                            add: diffs.add,
-                            remove: diffs.remove,
-                            to: urls
-                        )
+                    let listTargets = writableEmbedURLs()
+                    if !listTargets.isEmpty, !diffs.add.isEmpty || !diffs.remove.isEmpty {
+                        do {
+                            try await writeEngine.addRemoveListValues(
+                                add: diffs.add,
+                                remove: diffs.remove,
+                                to: listTargets
+                            )
+                        } catch let batch as EmbeddedMetadataBatchRefusal {
+                            lossRefusals += batch.refusals
+                        }
+                    }
+                }
+
+                if let batchMutation = draftMutation?.mutation, explicitBatchMutations.contains(where: { entry in
+                    if case .appendText = entry.value { return true }
+                    return false
+                }) {
+                    // Template text appends are per photo: each file gets its own value plus the
+                    // appended text, never the editor's common-value preview.
+                    for url in writableEmbedURLs() {
+                        let base: IPTCMetadata
+                        if let resolved = resolvedBatchSnapshot[url] {
+                            base = resolved
+                        } else {
+                            base = try await self.readService.readFullMetadata(url: url)
+                        }
+                        let photoFields = batchMutation.embeddedTextFields(for: url, base: base)
+                        guard !photoFields.isEmpty else { continue }
+                        do {
+                            try await writeEngine.writeFields(photoFields, to: [url])
+                            batchMutation.markDelivered(to: url, channel: .embedded)
+                        } catch let batch as EmbeddedMetadataBatchRefusal {
+                            lossRefusals += batch.refusals
+                        }
                     }
                 }
 
                 if isBatch, explicitLocationsShownMutation != .untouched {
-                    for url in urls {
+                    for url in writableEmbedURLs() {
                         let base: IPTCMetadata
                         if let resolved = resolvedBatchSnapshot[url] {
                             base = resolved
@@ -1856,13 +2476,17 @@ final class MetadataViewModel {
                             locationsShown: explicitLocationsShownMutation,
                             to: base
                         )
-                        try await writeEngine.writeFields(
-                            [:],
-                            to: [url],
-                            structuredData: StructuredWriteData(
-                                editorial: EditorialStructuredWriteData(metadata: updated)
+                        do {
+                            try await writeEngine.writeFields(
+                                [:],
+                                to: [url],
+                                structuredData: StructuredWriteData(
+                                    editorial: EditorialStructuredWriteData(metadata: updated)
+                                )
                             )
-                        )
+                        } catch let batch as EmbeddedMetadataBatchRefusal {
+                            lossRefusals += batch.refusals
+                        }
                     }
                 }
 
@@ -1870,7 +2494,7 @@ final class MetadataViewModel {
                     $0.key == .mediaTopic || $0.key == .genre
                 }
                 if isBatch, !controlledStructuredMutations.isEmpty {
-                    for url in urls {
+                    for url in writableEmbedURLs() {
                         let base: IPTCMetadata
                         if let resolved = resolvedBatchSnapshot[url] {
                             base = resolved
@@ -1879,27 +2503,131 @@ final class MetadataViewModel {
                         }
                         let updated = try MetadataFieldMutationSet(controlledStructuredMutations)
                             .applying(to: base)
-                        try await writeEngine.writeFields(
-                            [:],
-                            to: [url],
-                            structuredData: StructuredWriteData(
-                                editorial: EditorialStructuredWriteData(metadata: updated)
+                        do {
+                            try await writeEngine.writeFields(
+                                [:],
+                                to: [url],
+                                structuredData: StructuredWriteData(
+                                    editorial: EditorialStructuredWriteData(metadata: updated)
+                                )
                             )
-                        )
+                        } catch let batch as EmbeddedMetadataBatchRefusal {
+                            lossRefusals += batch.refusals
+                        }
                     }
                 }
 
-                await self.mirrorEmbeddedStateToExistingSidecars(for: urls)
-
-                if Set(self.selectedURLs) == selectionSnapshot {
-                    self.metadata = edited
-                    self.hasChanges = false
+                var installedRawRecords: [URL: IPTCMetadata] = [:]
+                for url in rawURLs {
+                    if let draftMutation {
+                        // Apply the batch change to the sidecar's current record inside its
+                        // transaction. Replacing it from the load-time snapshot would revert
+                        // ratings, labels or face names written to the sidecar since then.
+                        var fallback: IPTCMetadata
+                        if let resolved = resolvedBatchSnapshot[url] {
+                            fallback = resolved
+                        } else {
+                            fallback = try await self.readService.readFullMetadata(url: url)
+                        }
+                        // A descriptive batch edit leaves develop settings exactly as stored, and a
+                        // new sidecar must not freeze a copy of the file's embedded Camera Raw.
+                        fallback.cameraRaw = nil
+                        installedRawRecords[url] = try await self.xmpSidecarService.updateSidecarSerialized(
+                            for: url, fallback: fallback, preservesDevelopSettings: true,
+                            mutation: draftMutation.mutation.closure(for: url, channel: .xmpSidecar))
+                        draftMutation.mutation.markDelivered(to: url, channel: .xmpSidecar)
+                    } else {
+                        _ = try await self.descriptiveWriteBoundary.write(
+                            metadata: edited, for: url, requestedMode: .writeToFile, semantics: .replace)
+                    }
                 }
+
+                let refusedURLs = Set(lossRefusals.map(\.imageURL))
+                // Refused files whose change actually landed in a pending draft.
+                var draftedRefusedURLs: Set<URL> = []
+                let mirroredURLs = await self.mirrorEmbeddedStateToExistingSidecars(for: writableEmbedURLs())
+                if let draftMutation {
+                    // The mirror copied each file's complete post-write record, appended text
+                    // included, into its existing .xmp: a dual-write XMP phase must not append again.
+                    for url in mirroredURLs { draftMutation.mutation.markDelivered(to: url, channel: .xmpSidecar) }
+                }
+
+                // A pending draft is the photo's record until it is written. Apply the same batch
+                // change to it (keeping it pending) so a later Write All cannot revert this write.
+                if let draftMutation, let writeFolderURL {
+                    let pendingNames = Set(await self.sidecarService.imagesWithPendingChanges(in: writeFolderURL)
+                        .map(\.lastPathComponent))
+                    let draftURLs = urls.filter { pendingNames.contains($0.lastPathComponent) }
+                    if !draftURLs.isEmpty {
+                        let failure = await self.saveBatchSidecars(folderURL: writeFolderURL, pendingChanges: true,
+                            updateState: false,
+                            capture: self.captureBatchSidecars(targetURLs: draftURLs, capturedMutation: draftMutation))
+                        if failure == nil { draftedRefusedURLs.formUnion(refusedURLs.intersection(draftURLs)) }
+                    }
+                    // A refused file keeps this change as a pending draft (not written, not lost),
+                    // so it can be written later or moved to a sidecar destination.
+                    for url in embedURLs where refusedURLs.contains(url) && !pendingNames.contains(url.lastPathComponent) {
+                        var fallback: IPTCMetadata
+                        if let resolved = resolvedBatchSnapshot[url] {
+                            fallback = resolved
+                        } else {
+                            fallback = (try? await self.readService.readFullMetadata(url: url)) ?? IPTCMetadata()
+                        }
+                        fallback.cameraRaw = nil
+                        if (try? await self.sidecarService.updateMetadataSerialized(
+                            for: url, in: writeFolderURL, fallback: fallback, pendingChanges: true,
+                            timestamp: Date(), mutation: draftMutation.mutation.closure(for: url, channel: .jsonDraft))) != nil {
+                            draftMutation.mutation.markDelivered(to: url, channel: .jsonDraft)
+                            draftedRefusedURLs.insert(url)
+                        }
+                    }
+                }
+
+                // A refused file with no pending draft holds this change only in the editor: keep
+                // it dirty and leave the baselines where they were, so it isn't mistaken for saved.
+                let undraftedRefusedURLs = refusedURLs.subtracting(draftedRefusedURLs)
+                if Set(self.selectedURLs) == selectionSnapshot, !undraftedRefusedURLs.isEmpty {
+                    self.hasChanges = true
+                    if !draftedRefusedURLs.isEmpty { self.selectedHavePendingSidecars = true }
+                } else if Set(self.selectedURLs) == selectionSnapshot {
+                    self.metadata = edited
+                    if isBatch {
+                        // The saved state is the new baseline: later add/remove diffs and
+                        // explicit list operations must be computed against it, not load time.
+                        // The per-photo records advance with it: a later RAW `.replace` or
+                        // structured write starts from them and would otherwise revert this one.
+                        if let draftMutation {
+                            for (url, record) in resolvedBatchSnapshot where !refusedURLs.contains(url) {
+                                var written = record
+                                draftMutation.mutation.applyIgnoringDeliveries(to: &written)
+                                self.batchMetadataByURL[url] = installedRawRecords[url] ?? written
+                            }
+                        }
+                        self.previousEditingMetadata = edited
+                        self.clearSavedBatchFieldMutations(explicitBatchMutations)
+                        if self.batchLocationsShownMutation == explicitLocationsShownMutation {
+                            self.batchLocationsShownMutation = .untouched
+                        }
+                        self.batchCommonMetadata = edited
+                        self.reconcileBatchPartials(afterSaving: edited)
+                    }
+                    self.hasChanges = self.editingMetadata != edited
+                    if !draftedRefusedURLs.isEmpty { self.selectedHavePendingSidecars = true }
+                }
+                if !lossRefusals.isEmpty {
+                    let message = EmbeddedMetadataBatchRefusal(refusals: lossRefusals).localizedDescription
+                    self.saveError = message
+                    self.embeddedWriteFailures[generation] = message
+                }
+            } catch is CancellationError {
+                // Superseded or torn down; not a user-facing failure.
             } catch {
                 self.saveError = error.localizedDescription
+                self.embeddedWriteFailures[generation] = error.localizedDescription
             }
-            self.isSaving = false
+            if self.writeTaskGeneration == generation { self.isSaving = false }
         }
+        writeTask = Task { await write.value }
     }
 
     private func batchWriteFields(from metadata: IPTCMetadata) -> [MetadataFieldKey: String] {
@@ -1948,10 +2676,25 @@ final class MetadataViewModel {
         _ mutations: [MetadataFieldID: MetadataFieldMutation],
         into fields: inout [MetadataFieldKey: String]
     ) {
+        for field in MetadataFieldID.allCases where !field.isRepeatable {
+            guard let mutation = mutations[field] else { continue }
+            switch mutation {
+            case .untouched, .append, .appendText:
+                // A per-photo append is written file by file (see `perPhotoBatchTextFields`);
+                // never also write the common-value preview to every file.
+                fields.removeValue(forKey: field.metadataWriteKey)
+            case .clear:
+                fields[field.metadataWriteKey] = ""
+            case .overwrite:
+                guard let updated = try? applyingBatchTextMutations([field: mutation], to: IPTCMetadata()),
+                      let value = field.textValue(in: updated) else { continue }
+                fields[field.metadataWriteKey] = value
+            }
+        }
         for field in MetadataFieldID.allCases where field.isRepeatable {
             guard let mutation = mutations[field] else { continue }
             switch mutation {
-            case .untouched:
+            case .untouched, .appendText:
                 fields.removeValue(forKey: field.metadataWriteKey)
             case .append:
                 // Appends use the typed add/remove writer path below; never also overwrite the
@@ -1972,6 +2715,24 @@ final class MetadataViewModel {
                 }
             }
         }
+    }
+
+    /// The embedded-write fields for one photo's per-photo text appends, computed from that
+    /// photo's own record. Empty when the batch carries no text append intent.
+    nonisolated static func perPhotoBatchTextFields(
+        _ mutations: [MetadataFieldID: MetadataFieldMutation],
+        base: IPTCMetadata
+    ) -> [MetadataFieldKey: String] {
+        let appends = mutations.filter { entry in
+            guard case .appendText = entry.value else { return false }
+            return !entry.key.isRepeatable
+        }
+        guard !appends.isEmpty, let updated = try? applyingBatchTextMutations(appends, to: base) else { return [:] }
+        var fields: [MetadataFieldKey: String] = [:]
+        for field in appends.keys {
+            fields[field.metadataWriteKey] = field.textValue(in: updated) ?? ""
+        }
+        return fields
     }
 
     /// Compute add/remove diffs for list fields in add mode, relative to previousEditingMetadata.
@@ -2051,15 +2812,21 @@ final class MetadataViewModel {
     /// don't track per-file post-state, so read it back from each file that has a
     /// sidecar. The sidecar's Camera Raw settings and orientation are preserved —
     /// develop edits (RAW especially) live in the sidecar, not the embedded read-back.
-    private func mirrorEmbeddedStateToExistingSidecars(for urls: [URL]) async {
+    @discardableResult
+    private func mirrorEmbeddedStateToExistingSidecars(for urls: [URL]) async -> Set<URL> {
         guard let sidecarURLs = try? await MetadataSidecarMirrorPreflight.shared.existingImageURLs(urls) else {
-            return
+            return []
         }
-        guard !sidecarURLs.isEmpty else { return }
-        guard let postWrite = try? await readService.readBatchFullMetadata(urls: sidecarURLs) else {
+        guard !sidecarURLs.isEmpty else { return [] }
+        // Not cancellable: the embedded write already happened, so skipping the read-back
+        // would leave the sidecar shadowing it with stale values.
+        guard let postWrite = try? await readService.readBatchFullMetadata(
+            urls: sidecarURLs, stopsWhenCancelled: false
+        ) else {
             logger.error("Sidecar mirror: post-write metadata read-back failed; existing .xmp sidecars left untouched")
-            return
+            return []
         }
+        var mirrored: Set<URL> = []
         for url in sidecarURLs {
             guard let record = postWrite[url] else { continue }
             do {
@@ -2069,35 +2836,56 @@ final class MetadataViewModel {
                     onlyIfExisting: true,
                     preserveExistingOrientationIfMissing: true
                 )
+                mirrored.insert(url)
             } catch {
                 logger.error("Sidecar mirror failed for \(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
+        return mirrored
     }
 
-    private func writeXMPSidecar() async {
+    /// Everything an XMP sidecar write needs, captured when the save is requested so a write
+    /// that waits behind an earlier one still writes this selection's edits.
+    private struct XMPSidecarWriteCapture {
+        let urls: [URL]
+        let folder: URL?
+        let edited: IPTCMetadata
+        let mutation: BatchRecordMutation
+        let baselines: [URL: IPTCMetadata]
+    }
+
+    /// Returns nil (with `saveError` set) when the write must not start.
+    private func captureXMPSidecarWrite() -> XMPSidecarWriteCapture? {
         do { try requirePrimaryDevelopWritesPersisted() }
-        catch { saveError = error.localizedDescription; return }
-        let urls = selectedURLs
-        let folderAtAdmission = currentFolderURL
-        guard !urls.isEmpty else { return }
+        catch { saveError = error.localizedDescription; return nil }
+        guard !selectedURLs.isEmpty else { return nil }
+        return XMPSidecarWriteCapture(
+            urls: selectedURLs,
+            folder: currentFolderURL,
+            edited: editingMetadata,
+            mutation: capturedBatchMutation(),
+            baselines: batchMetadataByURL
+        )
+    }
+
+    /// Returns this write's own failure (also published as `saveError`), so a chained caller
+    /// never mistakes another write's error — or its cleared error — for its own outcome.
+    @discardableResult
+    private func writeXMPSidecar(_ capture: XMPSidecarWriteCapture) async -> String? {
+        let urls = capture.urls
         do {
-            if let folder = folderAtAdmission {
+            if let folder = capture.folder {
                 for url in urls {
                     try await sidecarService.requireNoPendingOrientation(for: url, in: folder)
                 }
             }
         } catch {
             saveError = error.localizedDescription
-            return
+            return saveError
         }
-
-        guard !Task.isCancelled, selectedURLs == urls, currentFolderURL == folderAtAdmission else {
-            saveError = "The selection changed before the XMP write began. Try the write again."
-            return
-        }
+        guard !Task.isCancelled else { return nil }
         if urls.count == 1, let imageURL = urls.first {
-            let edited = editingMetadata
+            let edited = capture.edited
             do {
                 try await xmpSidecarService.saveSidecarSerialized(
                     metadata: edited,
@@ -2108,61 +2896,95 @@ final class MetadataViewModel {
                 }
             } catch {
                 saveError = "Failed to write XMP sidecar: \(error.localizedDescription)"
+                return saveError
             }
-            return
+            return nil
         }
 
-        let mutation = capturedBatchMutation()
-        let baselines = batchMetadataByURL
+        var failure: String?
         for imageURL in urls {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return failure }
             do {
+                var fallback = capture.baselines[imageURL] ?? IPTCMetadata()
+                fallback.cameraRaw = nil
                 let installed = try await xmpSidecarService.updateSidecarSerialized(
                     for: imageURL,
-                    fallback: baselines[imageURL] ?? IPTCMetadata(),
-                    mutation: mutation
+                    fallback: fallback,
+                    preservesDevelopSettings: true,
+                    mutation: capture.mutation.closure(for: imageURL, channel: .xmpSidecar)
                 )
+                capture.mutation.markDelivered(to: imageURL, channel: .xmpSidecar)
                 if selectedURLs == urls {
                     batchMetadataByURL[imageURL] = installed
                 }
             } catch {
                 saveError = "Failed to save XMP sidecar: \(error.localizedDescription)"
+                failure = failure ?? saveError
             }
         }
+        return failure
     }
 
     private func writeXMPSidecarAndPreserveHistory(
         onComplete: @escaping (MetadataCommitResult) -> Void
     ) {
         guard let folderURL = currentFolderURL else {
-            writeTask?.cancel()
-            writeTask = Task {
-                await writeXMPSidecar()
-                if let saveError {
-                    onComplete(.failed(message: saveError))
+            guard let capture = captureXMPSidecarWrite() else {
+                onComplete(.failed(message: saveError ?? "The XMP sidecar could not be written."))
+                return
+            }
+            // Wait for an earlier write instead of cancelling it partway through its selection,
+            // and keep this one out of reach of a later `writeTask?.cancel()` the same way.
+            let priorWrite = writeTask
+            let generation = writeTaskGeneration + 1
+            isSaving = true
+            let batchTracking = capture.urls.count > 1 ? beginBatchWriteTracking(capture.urls) : nil
+            let write = Task {
+                defer { if writeTaskGeneration == generation { isSaving = false } }
+                defer { if let batchTracking { endBatchWriteTracking(batchTracking) } }
+                await priorWrite?.value
+                // Judge this write by its own result: `saveError` may belong to the earlier one.
+                if let failure = await writeXMPSidecar(capture) {
+                    onComplete(.failed(message: failure))
                 } else {
                     onComplete(.succeeded)
                 }
             }
+            writeTask = Task { await write.value }
             return
         }
 
         if selectedCount > 1 {
-            writeTask?.cancel()
-            writeTask = Task {
-                await writeXMPSidecar()
-                if let saveError {
-                    onComplete(.failed(message: saveError))
+            guard let capture = captureXMPSidecarWrite() else {
+                onComplete(.failed(message: saveError ?? "The XMP sidecar could not be written."))
+                return
+            }
+            let historyCapture = captureBatchSidecars()
+            let priorWrite = writeTask
+            let generation = writeTaskGeneration + 1
+            isSaving = true
+            // The batch runs in its own task so a later `writeTask?.cancel()` cannot stop it
+            // partway through the selection.
+            let batchTracking = beginBatchWriteTracking(capture.urls)
+            let write = Task {
+                defer { if writeTaskGeneration == generation { isSaving = false } }
+                defer { endBatchWriteTracking(batchTracking) }
+                await priorWrite?.value
+                // Judge each phase by its own result: `saveError` may belong to the earlier write.
+                if let failure = await writeXMPSidecar(capture) {
+                    onComplete(.failed(message: failure))
                     return
                 }
-                await saveBatchSidecars(folderURL: folderURL, pendingChanges: false)
-                hasChanges = false
-                if let saveError {
-                    onComplete(.failed(message: saveError))
+                let historyFailure = await saveBatchSidecars(folderURL: folderURL, pendingChanges: false,
+                    updateState: true, capture: historyCapture)
+                if let historyFailure {
+                    onComplete(.failed(message: historyFailure))
                 } else {
+                    if selectedURLs == historyCapture.selectedAtStart { hasChanges = false }
                     onComplete(.succeeded)
                 }
             }
+            writeTask = Task { await write.value }
             return
         }
 
@@ -2182,9 +3004,10 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
-        writeTask?.cancel()
+        let priorWrite = priorWriteForSingleSave(imageURL: imageURL, loadID: loadID)
         writeTask = Task {
             defer { if writeTaskGeneration == generation { isSaving = false } }
+            await priorWrite?.value
             let matchesSelection = {
                 self.writeTaskGeneration == generation && self.metadataLoadRequestID == loadID
                     && self.selectedURLs == [imageURL] && self.currentFolderURL == folderURL
@@ -2209,7 +3032,9 @@ final class MetadataViewModel {
                         sidecarHistory = installed.history
                         xmpMetadata = result.writtenXMPMetadata ?? edited
                         editorXMPWriteBaseline = (imageURL, folderURL, loadID, result.writtenXMPSnapshot, nil)
-                        editingMetadata.cameraRaw = xmpMetadata?.cameraRaw
+                        // A RAW+JPEG pair's stem crs is the RAW's; the JPEG keeps its embedded develop.
+                        editingMetadata.cameraRaw = PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: imageURL)
+                            ? edited.cameraRaw : xmpMetadata?.cameraRaw
                         editingMetadata.exifOrientation = xmpMetadata?.exifOrientation
                         previousEditingMetadata = editingMetadata
                         if metadataReferenceSource == .xmp {
@@ -2231,6 +3056,7 @@ final class MetadataViewModel {
                 onComplete(error is CancellationError ? .cancelled(message: message) : .failed(message: message))
             }
         }
+        registerSingleSave(imageURL: imageURL, loadID: loadID)
     }
 
     private nonisolated static func writeCompletionFailure(
@@ -2298,27 +3124,44 @@ final class MetadataViewModel {
               let folderURL = currentFolderURL else {
             // Batch / folderless fallback. Report completion only after both writes actually
             // finish, so callers (pending badges, Develop lifecycle) never see an early success.
+            let xmpCapture = alsoWriteXMPSidecar ? captureXMPSidecarWrite() : nil
+            if alsoWriteXMPSidecar, xmpCapture == nil {
+                onComplete(.failed(message: saveError ?? "The XMP sidecar could not be written."))
+                return
+            }
+            let generationBeforeEmbed = writeTaskGeneration
             writeMetadata()
+            guard writeTaskGeneration != generationBeforeEmbed else {
+                // The embedded write refused to start (for example unsaved Develop work).
+                onComplete(.failed(message: saveError ?? "Metadata could not be written."))
+                return
+            }
+            let embedGeneration = writeTaskGeneration
             let embedWrite = writeTask
-            writeTask = Task {
-                await withTaskCancellationHandler {
-                    await embedWrite?.value
-                } onCancel: {
-                    embedWrite?.cancel()
-                }
-                if let saveError {
-                    onComplete(Task.isCancelled ? .cancelled(message: saveError) : .failed(message: saveError))
+            // Replacing `writeTask` advances the generation, so the inner write no longer owns
+            // `isSaving`; this wrapper must clear it when it is still the latest write.
+            let wrapperGeneration = writeTaskGeneration + 1
+            // Like the embedded write, the XMP phase runs in its own task so a later
+            // `writeTask?.cancel()` cannot stop it partway through the selection.
+            let xmpTracking = xmpCapture.map { beginBatchWriteTracking($0.urls) }
+            let write = Task {
+                defer { if self.writeTaskGeneration == wrapperGeneration { self.isSaving = false } }
+                defer { if let xmpTracking { self.endBatchWriteTracking(xmpTracking) } }
+                await embedWrite?.value
+                // Judge each phase by its own result: `saveError` may belong to another write.
+                if let embedFailure = self.embeddedWriteFailures.removeValue(forKey: embedGeneration) {
+                    onComplete(.failed(message: embedFailure))
                     return
                 }
-                if alsoWriteXMPSidecar {
-                    await writeXMPSidecar()
-                    if let saveError {
-                        onComplete(.failed(message: saveError))
+                if let xmpCapture {
+                    if let xmpFailure = await writeXMPSidecar(xmpCapture) {
+                        onComplete(.failed(message: xmpFailure))
                         return
                     }
                 }
-                onComplete(Task.isCancelled ? .cancelled(message: "Metadata save was cancelled.") : .succeeded)
+                onComplete(.succeeded)
             }
+            writeTask = Task { await write.value }
             return
         }
 
@@ -2334,9 +3177,10 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
-        writeTask?.cancel()
+        let priorWrite = priorWriteForSingleSave(imageURL: imageURL, loadID: loadID)
         writeTask = Task {
             defer { if writeTaskGeneration == generation { isSaving = false } }
+            await priorWrite?.value
             let matchesSelection = {
                 self.writeTaskGeneration == generation && self.metadataLoadRequestID == loadID
                     && self.selectedURLs == [imageURL] && self.currentFolderURL == folderURL
@@ -2361,8 +3205,10 @@ final class MetadataViewModel {
                         anonymizer: edited.cameraRaw?.anonymizer,
                         unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
                         editorial: EditorialStructuredWriteData(metadata: edited),
+                        listValues: EditorialListWriteData(metadata: edited),
                         replaceCameraRawBlock: true)
-                    : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
+                    : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited),
+                                          listValues: EditorialListWriteData(metadata: edited))
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
                 let now = Date()
                 let sidecar = MetadataSidecar(sourceFile: imageURL.lastPathComponent,
@@ -2402,9 +3248,11 @@ final class MetadataViewModel {
                 onComplete(error is CancellationError ? .cancelled(message: message) : .failed(message: message))
             }
         }
+        registerSingleSave(imageURL: imageURL, loadID: loadID)
     }
 
     func applyTemplateFields(_ template: [String: String], append: Bool = false) {
+        let editorBeforeTemplate = editingMetadata
         for (key, value) in template {
             switch key {
             case "title":
@@ -2527,7 +3375,7 @@ final class MetadataViewModel {
             case "imageSupplierImageID":
                 editingMetadata.imageSupplierImageID = value
             case "imageSupplier":
-                guard let values = EditorialImageSupplier.values(fromCanonicalJSONString: value) else {
+                guard let values = EditorialImageSupplier.values(fromTemplateValue: value) else {
                     continue
                 }
                 editingMetadata.imageSuppliers = append
@@ -2559,13 +3407,170 @@ final class MetadataViewModel {
             default: break
             }
         }
+        if selectedCount > 1 {
+            // A template names its repeatable fields explicitly. Capture that intent even when
+            // the selection has no common value: the batch save would otherwise infer lists from
+            // previousCommon (dropping organisation/code/controlled-vocabulary lists) and let
+            // replace/append act on the common subset instead of every photo's own list.
+            let templateLists: [(String, MetadataFieldID)] = [
+                ("keywords", .keywords), ("personShown", .personShown), ("creator", .creator),
+                ("organisationShownName", .organisationShownName), ("organisationShownCode", .organisationShownCode),
+                ("sceneCode", .sceneCode), ("subjectCode", .subjectCode), ("mediaTopic", .mediaTopic), ("genre", .genre)
+            ]
+            for (key, field) in templateLists where template[key] != nil {
+                let values = Self.values(for: field, in: editingMetadata)
+                if append {
+                    switch batchFieldMutations[field] ?? .untouched {
+                    case .clear, .overwrite:
+                        // A prior removal/clear is represented as replacement intent. Appending
+                        // a template must extend that replacement, not resurrect original values.
+                        batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
+                    case .untouched, .append, .appendText:
+                        if !values.isEmpty { batchFieldMutations[field] = .append(values) }
+                    }
+                } else {
+                    batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
+                }
+            }
+            recordBatchTextTemplateIntents(template, append: append, before: editorBeforeTemplate)
+        }
         hasChanges = true
     }
 
     private func appendString(_ existing: String?, _ new: String) -> String {
-        guard let existing, !existing.isEmpty else { return new }
-        guard !new.isEmpty else { return existing }
-        return existing + " " + new
+        MetadataTemplateText.appending(existing, new)
+    }
+
+    /// How a template text field acts on a multi-selection. Appendable text concatenates per
+    /// photo in append mode; atomic values are always replaced (or cleared when empty).
+    private enum BatchTemplateTextKind { case appendable, atomic }
+
+    private static let batchTemplateTextFields: [(key: String, field: MetadataFieldID, kind: BatchTemplateTextKind)] = [
+        ("title", .headline, .appendable), ("description", .description, .appendable),
+        ("extendedDescription", .extendedDescription, .appendable),
+        ("creatorJobTitle", .creatorJobTitle, .appendable), ("descriptionWriter", .descriptionWriter, .appendable),
+        ("credit", .credit, .appendable), ("copyright", .copyright, .appendable),
+        ("rightsUsageTerms", .rightsUsageTerms, .appendable), ("webStatementOfRights", .webStatementOfRights, .appendable),
+        ("jobId", .jobId, .appendable), ("city", .city, .appendable), ("sublocation", .sublocation, .appendable),
+        ("provinceState", .provinceState, .appendable), ("country", .country, .appendable),
+        ("event", .event, .appendable), ("instructions", .instructions, .appendable), ("source", .source, .appendable),
+        ("digitalImageGUID", .digitalImageGUID, .atomic), ("imageSupplierImageID", .imageSupplierImageID, .atomic),
+        ("countryCode", .countryCode, .atomic),
+    ]
+
+    /// Records explicit per-photo text intent for a template applied to a multi-selection.
+    /// Without it the batch save only sees the common-value preview: an append on a mixed field
+    /// would write the bare template text over every photo's own value, and an empty ("clear")
+    /// template field would leave mixed values untouched.
+    private func recordBatchTextTemplateIntents(
+        _ template: [String: String],
+        append: Bool,
+        before: IPTCMetadata
+    ) {
+        for (key, field, kind) in Self.batchTemplateTextFields {
+            guard let value = template[key],
+                  let path = MetadataEditorFieldPaths.scalarText(for: key) else { continue }
+            let beforeValue = before[keyPath: path]
+            let after = editingMetadata[keyPath: path]
+            // An intent recorded by an earlier template is current only while the editor still
+            // shows the value it was recorded against; a typed value supersedes it.
+            var prior = batchFieldMutations[field]
+            if prior != nil, !Self.sameEditorText(batchTextIntentEditorValues[field] ?? nil, beforeValue) {
+                prior = nil
+            }
+            let afterIsEmpty = (after ?? "").isEmpty
+            if append, kind == .appendable {
+                guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    continue // Appending nothing leaves the field and its intent as they were.
+                }
+                switch prior {
+                case .appendText(let earlier)?:
+                    // Extends the pending append, keeping its token. A mixed field keeps showing
+                    // its mixed state; a shared one shows the combined value that will be written.
+                    let combined = MetadataFieldMutation.appendText(MetadataTemplateText.appending(earlier, value))
+                    if batchDifferingFields.contains(key) {
+                        setBatchTextIntent(combined, for: field, restoring: beforeValue, path: path, keepsToken: true)
+                    } else {
+                        setBatchTextIntent(combined, for: field, editorValue: after, keepsToken: true)
+                    }
+                case .overwrite?, .clear?:
+                    setBatchTextIntent(.overwrite(.scalar(after ?? value)), for: field, editorValue: after)
+                default:
+                    let commonValue = previousEditingMetadata?[keyPath: path]
+                    if !Self.sameEditorText(beforeValue, commonValue) {
+                        // The user typed a value for every photo; the template extends it.
+                        setBatchTextIntent(.overwrite(.scalar(after ?? value)), for: field, editorValue: after)
+                    } else if batchDifferingFields.contains(key) {
+                        // Mixed values: there is no common text to preview. Keep the field
+                        // showing its mixed state; each photo gets its own text plus the template.
+                        setBatchTextIntent(.appendText(value), for: field, restoring: beforeValue, path: path)
+                    } else {
+                        setBatchTextIntent(.appendText(value), for: field, editorValue: after)
+                    }
+                }
+            } else if afterIsEmpty {
+                setBatchTextIntent(.clear, for: field, editorValue: after)
+            } else if let after {
+                setBatchTextIntent(.overwrite(.scalar(after)), for: field, editorValue: after)
+            }
+        }
+    }
+
+    private func setBatchTextIntent(
+        _ mutation: MetadataFieldMutation,
+        for field: MetadataFieldID,
+        editorValue: String?,
+        keepsToken: Bool = false
+    ) {
+        batchFieldMutations[field] = mutation
+        batchTextIntentEditorValues[field] = .some(editorValue)
+        if case .appendText = mutation {
+            if !keepsToken || batchTextAppendTokens[field] == nil { batchTextAppendTokens[field] = UUID() }
+        } else {
+            batchTextAppendTokens.removeValue(forKey: field)
+        }
+    }
+
+    /// The panel stores an emptied text field as nil; a template sets "". Both mean empty.
+    private nonisolated static func sameEditorText(_ lhs: String?, _ rhs: String?) -> Bool {
+        (lhs ?? "") == (rhs ?? "")
+    }
+
+    /// Records an append on a mixed field and puts the editor back to its mixed (empty) state.
+    private func setBatchTextIntent(
+        _ mutation: MetadataFieldMutation,
+        for field: MetadataFieldID,
+        restoring editorValue: String?,
+        path: WritableKeyPath<IPTCMetadata, String?>,
+        keepsToken: Bool = false
+    ) {
+        editingMetadata[keyPath: path] = editorValue
+        setBatchTextIntent(mutation, for: field, editorValue: editorValue, keepsToken: keepsToken)
+    }
+
+    /// Drops scalar text intents whose field the user has since edited, so the typed value is
+    /// saved with ordinary batch semantics instead of the superseded template intent.
+    private func pruneStaleBatchTextIntents() {
+        for (field, mutation) in batchFieldMutations where !field.isRepeatable {
+            guard mutation != .untouched else { continue }
+            let path = MetadataEditorFieldPaths.scalarText(for: field.rawValue)
+            let current = path.map { editingMetadata[keyPath: $0] } ?? nil
+            if !Self.sameEditorText(batchTextIntentEditorValues[field] ?? nil, current) {
+                batchFieldMutations.removeValue(forKey: field)
+                batchTextIntentEditorValues.removeValue(forKey: field)
+                batchTextAppendTokens.removeValue(forKey: field)
+            }
+        }
+    }
+
+    /// The pending template text intent for an editor field key, if any (batch editor only).
+    func batchTextIntent(for key: String) -> MetadataFieldMutation? {
+        guard isBatchEdit, let field = MetadataFieldID(rawValue: key), !field.isRepeatable,
+              let mutation = batchFieldMutations[field] else { return nil }
+        let path = MetadataEditorFieldPaths.scalarText(for: key)
+        let current = path.map { editingMetadata[keyPath: $0] } ?? nil
+        guard Self.sameEditorText(batchTextIntentEditorValues[field] ?? nil, current) else { return nil }
+        return mutation
     }
 
     /// Applies template fields to the editing buffer and then immediately resolves
@@ -2587,31 +3592,6 @@ final class MetadataViewModel {
         }
         applyTemplateFields(template, append: append)
         guard !images.isEmpty else { return }
-        if selectedCount > 1 {
-            // An instant template names its repeatable fields explicitly. Capture that intent
-            // even when the selection has no common value; optional previousCommon inference
-            // must not drop a supplied organisation/controlled-vocabulary list.
-            let templateLists: [(String, MetadataFieldID)] = [
-                ("keywords", .keywords), ("personShown", .personShown), ("creator", .creator),
-                ("organisationShownName", .organisationShownName), ("organisationShownCode", .organisationShownCode),
-                ("sceneCode", .sceneCode), ("subjectCode", .subjectCode), ("mediaTopic", .mediaTopic), ("genre", .genre)
-            ]
-            for (key, field) in templateLists where template[key] != nil {
-                let values = Self.values(for: field, in: editingMetadata)
-                if append {
-                    switch batchFieldMutations[field] ?? .untouched {
-                    case .clear, .overwrite:
-                        // A prior removal/clear is represented as replacement intent. Appending
-                        // a template must extend that replacement, not resurrect original values.
-                        batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
-                    case .untouched, .append:
-                        if !values.isEmpty { batchFieldMutations[field] = .append(values) }
-                    }
-                } else {
-                    batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
-                }
-            }
-        }
         // Capture the batch mutation with the variable request. Awaited JSON preparation saves
         // the complete per-photo result; no separate fire-and-forget literal write can race it.
         startVariableBatch(images: images, previewAction: append ? .append : .replace)
@@ -2621,24 +3601,19 @@ final class MetadataViewModel {
 
     /// Checks whether any text field, keyword, or person in editingMetadata contains variable placeholders.
     var hasVariables: Bool {
-        let fields: [String?] = [
-            editingMetadata.title,
-            editingMetadata.description,
-            editingMetadata.extendedDescription,
-            editingMetadata.creatorJobTitle,
-            editingMetadata.descriptionWriter,
-            editingMetadata.credit,
-            editingMetadata.copyright,
-            editingMetadata.rightsUsageTerms,
-            editingMetadata.webStatementOfRights,
-            editingMetadata.digitalImageGUID,
-            editingMetadata.imageSupplierImageID,
-            editingMetadata.jobId,
-            editingMetadata.dateCreated,
-            editingMetadata.city,
-            editingMetadata.country,
-            editingMetadata.event,
-        ]
+        if Self.containsVariables(editingMetadata) { return true }
+        // A batch template append on a mixed field keeps its text in the explicit intent, not
+        // in the editor buffer.
+        return batchFieldMutations.values.contains { mutation in
+            guard case .appendText(let text) = mutation else { return false }
+            return text.contains(Self.variablePattern)
+        }
+    }
+
+    /// Whether any field variable resolution expands contains a placeholder. The scalar field
+    /// list is the resolver's own (`VariableMetadataResolver.scalarVariableFields`).
+    static func containsVariables(_ editingMetadata: IPTCMetadata) -> Bool {
+        let fields = VariableMetadataResolver.scalarVariableFields.map { editingMetadata[keyPath: $0] }
         let localizedTitleValues = editingMetadata.localizedTitles?.map(\.value) ?? []
         if fields.contains(where: { field in
             guard let field else { return false }
@@ -2847,6 +3822,149 @@ final class MetadataViewModel {
         try variableRecoveryEditorBarrier?.handler()
     }
 
+    /// Publishes typed-but-uncommitted text from the focused metadata field into
+    /// `editingMetadata`. AppKit text fields only commit on focus loss or Return, so keyboard
+    /// navigation, Paste IPTC and termination call this before deciding whether to save.
+    func captureFocusedEditorText() {
+        // The barrier flushes the field buffer first; its later folder check is irrelevant here.
+        try? variableRecoveryEditorBarrier?.handler()
+    }
+
+    /// Automatic saves (navigation, backgrounding, quit) must not embed literal `{variable}`
+    /// tokens. Keep the edit as a pending draft instead and tell the user why.
+    func keepUnresolvedVariablesAsPendingDraft(onComplete: ((String?) -> Void)? = nil) {
+        let names = selectedURLs.map(\.lastPathComponent)
+        withEditorFolder { saveToSidecar(onComplete: onComplete) }
+        notice = MetadataPanelNotice(
+            title: "Unresolved variables were kept as a pending draft. Use Process Variables, then Write, to update the file.",
+            detail: names,
+            severity: .warning
+        )
+        // Raised at a navigation boundary: keep it through the load of the next selection.
+        noticeSurvivesNextSelectionLoad = true
+    }
+
+    /// The write a new single-photo save must wait for. Saves queue instead of cancelling the
+    /// running write: a cancelled batch or other-photo save stops partway and loses its edits.
+    /// Only a still-running save of this same photo and load is superseded, as before — the new
+    /// request carries its newer edits and was captured against the same baseline. Call
+    /// `registerSingleSave` right after installing the new `writeTask`.
+    private func priorWriteForSingleSave(imageURL: URL, loadID: UUID?) -> Task<Void, Never>? {
+        let prior = writeTask
+        if let owner = supersedableSingleSave, owner.generation == writeTaskGeneration,
+           owner.imageURL == imageURL, owner.loadID == loadID {
+            prior?.cancel()
+        }
+        return prior
+    }
+
+    private func registerSingleSave(imageURL: URL, loadID: UUID?) {
+        supersedableSingleSave = (writeTaskGeneration, imageURL, loadID)
+    }
+
+    /// Waits until the current write chain (including writes queued while waiting) finishes.
+    /// Folder-wide batches (Write All Pending, Process Variables) run outside it; only quit
+    /// (`waitForPendingWritesAndBatches`) and file operations whose targets the batch is
+    /// writing (`waitForBatchOverlapping`) wait for those.
+    func waitForPendingWrites() async {
+        while let task = writeTask {
+            await task.value
+            if writeTask == task { return }
+        }
+    }
+
+    /// Quit-time barrier: the write chain and any metadata batch, including work queued meanwhile.
+    func waitForPendingWritesAndBatches() async {
+        while true {
+            let write = writeTask
+            let batch = batchProcessTask
+            await write?.value
+            await batch?.value
+            if writeTask == write, batchProcessTask == batch { return }
+        }
+    }
+
+    nonisolated enum BatchProcessKind: Sendable {
+        case writeAllPending
+        case processVariables
+
+        var displayName: String {
+            switch self {
+            case .writeAllPending: "Write All"
+            case .processVariables: "Process Variables"
+            }
+        }
+    }
+
+    /// What the running folder batch is and which folder it writes; valid while `isProcessingFolder`.
+    @ObservationIgnored private var batchProcessScope: (kind: BatchProcessKind, folder: URL)?
+
+    /// "Write All: 340 of 2000" while a folder batch runs, else nil.
+    var runningBatchDescription: String? {
+        guard isProcessingFolder, let scope = batchProcessScope else { return nil }
+        let parts = folderProcessProgress.split(separator: "/")
+        guard parts.count == 2 else { return scope.kind.displayName }
+        return "\(scope.kind.displayName): \(parts[0]) of \(parts[1])"
+    }
+
+    /// The kind of running folder batch that may write any of `urls`, or nil.
+    func runningBatchOverlapping(_ urls: [URL]) -> BatchProcessKind? {
+        guard isProcessingFolder, let scope = batchProcessScope else { return nil }
+        let folder = scope.folder.standardizedFileURL.resolvingSymlinksInPath().path
+        let overlaps = urls.contains {
+            $0.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path == folder
+        }
+        return overlaps ? scope.kind : nil
+    }
+
+    /// Waits for the folder batch only when it may be writing one of `urls` (rename, move).
+    func waitForBatchOverlapping(_ urls: [URL]) async {
+        guard runningBatchOverlapping(urls) != nil else { return }
+        while let batch = batchProcessTask {
+            await batch.value
+            if batchProcessTask == batch { return }
+        }
+    }
+
+    /// The Browser editor boundary (folder switch, folder close, workspace exit) that is
+    /// committing the departing photos, including its discard prompt. Termination waits for it
+    /// rather than committing the same photo a second time and stacking a second prompt.
+    @ObservationIgnored private var editorBoundaryTask: Task<Void, Never>?
+
+    func trackEditorBoundary(_ task: Task<Void, Never>) {
+        editorBoundaryTask = task
+    }
+
+    func waitForEditorBoundary() async {
+        while let task = editorBoundaryTask {
+            await task.value
+            if editorBoundaryTask == task {
+                editorBoundaryTask = nil
+                return
+            }
+        }
+    }
+
+    /// Photos covered by queued or running batch writes. A single-photo load of one of them waits
+    /// for those writes, so its editor baseline includes the batch change; otherwise a later save
+    /// of that photo would rewrite its fields from the pre-batch values and undo the batch.
+    @ObservationIgnored private var pendingBatchWriteURLs: [UUID: Set<URL>] = [:]
+
+    private func beginBatchWriteTracking(_ urls: [URL]) -> UUID {
+        let id = UUID()
+        pendingBatchWriteURLs[id] = Set(urls.map(\.standardizedFileURL))
+        return id
+    }
+
+    private func endBatchWriteTracking(_ id: UUID) {
+        pendingBatchWriteURLs[id] = nil
+    }
+
+    private func isPendingBatchWrite(_ url: URL) -> Bool {
+        let key = url.standardizedFileURL
+        return pendingBatchWriteURLs.values.contains { $0.contains(key) }
+    }
+
     var variableRecoveryPhotos: [URL] {
         var seen = Set<String>()
         return (retainedVariableWrites.map(\.imageURL) + retainedVariableAdmissions.map(\.imageURL))
@@ -3009,6 +4127,7 @@ final class MetadataViewModel {
             case .untouched: return ["operation": "untouched"]
             case .clear: return ["operation": "clear"]
             case .append(let values): return ["operation": "append", "values": values]
+            case .appendText(let value): return ["operation": "appendText", "value": value]
             case .overwrite(.scalar(let value)): return ["operation": "overwriteScalar", "value": value]
             case .overwrite(.repeatable(let values)): return ["operation": "overwriteRepeatable", "values": values]
             }
@@ -3279,6 +4398,7 @@ final class MetadataViewModel {
         let selectedSource = metadataReferenceSource
         let hasEditorInput = hasChanges && !Set(selected).isDisjoint(with: Set(urls))
         let hasUnsavedEditorInput = hasEditorInput && hasUnpersistedEditorChanges
+        if selectedCount > 1 { pruneStaleBatchTextIntents() }
         let batchInput: VariableCapturedBatchInput? = selectedCount > 1 && hasEditorInput
             ? .init(metadata: edited, previousCommon: previous, fields: batchFieldMutations,
                 locations: batchLocationsShownMutation, suppliers: batchImageSupplierMutation,
@@ -3320,6 +4440,7 @@ final class MetadataViewModel {
         activeVariableBatchIDs.insert(batchID)
         synchronizeVariableLifecycleRetention()
         isProcessingFolder = true
+        batchProcessScope = (.processVariables, folder)
         folderProcessProgress = "0/\(urls.count)"
         variableBatchOutcome = nil
         variableProcessingStatus = nil
@@ -3570,6 +4691,16 @@ final class MetadataViewModel {
 
     /// Re-read metadata from file for the currently displayed image after variable processing,
     /// so the UI reflects the resolved values instead of stale template strings.
+    /// Replacing `metadataLoadRequestID` strands an in-flight load: its completion guard no
+    /// longer matches, so it would never clear the loading flags (leaving the editor "loading").
+    private func supersedeInFlightMetadataLoad() {
+        guard let task = metadataLoadTask else { return }
+        task.cancel()
+        metadataLoadTask = nil
+        isLoading = false
+        isLoadingBatchMetadata = false
+    }
+
     private func refreshMetadataAfterProcessing(updatedURLs: Set<URL>, processedImages: [ImageFile]) async {
         if selectedCount > 1 {
             let selectionSnapshot = Set(selectedURLs)
@@ -3577,6 +4708,7 @@ final class MetadataViewModel {
             let selectedProcessedImages = processedImages.filter { selectionSnapshot.contains($0.url) }
             guard Set(selectedProcessedImages.map(\.url)) == selectionSnapshot else { return }
 
+            supersedeInFlightMetadataLoad()
             let requestID = UUID()
             let folderSnapshot = currentFolderURL
             metadataLoadRequestID = requestID
@@ -3598,6 +4730,7 @@ final class MetadataViewModel {
               let url = selectedURLs.first,
               updatedURLs.contains(url) else { return }
 
+        supersedeInFlightMetadataLoad()
         do {
             let requestID = UUID()
             let folderSnapshot = currentFolderURL
@@ -3807,12 +4940,16 @@ final class MetadataViewModel {
 
     // MARK: - Sidecar Management
 
-    func saveToSidecar() {
+    /// `onComplete` receives this save's own failure, or nil once the draft is durable.
+    func saveToSidecar(onComplete: ((String?) -> Void)? = nil) {
         do { try requirePrimaryDevelopWritesPersisted() }
-        catch { saveError = error.localizedDescription; return }
+        catch { saveError = error.localizedDescription; onComplete?(saveError); return }
         do { try requireVariableDiscardedEditorReconciled() }
-        catch { saveError = error.localizedDescription; return }
-        guard let folderURL = currentFolderURL else { return }
+        catch { saveError = error.localizedDescription; onComplete?(saveError); return }
+        guard let folderURL = currentFolderURL else {
+            onComplete?("No folder is open for this photo's metadata draft.")
+            return
+        }
         let generation = writeTaskGeneration + 1
         if selectedCount == 1, let imageURL = selectedURLs.first {
             let edited = editingMetadata
@@ -3828,9 +4965,10 @@ final class MetadataViewModel {
                 history: buildHistory(previous: previous, edited: edited, timestamp: now, existing: sidecarHistory))
             isSaving = true
             saveError = nil
-            writeTask?.cancel()
+            let priorWrite = priorWriteForSingleSave(imageURL: imageURL, loadID: loadID)
             writeTask = Task {
                 defer { if writeTaskGeneration == generation { isSaving = false } }
+                await priorWrite?.value
                 let matchesSelection = {
                     self.writeTaskGeneration == generation && self.metadataLoadRequestID == loadID
                         && self.selectedURLs == [imageURL] && self.currentFolderURL == folderURL
@@ -3851,26 +4989,45 @@ final class MetadataViewModel {
                             sidecarHistory = installed.history
                             xmpMetadata = result.writtenXMPMetadata ?? edited
                             editorXMPWriteBaseline = (imageURL, folderURL, loadID, result.writtenXMPSnapshot, nil)
-                            editingMetadata.cameraRaw = xmpMetadata?.cameraRaw
+                            editingMetadata.cameraRaw = PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: imageURL)
+                                ? edited.cameraRaw : xmpMetadata?.cameraRaw
                             editingMetadata.exifOrientation = xmpMetadata?.exifOrientation
                             previousEditingMetadata = editingMetadata
                             hasChanges = true
                             selectedHavePendingSidecars = true
                         }
-                    } else if matchesSelection() {
-                        saveError = Self.writeCompletionFailure(result, imageWasWritten: false)
+                        onComplete?(nil)
+                    } else {
+                        let message = Self.writeCompletionFailure(result, imageWasWritten: false)
+                        if matchesSelection() { saveError = message }
+                        onComplete?(message)
                     }
                 } catch {
-                    if matchesSelection() { saveError = "Failed to save sidecar: \(error.localizedDescription)" }
+                    let message = "Failed to save sidecar: \(error.localizedDescription)"
+                    if matchesSelection() { saveError = message }
+                    onComplete?(message)
                 }
             }
+            registerSingleSave(imageURL: imageURL, loadID: loadID)
         } else if selectedCount > 1 {
+            // Capture now and wait for an earlier write instead of cancelling it partway through
+            // its selection; this save still applies to the photos selected when it was requested.
+            // Its own task keeps it out of reach of a later `writeTask?.cancel()`.
+            let capture = captureBatchSidecars()
+            let priorWrite = writeTask
             isSaving = true
-            writeTask?.cancel()
-            writeTask = Task {
-                await saveBatchSidecars(folderURL: folderURL)
+            let batchTracking = beginBatchWriteTracking(capture.urls)
+            let write = Task {
+                defer { endBatchWriteTracking(batchTracking) }
+                await priorWrite?.value
+                let failure = await saveBatchSidecars(folderURL: folderURL, pendingChanges: true,
+                    updateState: true, capture: capture)
                 if writeTaskGeneration == generation { isSaving = false }
+                onComplete?(failure)
             }
+            writeTask = Task { await write.value }
+        } else {
+            onComplete?(nil)
         }
     }
 
@@ -3953,21 +5110,76 @@ final class MetadataViewModel {
         return history
     }
 
+    /// The batch editor state a sidecar save applies, captured when the save is requested so a
+    /// save that waits behind an earlier write still applies this selection's edits.
+    private struct BatchSidecarCapture {
+        let urls: [URL]
+        let selectedAtStart: [URL]
+        let baselines: [URL: IPTCMetadata]
+        let savedEditing: IPTCMetadata
+        let savedFieldMutations: [MetadataFieldID: MetadataFieldMutation]
+        let savedLocationsShownMutation: BatchLocationsShownMutation
+        let savedImageSupplierMutation: EditorialImageSupplierMutation
+        let mutation: BatchRecordMutation
+        let overridesSuppliers: Bool
+    }
+
+    private func captureBatchSidecars(
+        targetURLs: [URL]? = nil,
+        capturedMutation: (mutation: BatchRecordMutation, overridesSuppliers: Bool)? = nil
+    ) -> BatchSidecarCapture {
+        pruneStaleBatchTextIntents()
+        return BatchSidecarCapture(
+            urls: targetURLs ?? selectedURLs,
+            selectedAtStart: selectedURLs,
+            baselines: batchMetadataByURL,
+            savedEditing: editingMetadata,
+            savedFieldMutations: batchFieldMutations,
+            savedLocationsShownMutation: batchLocationsShownMutation,
+            savedImageSupplierMutation: batchImageSupplierMutation,
+            mutation: capturedMutation?.mutation ?? capturedBatchMutation(),
+            overridesSuppliers: capturedMutation?.overridesSuppliers ?? (batchImageSupplierMutation != .untouched)
+        )
+    }
+
     private func saveBatchSidecars(
         folderURL: URL,
         pendingChanges: Bool = true,
         targetURLs: [URL]? = nil,
-        updateState: Bool = true
+        updateState: Bool = true,
+        capturedMutation: (mutation: BatchRecordMutation, overridesSuppliers: Bool)? = nil
     ) async {
+        _ = await saveBatchSidecars(
+            folderURL: folderURL,
+            pendingChanges: pendingChanges,
+            updateState: updateState,
+            capture: captureBatchSidecars(targetURLs: targetURLs, capturedMutation: capturedMutation)
+        )
+    }
+
+    /// Returns this save's first failure (also published as `saveError`).
+    @discardableResult
+    private func saveBatchSidecars(
+        folderURL: URL,
+        pendingChanges: Bool,
+        updateState: Bool,
+        capture: BatchSidecarCapture
+    ) async -> String? {
         let now = Date()
-        let mutation = capturedBatchMutation()
-        let overridesSuppliers = batchImageSupplierMutation != .untouched
-        let urls = targetURLs ?? selectedURLs
-        let selectedAtStart = selectedURLs
-        let baselines = batchMetadataByURL
+        let mutation = capture.mutation
+        let overridesSuppliers = capture.overridesSuppliers
+        let urls = capture.urls
+        let selectedAtStart = capture.selectedAtStart
+        let baselines = capture.baselines
+        let savedEditing = capture.savedEditing
+        let savedFieldMutations = capture.savedFieldMutations
+        let savedLocationsShownMutation = capture.savedLocationsShownMutation
+        let savedImageSupplierMutation = capture.savedImageSupplierMutation
+        var allSaved = true
+        var failure: String?
 
         for imageURL in urls {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return failure }
             do {
                 let installed = try await sidecarService.updateMetadataSerialized(
                     for: imageURL,
@@ -3975,8 +5187,9 @@ final class MetadataViewModel {
                     fallback: baselines[imageURL] ?? IPTCMetadata(),
                     pendingChanges: pendingChanges,
                     timestamp: now,
-                    mutation: mutation
+                    mutation: mutation.closure(for: imageURL, channel: .jsonDraft)
                 )
+                mutation.markDelivered(to: imageURL, channel: .jsonDraft)
                 if selectedURLs == selectedAtStart {
                     batchMetadataByURL[imageURL] = installed.metadata
                 }
@@ -3991,39 +5204,81 @@ final class MetadataViewModel {
                         mergeWithExisting: true,
                         imageSuppliersOverride: overridesSuppliers ? installed.metadata.imageSuppliers : nil
                     )
+                    // The .xmp now carries the complete record, appended text included.
+                    mutation.markDelivered(to: imageURL, channel: .xmpSidecar)
                 }
             } catch {
+                allSaved = false
                 saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+                failure = failure ?? saveError
             }
         }
 
-        if updateState, selectedURLs == selectedAtStart {
+        if updateState, allSaved, selectedURLs == selectedAtStart {
+            // The saved state is the new baseline for later add/remove diffs and list operations.
+            previousEditingMetadata = savedEditing
+            batchCommonMetadata = savedEditing
+            reconcileBatchPartials(afterSaving: savedEditing)
+            clearSavedBatchFieldMutations(savedFieldMutations)
+            if batchLocationsShownMutation == savedLocationsShownMutation {
+                batchLocationsShownMutation = .untouched
+            }
+            if batchImageSupplierMutation == savedImageSupplierMutation {
+                batchImageSupplierMutation = .untouched
+            }
+        }
+        // A failed photo keeps the editor's unsaved state so the edit is not reported as saved.
+        if updateState, allSaved, selectedURLs == selectedAtStart {
             hasChanges = pendingChanges
             if !pendingChanges {
                 selectedHavePendingSidecars = false
             }
         }
+        return failure
     }
 
-    private func capturedBatchMutation() -> @Sendable (inout IPTCMetadata) -> Void {
-        let batchMeta = editingMetadata
-        let previousCommon = previousEditingMetadata
-        let fields = batchFieldMutations
-        let locations = batchLocationsShownMutation
-        let suppliers = batchImageSupplierMutation
-        let keywordsMode = multiSelectMode(for: "keywords")
-        let personMode = multiSelectMode(for: "personShown")
-        return { metadata in
-            Self.applyBatchEdits(
-                batchMeta, to: &metadata, previousCommon: previousCommon,
-                batchFieldMutations: fields, batchLocationsShownMutation: locations,
-                batchImageSupplierMutation: suppliers,
-                keywordsMode: keywordsMode, personMode: personMode
-            )
+    private func capturedBatchMutation() -> BatchRecordMutation {
+        pruneStaleBatchTextIntents()
+        return BatchRecordMutation(
+            batchMeta: editingMetadata,
+            previousCommon: previousEditingMetadata,
+            fields: batchFieldMutations,
+            appendTokens: batchTextAppendTokens,
+            locations: batchLocationsShownMutation,
+            suppliers: batchImageSupplierMutation,
+            keywordsMode: multiSelectMode(for: "keywords"),
+            personMode: multiSelectMode(for: "personShown"),
+            ledger: textAppendLedger
+        )
+    }
+
+    /// After a save, drops each intent it saved that is still unchanged, key by key. Clearing
+    /// only when the whole set matched left a saved `.appendText` in place whenever anything
+    /// else was edited during the save, and the next save appended it again. An append the
+    /// user extended meanwhile stays; the ledger knows which part each photo already has.
+    private func clearSavedBatchFieldMutations(_ saved: [MetadataFieldID: MetadataFieldMutation]) {
+        for (field, mutation) in saved where batchFieldMutations[field] == mutation {
+            batchFieldMutations.removeValue(forKey: field)
+            batchTextIntentEditorValues.removeValue(forKey: field)
+            batchTextAppendTokens.removeValue(forKey: field)
         }
     }
 
-    private nonisolated static func applyBatchEdits(
+    /// Batch scalar intent (Photo Mechanic semantics): a non-empty value overwrites every
+    /// selected photo, and emptying a value that was common to the selection explicitly clears
+    /// it. An empty field that was already empty or mixed leaves each photo untouched.
+    nonisolated static func batchScalarWriteValue(_ edited: String?, previous: String?) -> String? {
+        if let edited, !edited.isEmpty { return edited }
+        if let previous, !previous.isEmpty { return "" }
+        return nil
+    }
+
+    private nonisolated static func applyBatchScalar(_ edited: String?, previous: String?, to value: inout String?) {
+        guard let write = batchScalarWriteValue(edited, previous: previous) else { return }
+        value = write.isEmpty ? nil : write
+    }
+
+    nonisolated static func applyBatchEdits(
         _ batchMeta: IPTCMetadata,
         to metadata: inout IPTCMetadata,
         previousCommon: IPTCMetadata? = nil,
@@ -4046,16 +5301,17 @@ final class MetadataViewModel {
             ) else { return }
             metadata = explicitlyMutated
         }
+        // Explicit template text intent (append/replace/clear) applies to each photo's own value.
+        guard let textMutated = try? Self.applyingBatchTextMutations(batchFieldMutations, to: metadata) else { return }
+        metadata = textMutated
+        func scalar(_ field: MetadataFieldID, _ path: WritableKeyPath<IPTCMetadata, String?>) {
+            guard batchFieldMutations[field] == nil else { return }
+            applyBatchScalar(batchMeta[keyPath: path], previous: previousCommon?[keyPath: path], to: &metadata[keyPath: path])
+        }
 
-        if let title = batchMeta.title, !title.isEmpty {
-            metadata.title = title
-        }
-        if let desc = batchMeta.description, !desc.isEmpty {
-            metadata.description = desc
-        }
-        if let extDesc = batchMeta.extendedDescription, !extDesc.isEmpty {
-            metadata.extendedDescription = extDesc
-        }
+        scalar(.headline, \.title)
+        scalar(.description, \.description)
+        scalar(.extendedDescription, \.extendedDescription)
 
         // Keywords — add vs overwrite
         if batchFieldMutations[.keywords] == nil {
@@ -4132,79 +5388,66 @@ final class MetadataViewModel {
             }
         }
 
-        if let copyright = batchMeta.copyright, !copyright.isEmpty {
-            metadata.copyright = copyright
-        }
-        if let rightsUsageTerms = batchMeta.rightsUsageTerms, !rightsUsageTerms.isEmpty {
-            metadata.rightsUsageTerms = rightsUsageTerms
-        }
-        if let webStatementOfRights = batchMeta.webStatementOfRights, !webStatementOfRights.isEmpty {
-            metadata.webStatementOfRights = webStatementOfRights
-        }
-        if let digitalImageGUID = batchMeta.digitalImageGUID, !digitalImageGUID.isEmpty {
-            metadata.digitalImageGUID = digitalImageGUID
-        }
-        if let imageSupplierImageID = batchMeta.imageSupplierImageID, !imageSupplierImageID.isEmpty {
-            metadata.imageSupplierImageID = imageSupplierImageID
-        }
-        if let jobId = batchMeta.jobId, !jobId.isEmpty {
-            metadata.jobId = jobId
-        }
-        if let dateCreated = batchMeta.dateCreated,
-           (try? EditorialDateCreated(parsing: dateCreated)) != nil {
-            metadata.dateCreated = dateCreated
+        scalar(.copyright, \.copyright)
+        scalar(.rightsUsageTerms, \.rightsUsageTerms)
+        scalar(.webStatementOfRights, \.webStatementOfRights)
+        scalar(.digitalImageGUID, \.digitalImageGUID)
+        scalar(.imageSupplierImageID, \.imageSupplierImageID)
+        scalar(.jobId, \.jobId)
+        if let dateCreated = batchMeta.dateCreated, !dateCreated.isEmpty {
+            if (try? EditorialDateCreated(parsing: dateCreated)) != nil {
+                metadata.dateCreated = dateCreated
+            }
+        } else if let previous = previousCommon?.dateCreated, !previous.isEmpty {
+            // Emptying a date every photo shared clears it, like every other batch scalar.
+            metadata.dateCreated = nil
         }
         if batchFieldMutations[.creator] == nil, !batchMeta.creators.isEmpty {
             metadata.creators = batchMeta.creators
         }
-        if let creatorJobTitle = batchMeta.creatorJobTitle, !creatorJobTitle.isEmpty {
-            metadata.creatorJobTitle = creatorJobTitle
-        }
-        if let descriptionWriter = batchMeta.descriptionWriter, !descriptionWriter.isEmpty {
-            metadata.descriptionWriter = descriptionWriter
-        }
-        if let credit = batchMeta.credit, !credit.isEmpty {
-            metadata.credit = credit
-        }
-        if let city = batchMeta.city, !city.isEmpty {
-            metadata.city = city
-        }
-        if let sublocation = batchMeta.sublocation, !sublocation.isEmpty {
-            metadata.sublocation = sublocation
-        }
-        if let provinceState = batchMeta.provinceState, !provinceState.isEmpty {
-            metadata.provinceState = provinceState
-        }
-        if let country = batchMeta.country, !country.isEmpty {
-            metadata.country = country
-        }
-        if let countryCode = batchMeta.countryCode, !countryCode.isEmpty {
-            metadata.countryCode = countryCode
-        }
-        if let event = batchMeta.event, !event.isEmpty {
-            metadata.event = event
-        }
-        if let instructions = batchMeta.instructions, !instructions.isEmpty {
-            metadata.instructions = instructions
-        }
-        if let source = batchMeta.source, !source.isEmpty {
-            metadata.source = source
-        }
+        scalar(.creatorJobTitle, \.creatorJobTitle)
+        scalar(.descriptionWriter, \.descriptionWriter)
+        scalar(.credit, \.credit)
+        scalar(.city, \.city)
+        scalar(.sublocation, \.sublocation)
+        scalar(.provinceState, \.provinceState)
+        scalar(.country, \.country)
+        scalar(.countryCode, \.countryCode)
+        scalar(.event, \.event)
+        scalar(.instructions, \.instructions)
+        scalar(.source, \.source)
+        // Clearing a value common to the selection clears it everywhere; a value that was
+        // already empty or mixed leaves each photo's own value untouched.
         if batchMeta.digitalSourceType != nil {
             metadata.digitalSourceType = batchMeta.digitalSourceType
+        } else if previousCommon?.digitalSourceType != nil {
+            metadata.digitalSourceType = nil
         }
         if batchMeta.urgency != nil {
             metadata.urgency = batchMeta.urgency
+        } else if previousCommon?.urgency != nil {
+            metadata.urgency = nil
         }
 
         // GPS — apply only when both coordinates are set, mirroring the batch
         // file-write path in writeMetadata(). When GPS differs across the
         // selection and the user hasn't picked a location, the common
         // coordinates are nil, so each image's existing GPS is preserved.
+        // Clearing coordinates every photo shared removes them from all.
         if let lat = batchMeta.latitude, let lon = batchMeta.longitude {
             metadata.latitude = lat
             metadata.longitude = lon
+        } else if batchClearsGPS(edited: batchMeta, previous: previousCommon) {
+            metadata.latitude = nil
+            metadata.longitude = nil
         }
+    }
+
+    /// The Clear button empties both coordinates. Only a location the whole selection shared
+    /// is cleared; mixed GPS has no common value and stays untouched.
+    nonisolated static func batchClearsGPS(edited: IPTCMetadata, previous: IPTCMetadata?) -> Bool {
+        edited.latitude == nil && edited.longitude == nil
+            && previous?.latitude != nil && previous?.longitude != nil
     }
 
     private nonisolated static func applyImplicitAdditiveEdit(
@@ -4230,7 +5473,20 @@ final class MetadataViewModel {
         guard selectedCount == 1,
               let imageURL = selectedURLs.first,
               let folderURL = currentFolderURL else {
+            let urls = selectedURLs
+            let folderURL = currentFolderURL
+            let hadPendingDrafts = selectedHavePendingSidecars
             writeMetadata()
+            // The batch write folds its change into each pending draft; writing those drafts
+            // completes them, matching the single-photo Write (which writes and clears its draft).
+            guard hadPendingDrafts, let folderURL else { return }
+            let batchWrite = writeTask
+            Task { @MainActor in
+                await batchWrite?.value
+                guard saveError == nil, currentFolderURL == folderURL else { return }
+                // The caller confirmed the C2PA warning before an explicit Write.
+                writeAllPendingChanges(in: folderURL, images: [], skipC2PA: false, limitedTo: urls)
+            }
             return
         }
 
@@ -4246,9 +5502,10 @@ final class MetadataViewModel {
         let captureKey = imageURL.resolvingSymlinksInPath().path.lowercased()
         let cleanupKey = MetadataIOKey.key(for: imageURL)
         let capturedGeneration = captionCaptureGenerations[captureKey, default: 0]
-        writeTask?.cancel()
+        let priorWrite = priorWriteForSingleSave(imageURL: imageURL, loadID: loadID)
         writeTask = Task {
             defer { if writeTaskGeneration == generation { isSaving = false } }
+            await priorWrite?.value
             var metadataWasWritten = false
             do {
                 let cleanup = try await sidecarService.captureWriteCleanupSnapshot(
@@ -4274,9 +5531,11 @@ final class MetadataViewModel {
                         anonymizer: edited.cameraRaw?.anonymizer,
                         unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
                         editorial: EditorialStructuredWriteData(metadata: edited),
+                        listValues: EditorialListWriteData(metadata: edited),
                         replaceCameraRawBlock: true
                     )
-                    : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited))
+                    : StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: edited),
+                                          listValues: EditorialListWriteData(metadata: edited))
                 let wroteToRawSidecar = SupportedImageFormats.isRaw(url: imageURL)
                 if wroteToRawSidecar {
                     _ = try await descriptiveWriteBoundary.write(
@@ -4329,9 +5588,11 @@ final class MetadataViewModel {
                 self.sidecarHistory = []
                 self.selectedHavePendingSidecars = false
                 self.cleanupBaseline = (imageURL, folderURL, nil)
+                // A RAW write lands in the .xmp; the bytes this write installed are the evidence
+                // the next save in this editor is checked against.
                 self.editorXMPWriteBaseline = (imageURL, folderURL, loadID,
-                    wroteToRawSidecar ? nil : (try? priorXMPEvidence.get()),
-                    wroteToRawSidecar ? "Reload this photo after its RAW-sidecar write before another metadata save." : nil)
+                    wroteToRawSidecar ? descriptiveWriteBoundary.xmpSnapshot(for: imageURL) : (try? priorXMPEvidence.get()),
+                    nil)
                 self.previousEditingMetadata = edited
                 // The written revision is now the baseline, even if the user typed a newer value
                 // while the writer ran. Preserve that buffer and keep Write & Next on this photo.
@@ -4345,10 +5606,35 @@ final class MetadataViewModel {
                 }
             }
         }
+        registerSingleSave(imageURL: imageURL, loadID: loadID)
     }
 
-    func writeAllPendingChanges(in folderURL: URL?, images: [ImageFile], skipC2PA: Bool = true) {
+    /// Paste IPTC writes the file (or its XMP), but a pending draft stays the photo's record until
+    /// Write All. Merge the pasted values into each pending draft too (keeping it pending), so a
+    /// later Write All cannot revert the paste. Photos without a pending draft are untouched.
+    func applyPastedIPTCToPendingDrafts(_ copied: IPTCMetadata, urls: [URL], in folderURL: URL) async {
+        guard !urls.isEmpty else { return }
+        let pendingNames = Set(await sidecarService.imagesWithPendingChanges(in: folderURL).map(\.lastPathComponent))
+        var pasted = copied
+        pasted.cameraRaw = nil
+        pasted.exifOrientation = nil
+        let record = pasted
+        for url in urls where pendingNames.contains(url.lastPathComponent) {
+            do {
+                _ = try await sidecarService.updateMetadataSerialized(
+                    for: url, in: folderURL, fallback: IPTCMetadata(), pendingChanges: true,
+                    mutation: { $0 = $0.merged(preferring: record) }
+                )
+            } catch {
+                saveError = "IPTC was pasted, but the pending draft for \(url.lastPathComponent) could not be updated: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func writeAllPendingChanges(in folderURL: URL?, images: [ImageFile], skipC2PA: Bool = true,
+                                limitedTo photoURLs: [URL]? = nil) {
         guard let folderURL else { return }
+        let limitedNames = photoURLs.map { Set($0.map(\.lastPathComponent)) }
         // Image-list credential booleans may still be unloaded or stale. The service reads a
         // complete physical record for every discovered photo before choosing its destination.
         _ = images
@@ -4363,6 +5649,7 @@ final class MetadataViewModel {
         let reader = readService
         isProcessingFolder = true
         folderProcessProgress = "0/?"
+        batchProcessScope = (.writeAllPending, folderURL)
         pendingWriteBatchOutcome = nil
         saveError = nil
         batchProcessTask?.cancel()
@@ -4374,7 +5661,9 @@ final class MetadataViewModel {
                 }
             }
             let discovered = await discovery(folderURL)
-            let records = discovered.records.sorted { $0.key.path < $1.key.path }
+            let records = discovered.records
+                .filter { limitedNames?.contains($0.key.lastPathComponent) ?? true }
+                .sorted { $0.key.path < $1.key.path }
             var results: [PendingMetadataWriteResult] = []
             var cancelled = Task.isCancelled || discovered.wasCancelled
             if batchProcessGeneration == generation { folderProcessProgress = "0/\(records.count)" }
@@ -4696,8 +5985,10 @@ final class MetadataViewModel {
             imageMetadataSnapshot: pendingDraftImageMetadataSnapshot,
             history: []
         )
-        writeTask?.cancel()
+        // Queue behind any running write instead of cancelling it partway through.
+        let priorWrite = writeTask
         writeTask = Task {
+            await priorWrite?.value
             do {
                 let installed = try await sidecarService.saveSidecarReplacingHistorySerialized(
                     sidecar,
@@ -4991,5 +6282,148 @@ final class MetadataViewModel {
         originalImageMetadata = nil
         previousEditingMetadata = nil
         metadataReferenceSource = .embedded
+    }
+}
+
+/// Batch scalar text fields keyed by the editor's field name (the `batchPlaceholder` key).
+nonisolated enum MetadataEditorFieldPaths {
+    static func scalarText(for key: String) -> WritableKeyPath<IPTCMetadata, String?>? {
+        switch key {
+        case "title": \.title
+        case "description": \.description
+        case "extendedDescription": \.extendedDescription
+        case "copyright": \.copyright
+        case "rightsUsageTerms": \.rightsUsageTerms
+        case "webStatementOfRights": \.webStatementOfRights
+        case "digitalImageGUID": \.digitalImageGUID
+        case "imageSupplierImageID": \.imageSupplierImageID
+        case "jobId": \.jobId
+        case "dateCreated": \.dateCreated
+        case "creatorJobTitle": \.creatorJobTitle
+        case "descriptionWriter": \.descriptionWriter
+        case "credit": \.credit
+        case "source": \.source
+        case "city": \.city
+        case "sublocation": \.sublocation
+        case "provinceState": \.provinceState
+        case "country": \.country
+        case "countryCode": \.countryCode
+        case "event": \.event
+        case "instructions": \.instructions
+        default: nil
+        }
+    }
+}
+
+
+/// Which record of a photo a batch mutation is being applied to.
+nonisolated enum BatchRecordChannel: Hashable, Sendable {
+    /// The image file itself (embedded IPTC/XMP).
+    case embedded
+    /// The photo's `.xmp` sidecar.
+    case xmpSidecar
+    /// The app's JSON metadata draft.
+    case jsonDraft
+}
+
+/// Remembers which template text appends each record of each photo already received, keyed by
+/// the intent's token. Appending is the one batch operation that is not idempotent, so every
+/// path that applies a captured mutation consults this when it applies it, not when the save was
+/// requested: a dual-write XMP phase after the embedded phase (which already wrote RAW sidecars
+/// and mirrored existing ones), a save queued behind a slow one, and a retry after a partial
+/// failure each append only what that record still lacks.
+nonisolated final class BatchTextAppendLedger: @unchecked Sendable {
+    private struct Key: Hashable {
+        let url: URL
+        let field: MetadataFieldID
+        let channel: BatchRecordChannel
+    }
+
+    private let lock = NSLock()
+    private var delivered: [Key: (token: UUID, text: String)] = [:]
+
+    func effective(
+        _ fields: [MetadataFieldID: MetadataFieldMutation],
+        tokens: [MetadataFieldID: UUID],
+        url: URL,
+        channel: BatchRecordChannel
+    ) -> [MetadataFieldID: MetadataFieldMutation] {
+        lock.withLock {
+            var result = fields
+            for (field, mutation) in fields {
+                guard case .appendText(let text) = mutation, let token = tokens[field],
+                      let done = delivered[Key(url: url.standardizedFileURL, field: field, channel: channel)],
+                      done.token == token else { continue }
+                if text == done.text {
+                    result.removeValue(forKey: field)
+                } else if text.hasPrefix(done.text + " ") {
+                    result[field] = .appendText(String(text.dropFirst(done.text.count + 1)))
+                }
+            }
+            return result
+        }
+    }
+
+    func markDelivered(
+        _ fields: [MetadataFieldID: MetadataFieldMutation],
+        tokens: [MetadataFieldID: UUID],
+        url: URL,
+        channel: BatchRecordChannel
+    ) {
+        lock.withLock {
+            // Entries are tiny and keyed by one-off tokens; bound growth over a long session.
+            if delivered.count > 20_000 { delivered.removeAll() }
+            for (field, mutation) in fields {
+                guard case .appendText(let text) = mutation, let token = tokens[field] else { continue }
+                delivered[Key(url: url.standardizedFileURL, field: field, channel: channel)] = (token, text)
+            }
+        }
+    }
+}
+
+/// A batch editor change captured when a save is requested, applied per photo and per record.
+nonisolated struct BatchRecordMutation: Sendable {
+    let batchMeta: IPTCMetadata
+    let previousCommon: IPTCMetadata?
+    let fields: [MetadataFieldID: MetadataFieldMutation]
+    let appendTokens: [MetadataFieldID: UUID]
+    let locations: BatchLocationsShownMutation
+    let suppliers: EditorialImageSupplierMutation
+    let keywordsMode: MultiSelectFieldMode
+    let personMode: MultiSelectFieldMode
+    let ledger: BatchTextAppendLedger
+
+    /// Applies the change to one record, appending only text that record has not received yet.
+    func apply(to metadata: inout IPTCMetadata, url: URL, channel: BatchRecordChannel) {
+        apply(to: &metadata, fields: ledger.effective(fields, tokens: appendTokens, url: url, channel: channel))
+    }
+
+    /// The full change, for computing a baseline that starts from a pre-save snapshot.
+    func applyIgnoringDeliveries(to metadata: inout IPTCMetadata) {
+        apply(to: &metadata, fields: fields)
+    }
+
+    func closure(for url: URL, channel: BatchRecordChannel) -> @Sendable (inout IPTCMetadata) -> Void {
+        { metadata in self.apply(to: &metadata, url: url, channel: channel) }
+    }
+
+    /// The embedded-write fields for one photo's text appends, from that photo's own record.
+    func embeddedTextFields(for url: URL, base: IPTCMetadata) -> [MetadataFieldKey: String] {
+        MetadataViewModel.perPhotoBatchTextFields(
+            ledger.effective(fields, tokens: appendTokens, url: url, channel: .embedded), base: base
+        )
+    }
+
+    func markDelivered(to url: URL, channel: BatchRecordChannel) {
+        ledger.markDelivered(fields, tokens: appendTokens, url: url, channel: channel)
+    }
+
+    private func apply(to metadata: inout IPTCMetadata, fields: [MetadataFieldID: MetadataFieldMutation]) {
+        MetadataViewModel.applyBatchEdits(
+            batchMeta, to: &metadata, previousCommon: previousCommon,
+            batchFieldMutations: fields, batchLocationsShownMutation: locations,
+            batchImageSupplierMutation: suppliers,
+            keywordsMode: keywordsMode, personMode: personMode
+        )
     }
 }

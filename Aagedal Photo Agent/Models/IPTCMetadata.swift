@@ -207,27 +207,31 @@ nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
         radiusY = ax * sin(theta) + ay * cos(theta)
     }
 
-    /// Rigidly rotate the whole ellipse by `degrees` about the frame center
-    /// (0.5, 0.5) — the continuous analogue of `transformedForDisplay`, used to
-    /// follow a crop STRAIGHTEN angle. The display path renders the mask effect
-    /// in source space and then rotates the whole image view by the straighten
-    /// angle, so the overlay (a non-rotated sibling) must bake the same rotation
-    /// in to stay aligned. Rotation happens in aspect-corrected (pixel) space so
-    /// the ellipse isn't sheared; the true semi-axes are preserved and re-encoded
-    /// at the new angle. `aspect` is the display frame's pixel width/height.
-    /// `degrees` uses the screen convention (positive = clockwise, matching
-    /// SwiftUI's `.rotationEffect(.degrees(_:))`). Inverse: negate `degrees`.
-    func rotatedInDisplay(byDegrees degrees: Double, aspect: Double) -> EllipseMaskGeometry {
+    /// Rigidly rotate the whole ellipse by `degrees` about `pivot` (normalized
+    /// display UV, default the frame center) — the continuous analogue of
+    /// `transformedForDisplay`, used to follow a crop STRAIGHTEN angle. A
+    /// confirmed crop renders through the Metal crop viewport, which rotates
+    /// sampling around the viewport (crop) centre, so the overlay (drawn through
+    /// the un-rotated viewport) must bake the same rotation about that pivot.
+    /// Rotation happens in aspect-corrected (pixel) space so the ellipse isn't
+    /// sheared; the true semi-axes are preserved and re-encoded at the new angle.
+    /// `aspect` is the display frame's pixel width/height. `degrees` uses the
+    /// screen convention (positive = clockwise). Inverse: negate `degrees` (same pivot).
+    func rotatedInDisplay(
+        byDegrees degrees: Double,
+        aspect: Double,
+        around pivot: CGPoint = CGPoint(x: 0.5, y: 0.5)
+    ) -> EllipseMaskGeometry {
         guard abs(degrees) > 1e-12 else { return self }
         let a = aspect > 0 ? aspect : 1
         let rad = degrees * .pi / 180
         let semi = trueRadii(aspect: a)   // rotation-invariant ellipse shape
         var result = self
-        // Rotate the center about (0.5, 0.5) in aspect-corrected space.
-        let dx = (centerX - 0.5) * a
-        let dy = centerY - 0.5
-        result.centerX = 0.5 + (dx * cos(rad) - dy * sin(rad)) / a
-        result.centerY = 0.5 + (dx * sin(rad) + dy * cos(rad))
+        // Rotate the center about the pivot in aspect-corrected space.
+        let dx = (centerX - pivot.x) * a
+        let dy = centerY - pivot.y
+        result.centerX = pivot.x + (dx * cos(rad) - dy * sin(rad)) / a
+        result.centerY = pivot.y + (dx * sin(rad) + dy * cos(rad))
         result.rotation = rotation + degrees
         result.setTrueRadii(x: semi.x, y: semi.y, aspect: a)
         return result
@@ -516,18 +520,22 @@ nonisolated struct WatermarkGeometry: Codable, Sendable, Equatable {
         return transformedForDisplay(orientation: inverse)
     }
 
-    /// Rigidly rotate the anchor point by `degrees` about the frame center (0.5, 0.5), to
-    /// follow a crop STRAIGHTEN angle — mirrors `EllipseMaskGeometry.rotatedInDisplay`'s
+    /// Rigidly rotate the anchor point by `degrees` about `pivot` (default the frame center),
+    /// to follow a crop STRAIGHTEN angle — mirrors `EllipseMaskGeometry.rotatedInDisplay`'s
     /// center rotation. `aspect` is the display frame's pixel width/height.
-    func rotatedInDisplay(byDegrees degrees: Double, aspect: Double) -> WatermarkGeometry {
+    func rotatedInDisplay(
+        byDegrees degrees: Double,
+        aspect: Double,
+        around pivot: CGPoint = CGPoint(x: 0.5, y: 0.5)
+    ) -> WatermarkGeometry {
         guard abs(degrees) > 1e-12 else { return self }
         let a = aspect > 0 ? aspect : 1
         let rad = degrees * .pi / 180
         var result = self
-        let dx = (centerX - 0.5) * a
-        let dy = centerY - 0.5
-        result.centerX = 0.5 + (dx * cos(rad) - dy * sin(rad)) / a
-        result.centerY = 0.5 + (dx * sin(rad) + dy * cos(rad))
+        let dx = (centerX - pivot.x) * a
+        let dy = centerY - pivot.y
+        result.centerX = pivot.x + (dx * cos(rad) - dy * sin(rad)) / a
+        result.centerY = pivot.y + (dx * sin(rad) + dy * cos(rad))
         return result
     }
 
@@ -597,6 +605,58 @@ nonisolated struct WatermarkGeometry: Codable, Sendable, Equatable {
         if minX > maxX { minX = 0.5; maxX = 0.5 }
         if minY > maxY { minY = 0.5; maxY = 0.5 }
         return (minX, maxX, minY, maxY)
+    }
+
+    /// Valid size range per unit — shared by the edit-view slider and the library's
+    /// default-placement field so a converted or typed value never leaves the slider's range.
+    static func sizeRange(for unit: WatermarkSizeUnit) -> ClosedRange<Double> {
+        switch unit {
+        case .percent: return 1...100
+        case .pixel: return 8...4000
+        }
+    }
+
+    /// Valid margin range per unit (see `sizeRange(for:)`).
+    static func marginRange(for unit: WatermarkMarginUnit) -> ClosedRange<Double> {
+        switch unit {
+        case .percent: return 0...45
+        case .pixel: return 0...2000
+        }
+    }
+
+    /// Stand-in frame (a 24 MP 3:2 image) for converting units where no real image exists,
+    /// i.e. a library asset's default placement.
+    static let nominalReferenceImageSize = (width: 6000.0, height: 4000.0)
+
+    /// Re-expresses the size in `unit`, keeping the same rendered size against an image of
+    /// `imageWidth` × `imageHeight`, then clamps to `sizeRange(for:)`. Switching the unit used
+    /// to keep the bare number (20% → 20px), shrinking the watermark to a speck.
+    func convertingSizeUnit(to unit: WatermarkSizeUnit, imageWidth: Double, imageHeight: Double) -> WatermarkGeometry {
+        guard unit != sizeUnit else { return self }
+        var result = self
+        result.sizeUnit = unit
+        let length = sizeDimension == .width ? imageWidth : imageHeight
+        if length > 0 {
+            result.sizeValue = unit == .pixel ? sizeValue / 100 * length : sizeValue / length * 100
+        }
+        let range = Self.sizeRange(for: unit)
+        result.sizeValue = min(max(result.sizeValue.rounded(), range.lowerBound), range.upperBound)
+        return result
+    }
+
+    /// Margin counterpart of `convertingSizeUnit`. A pixel margin is uniform while a percent
+    /// margin scales per axis, so the conversion is exact on the image's shorter edge.
+    func convertingMarginUnit(to unit: WatermarkMarginUnit, imageWidth: Double, imageHeight: Double) -> WatermarkGeometry {
+        guard unit != marginUnit else { return self }
+        var result = self
+        result.marginUnit = unit
+        let length = min(imageWidth, imageHeight)
+        if length > 0 {
+            result.marginValue = unit == .pixel ? marginValue / 100 * length : marginValue / length * 100
+        }
+        let range = Self.marginRange(for: unit)
+        result.marginValue = min(max(result.marginValue.rounded(), range.lowerBound), range.upperBound)
+        return result
     }
 
     /// Clamp `centerX`/`centerY` into `safeAreaRect`, returning a corrected copy.
@@ -1010,6 +1070,14 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var asShotNeutralTemperature: Double?
     var asShotNeutralTint: Double?
 
+    /// True once this develop record was built from a state that already included the file's
+    /// embedded Anonymizer redactions (see `EffectiveMetadataResolver.reconciledDevelopSettings`).
+    /// A sidecar block carrying it is authoritative for redactions: a blur the user disabled or
+    /// deleted in it stays off, instead of being re-added from the embedded block. Persisted
+    /// app-private as `aaphoto:EmbeddedRedactionsReviewed`; per-image, excluded from isEmpty,
+    /// merged() and paste/template operations.
+    var embeddedRedactionsReviewed: Bool?
+
     /// True when the source pixels are a scene-referred RAW decode with highlight data
     /// above SDR white (RAW files always decode with full EDR headroom). Tells the tone
     /// pipeline to apply the SDR output tonemap when hdrEditMode is off, so super-white
@@ -1056,6 +1124,9 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
             && (anonymizer?.isEmpty ?? true)
             && (filmEmulation?.isEmpty ?? true)
             && (unparsedMaskCorrections?.isEmpty ?? true)
+            // A reviewed record with nothing else still overrides the embedded block (the
+            // user removed its last edit, e.g. a blur), so it is not empty.
+            && embeddedRedactionsReviewed != true
     }
 
     /// True when the settings contain at least one edit the user can see. Unlike
@@ -2784,5 +2855,22 @@ nonisolated extension Array where Element: Hashable {
     func uniqued() -> [Element] {
         var seen = Set<Element>()
         return filter { seen.insert($0).inserted }
+    }
+}
+
+extension IPTCMetadata {
+    /// The descriptive record Copy IPTC carries to other photos (every IPTC Core/Extension field
+    /// the editor shows, incl. location, instructions, source and creator contact info).
+    /// Per-image identity (Digital Image GUID, capture date), rating/label and develop and
+    /// orientation state never travel.
+    nonisolated var copyableIPTCRecord: IPTCMetadata {
+        var copy = self
+        copy.digitalImageGUID = nil
+        copy.captureDate = nil
+        copy.rating = nil
+        copy.label = nil
+        copy.cameraRaw = nil
+        copy.exifOrientation = nil
+        return copy
     }
 }

@@ -2,6 +2,8 @@ import Foundation
 import os
 import Darwin
 
+nonisolated private let voiceMemoTrashLog = Logger(subsystem: "com.aagedal.photo-agent", category: "PhotoTrash")
+
 nonisolated struct VoiceMemoRenamePlanningRequest: Sendable {
     let requestID: UUID
     let folderURL: URL
@@ -38,7 +40,8 @@ actor VoiceMemoRenamePlanningService {
 
     static let shared = VoiceMemoRenamePlanningService()
 
-    private let artifactPlanner: ArtifactPlanner
+    /// Injected per-image planner (tests); nil uses the repository's batch planner.
+    private let artifactPlanner: ArtifactPlanner?
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "VoiceMemoRenamePlanning"
@@ -48,9 +51,7 @@ actor VoiceMemoRenamePlanningService {
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.voice-memo-rename-planning", qos: .utility
         ),
-        artifactPlanner: @escaping ArtifactPlanner = {
-            try VoiceMemoCompanionRepository().planningArtifacts(for: $0)
-        }
+        artifactPlanner: ArtifactPlanner? = nil
     ) {
         self.filesystemQueue = filesystemQueue
         self.artifactPlanner = artifactPlanner
@@ -76,13 +77,24 @@ actor VoiceMemoRenamePlanningService {
             return snapshot(.cancelled(completedItemCount: 0))
         }
 
+        // Memo reference counts are read once per folder for the whole request; per-photo
+        // recounting re-read every relationship record and made large selections quadratic.
+        let repository = VoiceMemoCompanionRepository()
+        var referenceCountsByFolder: [URL: [URL: Int]] = [:]
         do {
             for var item in request.items {
                 guard !Task.isCancelled else {
                     signposter.endInterval("Plan", state, "cancelled=prefix count=\(completed.count)")
                     return snapshot(.cancelled(completedItemCount: completed.count))
                 }
-                item.associatedArtifacts = try artifactPlanner(item.sourceImageURL)
+                if let artifactPlanner {
+                    item.associatedArtifacts = try artifactPlanner(item.sourceImageURL)
+                } else {
+                    item.associatedArtifacts = try repository.planningArtifacts(
+                        for: item.sourceImageURL,
+                        referenceCountsByFolder: &referenceCountsByFolder
+                    )
+                }
                 guard !Task.isCancelled else {
                     signposter.endInterval("Plan", state, "cancelled=postread count=\(completed.count)")
                     return snapshot(.cancelled(completedItemCount: completed.count))
@@ -260,13 +272,18 @@ nonisolated struct VoiceMemoCompanionCopyIO: Sendable {
 nonisolated struct VoiceMemoCompanionRepository: Sendable {
     private let recordIO: any VoiceMemoCompanionRecordIO
     private let copyIO: VoiceMemoCompanionCopyIO
+    /// Source revisions go through the shared capture service so its digest cache (file ID,
+    /// size, mtime and ctime) answers repeated revalidation of unchanged photos and memos.
+    private let revisionCapture: SourceImageRevisionCaptureService
 
     init(
         recordIO: any VoiceMemoCompanionRecordIO = SystemVoiceMemoCompanionRecordIO(),
-        copyIO: VoiceMemoCompanionCopyIO = .system
+        copyIO: VoiceMemoCompanionCopyIO = .system,
+        revisionCapture: SourceImageRevisionCaptureService = .shared
     ) {
         self.recordIO = recordIO
         self.copyIO = copyIO
+        self.revisionCapture = revisionCapture
     }
 
     enum RepositoryError: Error, LocalizedError, Equatable, Sendable {
@@ -1011,16 +1028,31 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
     }
 
     func planningArtifacts(for imageURL: URL) throws -> [RenamePlanningAssociatedArtifact] {
+        var referenceCountsByFolder: [URL: [URL: Int]] = [:]
+        return try planningArtifacts(for: imageURL, referenceCountsByFolder: &referenceCountsByFolder)
+    }
+
+    /// Batch form: memo reference counts are computed once per folder and reused for every
+    /// photo in the request instead of re-reading every relationship record per photo.
+    func planningArtifacts(
+        for imageURL: URL,
+        referenceCountsByFolder: inout [URL: [URL: Int]]
+    ) throws -> [RenamePlanningAssociatedArtifact] {
         switch try lookup(for: imageURL) {
         case .none:
             return []
         case .missing(let record):
             throw RepositoryError.memoMissing(record.memoFilename)
         case .available(let association):
-            let referenceCount = try memoReferenceCount(
-                to: association.memoURL,
-                in: imageURL.deletingLastPathComponent()
-            )
+            let folderURL = imageURL.deletingLastPathComponent().standardizedFileURL
+            let counts: [URL: Int]
+            if let cached = referenceCountsByFolder[folderURL] {
+                counts = cached
+            } else {
+                counts = try memoReferenceCounts(in: folderURL)
+                referenceCountsByFolder[folderURL] = counts
+            }
+            let referenceCount = counts[VoiceMemoAssociationService.canonicalURL(association.memoURL)] ?? 0
             guard referenceCount == 1 else {
                 throw RepositoryError.sharedMemoRequiresGroupAction(
                     association.memoURL.lastPathComponent
@@ -1209,12 +1241,17 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
     }
 
     private func copyRevision(at url: URL) throws -> CopyRevision {
-        let before = try copyFileSnapshot(at: url)
-        let digest = try SourceImageRevisionCaptureIO.system.hash(url)
-        guard try before.matches(copyFileSnapshot(at: url)) else {
+        // Same stat-hash-stat transaction as before, on this exact (non-canonicalized) path so a
+        // symbolic-link leaf is still refused. An unchanged, settled stat identity answers from
+        // the digest cache; any change in file ID, size, mtime or ctime re-reads the bytes.
+        let verified: SourceImageRevisionVerifiedDigest
+        do {
+            verified = try revisionCapture.verifiedDigestSynchronously(
+                at: URL(fileURLWithPath: url.path), canonicalize: false)
+        } catch SourceImageRevisionError.sourceChangedDuringHash {
             throw RepositoryError.copySourceChanged
         }
-        return CopyRevision(snapshot: before, digest: digest)
+        return CopyRevision(snapshot: verified.snapshot, digest: verified.digest)
     }
 
     private func contentIdentity(for revision: CopyRevision) -> VoiceMemoCompanionContentIdentity {
@@ -1487,7 +1524,20 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         // Keep the old direct path for photos without a persisted relationship, including
         // callers with virtual URLs. Malformed or unavailable saved relationships fail closed.
         guard let companion = try moveCompanion(for: imageURL, to: imageURL) else {
+            // Sidecars left behind would silently attach to a later photo with the same name,
+            // so trash the ones this photo owns exclusively alongside it. Decide ownership
+            // before the photo leaves the folder.
+            let ownedSidecars = Self.exclusivelyOwnedSidecars(of: imageURL)
             try handler.trashItem(at: imageURL)
+            for sidecar in ownedSidecars {
+                do {
+                    try handler.trashItem(at: sidecar)
+                } catch {
+                    // The photo is already in the Trash; a stranded sidecar is not a reason
+                    // to report the photo itself as not deleted.
+                    voiceMemoTrashLog.error("Could not trash sidecar \(sidecar.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .private)")
+                }
+            }
             return
         }
         let folder = imageURL.deletingLastPathComponent()
@@ -1633,6 +1683,33 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             if !recovery.isEmpty { throw RepositoryError.trashRollbackFailed(recovery) }
             throw error
         }
+    }
+
+    /// The `.xmp` and editorial JSON sidecars that belong only to `imageURL`. The stem-named
+    /// `.xmp` (IMG_1.xmp) is shared by a RAW+JPEG pair, so it is kept while any same-stem
+    /// photo remains. A JSON record is included only when it declares this photo as its owner.
+    /// Anything ambiguous, linked, or unreadable is left in place.
+    static func exclusivelyOwnedSidecars(of imageURL: URL) -> [URL] {
+        let fm = FileManager.default
+        let folder = imageURL.deletingLastPathComponent()
+        func isRegularFile(_ url: URL) -> Bool {
+            (try? fm.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeRegular
+        }
+        var owned: [URL] = []
+        let xmp = XMPSidecarService().sidecarURL(for: imageURL)
+        if xmp.standardizedFileURL != imageURL.standardizedFileURL,
+           isRegularFile(xmp),
+           (try? PhotoSidecarOwnership.hasSurvivingStemSibling(of: imageURL, in: folder)) == false {
+            owned.append(xmp)
+        }
+        for record in MetadataSidecarService().relocationDestinationURLs(for: imageURL, in: folder)
+        where isRegularFile(record) {
+            guard let data = try? Data(contentsOf: record),
+                  let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  json["sourceFile"] as? String == imageURL.lastPathComponent else { continue }
+            owned.append(record)
+        }
+        return owned
     }
 
     private func trashCarrierExists(at url: URL) throws -> Bool {
@@ -1893,7 +1970,11 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
     }
 
     private func memoReferenceCount(to memoURL: URL, in folderURL: URL) throws -> Int {
-        let target = VoiceMemoAssociationService.canonicalURL(memoURL)
+        try memoReferenceCounts(in: folderURL)[VoiceMemoAssociationService.canonicalURL(memoURL)] ?? 0
+    }
+
+    /// Relationship-record count per canonical memo URL for every record in `folderURL`.
+    private func memoReferenceCounts(in folderURL: URL) throws -> [URL: Int] {
         let recordURLs = try FileManager.default.contentsOfDirectory(
             at: folderURL,
             includingPropertiesForKeys: nil,
@@ -1903,7 +1984,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             return name.hasPrefix(".") && name.hasSuffix(Self.recordSuffix)
         }
 
-        var count = 0
+        var counts: [URL: Int] = [:]
         for url in recordURLs {
             let name = url.lastPathComponent
             let imageFilename = String(name.dropFirst().dropLast(Self.recordSuffix.count))
@@ -1914,11 +1995,9 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
                 currentImageFilename: imageFilename
             )
             let candidate = folderURL.appendingPathComponent(effectiveMemo)
-            if VoiceMemoAssociationService.canonicalURL(candidate) == target {
-                count += 1
-            }
+            counts[VoiceMemoAssociationService.canonicalURL(candidate), default: 0] += 1
         }
-        return count
+        return counts
     }
 
     private static func validateFilename(_ filename: String) throws {

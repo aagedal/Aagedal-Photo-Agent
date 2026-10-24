@@ -32,7 +32,8 @@ nonisolated struct DevelopColorLUTSecurityScope: @unchecked Sendable {
 @Observable
 final class DevelopColorLUTImportCoordinator {
     typealias LoadOperation = @MainActor (URL, UUID) async throws -> ColorLUTImportResult
-    typealias ParseOperation = @MainActor (Data) throws -> ParsedCubeLUT
+    /// Async so the production seam (`CubeLUTParser.parseOffMain`) can parse off the main actor.
+    typealias ParseOperation = @Sendable (Data) async throws -> ParsedCubeLUT
     typealias PersistencePublisher = @MainActor (DevelopColorLUTPersistenceIntent) -> Void
 
     private(set) var imageURL: URL?
@@ -129,7 +130,7 @@ final class DevelopColorLUTImportCoordinator {
                         finishImport(requestID: currentRequestID)
                         return
                     }
-                    let parsed = try parse(snapshot.data)
+                    let parsed = try await parse(snapshot.data)
                     guard !Task.isCancelled, requestID == currentRequestID else { return }
                     let trimmedTitle = parsed.title?
                         .trimmingCharacters(in: .whitespacesAndNewlines)

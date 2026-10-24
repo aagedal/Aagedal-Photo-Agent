@@ -893,7 +893,7 @@ private nonisolated final class BlockingKeywordListsArchiveImporterProbe: @unche
         condition.broadcast()
         if importCount == 1 {
             while !firstImportReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeImports -= 1
@@ -913,6 +913,8 @@ private nonisolated final class BlockingKeywordListsArchiveImporterProbe: @unche
         let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstImport()
                 throw KeywordListsArchivePreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1009,7 +1011,7 @@ private nonisolated final class BlockingKeywordListsArchivePreviewReaderProbe: @
         condition.broadcast()
         if inspectionCount == 1 {
             while !firstInspectionReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeInspections -= 1
@@ -1021,6 +1023,8 @@ private nonisolated final class BlockingKeywordListsArchivePreviewReaderProbe: @
         let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstInspection()
                 throw KeywordListsArchivePreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

@@ -567,11 +567,11 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(probe.writtenData == nil)
     }
 
-    @Test("first-use import holds security scope and replaces the managed snapshot before append")
+    @Test("first-use import holds security scope and creates the managed list before append")
     func firstUseImport() async throws {
         let source = URL(fileURLWithPath: "/picked/credit.txt")
         let destination = URL(fileURLWithPath: "/managed/credit.txt")
-        let probe = KeywordListEditorFileAccessProbe(readData: Data("Agency\nDesk\n".utf8))
+        let probe = KeywordListEditorFileAccessProbe(files: [source: Data("Agency\nDesk\n".utf8)])
         let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
         let requestID = UUID()
 
@@ -586,7 +586,7 @@ struct KeywordListEditorPersistenceServiceTests {
             requestID: requestID,
             destinationURL: destination,
             entries: ["Agency", "Desk", "Freelance"],
-            addedEntries: ["Freelance"],
+            addedEntries: ["Agency", "Desk", "Freelance"],
             byteCount: Data("Agency\nDesk\nFreelance\n".utf8).count,
             cancellationRequestedAfterCommit: false
         )))
@@ -599,7 +599,7 @@ struct KeywordListEditorPersistenceServiceTests {
         let source = URL(fileURLWithPath: "/picked/keywords.csv")
         let destination = URL(fileURLWithPath: "/managed/keywords.txt")
         let probe = KeywordListEditorFileAccessProbe(
-            readData: Data("News,ignored column\nSport,ignored column\n".utf8)
+            files: [source: Data("News,ignored column\nSport,ignored column\n".utf8)]
         )
         let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
         let requestID = UUID()
@@ -615,10 +615,66 @@ struct KeywordListEditorPersistenceServiceTests {
             requestID: requestID,
             destinationURL: destination,
             entries: ["News", "Sport", "Weather"],
-            addedEntries: ["Weather"],
+            addedEntries: ["News", "Sport", "Weather"],
             byteCount: Data("News\nSport\nWeather\n".utf8).count,
             cancellationRequestedAfterCommit: false
         )))
+    }
+
+    @Test("file import merges into an existing managed list instead of replacing it")
+    func importMergesIntoExistingList() async throws {
+        let source = URL(fileURLWithPath: "/picked/city.txt")
+        let destination = URL(fileURLWithPath: "/managed/city.txt")
+        let probe = KeywordListEditorFileAccessProbe(files: [
+            destination: Data("Oslo\nBergen\n".utf8),
+            source: Data("Bergen\nTromsø\n\nOslo\nStavanger\n".utf8),
+        ])
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.appendEntries(
+            [],
+            to: destination,
+            importing: source,
+            requestID: requestID
+        )
+
+        // Existing entries keep their order; only the file's new entries are appended.
+        #expect(result == .committed(QuickListMutationCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            entries: ["Oslo", "Bergen", "Tromsø", "Stavanger"],
+            addedEntries: ["Tromsø", "Stavanger"],
+            byteCount: Data("Oslo\nBergen\nTromsø\nStavanger\n".utf8).count,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.writtenData == Data("Oslo\nBergen\nTromsø\nStavanger\n".utf8))
+    }
+
+    @Test("file import that adds nothing leaves the managed list untouched")
+    func importWithNoNewEntriesIsUnchanged() async throws {
+        let source = URL(fileURLWithPath: "/picked/city.txt")
+        let destination = URL(fileURLWithPath: "/managed/city.txt")
+        let probe = KeywordListEditorFileAccessProbe(files: [
+            destination: Data("Oslo\nBergen\n".utf8),
+            source: Data("Bergen\n".utf8),
+        ])
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.appendEntries(
+            [],
+            to: destination,
+            importing: source,
+            requestID: requestID
+        )
+
+        #expect(result == .unchanged(
+            requestID: requestID,
+            destinationURL: destination,
+            entries: ["Oslo", "Bergen"]
+        ))
+        #expect(probe.writtenData == nil)
     }
 
     @Test("append publishes exact durable evidence when cancellation arrives in the writer")
@@ -810,7 +866,7 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(source.contains("entries: commit.entries"))
         #expect(source.contains("persistenceRequestID = nil\n            persistenceTask = nil"))
 
-        let persistStart = try #require(source.range(of: "private func persist()"))
+        let persistStart = try #require(source.range(of: "private func persist(overwriting: Bool = false)"))
         let persistSource = source[persistStart.lowerBound...]
         let durablePublication = try #require(persistSource.range(of:
             "KeywordListsStore.shared.recordExternalWrite("
@@ -819,6 +875,18 @@ struct KeywordListEditorPersistenceServiceTests {
             "guard persistenceRequestID == requestID else { return }"
         ))
         #expect(durablePublication.lowerBound < uiRequestGate.lowerBound)
+
+        // Export must not write an empty file after a failed load.
+        let exportButton = try #require(source.range(of: "Button(\"Export to File…\")"))
+        let exportSuffix = source[exportButton.lowerBound...]
+        let exportButtonEnd = try #require(exportSuffix.range(of: "if let feedback"))
+        #expect(exportSuffix[..<exportButtonEnd.lowerBound].contains(".disabled(!canEdit)"))
+        let exportStart = try #require(source.range(of: "private func exportToFile() {"))
+        #expect(source[exportStart.upperBound...].hasPrefix("\n        guard canEdit else { return }"))
+        // Each save replaces the previous outcome so a stale "Save failed" never lingers.
+        let persistBody = try #require(source.range(of: "private func persist(overwriting: Bool = false) {"))
+        let firstLaunch = try #require(source[persistBody.upperBound...].range(of: "persistenceTask = Task"))
+        #expect(source[persistBody.upperBound..<firstLaunch.lowerBound].contains("feedback = nil"))
 
         #expect(!source.contains("KeywordListsStore.shared.readEntries(storeKey)"))
         #expect(!source.contains("KeywordListsStore.shared.writeEntries(entries, to: storeKey)"))
@@ -845,6 +913,8 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
     private let lock = NSLock()
     private let storedItemExists: Bool
     private let storedReadData: Data
+    /// When set, only these URLs exist and each reads its own bytes.
+    private let storedFiles: [URL: Data]?
     private let cancelDuringWrite: Bool
     private var existsCount = 0
     private var readCount = 0
@@ -858,26 +928,33 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
     init(
         itemExists: Bool = true,
         readData: Data = Data(),
+        files: [URL: Data]? = nil,
         cancelDuringWrite: Bool = false
     ) {
         storedItemExists = itemExists
         storedReadData = readData
+        storedFiles = files
         self.cancelDuringWrite = cancelDuringWrite
     }
 
     var fileAccess: KeywordListEditorFileAccess {
         KeywordListEditorFileAccess(
-            itemExists: { [self] _ in
+            itemExists: { [self] url in
                 lock.withLock {
                     existsCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
+                if let storedFiles { return storedFiles[url] != nil }
                 return storedItemExists
             },
-            readData: { [self] _ in
+            readData: { [self] url in
                 lock.withLock {
                     readCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
+                }
+                if let storedFiles {
+                    guard let data = storedFiles[url] else { throw CocoaError(.fileReadNoSuchFile) }
+                    return data
                 }
                 return storedReadData
             },
@@ -940,7 +1017,7 @@ private nonisolated final class BlockingKeywordListEditorFileAccessProbe: @unche
                 if readCount == 1 {
                     firstReadStarted = true
                     condition.broadcast()
-                    while !firstReadReleased { condition.wait() }
+                    while !firstReadReleased { if !condition.waitBounded() { break } }
                 }
                 activeReads -= 1
                 condition.unlock()
@@ -954,6 +1031,8 @@ private nonisolated final class BlockingKeywordListEditorFileAccessProbe: @unche
         let deadline = ContinuousClock.now + .seconds(30)
         while !condition.withLock({ firstReadStarted }) {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw KeywordListEditorFileAccessProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -999,4 +1078,144 @@ private nonisolated final class KeywordFilesystemTransactionProbe: @unchecked Se
     func recordBackupRead() { lock.withLock { reads += 1 } }
     var routingCount: Int { lock.withLock { routes } }
     var backupReadCount: Int { lock.withLock { reads } }
+}
+
+@Suite("Keyword-list editor save baselines", .serialized)
+struct KeywordListEditorSaveBaselineTests {
+    private func tempList(_ name: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("baseline-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(name)
+    }
+
+    @Test("a flat list changed elsewhere since it was loaded refuses the save and keeps the file")
+    func entriesBaselineConflict() async throws {
+        let list = try tempList("keywords.txt")
+        defer { try? FileManager.default.removeItem(at: list.deletingLastPathComponent()) }
+        try Data("Oslo\nBergen\n".utf8).write(to: list)
+        let service = KeywordListEditorPersistenceService()
+
+        // Another Mac adds an entry after the editor loaded ["Oslo", "Bergen"].
+        try Data("Oslo\nBergen\nTromsø\n".utf8).write(to: list)
+        await #expect(throws: KeywordListBaselineConflictError()) {
+            try await service.saveEntries(["Oslo"], to: list, expectedEntries: ["Oslo", "Bergen"], requestID: UUID())
+        }
+        #expect(try String(contentsOf: list, encoding: .utf8) == "Oslo\nBergen\nTromsø\n")
+
+        // A matching baseline saves; Overwrite (no baseline) saves regardless.
+        let matching = try await service.saveEntries(
+            ["Oslo", "Bergen", "Tromsø", "Bodø"], to: list,
+            expectedEntries: ["Oslo", "Bergen", "Tromsø"], requestID: UUID()
+        )
+        guard case .committed = matching else { Issue.record("Expected a commit"); return }
+        _ = try await service.saveEntries(["Only"], to: list, requestID: UUID())
+        #expect(try String(contentsOf: list, encoding: .utf8) == "Only\n")
+    }
+
+    @Test("a missing list file matches an empty baseline")
+    func missingFileMatchesEmptyBaseline() async throws {
+        let list = try tempList("new.txt")
+        defer { try? FileManager.default.removeItem(at: list.deletingLastPathComponent()) }
+        let service = KeywordListEditorPersistenceService()
+        _ = try await service.saveEntries(["First"], to: list, expectedEntries: [], requestID: UUID())
+        #expect(try String(contentsOf: list, encoding: .utf8) == "First\n")
+        _ = try await service.saveText("a\n", to: list.deletingLastPathComponent().appendingPathComponent("tree.txt"),
+                                        expectedText: "", requestID: UUID())
+    }
+
+    @MainActor
+    @Test("the keyword-hierarchy editor's save is refused when the tree file changed since it loaded")
+    func structuredTreeBaselineConflict() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tree-baseline-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let service = StructuredKeywordService()
+            try await service.saveTree([StructuredKeyword(name: "sport", kind: .keyword)])
+            let baseline = try #require(service.loadedText)
+
+            // Another writer replaces the file behind the open editor.
+            let file = root.appendingPathComponent(KeywordListKey.structured.relativePath)
+            try Data("sport\n\ttennis\n".utf8).write(to: file)
+
+            await #expect(throws: KeywordListBaselineConflictError()) {
+                try await service.saveTree([StructuredKeyword(name: "mine", kind: .keyword)], expectedText: baseline)
+            }
+            #expect(try String(contentsOf: file, encoding: .utf8) == "sport\n\ttennis\n")
+            // Overwrite is an explicit choice.
+            try await service.saveTree([StructuredKeyword(name: "mine", kind: .keyword)])
+            #expect(try String(contentsOf: file, encoding: .utf8) == "mine\n")
+            #expect(service.loadedText == "mine\n")
+        }
+    }
+
+    @MainActor
+    @Test("keyword trees refuse to save to an unsettled local fallback while list sync is on")
+    func unsettledRouteRefusesSave() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("unsettled-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("keywords.txt")
+        let service = StructuredKeywordService(
+            storageURL: { _ in file },
+            resolveStorageURL: { _ in file },
+            isSettledRoute: { _ in false }
+        )
+        await #expect(throws: ICloudStorageUnavailableError()) {
+            try await service.saveTree([StructuredKeyword(name: "stranded", kind: .keyword)])
+        }
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+}
+
+@Suite("Template storage while iCloud is unavailable", .serialized)
+struct TemplateStorageICloudUnavailableTests {
+    @Test("Templates sync on with no iCloud container resolves read-only and refuses writes")
+    func refusesWritesWhileICloudUnavailable() throws {
+        let defaults = AppDefaults.store
+        let saved = defaults.object(forKey: UserDefaultsKeys.templatesICloudEnabled)
+        defaults.set(true, forKey: UserDefaultsKeys.templatesICloudEnabled)
+        defer {
+            if let saved { defaults.set(saved, forKey: UserDefaultsKeys.templatesICloudEnabled) }
+            else { defaults.removeObject(forKey: UserDefaultsKeys.templatesICloudEnabled) }
+        }
+        try AppPathsICloudOverride.$documents.withValue(.some(nil)) {
+            let resolution = AppPaths.templatesDirectoryResolution()
+            resolution.release()
+            #expect(resolution.cloudUnavailable)
+            #expect(AppPaths.templatesCloudUnavailable)
+            #expect(AppPaths.developTemplatesDirectoryResolution().cloudUnavailable)
+        }
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("templates-ro-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let readOnly = TemplateStorageService(directoryURL: folder, refusesWrites: true)
+        #expect(throws: ICloudStorageUnavailableError()) {
+            try readOnly.save(MetadataTemplate(name: "Stranded"))
+        }
+        #expect(try readOnly.loadAll().isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+        let developReadOnly = DevelopTemplateStorageService(directoryURL: folder, refusesWrites: true)
+        #expect(throws: ICloudStorageUnavailableError()) {
+            try developReadOnly.save(DevelopTemplate(name: "Stranded"))
+        }
+    }
+
+    @Test("a reachable container is used for templates when sync is on")
+    func reachableContainerIsUsed() throws {
+        let defaults = AppDefaults.store
+        let saved = defaults.object(forKey: UserDefaultsKeys.templatesICloudEnabled)
+        defaults.set(true, forKey: UserDefaultsKeys.templatesICloudEnabled)
+        defer {
+            if let saved { defaults.set(saved, forKey: UserDefaultsKeys.templatesICloudEnabled) }
+            else { defaults.removeObject(forKey: UserDefaultsKeys.templatesICloudEnabled) }
+        }
+        let documents = FileManager.default.temporaryDirectory.appendingPathComponent("fake-icloud-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: documents) }
+        AppPathsICloudOverride.$documents.withValue(.some(documents)) {
+            let resolution = AppPaths.templatesDirectoryResolution()
+            resolution.release()
+            #expect(!resolution.cloudUnavailable)
+            #expect(resolution.url == documents.appendingPathComponent("Templates", isDirectory: true))
+        }
+    }
 }

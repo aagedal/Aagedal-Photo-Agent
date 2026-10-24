@@ -287,11 +287,11 @@ struct KnownPeopleInterchangeProductionOperationsTests {
             "CFBundleVersion": "738"
         ])
         let root = fixture.plan.route.rootURL, originalOverride = KnownPeopleService.storageOverrideURL
-        let key = UserDefaultsKeys.knownPeopleICloudEnabled, prior = UserDefaults.standard.object(forKey: key)
-        KnownPeopleService.storageOverrideURL = root; UserDefaults.standard.set(false, forKey: key)
+        let key = UserDefaultsKeys.knownPeopleICloudEnabled, prior = AppDefaults.store.object(forKey: key)
+        KnownPeopleService.storageOverrideURL = root; AppDefaults.store.set(false, forKey: key)
         defer {
             KnownPeopleService.storageOverrideURL = originalOverride
-            if let prior { UserDefaults.standard.set(prior, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
+            if let prior { AppDefaults.store.set(prior, forKey: key) } else { AppDefaults.store.removeObject(forKey: key) }
         }
         let owner = KnownPeopleService()
         var access = KnownPeopleInterchangeOperationsAccess.system(owner: owner, coordinator: .shared,
@@ -325,11 +325,11 @@ struct KnownPeopleInterchangeProductionOperationsTests {
         let lease = try await knownPeopleICloudPreferenceTestGate.acquire(); defer { lease.release() }
         let fixture = try await fixture(); defer { try? FileManager.default.removeItem(at: fixture.parent) }
         let root = fixture.plan.route.rootURL, originalOverride = KnownPeopleService.storageOverrideURL
-        let key = UserDefaultsKeys.knownPeopleICloudEnabled, prior = UserDefaults.standard.object(forKey: key)
-        KnownPeopleService.storageOverrideURL = root; UserDefaults.standard.set(false, forKey: key)
+        let key = UserDefaultsKeys.knownPeopleICloudEnabled, prior = AppDefaults.store.object(forKey: key)
+        KnownPeopleService.storageOverrideURL = root; AppDefaults.store.set(false, forKey: key)
         defer {
             KnownPeopleService.storageOverrideURL = originalOverride
-            if let prior { UserDefaults.standard.set(prior, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
+            if let prior { AppDefaults.store.set(prior, forKey: key) } else { AppDefaults.store.removeObject(forKey: key) }
         }
         let legacyURL = root.appendingPathComponent("database.json")
         let bytes = try JSONEncoder().encode(KnownPeopleDatabase(people: fixture.snapshot.people))

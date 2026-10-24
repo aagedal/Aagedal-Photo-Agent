@@ -25,9 +25,121 @@ struct ImageMemoryCoordinatorTests {
         ).policy()
 
         #expect(fourGiB.totalBudget == 512 * mebibyte)
-        #expect(thirtyTwoGiB.totalBudget == 1_024 * mebibyte)
+        #expect(thirtyTwoGiB.totalBudget == 4_096 * mebibyte)
         #expect(sumOfCacheLimits(fourGiB) == fourGiB.totalBudget)
         #expect(sumOfCacheLimits(thirtyTwoGiB) == thirtyTwoGiB.totalBudget)
+    }
+
+    @Test("the budget ceiling scales with RAM between 1 and 4 GiB; 8 GB Macs are unchanged")
+    func budgetCeilingScalesWithPhysicalMemory() {
+        func total(_ gibibytes: UInt64) -> Int {
+            ImageMemoryCoordinator(
+                availableMemory: { gibibytes * 1_024 * 1_024 * 1_024 },
+                observesSystemPressure: false
+            ).policy().totalBudget
+        }
+        #expect(total(8) == 1_024 * mebibyte)
+        #expect(total(16) == 2_048 * mebibyte)
+        #expect(total(32) == 4_096 * mebibyte)
+        #expect(total(64) == 4_096 * mebibyte)
+        #expect(total(128) == ImageMemoryCoordinator.maximumTotalBudget)
+    }
+
+    @Test("full-screen estimates use a 3:2 photo, not a square, so 6K screens keep their full share")
+    func fullScreenEstimateUsesPhotoAspect() {
+        let estimate = FullScreenImageCache.estimatedScreenImageSize(screenMaxPx: 6_016)
+        #expect(estimate.width == 6_016)
+        #expect(estimate.height == (6_016.0 * 2 / 3).rounded(.up))
+
+        // On an 8 GB Mac a square 6K estimate (two reserved images ≥ 1/2 of the budget)
+        // halved the cache; the 3:2 estimate stays below that tier.
+        let coordinator = ImageMemoryCoordinator(
+            availableMemory: { 8 * 1_024 * 1_024 * 1_024 },
+            observesSystemPressure: false
+        )
+        let base = coordinator.policy().fullScreenPrimaryLimit
+        let square = coordinator.adaptiveLimit(
+            for: .fullScreenPrimary,
+            sourcePixelSize: CGSize(width: 6_016, height: 6_016),
+            bytesPerPixel: 8
+        )
+        let photo = coordinator.adaptiveLimit(
+            for: .fullScreenPrimary,
+            sourcePixelSize: estimate,
+            bytesPerPixel: 8
+        )
+        #expect(square == base / 2)
+        #expect(photo == base)
+    }
+
+    @Test("pressure handlers outside the budget run at their tier without changing cache shares")
+    func pressureHandlersRunByTier() {
+        let coordinator = ImageMemoryCoordinator(
+            availableMemory: { 8 * 1_024 * 1_024 * 1_024 },
+            observesSystemPressure: false
+        )
+        let recorder = EventRecorder()
+        let limits = IntegerRecorder()
+        let cache = coordinator.register(
+            kind: .fullScreenPreview,
+            applyLimit: { limits.setFirst($0) },
+            evict: { recorder.append("evict-cache") }
+        )
+        let warning = coordinator.registerPressureEviction(level: .warning) {
+            recorder.append("warning-handler")
+        }
+        let critical = coordinator.registerPressureEviction(level: .critical) {
+            recorder.append("critical-handler")
+        }
+        // Registering handlers must not split the fullScreenPreview share.
+        #expect(limits.first == coordinator.policy().fullScreenPreviewLimit)
+
+        coordinator.handleMemoryPressure(.warning)
+        #expect(recorder.events == ["evict-cache", "warning-handler"])
+
+        recorder.reset()
+        coordinator.handleMemoryPressure(.critical)
+        #expect(recorder.events == ["evict-cache", "warning-handler", "critical-handler"])
+
+        recorder.reset()
+        warning.cancel()
+        critical.cancel()
+        coordinator.handleMemoryPressure(.critical)
+        #expect(recorder.events == ["evict-cache"])
+        _ = cache
+    }
+
+    @Test("Caption's preview LRU is evicted on memory pressure")
+    @MainActor
+    func captionPreviewPipelineYieldsToPressure() async throws {
+        let coordinator = ImageMemoryCoordinator(
+            availableMemory: { 8 * 1_024 * 1_024 * 1_024 },
+            observesSystemPressure: false
+        )
+        let image = try #require(CGContext(
+            data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 16,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )?.makeImage())
+        let pipeline = CaptionPreviewPipeline(memoryCoordinator: coordinator) { _, _, _, _ in image }
+        let request = CaptionPreviewPipeline.Request(
+            url: URL(fileURLWithPath: "/tmp/caption-pressure.jpg"), orientation: 1,
+            renderToken: nil, fileSize: nil, fileModified: nil, maxPixelSize: 1_024
+        )
+        _ = await pipeline.image(for: request, settings: nil)
+        // The cache insert happens in a follow-up main-actor task.
+        let insertDeadline = ContinuousClock.now + .seconds(2)
+        while pipeline.cachedImage(for: request) == nil, ContinuousClock.now < insertDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(pipeline.cachedImage(for: request) != nil)
+
+        coordinator.handleMemoryPressure(.warning)
+        let deadline = ContinuousClock.now + .seconds(2)
+        while pipeline.cachedImage(for: request) != nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(pipeline.cachedImage(for: request) == nil)
     }
 
     @Test("large full-resolution sources reduce limits and disable speculative GPU prefetch")
@@ -737,6 +849,35 @@ struct ThumbnailRevisionInvalidationTests {
         #expect(service.thumbnail(for: changed, preferOriginal: true) === refreshed)
     }
 
+    @Test("Grid rotation turns cached edits in place, but re-renders a watermarked edit upright")
+    func rotationRerendersWatermarkedEdit() async throws {
+        let landscape = CIImage(color: CIColor(red: 0.25, green: 0.35, blue: 0.45))
+            .cropped(to: CGRect(x: 0, y: 0, width: 32, height: 16))
+        let bitmap = try #require(CIContext().createCGImage(landscape, from: landscape.extent))
+        let service = ThumbnailService(memoryCoordinator: makeMemoryCoordinator(), originalThumbnailLoader: { _ in
+            NSImage(cgImage: bitmap, size: NSSize(width: bitmap.width, height: bitmap.height))
+        })
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        let plain = URL(fileURLWithPath: "/virtual/rotate-plain-\(UUID()).jpg")
+        let watermarked = URL(fileURLWithPath: "/virtual/rotate-watermarked-\(UUID()).jpg")
+        for url in [plain, watermarked] {
+            _ = try #require(await service.renderEditedThumbnail(for: url, settings: settings, exifOrientation: 1))
+        }
+
+        service.rotateThumbnailInCache(for: plain, clockwise: true)
+        let turned = try #require(service.thumbnail(for: plain))
+        #expect(service.hasEditedThumbnail(for: plain))
+        #expect(turned.size.width < turned.size.height)
+
+        // Watermark artwork is drawn upright in the display frame: the edited entry is
+        // dropped so the grid re-renders it, while the plain original still turns in place.
+        service.rotateThumbnailInCache(for: watermarked, clockwise: true, editedHasDisplayFrameArtwork: true)
+        #expect(!service.hasEditedThumbnail(for: watermarked))
+        let original = try #require(service.thumbnail(for: watermarked, preferOriginal: true))
+        #expect(original.size.width < original.size.height)
+    }
+
     private func makeMemoryCoordinator() -> ImageMemoryCoordinator {
         ImageMemoryCoordinator(availableMemory: { 8 * 1_024 * 1_024 * 1_024 }, observesSystemPressure: false)
     }
@@ -1062,4 +1203,115 @@ private nonisolated final class ExportOutputFilesystemGate: @unchecked Sendable 
         lock.withLock { didFinish = true; didTimeOut = timeout }
     }
     func release() { semaphore.signal() }
+}
+
+@Suite("Grid controller lifetime", .serialized)
+@MainActor
+struct GridControllerLifetimeTests {
+    private func makeController(_ viewModel: BrowserViewModel) -> CollectionViewGridController {
+        let controller = CollectionViewGridController(
+            viewModel: viewModel,
+            commandRouter: AppCommandRouter()
+        )
+        _ = controller.view // loadView + viewDidLoad start the observation loops
+        return controller
+    }
+
+    /// Bounded wait that lets the main actor run cancelled observation tasks to completion.
+    private func waitUntil(
+        timeout: Duration = .seconds(3),
+        _ condition: () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    @Test("a grid dismantled by SwiftUI stops observing and deallocates")
+    func dismantledGridDeallocates() async throws {
+        let viewModel = BrowserViewModel()
+        weak var weakController: CollectionViewGridController?
+        autoreleasepool {
+            let controller = makeController(viewModel)
+            weakController = controller
+            CollectionViewGridRepresentable.dismantleNSViewController(controller, coordinator: ())
+            #expect(controller.isTornDown)
+        }
+        try await waitUntil { weakController == nil }
+        #expect(weakController == nil)
+    }
+
+    @Test("a released grid deallocates even if it was never dismantled")
+    func releasedGridDeallocates() async throws {
+        let viewModel = BrowserViewModel()
+        weak var weakController: CollectionViewGridController?
+        autoreleasepool {
+            weakController = makeController(viewModel)
+        }
+        // The loops hold only weak references across their suspension, so ARC can free the
+        // controller and its deinit cancels them.
+        try await waitUntil { weakController == nil }
+        #expect(weakController == nil)
+    }
+
+    @Test("only the live grid applies updates and consumes the reveal request")
+    func onlyLiveGridConsumesRevealRequest() async throws {
+        let viewModel = BrowserViewModel()
+        let originalShowOriginals = viewModel.showOriginalThumbnails
+        defer { viewModel.showOriginalThumbnails = originalShowOriginals }
+
+        let stale = makeController(viewModel)
+        CollectionViewGridRepresentable.dismantleNSViewController(stale, coordinator: ())
+        let staleApplies = stale.dataApplyCount
+        let live = makeController(viewModel)
+        let liveApplies = live.dataApplyCount
+        // Let the observation tasks start and register their tracking before the change.
+        try await Task.sleep(for: .milliseconds(100))
+
+        viewModel.requestRevealActive()
+        viewModel.showOriginalThumbnails.toggle()
+        try await waitUntil { live.dataApplyCount > liveApplies }
+
+        #expect(live.dataApplyCount > liveApplies)
+        #expect(stale.dataApplyCount == staleApplies)
+        // The live grid consumed the one-shot request; nothing is left for a later refresh.
+        #expect(!viewModel.consumeRevealActiveRequest())
+    }
+}
+
+@Suite("Lazy Clean Feed pipeline")
+@MainActor
+struct LazyCleanFeedPipelineTests {
+    @Test("creating the controller builds no Metal pipeline until the feed is first needed")
+    func pipelineIsCreatedOnFirstUse() {
+        let factoryCalls = IntegerRecorder()
+        let controller = CleanFeedController(makeFeedPipeline: {
+            factoryCalls.setFirst(factoryCalls.first + 1)
+            return nil
+        })
+        #expect(controller.feedPipeline == nil)
+        #expect(factoryCalls.first == 0)
+
+        // Tearing the Develop publication down never creates it.
+        let publication = DevelopCleanFeedPublicationCoordinator()
+        publication.endWorkspace(editorPipeline: nil, controller: controller)
+        #expect(factoryCalls.first == 0)
+
+        _ = controller.ensureFeedPipeline()
+        _ = controller.ensureFeedPipeline()
+        // Attempted once, even when the device cannot build one.
+        #expect(factoryCalls.first == 1)
+    }
+
+    @Test("the production factory builds a live pipeline only on demand")
+    func productionFactoryBuildsOnDemand() {
+        let controller = CleanFeedController()
+        #expect(controller.feedPipeline == nil)
+        let pipeline = controller.ensureFeedPipeline()
+        if MTLCreateSystemDefaultDevice() != nil {
+            #expect(pipeline != nil)
+            #expect(controller.feedPipeline === pipeline)
+        }
+    }
 }

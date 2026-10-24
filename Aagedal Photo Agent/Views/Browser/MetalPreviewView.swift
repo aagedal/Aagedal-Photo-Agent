@@ -32,6 +32,7 @@ struct MetalPreviewView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> MTKView {
+        _ = Coordinator.ciContextPressureRegistration
         let mtkView = MTKView(frame: .zero, device: Coordinator.device)
         mtkView.delegate = context.coordinator
         mtkView.enableSetNeedsDisplay = true
@@ -119,6 +120,12 @@ struct MetalPreviewView: NSViewRepresentable {
             .workingFormat: CIFormat.RGBAh,
             .workingColorSpace: colorSpace,
         ])
+        /// Clears the shared preview context's Core Image caches on critical memory pressure.
+        /// Installed once, the first time a preview coordinator is created.
+        nonisolated static let ciContextPressureRegistration = ImageMemoryCoordinator.shared
+            .registerPressureEviction(level: .critical) {
+                ciContext.clearCaches()
+            }
 
         var ciImage: CIImage?
         var metalPipeline: MetalLivePreviewPipeline?

@@ -6,6 +6,115 @@ nonisolated private let sliderLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "EditSlider"
 )
 
+/// Marks the `onReset` call of an `EditSlider` double-click whose first click already committed
+/// a jumped-to value. Develop folds that reset into the first click's Undo entry, so one Undo
+/// returns to the value from before the double-click.
+enum EditSliderDoubleClickReset {
+    private(set) static var isActive = false
+
+    static func perform(_ reset: () -> Void) {
+        isActive = true
+        defer { isActive = false }
+        reset()
+    }
+}
+
+/// The Undo/Redo title for the Develop mutation a control commits synchronously ("Undo
+/// Exposure"). Sliders set their label around the binding write; `updateCameraRaw` reads it
+/// when no explicit action name is passed.
+enum DevelopUndoActionName {
+    private(set) static var current: String?
+
+    static func perform(_ name: String?, _ body: () -> Void) {
+        let previous = current
+        current = name ?? previous
+        defer { current = previous }
+        body()
+    }
+}
+
+/// A keyboard / VoiceOver stepping session. Steps (incl. key repeats) only preview; the value is
+/// committed once — one Develop commit, one Undo entry — when the key is released or after a
+/// short pause without another step.
+final class EditSliderKeyStepper {
+    static let settleDelay: Duration = .milliseconds(300)
+
+    private(set) var pendingValue: Double?
+    private var commitTask: Task<Void, Never>?
+    private let settleDelay: Duration
+    var onBegin: () -> Void = {}
+    var onPreview: (Double) -> Void = { _ in }
+    var onCommit: (Double) -> Void = { _ in }
+
+    init(settleDelay: Duration = EditSliderKeyStepper.settleDelay) {
+        self.settleDelay = settleDelay
+    }
+
+    var isStepping: Bool { pendingValue != nil }
+
+    func step(from committedValue: Double, range: ClosedRange<Double>, step: Double, direction: Int, large: Bool) {
+        let base = pendingValue ?? committedValue
+        let newValue = EditSliderStepping.steppedValue(
+            from: base, range: range, step: step, direction: direction, large: large
+        )
+        if newValue != base {
+            if pendingValue == nil { onBegin() }
+            pendingValue = newValue
+            onPreview(newValue)
+        }
+        guard pendingValue != nil else { return }
+        commitTask?.cancel()
+        let delay = settleDelay
+        commitTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.commitNow()
+        }
+    }
+
+    /// Commits a pending step value now (key-up, mouse-down, or the settle timer).
+    func commitNow() {
+        commitTask?.cancel()
+        commitTask = nil
+        guard let value = pendingValue else { return }
+        pendingValue = nil
+        onCommit(value)
+    }
+}
+
+/// Keyboard / VoiceOver stepping shared by the horizontal and vertical Develop sliders.
+nonisolated enum EditSliderStepping {
+    /// One arrow-key step: the slider's own step, but at least 1/200 of the range so fine-step
+    /// sliders (Exposure 0.01) still move visibly. Shift (`large`) steps 10x.
+    static func steppedValue(
+        from value: Double,
+        range: ClosedRange<Double>,
+        step: Double,
+        direction: Int,
+        large: Bool
+    ) -> Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0, direction != 0 else { return value }
+        let unit = max(step, span / 200) * (large ? 10 : 1)
+        let raw = value + Double(direction.signum()) * unit
+        let clamped = min(range.upperBound, max(range.lowerBound, raw))
+        guard step > 0 else { return clamped }
+        let snapped = (clamped / step).rounded() * step
+        return min(range.upperBound, max(range.lowerBound, snapped))
+    }
+
+    /// Up/Right arrow (+1), Down/Left arrow (-1), else nil. Left/Right stay reserved for photo
+    /// navigation in Develop (the workspace key monitor consumes them first), so in practice
+    /// Up/Down step a focused slider.
+    static func direction(forKeyCode keyCode: UInt16) -> Int? {
+        switch keyCode {
+        case 126, 124: return 1
+        case 125, 123: return -1
+        default: return nil
+        }
+    }
+}
+
 /// A custom slider using AppKit mouse event handling for high-frequency updates.
 /// Delivers drag events at the full hardware mouse rate (~60-120 Hz) instead of
 /// SwiftUI DragGesture's throttled ~10 Hz.
@@ -28,6 +137,10 @@ struct EditSlider: NSViewRepresentable {
     /// The binding is NOT updated during drag — only on drag end.
     var onDragValueChanged: ((Double) -> Void)?
     var onReset: (() -> Void)?
+    /// Spoken name (VoiceOver) and Undo/Redo action title for commits from this slider.
+    var label: String?
+    /// Formats the value for VoiceOver; nil reads the raw number.
+    var valueText: ((Double) -> String)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -42,8 +155,8 @@ struct EditSlider: NSViewRepresentable {
 
     func updateNSView(_ nsView: EditSliderNSView, context: Context) {
         context.coordinator.parent = self
-        // Don't override visual state during drag — coordinator controls it
-        if !context.coordinator.isDragging {
+        // Don't override visual state during drag or key stepping — coordinator controls it
+        if !context.coordinator.isDragging, !context.coordinator.keyStepper.isStepping {
             updateViewState(nsView, context: context)
         }
     }
@@ -73,7 +186,10 @@ struct EditSlider: NSViewRepresentable {
         var wasPrecision = false
         var precisionAnchorFraction: Double = 0
         var precisionAnchorX: CGFloat = 0
-        var lastMouseDownTime: Date = .distantPast
+        /// The last click committed a jumped-to value without dragging; a double-click reset
+        /// replaces that value rather than adding a second edit.
+        var lastClickCommittedWithoutDrag = false
+        var didDragSinceMouseDown = false
         var lastBindingUpdateTime: ContinuousClock.Instant = .now
         private let bindingThrottleInterval: Duration = .milliseconds(32) // ~30 Hz
 
@@ -83,7 +199,6 @@ struct EditSlider: NSViewRepresentable {
         var lastDragEventTimestamp: ContinuousClock.Instant = .now
 
         private let precisionFactor: Double = 10.0
-        private let doubleClickInterval: TimeInterval = 0.3
 
         init(parent: EditSlider) {
             self.parent = parent
@@ -106,16 +221,22 @@ struct EditSlider: NSViewRepresentable {
             return (value - parent.range.lowerBound) / span
         }
 
-        func handleMouseDown(at locationX: CGFloat, width: CGFloat) {
-            let now = Date()
-            if now.timeIntervalSince(lastMouseDownTime) < doubleClickInterval,
-               let onReset = parent.onReset
-            {
-                onReset()
-                lastMouseDownTime = .distantPast
+        func handleMouseDown(at locationX: CGFloat, width: CGFloat, clickCount: Int) {
+            keyStepper.commitNow()
+            // AppKit's click count honors the user's double-click speed setting.
+            if clickCount >= 2, let onReset = parent.onReset {
+                DevelopUndoActionName.perform(parent.label) {
+                    if lastClickCommittedWithoutDrag {
+                        EditSliderDoubleClickReset.perform(onReset)
+                    } else {
+                        onReset()
+                    }
+                }
+                lastClickCommittedWithoutDrag = false
                 return
             }
-            lastMouseDownTime = now
+            lastClickCommittedWithoutDrag = false
+            didDragSinceMouseDown = false
             isDragging = true
             wasPrecision = false
             dragEventCount = 0
@@ -136,6 +257,7 @@ struct EditSlider: NSViewRepresentable {
 
         func handleMouseDragged(at locationX: CGFloat, width: CGFloat, isOptionDown: Bool) {
             guard isDragging else { return }
+            didDragSinceMouseDown = true
 
             if isOptionDown {
                 if !wasPrecision {
@@ -176,7 +298,9 @@ struct EditSlider: NSViewRepresentable {
             wasPrecision = false
 
             // Commit final value to binding (triggers one SwiftUI update)
-            parent.value = currentDragValue
+            DevelopUndoActionName.perform(parent.label) {
+                parent.value = currentDragValue
+            }
 
             let elapsed = ContinuousClock.now - dragStartTimestamp
             let totalSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
@@ -184,6 +308,42 @@ struct EditSlider: NSViewRepresentable {
             let rate = totalSeconds > 0 ? Double(dragEventCount) / totalSeconds : 0
             sliderLog.info("⏱ Drag ended: \(self.dragEventCount) events over \(totalMs)ms = \(rate, format: .fixed(precision: 1)) events/sec")
             parent.onEditingChanged?(false)
+            lastClickCommittedWithoutDrag = !didDragSinceMouseDown
+        }
+
+        /// Keyboard / VoiceOver stepping: previews each step like a drag, commits once.
+        lazy var keyStepper: EditSliderKeyStepper = {
+            let stepper = EditSliderKeyStepper()
+            stepper.onBegin = { [unowned self] in
+                lastClickCommittedWithoutDrag = false
+                parent.onEditingChanged?(true)
+            }
+            stepper.onPreview = { [unowned self] value in
+                currentDragValue = value
+                sliderView?.fraction = fractionForValue(value)
+                sliderView?.needsDisplay = true
+                if let preview = parent.onDragValueChanged { preview(value) } else { parent.value = value }
+            }
+            stepper.onCommit = { [unowned self] value in
+                DevelopUndoActionName.perform(parent.label) {
+                    parent.value = value
+                }
+                parent.onEditingChanged?(false)
+                sliderView?.fraction = fractionForValue(value)
+                sliderView?.needsDisplay = true
+            }
+            return stepper
+        }()
+
+        func step(direction: Int, large: Bool) {
+            guard !isDragging else { return }
+            keyStepper.step(from: parent.value, range: parent.range, step: parent.step,
+                            direction: direction, large: large)
+        }
+
+        var accessibilityValueText: String {
+            let value = isDragging ? currentDragValue : (keyStepper.pendingValue ?? parent.value)
+            return parent.valueText?(value) ?? value.formatted(.number.precision(.fractionLength(0...2)))
         }
 
         /// Update NSView playhead and notify caller — without touching the SwiftUI binding.
@@ -239,6 +399,49 @@ final class EditSliderNSView: NSView {
         NSSize(width: NSView.noIntrinsicMetric, height: 16)
     }
 
+    // MARK: Accessibility — an adjustable slider element
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .slider }
+    override func accessibilityLabel() -> String? { coordinator?.parent.label }
+    override func accessibilityValue() -> Any? { coordinator?.accessibilityValueText }
+    override func accessibilityMinValue() -> Any? { coordinator?.parent.range.lowerBound }
+    override func accessibilityMaxValue() -> Any? { coordinator?.parent.range.upperBound }
+
+    override func accessibilityPerformIncrement() -> Bool {
+        coordinator?.step(direction: 1, large: false)
+        return true
+    }
+
+    override func accessibilityPerformDecrement() -> Bool {
+        coordinator?.step(direction: -1, large: false)
+        return true
+    }
+
+    /// Arrow keys step a focused slider (Shift = 10x). Left/Right are consumed by the Develop
+    /// workspace's photo navigation before they reach here, so Up/Down are the working keys.
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control])
+        guard modifiers.isEmpty,
+              let direction = EditSliderStepping.direction(forKeyCode: event.keyCode) else {
+            super.keyDown(with: event)
+            return
+        }
+        coordinator?.step(direction: direction, large: event.modifierFlags.contains(.shift))
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if EditSliderStepping.direction(forKeyCode: event.keyCode) != nil {
+            coordinator?.keyStepper.commitNow()
+        }
+        super.keyUp(with: event)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        coordinator?.keyStepper.commitNow()
+        return super.resignFirstResponder()
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let bounds = self.bounds
         let trackHeight: CGFloat = 3
@@ -280,7 +483,7 @@ final class EditSliderNSView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
-        coordinator?.handleMouseDown(at: location.x, width: bounds.width)
+        coordinator?.handleMouseDown(at: location.x, width: bounds.width, clickCount: event.clickCount)
     }
 
     override func mouseDragged(with event: NSEvent) {

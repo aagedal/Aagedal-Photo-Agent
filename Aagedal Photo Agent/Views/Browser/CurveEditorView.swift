@@ -1,7 +1,9 @@
+import AppKit
 import SwiftUI
 
 /// Interactive tone curve editor with master + per-channel (R/G/B) curves.
-/// Click to add points, click existing point to select, Delete/Backspace to remove.
+/// Click to add points, click existing point to select, Delete/Backspace (or double-click) to
+/// remove the selected interior point.
 /// Renders a Catmull-Rom spline through control points.
 struct CurveEditorView: View {
     @Binding var toneCurve: ToneCurve?
@@ -21,6 +23,10 @@ struct CurveEditorView: View {
     /// Local copy of tone curve used during drag to avoid writing to binding.
     @State private var dragToneCurve: ToneCurve?
     @State private var isDraggingCurve = false
+    /// The curve this editor last committed to the binding. Any other incoming curve (image
+    /// change, undo/redo, paste, reset elsewhere) invalidates the point selection.
+    @State private var lastCommittedCurve: ToneCurve?
+    @FocusState private var isCanvasFocused: Bool
 
     enum CurveChannel: String, CaseIterable {
         case master, red, green, blue
@@ -123,9 +129,7 @@ struct CurveEditorView: View {
                     .foregroundStyle(.secondary)
                     .onTapGesture(count: 2) {
                         guard toneCurve != nil else { return }
-                        toneCurve = nil
-                        selectedPointIndex = nil
-                        onDragCurveChanged?(nil)
+                        resetCurve()
                     }
                 Spacer()
                 Button {
@@ -139,9 +143,7 @@ struct CurveEditorView: View {
                 .buttonStyle(.plain)
                 .help(isMuted ? "Show tone curve" : "Hide tone curve")
                 Button {
-                    toneCurve = nil
-                    selectedPointIndex = nil
-                    onDragCurveChanged?(nil)
+                    resetCurve()
                 } label: {
                     Image(systemName: "arrow.counterclockwise")
                         .font(.system(size: 9))
@@ -230,6 +232,13 @@ struct CurveEditorView: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 .contentShape(Rectangle())
+                // Focusable so Delete/Backspace reaches `onDeleteCommand` after a point click.
+                .focusable()
+                .focusEffectDisabled()
+                .focused($isCanvasFocused)
+                .onDeleteCommand {
+                    deleteSelectedPoint()
+                }
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { drag in
@@ -237,6 +246,7 @@ struct CurveEditorView: View {
                                 // Start drag: snapshot binding to local copy
                                 dragToneCurve = toneCurve
                                 isDraggingCurve = true
+                                isCanvasFocused = true
                             }
                             handleDrag(drag, in: size)
                         }
@@ -248,19 +258,28 @@ struct CurveEditorView: View {
                                 }
                                 dragIndex = nil
                                 // Commit local copy to binding (one SwiftUI update)
+                                lastCommittedCurve = dragToneCurve
                                 toneCurve = dragToneCurve
                                 isDraggingCurve = false
                                 onEditingChanged?(false)
                             } else {
-                                // Click-to-add: commit immediately
+                                // Double-click point removal (no point is being dragged):
+                                // commit immediately
+                                lastCommittedCurve = dragToneCurve
                                 toneCurve = dragToneCurve
                                 isDraggingCurve = false
+                                onEditingChanged?(false)
                             }
                             didDragAfterMouseDown = false
                         }
                 )
             }
             .aspectRatio(1, contentMode: .fit)
+        }
+        .onChange(of: toneCurve) { _, newCurve in
+            // A curve this editor didn't just commit makes the selected index meaningless.
+            guard !isDraggingCurve, newCurve != lastCommittedCurve else { return }
+            selectedPointIndex = nil
         }
     }
 
@@ -342,10 +361,10 @@ struct CurveEditorView: View {
                 }
             }
 
-            // Double-click detection: same point clicked twice within 0.3s
+            // Double-click detection: same point clicked twice within the system interval
             if let hit = hitIndex {
                 let now = Date()
-                if hit == lastClickIndex && now.timeIntervalSince(lastClickTime) < 0.3 {
+                if hit == lastClickIndex && now.timeIntervalSince(lastClickTime) < NSEvent.doubleClickInterval {
                     // Double-click on a point — delete it (if not an endpoint)
                     if hit > 0 && hit < points.count - 1 {
                         var newPoints = points
@@ -424,5 +443,14 @@ struct CurveEditorView: View {
         points.remove(at: index)
         selectedPointIndex = nil
         setPointsForChannel(selectedChannel, points)
+        onEditingChanged?(false)
+    }
+
+    /// Clears every channel. A finished edit like a drag release, so it is committed.
+    private func resetCurve() {
+        toneCurve = nil
+        selectedPointIndex = nil
+        onDragCurveChanged?(nil)
+        onEditingChanged?(false)
     }
 }

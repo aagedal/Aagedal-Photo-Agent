@@ -2,6 +2,13 @@ import Foundation
 import AppKit
 import os
 
+struct FileOperationNotice: Equatable, Identifiable {
+    let id = UUID()
+    let message: String
+    var revealURL: URL?
+    var systemImage = "checkmark.circle"
+}
+
 nonisolated struct MetadataReviewLoadedBaseline: Sendable {
     let metadata: IPTCMetadata
     let sidecar: MetadataSidecar?
@@ -20,6 +27,9 @@ struct MetadataReviewEditorState {
     var creationEvidence: MetadataSidecarReplayCreationEvidence?
     var textBuffers: [MetadataFieldID: String] = [:]
     var error: String?
+    /// The browser source generation this baseline was loaded under. A lazy row reappearing
+    /// under the same generation reuses a clean editor instead of re-reading the file.
+    var sourceGeneration: UUID? = nil
 }
 
 enum SidebarTree: Hashable {
@@ -45,29 +55,67 @@ final class BrowserViewModel {
     }
 
     var images: [ImageFile] = [] {
+        // Never reference `oldValue` here: doing so makes every `images[i].x = …` copy the
+        // whole array (SE-0268). The previous URL identity lives in `imagesCascadeURLs`.
         didSet {
-            guard !suppressImagesCascade else { return }
-            urlToImageIndex = Dictionary(uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) })
-            guard !isBatchUpdating else { return }
+            if imageCount != images.count { imageCount = images.count }
+            guard !suppressImagesCascade else {
+                syncFullScreenImage()
+                return
+            }
+            let urls = images.map(\.url)
             // Equal counts do not imply equal identities: rename/replacement keeps the
             // count but changes URL keys. Reusing the old sorted list would drop those rows.
-            let sameURLs = images.count == oldValue.count
-                && zip(images, oldValue).allSatisfy { $0.url == $1.url }
+            let sameURLs = urls == imagesCascadeURLs
+            if !sameURLs {
+                // The index is a pure function of the URL list, so only identity changes
+                // rebuild (and re-publish) it.
+                urlToImageIndex = Dictionary(uniqueKeysWithValues: urls.enumerated().map { ($1, $0) })
+                imagesCascadeURLs = urls
+            }
+            syncFullScreenImage()
+            guard !isBatchUpdating else { return }
             setNeedsSortRebuild(forceSort: !sameURLs)
         }
     }
+    /// URL identity of `images` as of the last cascading assignment (or explicit index
+    /// rebuild). Suppressed in-place edits never change URLs, so this stays current.
+    @ObservationIgnored private var imagesCascadeURLs: [URL] = []
+    /// Views that only need emptiness/count read these instead of `images`, so a rating
+    /// change on one row doesn't re-evaluate them.
+    private(set) var imageCount = 0
+    var hasImages: Bool { imageCount > 0 }
+    /// The row the full-screen viewer shows, published only when that row changes so
+    /// edits to other rows don't re-evaluate the viewer. Kept current only while
+    /// `isFullScreen` (re-synced on entry).
+    private(set) var fullScreenImage: ImageFile?
     var selectedImageIDs: Set<URL> = [] {
         didSet {
             if selectedImageIDs != oldValue {
                 rebuildSelectedCache()
             }
+            syncFullScreenImage()
         }
     }
-    var lastClickedImageURL: URL?
+    var lastClickedImageURL: URL? {
+        didSet { syncFullScreenImage() }
+    }
+    /// Fixed end of a Shift-extended range (Finder/Photo Mechanic). Set by plain and
+    /// Command selections; Shift extensions keep it so they can shrink as well as grow.
+    @ObservationIgnored private(set) var selectionAnchorURL: URL?
+    /// Set only around rebuilds caused by the user's own mutations (rating/label changes,
+    /// moves, deletes). Those move a filtered-out active photo's selection to its neighbour;
+    /// filter, search and refresh rebuilds keep the plain visible-selection reconciliation.
+    @ObservationIgnored private var movesSelectionToNeighborOnRebuild = false
+    /// While Compare is open, the Browser selection mirrors Compare's focused photo even when
+    /// it no longer passes the filter (set by the window as it enters/leaves Compare).
+    @ObservationIgnored var keepsSelectionThroughFilterChanges = false
     var currentFolderURL: URL?
     var currentFolderName: String?
     var isLoading = false
-    var isFullScreen = false
+    var isFullScreen = false {
+        didSet { syncFullScreenImage() }
+    }
     var shouldRestoreGridFocus = false
     var iCloudDownloadNotice: String?
     /// Non-blocking second phase after the file grid appears. Exposed so the browser can
@@ -96,16 +144,18 @@ final class BrowserViewModel {
     var sortOrder: SortOrder = .name {
         didSet {
             if sortOrder != .similarity { resetSimilaritySort() }
-            UserDefaults.standard.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
+            AppDefaults.store.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
             guard !isBatchUpdating else { return }
+            requestRevealActive()
             setNeedsSortRebuild(forceSort: true)
             showSortFeedback()
         }
     }
     var sortReversed: Bool = false {
         didSet {
-            UserDefaults.standard.set(sortReversed, forKey: UserDefaultsKeys.thumbnailSortReversed)
+            AppDefaults.store.set(sortReversed, forKey: UserDefaultsKeys.thumbnailSortReversed)
             guard !isBatchUpdating else { return }
+            requestRevealActive()
             setNeedsSortRebuild(forceSort: true)
             showSortFeedback()
         }
@@ -132,9 +182,19 @@ final class BrowserViewModel {
         }
     }
     @ObservationIgnored var draggedImageURLs: Set<URL> = []
+    @ObservationIgnored private var lastSearchTextEdit: ContinuousClock.Instant?
+    /// True only while the user is actively typing a search (shortly after the last
+    /// keystroke). Auto-refresh defers during typing but must still run while a search
+    /// stays applied, or tethered/imported files never appear.
+    var isEditingSearchText: Bool {
+        guard let lastSearchTextEdit else { return false }
+        return ContinuousClock.now - lastSearchTextEdit < .seconds(1)
+    }
     var searchText: String = "" {
         didSet {
             guard !isBatchUpdating else { return }
+            lastSearchTextEdit = .now
+            requestRevealActive()
             searchDebounceTask?.cancel()
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 setNeedsVisibleRebuild()
@@ -148,45 +208,45 @@ final class BrowserViewModel {
         }
     }
     var minimumStarRating: StarRating = .none {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     var selectedColorLabels: Set<ColorLabel> = [] {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     var personShownFilter: PersonShownFilter = .any {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     var editedFilter: EditedFilter = .any {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     /// Completeness check against the user's required-metadata fields (configured in Settings).
     var requiredMetadataFilter: RequiredMetadataFilter = .any {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     /// Fields the browser should filter to "missing". OR semantics, matching color-label selection:
     /// an image passes when it's missing at least one of these. Empty → inactive.
     var missingFieldFilters: Set<MetadataFieldID> = [] {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
 
     @ObservationIgnored private var folderFilterStates: [URL: FolderFilterState] = [:]
 
     var thumbnailScale: Double = 1.0 {
         didSet {
-            UserDefaults.standard.set(thumbnailScale, forKey: UserDefaultsKeys.thumbnailScale)
+            AppDefaults.store.set(thumbnailScale, forKey: UserDefaultsKeys.thumbnailScale)
         }
     }
 
     var fileVisibility: BrowserFileVisibility = .photos {
         didSet {
-            UserDefaults.standard.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
+            AppDefaults.store.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
             if let url = currentFolderURL { loadFolder(url: url) }
         }
     }
 
     var showOriginalThumbnails: Bool = false {
         didSet {
-            UserDefaults.standard.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails)
+            AppDefaults.store.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails)
         }
     }
 
@@ -250,15 +310,35 @@ final class BrowserViewModel {
     @ObservationIgnored private var metadataLoadRequestID: UUID?
     @ObservationIgnored private var metadataProgressID: UUID?
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
+    /// Photos with an on-demand develop-settings read in flight (`ensureDevelopSettingsLoaded`).
+    @ObservationIgnored private var developSettingsReadsInFlight: Set<URL> = []
     @ObservationIgnored private var retinaPreCacheTask: Task<Void, Never>?
     @ObservationIgnored private var retinaPreCacheRequestID: UUID?
     @ObservationIgnored private var suppressImagesCascade = false
     @ObservationIgnored private var pendingMetadataDrainTask: Task<Void, Never>?
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var folderOrientationLoadRequestID: UUID?
+    @ObservationIgnored private var folderOrientationTask: Task<Void, Never>?
+    /// Identity of the running eager orientation pass (nil when none is running).
+    @ObservationIgnored private var eagerOrientationPassID: UUID?
+    /// Rows whose orientation an authoritative source (metadata batch, pending draft,
+    /// rotation, refresh) wrote while the eager pass runs. The pass never overwrites them,
+    /// even when the authoritative value happens to equal the pass's starting value.
+    @ObservationIgnored private var eagerOrientationAuthoritativeURLs: Set<URL> = []
     @ObservationIgnored private var refreshOrientationLoadRequestID: UUID?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var fieldMutationTask: Task<Void, Never>?
+    @ObservationIgnored private var fieldMutationBatchesInFlight = 0
+    /// True while browser rating/label/rotation writes are still running. Their own
+    /// FSEvents echoes are folded into one folder refresh after the queue drains.
+    var hasFieldMutationWritesInFlight: Bool { fieldMutationBatchesInFlight > 0 }
+    /// Photos whose queued rating/label/rotation write has not finished yet.
+    @ObservationIgnored private(set) var pendingFieldMutationWriteCount = 0
+    /// "Ratings/labels: 120 remaining" for the quit "Saving Changes…" prompt, or nil when idle.
+    var fieldMutationActivityDescription: String? {
+        guard hasFieldMutationWritesInFlight else { return nil }
+        return "Ratings/labels: \(max(pendingFieldMutationWriteCount, 1)) remaining"
+    }
     @ObservationIgnored private var fieldMutationDisplayID = UUID()
     @ObservationIgnored private var tagReadRevisions: [URL: UUID] = [:]
     @ObservationIgnored private var fieldMutationRequestIDs: [URL: [String: UUID]] = [:]
@@ -271,6 +351,11 @@ final class BrowserViewModel {
     private(set) var metadataReviewLoadErrors: [String: String] = [:]
     private var metadataReviewFreezeOwners: [String: UUID] = [:]
     @ObservationIgnored private var metadataReviewLoadIDs: [String: UUID] = [:]
+    /// The Review row whose field currently has keyboard focus in this browser. Only that editor
+    /// owns the key window's input-method composition, so only it refuses a capture for it.
+    @ObservationIgnored private(set) var metadataReviewFocusedKey: String?
+    /// Resolved review keys per URL; resolving symlinks on every row render was measurable.
+    @ObservationIgnored private var metadataReviewKeyCache: [URL: String] = [:]
     @ObservationIgnored private let metadataReviewBaselineLoader: (@Sendable (URL, URL) async throws -> MetadataReviewLoadedBaseline)?
     let metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator
     @ObservationIgnored private var batchReadTask: Task<Void, Never>?
@@ -279,6 +364,11 @@ final class BrowserViewModel {
     @ObservationIgnored private var pendingStatusRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var renamePlanningTask: Task<Void, Never>?
     @ObservationIgnored private var renamePlanningRequestID: UUID?
+    /// Transient success/info notice for file operations without their own sheet (e.g. Move
+    /// Rejected to Folder), optionally offering to reveal the affected folder in Finder.
+    var fileOperationNotice: FileOperationNotice?
+    /// True while Rename… resolves voice-memo companions before its sheet can open.
+    private(set) var isPreparingRename = false
     @ObservationIgnored private let voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService
 
     @ObservationIgnored private let favoritesDefaults: UserDefaults
@@ -320,7 +410,7 @@ final class BrowserViewModel {
          presentationFactsService: FullScreenImagePresentationFactsService = .shared,
          pathContainmentService: SafePathContainmentService = .shared,
          voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService = .shared,
-         favoritesDefaults: UserDefaults = .standard,
+         favoritesDefaults: UserDefaults = AppDefaults.store,
          favoriteBookmarkService: FavoriteFolderBookmarkService = .shared,
          fieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)? = nil,
          fieldMutationModeResolver: @escaping @MainActor (Bool, Bool) -> MetadataWriteMode = {
@@ -349,16 +439,16 @@ final class BrowserViewModel {
         self.voiceMemoRenamePlanningService = voiceMemoRenamePlanningService
         self.favoritesDefaults = favoritesDefaults
         self.favoriteBookmarkService = favoriteBookmarkService
-        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
+        if let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
         }
-        sortReversed = UserDefaults.standard.bool(forKey: UserDefaultsKeys.thumbnailSortReversed)
-        let storedScale = UserDefaults.standard.double(forKey: UserDefaultsKeys.thumbnailScale)
+        sortReversed = AppDefaults.store.bool(forKey: UserDefaultsKeys.thumbnailSortReversed)
+        let storedScale = AppDefaults.store.double(forKey: UserDefaultsKeys.thumbnailScale)
         if storedScale >= 0.5 && storedScale <= 2.0 {
             thumbnailScale = storedScale
         }
-        self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
+        self.showOriginalThumbnails = AppDefaults.store.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.fileVisibility = BrowserFileVisibility.saved()
     }
 
@@ -378,6 +468,7 @@ final class BrowserViewModel {
         favoriteLoadTask?.cancel()
         subfolderLoadTask?.cancel()
         subfolderRefreshTask?.cancel()
+        folderOrientationTask?.cancel()
         folderOrientationLoadRequestID = nil
         refreshOrientationLoadRequestID = nil
         imageMutationTask?.cancel()
@@ -386,56 +477,91 @@ final class BrowserViewModel {
 
     var selectedImages: [ImageFile] { selectedImagesCache }
 
+    /// The given photos this folder currently knows to carry Content Credentials. C2PA detection
+    /// finishes after a photo is first listed, so metadata saves add this to the editor's facts.
+    func c2paURLs(among urls: [URL]) -> Set<URL> {
+        Set(urls.filter { url in
+            guard let index = urlToImageIndex[url], images.indices.contains(index) else { return false }
+            return images[index].hasC2PA
+        })
+    }
+
     var firstSelectedImage: ImageFile? {
         guard let firstID = selectedImageIDs.first else { return nil }
         if let index = urlToImageIndex[firstID] { return images[index] }
         return nil
     }
 
+    /// Same resolution the viewer used to compute from `images` (active row if selected,
+    /// else the first selected row), applied only when the resolved row differs. O(1).
+    private func syncFullScreenImage() {
+        // Outside full screen nothing reads it; entering full screen re-syncs. Leaving the
+        // last value in place keeps a closing viewer from seeing a transient nil.
+        guard isFullScreen else { return }
+        func indexed(_ url: URL) -> ImageFile? {
+            guard let index = urlToImageIndex[url], images.indices.contains(index),
+                  images[index].url == url else { return nil }
+            return images[index]
+        }
+        var resolved: ImageFile?
+        if let active = lastClickedImageURL, selectedImageIDs.contains(active) {
+            resolved = indexed(active)
+        }
+        if resolved == nil, let first = selectedImageIDs.first {
+            resolved = indexed(first)
+        }
+        if resolved != fullScreenImage { fullScreenImage = resolved }
+    }
+
     private func rebuildSortedCache(forceSort: Bool = true) {
         let needsSort = forceSort || sortOrder == .rating || sortOrder == .label || sortOrder == .similarity
         if needsSort {
             let sorted: [ImageFile]
+            // Key sorts apply the reverse toggle to the key only, so equal keys always stay
+            // in ascending filename order (Finder/Photo Mechanic) instead of directory order.
+            var reversalApplied = false
+            let images = self.images
             switch sortOrder {
             case .name:
-                sorted = images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+                sorted = filenameOrder().order.map { images[$0] }
             case .dateCreated:
-                sorted = images.sorted { $0.dateCreated > $1.dateCreated }
+                sorted = sortedWithNameTieBreak(descending: true) { $0.dateCreated }
+                reversalApplied = true
             case .dateModified:
-                sorted = images.sorted { $0.dateModified > $1.dateModified }
+                sorted = sortedWithNameTieBreak(descending: true) { $0.dateModified }
+                reversalApplied = true
             case .dateAdded:
-                sorted = images.sorted { $0.dateAdded > $1.dateAdded }
+                sorted = sortedWithNameTieBreak(descending: true) { $0.dateAdded }
+                reversalApplied = true
             case .rating:
-                sorted = images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
+                sorted = sortedWithNameTieBreak(descending: true) { $0.starRating.rawValue }
+                reversalApplied = true
             case .label:
-                sorted = images.sorted { ($0.colorLabel.shortcutIndex ?? 0) < ($1.colorLabel.shortcutIndex ?? 0) }
+                sorted = sortedWithNameTieBreak(descending: false) { $0.colorLabel.shortcutIndex ?? 0 }
+                reversalApplied = true
             case .fileType:
-                sorted = images.sorted {
-                    let ext0 = $0.url.pathExtension.lowercased()
-                    let ext1 = $1.url.pathExtension.lowercased()
-                    if ext0 != ext1 {
-                        return ext0.localizedStandardCompare(ext1) == .orderedAscending
-                    }
-                    return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
-                }
+                sorted = Self.fileTypeSorted(images, nameRank: filenameOrder().rank)
             case .similarity:
                 updateSimilaritySortIfNeeded()
                 let byURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
                 let ordered = Set(similarityOrder)
                 sorted = similarityOrder.compactMap { byURL[$0] }
-                    + images.filter { !ordered.contains($0.url) }.sorted(by: Self.similarityNameOrder)
+                    + similarityNameOrderedImages().filter { !ordered.contains($0.url) }
             case .manual:
+                // Manual order is session-only (every folder load clears it); files the
+                // user hasn't arranged fall back to name order, never raw directory order.
+                let byName = filenameOrder().order.map { images[$0] }
                 if manualOrder.isEmpty {
-                    sorted = images
+                    sorted = byName
                 } else {
                     let imagesByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
                     var result = manualOrder.compactMap { imagesByURL[$0] }
                     let manualSet = Set(manualOrder)
-                    result.append(contentsOf: images.filter { !manualSet.contains($0.url) })
+                    result.append(contentsOf: byName.filter { !manualSet.contains($0.url) })
                     sorted = result
                 }
             }
-            let final = (sortReversed && sortOrder != .manual) ? sorted.reversed() : sorted
+            let final = (sortReversed && sortOrder != .manual && !reversalApplied) ? sorted.reversed() : sorted
             sortedImages = Array(final)
             urlToSortedIndex = Dictionary(uniqueKeysWithValues: sortedImages.enumerated().map { ($1.url, $0) })
         } else {
@@ -444,6 +570,81 @@ final class BrowserViewModel {
             sortedImages = sortedImages.compactMap { imageByURL[$0.url] }
         }
         rebuildVisibleCache()
+    }
+
+    /// Sorts by a precomputed key, breaking ties by the cached filename rank rather than a
+    /// `localizedStandardCompare` per comparison (identical order, far fewer string compares).
+    private func sortedWithNameTieBreak<Key: Comparable>(
+        descending: Bool,
+        by key: (ImageFile) -> Key
+    ) -> [ImageFile] {
+        let descending = descending != sortReversed
+        let images = self.images
+        let keys = images.map(key)
+        let rank = filenameOrder().rank
+        return images.indices.sorted { lhs, rhs in
+            if keys[lhs] != keys[rhs] { return descending ? keys[lhs] > keys[rhs] : keys[lhs] < keys[rhs] }
+            return rank[lhs] < rank[rhs]
+        }.map { images[$0] }
+    }
+
+    /// Sorting indices by precomputed keys yields the same permutation as sorting the rows
+    /// with the equivalent comparator (same stable algorithm, same comparison results),
+    /// without moving large `ImageFile` values on every swap.
+    static func reordered<Key>(_ rows: [ImageFile], by key: (ImageFile) -> Key,
+                               _ areInIncreasingOrder: (Key, Key) -> Bool) -> [ImageFile] {
+        let keys = rows.map(key)
+        return rows.indices.sorted { areInIncreasingOrder(keys[$0], keys[$1]) }.map { rows[$0] }
+    }
+
+    /// Stable `localizedStandardCompare` filename permutation of `rows`.
+    static func filenameSortPermutation(_ rows: [ImageFile]) -> [Int] {
+        rows.indices.sorted {
+            rows[$0].filename.localizedStandardCompare(rows[$1].filename) == .orderedAscending
+        }
+    }
+
+    /// Extension order, then filename. `nameRank` (from `filenameSortPermutation`) replaces
+    /// the per-comparison filename compare: it orders localized-different names identically
+    /// and orders localized-equal names by listing position, which is what the stable sort
+    /// kept for them.
+    static func fileTypeSorted(_ rows: [ImageFile], nameRank: [Int]) -> [ImageFile] {
+        let extensions = rows.map { $0.url.pathExtension.lowercased() }
+        return rows.indices.sorted { lhs, rhs in
+            if extensions[lhs] != extensions[rhs] {
+                return extensions[lhs].localizedStandardCompare(extensions[rhs]) == .orderedAscending
+            }
+            return nameRank[lhs] < nameRank[rhs]
+        }.map { rows[$0] }
+    }
+
+    /// Filename orders depend only on the URL list, so the localized comparisons run once
+    /// per listing change rather than on every reverse toggle, file-type sort or
+    /// similarity rebuild. `order` is the stable `localizedStandardCompare` permutation of
+    /// `images`; `rank[i]` is row i's position in it (ties keep listing order, as before).
+    @ObservationIgnored private var filenameOrderCache: (urls: [URL], order: [Int], rank: [Int])?
+    @ObservationIgnored private var similarityNameOrderCache: (urls: [URL], order: [Int])?
+
+    private func filenameOrder() -> (order: [Int], rank: [Int]) {
+        let images = self.images
+        let urls = images.map(\.url)
+        if let cache = filenameOrderCache, cache.urls == urls { return (cache.order, cache.rank) }
+        let order = Self.filenameSortPermutation(images)
+        var rank = [Int](repeating: 0, count: images.count)
+        for (position, index) in order.enumerated() { rank[index] = position }
+        filenameOrderCache = (urls, order, rank)
+        return (order, rank)
+    }
+
+    /// `images` in `similarityNameOrder` (a total order, so filtering this list equals
+    /// sorting a filtered subset).
+    private func similarityNameOrderedImages() -> [ImageFile] {
+        let images = self.images
+        let urls = images.map(\.url)
+        if let cache = similarityNameOrderCache, cache.urls == urls { return cache.order.map { images[$0] } }
+        let order = images.indices.sorted { Self.similarityNameOrder(images[$0], images[$1]) }
+        similarityNameOrderCache = (urls, order)
+        return order.map { images[$0] }
     }
 
     private func showSortFeedback() {
@@ -465,6 +666,29 @@ final class BrowserViewModel {
     private func setNeedsVisibleRebuild() {
         needsVisibleRebuild = true
         scheduleCoalescedRebuild()
+    }
+
+    private func filterSettingDidChange() {
+        requestRevealActive()
+        setNeedsVisibleRebuild()
+    }
+
+    @ObservationIgnored private var revealActiveRequestedAt: ContinuousClock.Instant?
+
+    /// Marks the next grid update as caused by the user (sort/filter setting, their own
+    /// rating/label, move or delete): the grid then scrolls the active photo into view.
+    /// Refreshes and background metadata re-sorts don't request it, so they never pull a
+    /// user who scrolled elsewhere back to the selection.
+    func requestRevealActive() {
+        revealActiveRequestedAt = .now
+    }
+
+    /// Read once per grid data update. A request expires after a second so a user action
+    /// that changed nothing structural can't make a later refresh scroll.
+    func consumeRevealActiveRequest() -> Bool {
+        defer { revealActiveRequestedAt = nil }
+        guard let requested = revealActiveRequestedAt else { return false }
+        return ContinuousClock.now - requested < .seconds(1)
     }
 
     private func scheduleCoalescedRebuild() {
@@ -499,6 +723,7 @@ final class BrowserViewModel {
         isBatchUpdating = true
         block()
         isBatchUpdating = false
+        requestRevealActive()
         // The per-property didSets are gated on `!isBatchUpdating`, so the changes above
         // requested no rebuild. Mark one explicitly, otherwise `rebuildNow()` finds no
         // pending flag and the grid keeps showing the pre-batch filtered set (e.g. Clear
@@ -510,39 +735,67 @@ final class BrowserViewModel {
 
     private func rebuildVisibleCache() {
         let previousVisibleURLs = visibleImages.map(\.url)
-        let fullScreenAnchor = isFullScreen
-            ? (lastClickedImageURL ?? selectedImageIDs.first)
-            : nil
+        let anchor = lastClickedImageURL ?? selectedImageIDs.first
         let filtered = applyFilters(to: sortedImages)
         visibleImages = filtered
         urlToVisibleIndex = Dictionary(uniqueKeysWithValues: filtered.enumerated().map { ($1.url, $0) })
 
         let visibleSet = Set(filtered.map(\.url))
-        if let fullScreenAnchor,
-           previousVisibleURLs.contains(fullScreenAnchor),
-           !visibleSet.contains(fullScreenAnchor) {
-            // Rating/label changes can make the image being viewed fail the active
-            // filter. Keep full screen anchored in the old filmstrip by moving to the
-            // nearest surviving image (next wins ties), rather than allowing selection
-            // reconciliation to clear the viewer to a black screen.
+        if keepsSelectionThroughFilterChanges {
+            // Compare shows (and rates) its focused photo even after it left the filter; the
+            // Browser selection and metadata editor stay on it rather than a neighbour.
+            rebuildSelectedCache()
+            return
+        }
+        if let anchor,
+           isFullScreen || movesSelectionToNeighborOnRebuild,
+           previousVisibleURLs.contains(anchor),
+           !visibleSet.contains(anchor) {
+            // Rating/labelling (or moving/deleting) the active photo out of the active filter
+            // must not drop the selection: in the grid the next culling key would do nothing
+            // and → would jump to the first photo; full screen would go black. Photo Mechanic
+            // moves on to the next photo (else the previous one) in the old order. A plain
+            // filter or search change keeps the previous behaviour (visible selection only).
+            let survivors = selectedImageIDs.intersection(visibleSet)
+            if !survivors.isEmpty {
+                // A partly filtered-out multi-selection keeps its survivors (full screen keeps
+                // stepping through them); the active photo moves to the nearest survivor.
+                let notSurviving = Set(previousVisibleURLs).subtracting(survivors)
+                let active = Self.closestSurvivingImageURL(
+                    in: previousVisibleURLs,
+                    around: anchor,
+                    deleting: notSurviving
+                ) ?? survivors.first
+                if survivors != selectedImageIDs {
+                    selectedImageIDs = survivors
+                } else {
+                    rebuildSelectedCache()
+                }
+                if let selectionAnchorURL, survivors.contains(selectionAnchorURL) {
+                    // The Shift anchor survived; keep extending from it.
+                } else {
+                    selectionAnchorURL = active
+                }
+                lastClickedImageURL = active
+                return
+            }
             let removedURLs = Set(previousVisibleURLs).subtracting(visibleSet)
-            let replacementURL = Self.closestSurvivingImageURL(
+            if let replacementURL = Self.closestSurvivingImageURL(
                 in: previousVisibleURLs,
-                around: fullScreenAnchor,
+                around: anchor,
                 deleting: removedURLs
-            ) ?? filtered.first?.url
-
-            if let replacementURL {
-                lastClickedImageURL = replacementURL
-                selectedImageIDs = [replacementURL]
-            } else {
+            ) ?? filtered.first?.url {
+                applySelection(ids: [replacementURL], active: replacementURL)
+                return
+            }
+            if isFullScreen {
                 // No images satisfy the filter anymore, so there is nothing valid for
                 // the full-screen window to display.
                 selectedImageIDs = []
                 lastClickedImageURL = nil
                 isFullScreen = false
+                return
             }
-            return
         }
 
         if !selectedImageIDs.isEmpty {
@@ -576,11 +829,49 @@ final class BrowserViewModel {
             return
         }
         selectedImagesCache = selectedImageIDs.compactMap { url in
-            guard let index = urlToImageIndex[url] else { return nil }
+            guard let index = validImageIndex(for: url) else { return nil }
             return images[index]
         }
         urlToSelectedIndex = Dictionary(uniqueKeysWithValues: selectedImagesCache.enumerated().map { ($1.url, $0) })
         preCacheSelectedRetinaImage()
+    }
+
+    /// The loaded photo at `url`: O(1) through `urlToImageIndex`, falling back to the linear
+    /// scan only while that index is stale, so the result always equals
+    /// `images.first(where: { $0.url == url })`. Cheap enough for SwiftUI body evaluation.
+    func image(at url: URL) -> ImageFile? {
+        if let index = validImageIndex(for: url) { return images[index] }
+        return images.first(where: { $0.url == url })
+    }
+
+    /// `urlToImageIndex[url]`, but only while it still points at that photo. The index is
+    /// not rebuilt while `suppressImagesCascade` is held, so never trust it blindly.
+    private func validImageIndex(for url: URL) -> Int? {
+        guard let index = urlToImageIndex[url], images.indices.contains(index),
+              images[index].url == url else { return nil }
+        return index
+    }
+
+    /// Moves, duplicates and trash change the file inventory, and can land while
+    /// `loadBasicMetadata` holds `suppressImagesCascade` across an await — then the
+    /// `images` didSet skips the index rebuild. Rebuild identity, sorted/visible caches and
+    /// the selection explicitly so later index readers never target a neighbour.
+    private func reindexAfterInventoryChange() {
+        imagesCascadeURLs = images.map(\.url)
+        urlToImageIndex = Dictionary(
+            uniqueKeysWithValues: imagesCascadeURLs.enumerated().map { ($1, $0) }
+        )
+        setNeedsSortRebuild(forceSort: true)
+        rebuildMovingSelectionToNeighbor { rebuildNow() }
+    }
+
+    /// Runs a rebuild caused by the user's own mutation (see `movesSelectionToNeighborOnRebuild`).
+    private func rebuildMovingSelectionToNeighbor(_ rebuild: () -> Void) {
+        requestRevealActive()
+        let previous = movesSelectionToNeighborOnRebuild
+        movesSelectionToNeighborOnRebuild = true
+        defer { movesSelectionToNeighborOnRebuild = previous }
+        rebuild()
     }
 
     private func preCacheSelectedRetinaImage() {
@@ -791,10 +1082,12 @@ final class BrowserViewModel {
 
     @ObservationIgnored private var loadFolderTask: Task<Void, Never>?
 
-    func loadFolder(url: URL, addToOpenFolders: Bool = true) {
+    /// Cancels every in-flight load/refresh/metadata task of the current folder so stale
+    /// results can't land after the browser moved on (another folder or no folder at all).
+    private func cancelCurrentFolderWork() {
         resetSimilaritySort()
         fieldMutationDisplayID = UUID()
-        AppStartupSignposts.shared.firstFolderLoadStarted()
+        metadataReviewKeyCache.removeAll()
 
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
@@ -806,17 +1099,19 @@ final class BrowserViewModel {
         isAutoRefreshing = false
         metadataWriteTask?.cancel()
         batchReadTask?.cancel()
+        folderOrientationTask?.cancel()
+        folderOrientationTask = nil
+        eagerOrientationPassID = nil
+        eagerOrientationAuthoritativeURLs.removeAll()
         folderOrientationLoadRequestID = nil
         refreshOrientationLoadRequestID = nil
         // Reset in case the cancelled task's metadata loop left this true,
         // otherwise the images.didSet below won't rebuild urlToImageIndex.
         suppressImagesCascade = false
+    }
 
-        saveCurrentFilterState()
-
-        currentFolderURL = url
-        currentFolderName = url.lastPathComponent
-        isLoading = true
+    /// Clears the per-folder display state shared by a folder switch and closing the folder.
+    private func clearCurrentFolderState() {
         errorMessage = nil
         folderLoadErrorMessage = nil
         iCloudDownloadNotice = nil
@@ -828,7 +1123,31 @@ final class BrowserViewModel {
         images = []
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
+        selectionAnchorURL = nil
         manualOrder.removeAll()
+    }
+
+    /// Returns the browser to the "no folder" state. Closing the folder mid-load must not
+    /// leave "Loading images…" (or an old iCloud notice/filter) behind.
+    private func resetToNoFolder() {
+        cancelCurrentFolderWork()
+        currentFolderURL = nil
+        currentFolderName = nil
+        isLoading = false
+        clearCurrentFolderState()
+        clearFilters()
+    }
+
+    func loadFolder(url: URL, addToOpenFolders: Bool = true) {
+        AppStartupSignposts.shared.firstFolderLoadStarted()
+        cancelCurrentFolderWork()
+
+        saveCurrentFilterState()
+
+        currentFolderURL = url
+        currentFolderName = url.lastPathComponent
+        isLoading = true
+        clearCurrentFolderState()
         fullScreenImageCache.clearAll()
 
         restoreFilterState(for: url)
@@ -847,6 +1166,9 @@ final class BrowserViewModel {
             // this root even when a non-primary split-view pane opened it.
             onDidOpenRootFolder?(url)
         }
+
+        // Interrupted embedded writes can leave hidden staging folders behind; clean old ones.
+        PrimaryStagingDirectorySweeper.sweepInBackground(folder: url)
 
         loadFolderTask = Task {
             do {
@@ -878,41 +1200,10 @@ final class BrowserViewModel {
                 self.isLoading = false
                 AppStartupSignposts.shared.firstFolderLoadReady(itemCount: files.count)
 
-                // Phase 1.5: Read EXIF orientations in background (deferred).
-                // Thumbnails don't need this (QL/CGImageSource apply transforms internally).
-                // Phase 5 (metadata read) also sets it; this provides it sooner for full-screen entry.
-                var orientedFiles = files
-                guard await self.readOrientationsEagerly(
-                    for: &orientedFiles,
-                    owner: .folderLoad
-                ) else { return }
-                guard !Task.isCancelled, self.currentFolderURL == url else { return }
-                let nonDefault = orientedFiles.filter { $0.exifOrientation != 1 }
-                if !nonDefault.isEmpty {
-                    // Resolve each file by URL via urlToImageIndex rather than by the
-                    // positional index from `orientedFiles`: `self.images` may have been
-                    // replaced or reordered (auto-refresh merge, delete, sort) during the
-                    // `await` above, so a stale positional index could write to the wrong
-                    // image or crash out-of-bounds. urlToImageIndex always matches the
-                    // current `self.images`. We only mutate a field (set unchanged), so the
-                    // index stays valid across the loop even with the cascade suppressed.
-                    self.suppressImagesCascade = true
-                    for file in nonDefault {
-                        guard let index = self.urlToImageIndex[file.url] else { continue }
-                        if self.images[index].exifOrientation != file.exifOrientation {
-                            self.logger.info("[\(file.url.lastPathComponent, privacy: .private(mask: .hash))] eager orientation (loadFolder) \(self.images[index].exifOrientation) → \(file.exifOrientation)")
-                            // See applyBatchMetadataResults: drop model-orientation-derived
-                            // renders produced under the old value.
-                            self.thumbnailService.invalidateEditedThumbnail(for: file.url)
-                            self.fullScreenImageCache.invalidateImage(for: file.url)
-                        }
-                        self.images[index].exifOrientation = file.exifOrientation
-                    }
-                    self.suppressImagesCascade = false
-                }
-
                 // Phase 2: The filesystem actor retains a Dispatch worker for directory I/O.
                 // Await it directly so replacing the folder propagates cancellation to the scan.
+                // It runs before the eager orientation pass below, which shares that actor:
+                // one directory listing should not queue behind thousands of header reads.
                 let discoveredSubfolders = try? await subfolderLoader(url)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 if let discoveredSubfolders {
@@ -922,6 +1213,13 @@ final class BrowserViewModel {
                     }
                     self.prefetchGrandchildren(of: url)
                 }
+
+                // Phase 1.5: Read display orientations in the background, in grid order. Not
+                // awaited: the JSON sidecar and metadata passes below set the authoritative
+                // orientation themselves, and base thumbnails apply sidecar orientation at
+                // generation time. This only gets the model value in place sooner for
+                // full-screen/edit entry, so it must not hold up the rest of folder open.
+                self.startEagerFolderOrientationLoad(folderURL: url)
 
                 // Phase 3: Load sidecars and apply pending overrides
                 let allSidecars = await sidecarService.loadAllSidecars(in: url)
@@ -991,8 +1289,72 @@ final class BrowserViewModel {
         }
     }
 
+    static let folderUnavailableMessage = "This folder is no longer available — the volume may have been ejected."
+
+    nonisolated enum FolderAvailability: Equatable, Sendable {
+        case available
+        /// ENOENT/ENOTDIR: deleted, or its volume (card, share) is no longer mounted.
+        case gone
+        /// Any other stat failure (EACCES, ETIMEDOUT/ENOTCONN while SMB reconnects…): not
+        /// proof the folder is gone, so the grid stays as it is.
+        case undetermined
+    }
+
+    /// Off the main actor: a stat on a dead network mount can block.
+    @concurrent nonisolated static func folderAvailability(_ url: URL) async -> FolderAvailability {
+        folderAvailabilityNow(url)
+    }
+
+    nonisolated static func folderAvailabilityNow(_ url: URL) -> FolderAvailability {
+        var info = stat()
+        if stat(url.path, &info) == 0 {
+            return (info.st_mode & S_IFMT) == S_IFDIR ? .available : .gone
+        }
+        switch errno {
+        case ENOENT, ENOTDIR: return .gone
+        default: return .undetermined
+        }
+    }
+
+    /// True while the displayed folder is known to be gone. Photo commands (ratings, labels,
+    /// templates…) are ignored meanwhile instead of acting on the hidden rows.
+    var isCurrentFolderUnavailable: Bool {
+        folderLoadErrorMessage == Self.folderUnavailableMessage
+    }
+
+    /// Shows the folder-unavailable state (Retry / Open Another Folder) when the displayed
+    /// folder vanished: an ejected card, an unmounted share or a deleted folder. Rows,
+    /// selection and the metadata editor are left untouched, so unsaved edits are never
+    /// discarded; saving them goes through the normal write-failure path.
+    func verifyCurrentFolderAvailability() async {
+        guard let folderURL = currentFolderURL else { return }
+        let availability = await Self.folderAvailability(folderURL)
+        guard currentFolderURL == folderURL else { return }
+        switch availability {
+        case .gone:
+            folderLoadErrorMessage = Self.folderUnavailableMessage
+        case .available:
+            if isCurrentFolderUnavailable { folderLoadErrorMessage = nil }
+        case .undetermined:
+            break
+        }
+    }
+
+    /// Retry from the folder-unavailable state: once the folder is back, rescan it in place
+    /// (rows, selection and editor state kept) instead of reloading from scratch.
+    func retryUnavailableFolder() async {
+        await verifyCurrentFolderAvailability()
+        guard currentFolderURL != nil, !isCurrentFolderUnavailable else { return }
+        refreshCurrentFolderIfNeeded()
+    }
+
+    /// `excludingNewURLs` names files a refresh must not add yet (an import's copies whose
+    /// sidecar/template finisher hasn't run). Rows already shown are never removed by it.
     @discardableResult
-    func refreshCurrentFolderIfNeeded(onComplete: ((Set<URL>) -> Void)? = nil) -> Bool {
+    func refreshCurrentFolderIfNeeded(
+        onComplete: ((Set<URL>) -> Void)? = nil,
+        excludingNewURLs: (@MainActor () -> Set<URL>)? = nil
+    ) -> Bool {
         guard let folderURL = currentFolderURL else { return false }
         guard !isLoading, !isMetadataLoading, !isAutoRefreshing, !isRenameQuiesced else { return false }
         isAutoRefreshing = true
@@ -1016,15 +1378,29 @@ final class BrowserViewModel {
             do {
                 scanResult = try await fileSystemService.scanFolderWithStatus(at: folderURL, includeAllFiles: fileVisibility == .all, includeVideos: fileVisibility == .media)
             } catch {
+                // A failed scan is usually transient, but an ejected card, unmounted share or
+                // deleted folder never recovers; show that instead of a silently stale grid.
+                guard !Task.isCancelled, self.canPublishRefresh(requestID, in: folderURL) else { return }
+                await self.verifyCurrentFolderAvailability()
                 return
             }
             guard self.canPublishRefresh(requestID, in: folderURL) else { return }
+            if self.folderLoadErrorMessage == Self.folderUnavailableMessage {
+                self.folderLoadErrorMessage = nil
+            }
             self.iCloudDownloadNotice = scanResult.hasDeferredICloudItems
                 ? Self.iCloudDownloadMessage(for: scanResult.deferredICloudItemCount)
                 : nil
-            let scanned = scanResult.files
-
             let existingByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+            let scanned: [ImageFile]
+            if let excluded = excludingNewURLs?(), !excluded.isEmpty {
+                scanned = scanResult.files.filter {
+                    existingByURL[$0.url] != nil || !excluded.contains($0.url.standardizedFileURL)
+                }
+            } else {
+                scanned = scanResult.files
+            }
+
             let existingURLs = Set(existingByURL.keys)
             let scannedURLs = Set(scanned.map(\.url))
 
@@ -1050,6 +1426,17 @@ final class BrowserViewModel {
                         || existing.dateModified != item.dateModified
                     let sidecarChanged = !contentModified
                         && existing.sidecarModified != item.sidecarModified
+                    if !contentModified, !sidecarChanged,
+                       existing.dateCreated == item.dateCreated,
+                       existing.dateAdded == item.dateAdded,
+                       existing.isICloudDownloadPending == item.isICloudDownloadPending {
+                        // Every scanned field matches, so the copy below would rebuild an
+                        // identical value — including the derived lowercased search text
+                        // that the metadata/keyword/person didSets recompute. Most refreshes
+                        // touch few files; reuse the row instead of rebuilding n of them.
+                        merged.append(existing)
+                        continue
+                    }
                     var updated = item
                     updated.starRating = existing.starRating
                     updated.colorLabel = existing.colorLabel
@@ -1058,6 +1445,7 @@ final class BrowserViewModel {
                     updated.hasCropEdits = existing.hasCropEdits
                     updated.cropRegion = existing.cropRegion
                     updated.cameraRawSettings = existing.cameraRawSettings
+                    updated.developSettingsLoaded = existing.developSettingsLoaded
                     updated.exifOrientation = existing.exifOrientation
                     updated.isNativeHDR = existing.isNativeHDR
                     updated.hasPendingMetadataChanges = existing.hasPendingMetadataChanges
@@ -1069,6 +1457,7 @@ final class BrowserViewModel {
                         // File changed on disk — clear stale develop/crop state so
                         // thumbnails reflect the actual file content
                         updated.cameraRawSettings = nil
+                        updated.developSettingsLoaded = false
                         updated.hasDevelopEdits = false
                         updated.hasCropEdits = false
                         updated.cropRegion = nil
@@ -1099,13 +1488,19 @@ final class BrowserViewModel {
             // initial-load eager read) so new thumbnails render upright immediately without
             // blocking the UI on per-file CGImageSource I/O.
             if !newURLs.isEmpty {
+                let newURLSet = Set(newURLs)
+                let newURLsWithoutSidecar = Set(merged.lazy
+                    .filter { newURLSet.contains($0.url) && $0.sidecarModified == nil }
+                    .map(\.url))
                 guard let orientationSnapshot = await loadOrientationSnapshot(
                     for: newURLs,
-                    owner: .refresh
+                    owner: .refresh,
+                    urlsWithoutSidecar: newURLsWithoutSidecar
                 ) else {
                     return
                 }
                 guard self.canPublishRefresh(requestID, in: folderURL) else { return }
+                for url in newURLs { noteAuthoritativeOrientation(for: url) }
                 let orientations = orientationSnapshot.orientations
                 if !orientations.isEmpty {
                     for index in merged.indices {
@@ -1133,6 +1528,14 @@ final class BrowserViewModel {
             }
 
             self.images = merged
+            // A rewritten file (often the app's own caption/rating write — the watcher can't
+            // tell) lost its known develop settings above. Re-read the ones that were known
+            // right away instead of queueing them behind the folder's metadata batch, so
+            // Clean Feed and drag-out don't wait on it.
+            let previouslyKnown = modifiedURLs.filter { existingByURL[$0]?.developSettingsLoaded == true }
+            if !previouslyKnown.isEmpty {
+                ensureDevelopSettingsLoaded(for: previouslyKnown)
+            }
             if creationDatesChanged && sortOrder == .dateCreated {
                 setNeedsSortRebuild(forceSort: true)
             }
@@ -1181,24 +1584,125 @@ final class BrowserViewModel {
         isRenameQuiesced = false
     }
 
-    /// Read EXIF orientation via CGImageSource (metadata-only, ~0.1ms/file).
-    /// Called eagerly after folder scan so exifOrientation is correct before
-    /// the full batch metadata read.
-    private func readOrientationsEagerly(
-        for images: inout [ImageFile],
-        owner: OrientationLoadOwner
-    ) async -> Bool {
-        let urls = images.compactMap { $0.isImageFile && !$0.isICloudDownloadPending ? $0.url : nil }
-        guard !urls.isEmpty else { return true }
-        guard let snapshot = await loadOrientationSnapshot(for: urls, owner: owner) else { return false }
-        let orientations = snapshot.orientations
-        guard !orientations.isEmpty else { return true }
-        for index in images.indices where images[index].isImageFile {
-            if let orientation = orientations[images[index].url] {
-                images[index].exifOrientation = orientation
+    /// Files per eager-orientation actor hop. Small enough that other work on the
+    /// filesystem actor (grandchild listings) interleaves and results land progressively.
+    private static let eagerOrientationChunkSize = 200
+
+    /// Reads display orientations (sidecar first, then the embedded header) right after the
+    /// folder scan, in grid order and in chunks, publishing each chunk as it lands. Runs
+    /// alongside the JSON sidecar and metadata passes instead of gating them.
+    ///
+    /// Photos the scan's directory listing showed have no `.xmp` skip the sidecar probe.
+    /// A chunk result only fills in a row whose orientation is still the value it had when
+    /// the pass started: a metadata batch, a pending orientation draft or a user rotation
+    /// that landed meanwhile is authoritative and is never overwritten by this early read.
+    /// Those writers record the row in `eagerOrientationAuthoritativeURLs`, which also
+    /// covers an authoritative value equal to the starting value and a row whose scan-time
+    /// "no .xmp" fact went stale (a rotation that created a sidecar).
+    private func startEagerFolderOrientationLoad(folderURL: URL) {
+        folderOrientationTask?.cancel()
+        folderOrientationTask = nil
+        eagerOrientationPassID = nil
+        eagerOrientationAuthoritativeURLs.removeAll()
+        let eligible = images.filter { $0.isImageFile && !$0.isICloudDownloadPending }
+        guard !eligible.isEmpty else { return }
+        let passID = UUID()
+        eagerOrientationPassID = passID
+        let urlsWithoutSidecar = Set(eligible.lazy.filter { $0.sidecarModified == nil }.map(\.url))
+        var baseline: [URL: Int] = [:]
+        baseline.reserveCapacity(eligible.count)
+        for file in eligible { baseline[file.url] = file.exifOrientation }
+        let orderedURLs = gridPrioritizedURLs(eligible.map(\.url))
+
+        folderOrientationTask = Task { [weak self] in
+            defer { self?.finishEagerOrientationPass(passID) }
+            let chunkSize = Self.eagerOrientationChunkSize
+            for chunkStart in stride(from: 0, to: orderedURLs.count, by: chunkSize) {
+                // Checked before `loadOrientationSnapshot` claims the folder-load request
+                // identity, so a superseded pass can never steal it from its replacement.
+                guard let self, !Task.isCancelled, self.currentFolderURL == folderURL,
+                      self.eagerOrientationPassID == passID else { return }
+                let chunk = Array(orderedURLs[chunkStart..<min(chunkStart + chunkSize, orderedURLs.count)])
+                guard let snapshot = await self.loadOrientationSnapshot(
+                    for: chunk,
+                    owner: .folderLoad,
+                    urlsWithoutSidecar: urlsWithoutSidecar
+                ) else { return }
+                guard !Task.isCancelled, self.currentFolderURL == folderURL,
+                      self.eagerOrientationPassID == passID else { return }
+                self.applyEagerOrientations(snapshot.orientations, baseline: baseline)
             }
         }
-        return true
+    }
+
+    private func finishEagerOrientationPass(_ passID: UUID) {
+        guard eagerOrientationPassID == passID else { return }
+        eagerOrientationPassID = nil
+        eagerOrientationAuthoritativeURLs.removeAll()
+    }
+
+    /// Records that an authoritative source just wrote `url`'s orientation (or decided it),
+    /// so a still-running eager pass leaves the row alone. No-op when no pass is running.
+    private func noteAuthoritativeOrientation(for url: URL) {
+        guard eagerOrientationPassID != nil else { return }
+        eagerOrientationAuthoritativeURLs.insert(url)
+    }
+
+    /// Test seam: waits for the current eager orientation pass, if any.
+    func waitForEagerOrientationPass() async { await folderOrientationTask?.value }
+
+    private func applyEagerOrientations(_ orientations: [URL: Int], baseline: [URL: Int]) {
+        guard !orientations.isEmpty else { return }
+        // A metadata load can hold the cascade suppressed across awaits; restore its state.
+        let wasSuppressed = suppressImagesCascade
+        suppressImagesCascade = true
+        var changedURLs: [URL] = []
+        for (url, orientation) in orientations {
+            guard !eagerOrientationAuthoritativeURLs.contains(url),
+                  let index = validImageIndex(for: url),
+                  let original = baseline[url],
+                  images[index].exifOrientation == original,
+                  orientation != original,
+                  !images[index].pendingFieldNames.contains("Orientation"),
+                  !hasActiveOrientationMutation(for: url)
+            else { continue }
+            logger.info("[\(url.lastPathComponent, privacy: .private(mask: .hash))] eager orientation (loadFolder) \(original) → \(orientation)")
+            // See applyBatchMetadataResults: drop model-orientation-derived
+            // renders produced under the old value.
+            thumbnailService.invalidateEditedThumbnail(for: url)
+            fullScreenImageCache.invalidateImage(for: url)
+            images[index].exifOrientation = orientation
+            changedURLs.append(url)
+        }
+        suppressImagesCascade = wasSuppressed
+        guard !changedURLs.isEmpty else { return }
+        publishMetadataBatch(for: changedURLs, sortKeyChanged: false)
+    }
+
+    /// Orders `urls` the way the grid shows them (visible rows first, then the rest of
+    /// the sorted folder, then anything else) so background passes reach what the user
+    /// is looking at first. Pure in-memory reordering; the set of URLs is unchanged.
+    private func gridPrioritizedURLs(_ urls: [URL]) -> [URL] {
+        guard urls.count > 1 else { return urls }
+        let requested = Set(urls)
+        var seen = Set<URL>()
+        seen.reserveCapacity(urls.count)
+        var ordered: [URL] = []
+        ordered.reserveCapacity(urls.count)
+        for image in visibleImages where requested.contains(image.url) && seen.insert(image.url).inserted {
+            ordered.append(image.url)
+        }
+        if ordered.count < requested.count {
+            for image in sortedImages where requested.contains(image.url) && seen.insert(image.url).inserted {
+                ordered.append(image.url)
+            }
+        }
+        if ordered.count < urls.count {
+            for url in urls where seen.insert(url).inserted {
+                ordered.append(url)
+            }
+        }
+        return ordered
     }
 
     private enum OrientationLoadOwner {
@@ -1212,7 +1716,8 @@ final class BrowserViewModel {
     /// ordinary task cancellation.
     private func loadOrientationSnapshot(
         for urls: [URL],
-        owner: OrientationLoadOwner
+        owner: OrientationLoadOwner,
+        urlsWithoutSidecar: Set<URL> = []
     ) async -> FileSystemService.DisplayOrientationSnapshot? {
         let requestID = UUID()
         switch owner {
@@ -1223,7 +1728,8 @@ final class BrowserViewModel {
         }
         let snapshot = await fileSystemService.displayOrientationSnapshot(
             for: urls,
-            requestID: requestID
+            requestID: requestID,
+            urlsWithoutSidecar: urlsWithoutSidecar
         )
         guard !Task.isCancelled,
               isCurrentOrientationRequest(requestID, owner: owner),
@@ -1249,20 +1755,25 @@ final class BrowserViewModel {
     }
 
     /// Reads IPTC/XMP basic metadata for the given URLs in batches of 50 and merges
-    /// each batch into `self.images`. Pass `cachedSidecars` when the caller has already
-    /// loaded all sidecars for the folder (initial-load path); the incremental path
-    /// leaves it empty and relies on `applyPendingSidecarOverrides`'s per-file fallback.
+    /// each batch into `self.images`, in grid order so visible rows fill in first.
+    ///
+    /// Each batch's JSON sidecars are resolved off-main alongside its XMP read, from one
+    /// listing of `.photo_metadata`; the result is authoritative for the batch, so a photo
+    /// without a sidecar costs no filesystem probe on the MainActor. Pass `cachedSidecars`
+    /// when the caller already loaded the folder's sidecars (initial-load path): carriers
+    /// still present are reused instead of re-read, and sidecars created since are read.
     private func loadBasicMetadata(
-        for urls: [URL],
+        for requestedURLs: [URL],
         cachedSidecars: [URL: MetadataSidecar] = [:],
         showsProgress: Bool = false
     ) async {
         guard metadataReadService.isAvailable else { return }
-        guard !urls.isEmpty else { return }
+        guard !requestedURLs.isEmpty else { return }
         if isMetadataLoading {
-            pendingMetadataURLs.formUnion(urls)
+            pendingMetadataURLs.formUnion(requestedURLs)
             return
         }
+        let urls = gridPrioritizedURLs(requestedURLs)
         let requestID = UUID()
         metadataLoadRequestID = requestID
         isMetadataLoading = true
@@ -1324,9 +1835,23 @@ final class BrowserViewModel {
                     imageURLs: batchURLs,
                     requestID: requestID
                 )
+                // Captured before the listing below, so any carrier write that lands after it
+                // (while this batch is in flight) is reported at apply time and re-read then.
+                let sidecarJournalGeneration = MetadataSidecarWriteJournal.shared.generation
+                var reusableSidecars: [URL: MetadataSidecar] = [:]
+                for url in batchURLs {
+                    if let cached = cachedSidecars[url] { reusableSidecars[url] = cached }
+                }
+                async let jsonSidecarLoad = Self.loadBatchJSONSidecars(
+                    sidecarService,
+                    for: batchURLs,
+                    in: folderURL,
+                    reusing: reusableSidecars
+                )
                 let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
                 let xmpLoadResult = await xmpDataLoad
                 let hdrClassificationResult = await hdrClassification
+                let batchSidecars = await jsonSidecarLoad
                 guard !Task.isCancelled,
                       currentFolderURL == folderURL,
                       metadataLoadRequestID == requestID,
@@ -1353,20 +1878,33 @@ final class BrowserViewModel {
                 let batchMs = batchTimer.elapsedMilliseconds()
                 perfLog.info("[BrowserVM] batch \(batchIndex)/\(totalBatches) DONE — \(batchURLs.count) files in \(batchMs)ms")
                 let previousSortValues = batchURLs.compactMap { url -> (URL, StarRating, ColorLabel)? in
-                    guard let index = urlToImageIndex[url] else { return nil }
+                    guard let index = validImageIndex(for: url) else { return nil }
                     return (url, images[index].starRating, images[index].colorLabel)
                 }
+                // Same actor turn as the merge below: nothing can write between this check
+                // and the per-row decision.
+                let sidecarsWrittenDuringBatch = MetadataSidecarWriteJournal.shared.urlsWritten(
+                    since: sidecarJournalGeneration,
+                    among: batchURLs
+                )
                 applyBatchMetadataResults(
                     results,
                     to: &images,
                     localIndex: urlToImageIndex,
-                    cachedSidecars: cachedSidecars,
+                    cachedSidecars: batchSidecars ?? [:],
+                    sidecarsAreAuthoritative: batchSidecars != nil,
+                    staleSidecarURLs: sidecarsWrittenDuringBatch,
                     xmpMetadataMap: xmpMetadataMap,
                     nativeHDRByURL: hdrSnapshot.isHDRByImageURL,
                     tagRevisionsAtRead: tagRevisions
                 )
+                markDevelopSettingsLoadedWithoutFileMetadata(
+                    batchURLs: batchURLs,
+                    results: results,
+                    xmpMetadataMap: xmpMetadataMap
+                )
                 let sortKeyChanged = previousSortValues.contains { url, rating, label in
-                    guard let index = urlToImageIndex[url] else { return false }
+                    guard let index = validImageIndex(for: url) else { return false }
                     return (sortOrder == .rating && rating != images[index].starRating)
                         || (sortOrder == .label && label != images[index].colorLabel)
                 }
@@ -1405,7 +1943,9 @@ final class BrowserViewModel {
                         fromData: data,
                         imageAspect: { imageAspects[url] ?? ImagePixelAspect.aspect(at: url) }
                     )
-                    return (url, metadata)
+                    // A RAW+JPEG pair's stem sidecar carries the RAW's develop settings; the
+                    // JPEG keeps its own (Adobe convention), so drop crs for it here.
+                    return (url, PhotoSidecarOwnership.applyingDevelopOwnership(metadata, for: url))
                 }
             }
 
@@ -1416,6 +1956,18 @@ final class BrowserViewModel {
             }
             return result
         }
+    }
+
+    /// Resolves one metadata batch's JSON sidecars on the sidecar filesystem actor. Returns
+    /// nil (non-authoritative) only when there is no folder to resolve against.
+    private nonisolated static func loadBatchJSONSidecars(
+        _ service: MetadataSidecarService,
+        for urls: [URL],
+        in folderURL: URL?,
+        reusing cached: [URL: MetadataSidecar]
+    ) async -> [URL: MetadataSidecar]? {
+        guard let folderURL else { return nil }
+        return await service.loadSidecarsForBrowserBatch(urls, in: folderURL, reusing: cached)
     }
 
     private func drainPendingMetadataIfNeeded() {
@@ -1429,6 +1981,84 @@ final class BrowserViewModel {
         }
     }
 
+    /// On-demand develop read for photos whose settings the metadata batch has not reached yet
+    /// (the selected photo, the Clean Feed photo, a dragged photo, a file just rewritten on disk).
+    /// The batch reads 50 photos at a time in grid order and queues new work behind the running
+    /// load, so in a large folder a selected photo could otherwise stay "unknown" for minutes —
+    /// leaving Clean Feed black and drag-out refused. Reads the embedded block and the sidecar
+    /// with the full parser and reconciles them exactly as the export does
+    /// (`ExportCameraRawSourcePolicy.persisted`). At most `limit` photos per call.
+    func ensureDevelopSettingsLoaded(for urls: [URL], limit: Int = 24) {
+        var targets: [URL] = []
+        var modificationDates: [URL: Date] = [:]
+        for url in urls where targets.count < limit {
+            guard let index = validImageIndex(for: url) else { continue }
+            let image = images[index]
+            guard !image.developSettingsLoaded, image.isImageFile, !image.isICloudDownloadPending,
+                  !developSettingsReadsInFlight.contains(url) else { continue }
+            targets.append(url)
+            modificationDates[url] = image.dateModified
+        }
+        guard !targets.isEmpty else { return }
+        developSettingsReadsInFlight.formUnion(targets)
+        let folderURL = currentFolderURL
+        Task { [weak self] in
+            guard let self else { return }
+            let embedded = (try? await metadataReadService.readBatchFullMetadata(
+                urls: targets, stopsWhenCancelled: false
+            )) ?? [:]
+            let sidecars = await Self.readSidecarDevelopSettings(for: targets)
+            developSettingsReadsInFlight.subtract(targets)
+            guard currentFolderURL == folderURL else { return }
+            for url in targets {
+                // A file rewritten again while this read ran waits for its own re-read.
+                guard let index = validImageIndex(for: url), !images[index].developSettingsLoaded,
+                      images[index].dateModified == modificationDates[url] else { continue }
+                images[index].cameraRawSettings = ExportCameraRawSourcePolicy.persisted(
+                    imageURL: url,
+                    sidecar: sidecars[url],
+                    embedded: embedded[url]?.cameraRaw
+                )
+                images[index].developSettingsLoaded = true
+            }
+        }
+    }
+
+    @concurrent
+    private nonisolated static func readSidecarDevelopSettings(for urls: [URL]) async -> [URL: CameraRawSettings] {
+        let service = XMPSidecarService()
+        var result: [URL: CameraRawSettings] = [:]
+        for url in urls where !Task.isCancelled {
+            if let settings = service.loadDevelopSettings(for: url), !settings.isEmpty {
+                result[url] = settings
+            }
+        }
+        return result
+    }
+
+    /// A file whose embedded-metadata read failed has no result dict, so the batch merge never
+    /// reaches it. Its sidecar was still read: apply the sidecar's develop settings (a redaction
+    /// may live only there) and mark the settings known, so Clean Feed and drag-out stop waiting
+    /// on a load that will not come.
+    func markDevelopSettingsLoadedWithoutFileMetadata(
+        batchURLs: [URL],
+        results: [[String: Any]],
+        xmpMetadataMap: [URL: IPTCMetadata]
+    ) {
+        let returned = Set(results.compactMap { dict -> URL? in
+            guard let path = dict[MetadataDictKey.sourceFile] as? String else { return nil }
+            return URL(fileURLWithPath: path)
+        })
+        for url in batchURLs where !returned.contains(url) {
+            guard let index = validImageIndex(for: url), !images[index].developSettingsLoaded else { continue }
+            if images[index].cameraRawSettings == nil,
+               let sidecarSettings = xmpMetadataMap[url]?.cameraRaw, !sidecarSettings.isEmpty {
+                images[index].cameraRawSettings = sidecarSettings
+            }
+            images[index].developSettingsLoaded = true
+        }
+    }
+
     /// Apply parsed batch metadata results to the local ImageFile array.
     /// Shared by full-folder reload and incremental (pending URL) reload paths.
     func applyBatchMetadataResults(
@@ -1436,6 +2066,8 @@ final class BrowserViewModel {
         to updated: inout [ImageFile],
         localIndex: [URL: Int],
         cachedSidecars: [URL: MetadataSidecar] = [:],
+        sidecarsAreAuthoritative: Bool = false,
+        staleSidecarURLs: Set<URL> = [],
         xmpMetadataMap: [URL: IPTCMetadata] = [:],
         nativeHDRByURL: [URL: Bool],
         tagRevisionsAtRead: [URL: UUID]? = nil
@@ -1446,7 +2078,9 @@ final class BrowserViewModel {
 
             // Bounds-check: localIndex can become stale when images are modified during
             // an async metadata await (e.g. user switches folder while batch is in-flight).
-            if let index = localIndex[sourceURL], index < updated.count {
+            // The URL check also rejects an index left behind by a move/duplicate that
+            // landed while the cascade (and so the index rebuild) was suppressed.
+            if let index = localIndex[sourceURL], index < updated.count, updated[index].url == sourceURL {
                 let changedDuringRead = tagRevisionsAtRead.map { $0[sourceURL] != tagReadRevisions[sourceURL] } ?? false
                 let pendingRating = changedDuringRead || fieldMutationRequestIDs[sourceURL]?["rating"] != nil ? updated[index].starRating : nil
                 let pendingLabel = changedDuringRead || fieldMutationRequestIDs[sourceURL]?["label"] != nil ? updated[index].colorLabel : nil
@@ -1461,22 +2095,20 @@ final class BrowserViewModel {
                 updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
                 let previousOrientation = updated[index].exifOrientation
+                noteAuthoritativeOrientation(for: sourceURL)
                 updated[index].exifOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? 1
                 updated[index].isNativeHDR = nativeHDRByURL[sourceURL] == true
-                    || (UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
+                    || (AppDefaults.store.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
                 updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
-                // Preserve in-memory localAdjustments — these are set by the edit
-                // workspace and written to the image directly, not parsed from
-                // batch XMP output.
-                let existingLocalAdjustments = updated[index].cameraRawSettings?.localAdjustments
-                var newSettings = cameraRawSettings(in: dict)
-                if (existingLocalAdjustments?.isEmpty == false) && newSettings == nil {
-                    newSettings = CameraRawSettings()
-                }
-                if let masks = existingLocalAdjustments, !masks.isEmpty {
-                    newSettings?.localAdjustments = masks
-                }
-                updated[index].cameraRawSettings = newSettings
+                // The file's embedded develop block, parsed with the shared full parser so
+                // masks (incl. Anonymizer redactions), the global Anonymizer, watermark layers,
+                // film emulation and layer order survive a reload. Under Professional (and
+                // always for a RAW+JPEG pair's JPEG) this is where a JPEG's develop lives;
+                // every thumbnail, preview and export fallback reads this copy.
+                let parsedFromFile = iptcMetadataFromDict(dict)
+                let embeddedSettings = parsedFromFile.cameraRaw
+                updated[index].cameraRawSettings = embeddedSettings
+                updated[index].developSettingsLoaded = true
 
                 // XMP I/O and XML parsing completed off-main before this model merge.
                 let xmpMeta = xmpMetadataMap[sourceURL]
@@ -1488,12 +2120,9 @@ final class BrowserViewModel {
                 // through nil sidecar fields (e.g. Adobe omitting Temperature).
                 if SupportedImageFormats.isRaw(url: sourceURL) {
                     if let xmpCRS = xmpMeta?.cameraRaw, !xmpCRS.isEmpty {
-                        var finalCRS = xmpCRS
-                        // Preserve in-memory localAdjustments (written to image, not sidecar)
-                        if (xmpCRS.localAdjustments?.isEmpty ?? true),
-                           let masks = updated[index].cameraRawSettings?.localAdjustments, !masks.isEmpty {
-                            finalCRS.localAdjustments = masks
-                        }
+                        // The sidecar is parsed with the full parser (masks included), so it
+                        // replaces the in-memory copy wholesale.
+                        let finalCRS = xmpCRS
                         updated[index].cameraRawSettings = finalCRS
                         applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
                     } else {
@@ -1512,11 +2141,12 @@ final class BrowserViewModel {
                     // embedded crs (empty for sidecar-only edits). Unlike RAW we DON'T clear
                     // on an absent/empty sidecar: a non-RAW file can legitimately carry
                     // embedded crs (e.g. an ACR-edited JPEG), already loaded from the dict above.
-                    var finalCRS = xmpCRS
-                    if (xmpCRS.localAdjustments?.isEmpty ?? true),
-                       let masks = updated[index].cameraRawSettings?.localAdjustments, !masks.isEmpty {
-                        finalCRS.localAdjustments = masks
-                    }
+                    // Same reconciliation as the inspector, Develop paste and export: embedded
+                    // masks show through a sidecar block that has none. (A RAW+JPEG pair's JPEG
+                    // never gets here — `applyingDevelopOwnership` dropped the RAW's crs.)
+                    let finalCRS = EffectiveMetadataResolver.reconciledDevelopSettings(
+                        sidecar: xmpCRS, embedded: embeddedSettings
+                    )
                     updated[index].cameraRawSettings = finalCRS
                     applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
                 }
@@ -1561,7 +2191,7 @@ final class BrowserViewModel {
                 // metadata"). Mirror the inspector's merge (`loadMetadataSnapshot`): a
                 // descriptive sidecar IS the record (clears stick), a develop-only sidecar
                 // overlays additively.
-                var descriptive = iptcMetadataFromDict(dict)
+                var descriptive = parsedFromFile
                 if let xmpMeta {
                     descriptive = xmpMeta.hasDescriptiveContent
                         ? descriptive.replacingDescriptiveFields(from: xmpMeta)
@@ -1569,7 +2199,14 @@ final class BrowserViewModel {
                 }
                 updated[index].metadata = descriptive
 
-                applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
+                applyPendingSidecarOverrides(
+                    to: &updated,
+                    for: sourceURL,
+                    index: index,
+                    // A carrier written after the batch's listing is re-read from disk now.
+                    cachedSidecar: staleSidecarURLs.contains(sourceURL) ? nil : cachedSidecars[sourceURL],
+                    cacheIsAuthoritative: sidecarsAreAuthoritative && !staleSidecarURLs.contains(sourceURL)
+                )
                 // Background reads can finish while a field write is suspended. Keep the
                 // accepted optimistic value until its own verified completion or rollback.
                 if let pendingRating { updated[index].starRating = pendingRating }
@@ -1706,81 +2343,6 @@ final class BrowserViewModel {
     // metadata value of inf/nan/overflow — the shared version routes through `safeInt`.
     // Don't reintroduce private copies; reuse the shared, hardened helpers.
 
-    private func parseToneCurve(_ value: Any?) -> [ToneCurvePoint]? {
-        guard let array = value as? [String], array.count >= 2 else { return nil }
-        let points = array.compactMap { str -> ToneCurvePoint? in
-            let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            guard parts.count == 2,
-                  let x = Double(parts[0]),
-                  let y = Double(parts[1]) else { return nil }
-            return ToneCurvePoint(acr255: x, y)
-        }
-        return points.isIdentityToneCurve ? nil : points
-    }
-
-    private func cameraRawSettings(in dict: [String: Any]) -> CameraRawSettings? {
-        // crs values are Adobe's un-rotated-frame corner encoding; decode to the
-        // app's upright-rect convention (identity at angle 0).
-        let crop = CameraRawCrop(
-            top: parseDoubleValue(dict[MetadataDictKey.crsCropTop]),
-            left: parseDoubleValue(dict[MetadataDictKey.crsCropLeft]),
-            bottom: parseDoubleValue(dict[MetadataDictKey.crsCropBottom]),
-            right: parseDoubleValue(dict[MetadataDictKey.crsCropRight]),
-            angle: parseDoubleValue(dict[MetadataDictKey.crsCropAngle]),
-            hasCrop: parseBoolValue(dict[MetadataDictKey.crsHasCrop])
-        ).decodedFromACR(aspect: metadataDictPixelAspect(dict))
-        let cropValue = crop.isEmpty ? nil : crop
-
-        let tcMaster = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012])
-        let tcRed = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012Red])
-        let tcGreen = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012Green])
-        let tcBlue = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012Blue])
-        let toneCurve: ToneCurve? = {
-            let tc = ToneCurve(master: tcMaster, red: tcRed, green: tcGreen, blue: tcBlue)
-            return tc.isEmpty ? nil : tc
-        }()
-
-        let settings = CameraRawSettings(
-            version: dict[MetadataDictKey.crsVersion] as? String,
-            processVersion: dict[MetadataDictKey.crsProcessVersion] as? String,
-            whiteBalance: dict[MetadataDictKey.crsWhiteBalance] as? String,
-            temperature: parseIntValue(dict[MetadataDictKey.crsTemperature]),
-            tint: parseIntValue(dict[MetadataDictKey.crsTint]),
-            incrementalTemperature: parseIntValue(dict[MetadataDictKey.crsIncrementalTemperature]),
-            incrementalTint: parseIntValue(dict[MetadataDictKey.crsIncrementalTint]),
-            exposure2012: parseDoubleValue(dict[MetadataDictKey.crsExposure2012]),
-            contrast2012: parseIntValue(dict[MetadataDictKey.crsContrast2012]),
-            highlights2012: parseIntValue(dict[MetadataDictKey.crsHighlights2012]),
-            shadows2012: parseIntValue(dict[MetadataDictKey.crsShadows2012]),
-            whites2012: parseIntValue(dict[MetadataDictKey.crsWhites2012]),
-            blacks2012: parseIntValue(dict[MetadataDictKey.crsBlacks2012]),
-            saturation: parseIntValue(dict[MetadataDictKey.crsSaturation]),
-            vibrance: parseIntValue(dict[MetadataDictKey.crsVibrance]),
-            globalDensity: parseIntValue(dict[MetadataDictKey.globalDensity]),
-            sharpness: parseIntValue(dict[MetadataDictKey.crsSharpness]),
-            clarity2012: parseIntValue(dict[MetadataDictKey.crsClarity2012]),
-            dehaze: parseIntValue(dict[MetadataDictKey.crsDehaze]),
-            hasSettings: parseBoolValue(dict[MetadataDictKey.crsHasSettings]),
-            crop: cropValue,
-            hdrEditMode: parseIntValue(dict[MetadataDictKey.crsHDREditMode]),
-            hdrMaxValue: dict[MetadataDictKey.crsHDRMaxValue] as? String,
-            sdrBrightness: parseIntValue(dict[MetadataDictKey.crsSDRBrightness]),
-            sdrContrast: parseIntValue(dict[MetadataDictKey.crsSDRContrast]),
-            sdrClarity: parseIntValue(dict[MetadataDictKey.crsSDRClarity]),
-            sdrHighlights: parseIntValue(dict[MetadataDictKey.crsSDRHighlights]),
-            sdrShadows: parseIntValue(dict[MetadataDictKey.crsSDRShadows]),
-            sdrWhites: parseIntValue(dict[MetadataDictKey.crsSDRWhites]),
-            sdrBlend: parseIntValue(dict[MetadataDictKey.crsSDRBlend]),
-            toneCurve: toneCurve,
-            hslAdjustments: decodeHSLAdjustments { parseIntValue(dict[$0]) }
-        )
-        // A crs block marked AlreadyApplied="True" is baked into the pixels (our own
-        // export, or an ACR-rendered-from-RAW JPEG) — treat it as unedited so the
-        // settings aren't applied a second time on top of the already-baked render.
-        if crsIsAlreadyApplied(in: dict) { return nil }
-        return settings.isEmpty ? nil : settings
-    }
-
     // MARK: - Arrow Key Navigation
 
     @discardableResult
@@ -1832,9 +2394,7 @@ final class BrowserViewModel {
         let nextIndex = min(currentIndex + 1, visibleImages.count - 1)
         let nextURL = visibleImages[nextIndex].url
         if extending {
-            var updated = selectedImageIDs
-            updated.insert(nextURL)
-            return (ids: updated, active: nextURL)
+            return (ids: extendedSelection(to: nextIndex, from: currentIndex), active: nextURL)
         } else {
             return (ids: [nextURL], active: nextURL)
         }
@@ -1853,9 +2413,7 @@ final class BrowserViewModel {
         let prevIndex = max(currentIndex - 1, 0)
         let prevURL = visibleImages[prevIndex].url
         if extending {
-            var updated = selectedImageIDs
-            updated.insert(prevURL)
-            return (ids: updated, active: prevURL)
+            return (ids: extendedSelection(to: prevIndex, from: currentIndex), active: prevURL)
         } else {
             return (ids: [prevURL], active: prevURL)
         }
@@ -1873,13 +2431,7 @@ final class BrowserViewModel {
         let targetIndex = min(currentIndex + columns, visibleImages.count - 1)
         let targetURL = visibleImages[targetIndex].url
         if extending {
-            var updated = selectedImageIDs
-            if targetIndex > currentIndex {
-                for i in (currentIndex + 1)...targetIndex {
-                    updated.insert(visibleImages[i].url)
-                }
-            }
-            return (ids: updated, active: targetURL)
+            return (ids: extendedSelection(to: targetIndex, from: currentIndex), active: targetURL)
         } else {
             return (ids: [targetURL], active: targetURL)
         }
@@ -1897,13 +2449,7 @@ final class BrowserViewModel {
         let targetIndex = max(currentIndex - columns, 0)
         let targetURL = visibleImages[targetIndex].url
         if extending {
-            var updated = selectedImageIDs
-            if targetIndex < currentIndex {
-                for i in targetIndex..<currentIndex {
-                    updated.insert(visibleImages[i].url)
-                }
-            }
-            return (ids: updated, active: targetURL)
+            return (ids: extendedSelection(to: targetIndex, from: currentIndex), active: targetURL)
         } else {
             return (ids: [targetURL], active: targetURL)
         }
@@ -1916,8 +2462,29 @@ final class BrowserViewModel {
         return (ids: Set(visibleImages.map(\.url)), active: active)
     }
 
-    /// Apply a precomputed selection to @Observable state.
-    func applySelection(ids: Set<URL>, active: URL?) {
+    /// The fixed end a Shift extension grows from: the stored anchor while it is still a
+    /// visible part of the selection, else the active item (e.g. after a programmatic change).
+    var shiftSelectionAnchorURL: URL? {
+        if let selectionAnchorURL,
+           selectedImageIDs.contains(selectionAnchorURL),
+           urlToVisibleIndex[selectionAnchorURL] != nil {
+            return selectionAnchorURL
+        }
+        return lastClickedImageURL ?? selectedImageIDs.first
+    }
+
+    /// Shift-extension replaces the selection with the anchor…target range, so moving
+    /// back toward the anchor shrinks it (Finder/Photo Mechanic).
+    private func extendedSelection(to targetIndex: Int, from currentIndex: Int) -> Set<URL> {
+        let anchorIndex = shiftSelectionAnchorURL.flatMap { urlToVisibleIndex[$0] } ?? currentIndex
+        let range = min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)
+        return Set(visibleImages[range].lazy.map(\.url))
+    }
+
+    /// Apply a precomputed selection to @Observable state. Non-extending selections move the
+    /// Shift anchor to `active`; extending ones keep it fixed.
+    func applySelection(ids: Set<URL>, active: URL?, extending: Bool = false) {
+        selectionAnchorURL = extending ? shiftSelectionAnchorURL : active
         selectedImageIDs = ids
         lastClickedImageURL = active
     }
@@ -1926,24 +2493,24 @@ final class BrowserViewModel {
 
     func selectNext(extending: Bool = false) {
         guard let sel = computeNextSelection(extending: extending) else { return }
-        applySelection(ids: sel.ids, active: sel.active)
+        applySelection(ids: sel.ids, active: sel.active, extending: extending)
     }
 
     func selectPrevious(extending: Bool = false) {
         guard let sel = computePreviousSelection(extending: extending) else { return }
-        applySelection(ids: sel.ids, active: sel.active)
+        applySelection(ids: sel.ids, active: sel.active, extending: extending)
     }
 
     /// Navigate down one row in a grid layout
     func selectDown(columns: Int, extending: Bool = false) {
         guard let sel = computeDownSelection(columns: columns, extending: extending) else { return }
-        applySelection(ids: sel.ids, active: sel.active)
+        applySelection(ids: sel.ids, active: sel.active, extending: extending)
     }
 
     /// Navigate up one row in a grid layout
     func selectUp(columns: Int, extending: Bool = false) {
         guard let sel = computeUpSelection(columns: columns, extending: extending) else { return }
-        applySelection(ids: sel.ids, active: sel.active)
+        applySelection(ids: sel.ids, active: sel.active, extending: extending)
     }
 
     /// Select all images in the current folder
@@ -1952,18 +2519,80 @@ final class BrowserViewModel {
         applySelection(ids: sel.ids, active: sel.active)
     }
 
+    enum FullScreenStepOutcome: Equatable {
+        case moved
+        case atFirst
+        case atLast
+    }
+
+    /// Full-screen navigation. Opened on a multi-selection, it steps through the selected
+    /// photos only (in grid order) and keeps the set for when the viewer closes, like Photo
+    /// Mechanic; full-screen ratings already touch only the shown photo. A single selection
+    /// steps through every visible photo. Stops at either end instead of wrapping.
+    @discardableResult
+    func stepFullScreen(by step: Int) -> FullScreenStepOutcome {
+        if navigateFullScreenFaceSequence(step: step) { return .moved }
+        let boundary: FullScreenStepOutcome = step < 0 ? .atFirst : .atLast
+        let current = lastClickedImageURL ?? selectedImageIDs.first
+        if selectedImageIDs.count > 1 {
+            let selected = selectedImageIDs
+            let ordered: [URL] = visibleImages.compactMap { selected.contains($0.url) ? $0.url : nil }
+            guard let current, let index = ordered.firstIndex(of: current) else {
+                guard let first = ordered.first else { return boundary }
+                lastClickedImageURL = first
+                return .moved
+            }
+            let target = index + step
+            guard ordered.indices.contains(target) else { return boundary }
+            lastClickedImageURL = ordered[target]
+            return .moved
+        }
+        guard let current, let index = urlToVisibleIndex[current] else {
+            guard let first = visibleImages.first?.url else { return boundary }
+            applySelection(ids: [first], active: first)
+            return .moved
+        }
+        let target = index + step
+        guard visibleImages.indices.contains(target) else { return boundary }
+        let url = visibleImages[target].url
+        applySelection(ids: [url], active: url)
+        return .moved
+    }
+
     // MARK: - Rating & Labels
 
-    func setRating(_ rating: StarRating) {
+    func setRating(_ rating: StarRating, imagesToMutate: [ImageFile]? = nil) {
         applyBrowserFieldMutation(mutationForImage: { _ in .rating(rating == .none ? nil : rating.rawValue) }, field: "rating",
+            imagesToMutate: imagesToMutate,
             updateImage: { $0.starRating = rating },
             affectsSortKey: sortOrder == .rating, affectsFilterKey: minimumStarRating != .none)
     }
 
-    func setLabel(_ label: ColorLabel) {
+    func setLabel(_ label: ColorLabel, imagesToMutate: [ImageFile]? = nil) {
         applyBrowserFieldMutation(mutationForImage: { _ in .label(label.xmpLabelValue) }, field: "label",
+            imagesToMutate: imagesToMutate,
             updateImage: { $0.colorLabel = label },
             affectsSortKey: sortOrder == .label, affectsFilterKey: !selectedColorLabels.isEmpty)
+    }
+
+    /// Full screen shows one photo, so (like Photo Mechanic) rating it touches only that
+    /// photo even when a multi-selection is kept behind the viewer.
+    func setRatingOnFullScreenImage(_ rating: StarRating) {
+        guard let image = fullScreenImage else { return }
+        setRating(rating, imagesToMutate: [image])
+    }
+
+    func setLabelOnFullScreenImage(_ label: ColorLabel) {
+        guard let image = fullScreenImage else { return }
+        setLabel(label, imagesToMutate: [image])
+    }
+
+    /// Before a selection command without its own full-screen handling (templates, Paste
+    /// IPTC, export, rename…), narrow a kept multi-selection to the photo on screen: users
+    /// expect full-screen actions to affect what they see. No-op outside full screen.
+    func collapseSelectionToFullScreenImage() {
+        guard isFullScreen, selectedImageIDs.count > 1, let url = fullScreenImage?.url else { return }
+        applySelection(ids: [url], active: url)
     }
 
     /// Accepted field intents run in order; a later action never cancels an earlier one.
@@ -1981,7 +2610,8 @@ final class BrowserViewModel {
                 requestedMode: fieldMutationModeResolver(image.hasC2PA, SupportedImageFormats.isRaw(url: image.url)),
                 mutation: mutationForImage(image))
         }
-        updateMetadataFieldPresentation(updateImage: updateImage, affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
+        updateMetadataFieldPresentation(urls: capturedImages.map(\.url), updateImage: updateImage,
+            affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
         guard let folder else {
             errorMessage = "The current folder is unavailable; the \(field) could not be saved."
             return
@@ -1998,7 +2628,10 @@ final class BrowserViewModel {
         let writer = injectedFieldMutationWriter
         let engine = writeEngine
         let reader = metadataReadService
+        fieldMutationBatchesInFlight += 1
+        pendingFieldMutationWriteCount += requests.count
         fieldMutationTask = Task {
+            defer { fieldMutationBatchesInFlight -= 1 }
             await previous?.value
             let service = MetadataFieldMutationWriteService(writeEngine: engine, readEmbedded: { url in
                 guard let value = try await reader.readBatchFullMetadata(urls: [url])[url] else {
@@ -2011,6 +2644,7 @@ final class BrowserViewModel {
             for (request, original) in zip(requests, capturedImages) {
                 let result = if let writer { await writer(request) } else { await service.write(request) }
                 results.append(result)
+                pendingFieldMutationWriteCount -= 1
                 let ownsField = fieldMutationRequestIDs[request.imageURL]?[field] == request.id
                 let prior = fieldMutationFallbacks[request.imageURL]?[field]
                 var fallback = prior?.image ?? original
@@ -2039,6 +2673,7 @@ final class BrowserViewModel {
                 currentResults.append(contentsOf: unresolved)
                 if !unresolved.contains(where: { $0.requestID == result.requestID }) { currentResults.append(result) }
                 suppressImagesCascade = true
+                if field == "orientation" { noteAuthoritativeOrientation(for: request.imageURL) }
                 let oldOrientation = images[index].exifOrientation
                 let oldRating = images[index].starRating
                 let oldLabel = images[index].colorLabel
@@ -2120,7 +2755,7 @@ final class BrowserViewModel {
         }
         var selectedRenderChanged = false
         for url in urls {
-            guard let imageIndex = urlToImageIndex[url] else { continue }
+            guard let imageIndex = validImageIndex(for: url) else { continue }
             let image = images[imageIndex]
             if let index = urlToSortedIndex[url] { sortedImages[index] = image }
             if !isFilteringActive {
@@ -2156,7 +2791,14 @@ final class BrowserViewModel {
         }
     }
 
-    func waitForPendingFieldMutationWrites() async { await fieldMutationTask?.value }
+    /// Waits until every queued rating/label/rotation write has finished, including writes
+    /// queued while waiting (quit registers this per pane via `BrowserFieldMutationTermination`).
+    func waitForPendingFieldMutationWrites() async {
+        while let task = fieldMutationTask {
+            await task.value
+            if fieldMutationTask == task { return }
+        }
+    }
 
     func waitForFolderLoad() async { await loadFolderTask?.value }
 
@@ -2167,19 +2809,43 @@ final class BrowserViewModel {
         guard prepareMetadataReviewBeforeMutation({ self.moveRejectedToFolder() }) else { return }
         guard let folderURL = currentFolderURL else { return }
         let rejectedURLs = visibleImages.filter { $0.colorLabel == .trash }.map(\.url)
-        guard !rejectedURLs.isEmpty else { return }
+        guard !rejectedURLs.isEmpty else {
+            fileOperationNotice = FileOperationNotice(message: "No visible photos are labeled Rejected.")
+            return
+        }
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             let result = await fileSystemService.moveRejectedItems(rejectedURLs, in: folderURL)
+            let folderName = RejectMoveService.rejectedFolderName
+
+            // Report the outcome even if the user has since opened another folder.
+            if !result.failedFiles.isEmpty {
+                let shown = result.failedFiles.prefix(20).map { "\($0.0.lastPathComponent): \($0.1)" }
+                let remainder = result.failedFiles.count - shown.count
+                errorMessage = (["Failed to move \(result.failedFiles.count) rejected file(s) to \(folderName)/."]
+                    + shown + (remainder > 0 ? ["…and \(remainder) more."] : []))
+                    .joined(separator: "\n")
+            }
+            if !result.movedFiles.isEmpty {
+                // Like rename and Move to Folder: the moved photos' faces leave this folder's
+                // face data (a later rename into a freed name must not inherit them), and the
+                // import ledger follows them into .Rejected so the card is not re-imported.
+                let movedSources = await Self.finishRejectedMove(sources: rejectedURLs, movedFiles: result.movedFiles)
+                if !movedSources.isEmpty { onImagesDeleted?(movedSources) }
+                let count = result.movedFiles.count
+                fileOperationNotice = FileOperationNotice(
+                    message: "Moved \(count) rejected photo\(count == 1 ? "" : "s") to \(folderName)",
+                    revealURL: result.rejectedFolder
+                )
+            }
 
             // The user can navigate while a slow volume is moving bundles. Never let completion
             // from the old folder navigate the browser back or overwrite the new folder's state.
             guard currentFolderURL == folderURL else { return }
-
-            if !result.failedFiles.isEmpty {
-                errorMessage = "Failed to move \(result.failedFiles.count) rejected file(s) to \(RejectMoveService.rejectedFolderName)/."
-            }
 
             // A pre-cancelled operation made no filesystem change and needs no reload. Any moved
             // or failed bundle preserves the previous behavior of reconciling from disk.
@@ -2188,13 +2854,39 @@ final class BrowserViewModel {
         }
     }
 
-    func rotateClockwise() { rotateSelection(clockwise: true) }
+    /// Off-main follow-up of Move Rejected. The sources no longer present are the moved ones
+    /// (each bundle commits or rolls back whole). The move reports destinations in source order,
+    /// so when the counts agree and every destination keeps its source's stem (a uniquified
+    /// name only adds a suffix) they are paired and the import ledger follows them.
+    @concurrent
+    nonisolated static func finishRejectedMove(sources: [URL], movedFiles: [URL]) async -> Set<URL> {
+        let gone = sources.filter { !FileManager.default.fileExists(atPath: $0.path) }
+        let pairs = zip(gone, movedFiles).map { (from: $0, to: $1) }
+        if gone.count == movedFiles.count, pairs.allSatisfy({
+            $0.to.deletingPathExtension().lastPathComponent
+                .hasPrefix($0.from.deletingPathExtension().lastPathComponent)
+        }) {
+            ImportLedger.recordRelocations(pairs)
+        }
+        return Set(gone)
+    }
 
-    func rotateCounterclockwise() { rotateSelection(clockwise: false) }
+    func rotateClockwise() { rotate(selectedImages, clockwise: true) }
 
-    private func rotateSelection(clockwise: Bool) {
-        let captured = selectedImages
+    func rotateCounterclockwise() { rotate(selectedImages, clockwise: false) }
+
+    /// Full screen shows one photo, so (like rating) rotating touches only that photo even
+    /// when a multi-selection is kept behind the viewer.
+    func rotateFullScreenImage(clockwise: Bool) {
+        guard let image = fullScreenImage else { return }
+        rotate([image], clockwise: clockwise)
+    }
+
+    private func rotate(_ captured: [ImageFile], clockwise: Bool) {
         guard !captured.isEmpty else { return }
+        // A user rotation decides these rows' orientation (and may create an .xmp the eager
+        // pass's scan-time facts don't know about).
+        for image in captured { noteAuthoritativeOrientation(for: image.url) }
         let targets = Dictionary(uniqueKeysWithValues: captured.map { image in
             (image.url, clockwise ? ImageFile.orientationAfterClockwiseRotation(image.exifOrientation)
                 : ImageFile.orientationAfterCounterclockwiseRotation(image.exifOrientation))
@@ -2209,7 +2901,8 @@ final class BrowserViewModel {
             self.applySidecarCropState(to: &image, cameraRaw: cameraRaw)
         }, affectsSortKey: false, affectsFilterKey: false)
         for image in captured {
-            thumbnailService.rotateThumbnailInCache(for: image.url, clockwise: clockwise)
+            thumbnailService.rotateThumbnailInCache(for: image.url, clockwise: clockwise,
+                editedHasDisplayFrameArtwork: image.cameraRawSettings?.watermarkLayers?.isEmpty == false)
             fullScreenImageCache.invalidateImage(for: image.url)
         }
     }
@@ -2241,7 +2934,8 @@ final class BrowserViewModel {
         let urls = selectedImages.map(\.url)
         let c2paByURL = Dictionary(uniqueKeysWithValues: selectedImages.map { ($0.url, $0.hasC2PA) })
 
-        updateMetadataFieldPresentation(updateImage: updateImage, affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
+        updateMetadataFieldPresentation(urls: Array(selectedImageIDs), updateImage: updateImage,
+            affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
 
         metadataWriteTask?.cancel()
         metadataWriteTask = Task {
@@ -2293,12 +2987,17 @@ final class BrowserViewModel {
         }
     }
 
-    private func updateMetadataFieldPresentation(updateImage: (inout ImageFile) -> Void,
+    private func updateMetadataFieldPresentation(urls targetURLs: [URL], updateImage: (inout ImageFile) -> Void,
         affectsSortKey: Bool, affectsFilterKey: Bool) {
+        // The user's own rating/label change: a photo it filters out hands the selection on.
+        requestRevealActive()
+        let previousNeighborMove = movesSelectionToNeighborOnRebuild
+        movesSelectionToNeighborOnRebuild = true
+        defer { movesSelectionToNeighborOnRebuild = previousNeighborMove }
         // Phase 1: In-place mutation — skip the didSet cascade since URLs don't change
         suppressImagesCascade = true
         defer { suppressImagesCascade = false }
-        for url in selectedImageIDs {
+        for url in targetURLs {
             guard let index = urlToImageIndex[url] else { continue }
             updateImage(&images[index])
         }
@@ -2307,7 +3006,7 @@ final class BrowserViewModel {
         if affectsSortKey {
             rebuildSortedCache()
         } else {
-            for url in selectedImageIDs {
+            for url in targetURLs {
                 guard let imageIdx = urlToImageIndex[url],
                       let sortedIdx = urlToSortedIndex[url] else { continue }
                 sortedImages[sortedIdx] = images[imageIdx]
@@ -2316,7 +3015,7 @@ final class BrowserViewModel {
             if affectsFilterKey || isFilteringActive {
                 let filterContext = makeImageFilterContext()
                 var needsFullRebuild = false
-                for url in selectedImageIDs {
+                for url in targetURLs {
                     guard let imageIdx = urlToImageIndex[url] else { continue }
                     let updatedImage = images[imageIdx]
                     let passes = imagePassesFilter(updatedImage, context: filterContext)
@@ -2338,7 +3037,7 @@ final class BrowserViewModel {
                     rebuildSelectedCache()
                 }
             } else {
-                for url in selectedImageIDs {
+                for url in targetURLs {
                     guard let imageIdx = urlToImageIndex[url],
                           let visibleIdx = urlToVisibleIndex[url] else { continue }
                     visibleImages[visibleIdx] = images[imageIdx]
@@ -2353,11 +3052,24 @@ final class BrowserViewModel {
         applyPendingSidecarOverrides(to: &images, for: url, index: index, cachedSidecar: cachedSidecar)
     }
 
-    private func applyPendingSidecarOverrides(to array: inout [ImageFile], for url: URL, index: Int, cachedSidecar: MetadataSidecar? = nil) {
+    /// `cacheIsAuthoritative` means `cachedSidecar` came from a read that covered this
+    /// photo, so nil means "no sidecar" and the synchronous per-file fallback is skipped.
+    /// Exception: a row that already shows pending state while the read reported no sidecar
+    /// disagrees with it (the draft may have landed after the read's listing), so that rare
+    /// row is re-read from disk rather than silently losing its draft.
+    private func applyPendingSidecarOverrides(
+        to array: inout [ImageFile],
+        for url: URL,
+        index: Int,
+        cachedSidecar: MetadataSidecar? = nil,
+        cacheIsAuthoritative: Bool = false
+    ) {
+        let rowShowsPendingState = array[index].hasPendingMetadataChanges || !array[index].pendingFieldNames.isEmpty
         let sidecar: MetadataSidecar
         if let cached = cachedSidecar {
             sidecar = cached
-        } else if let folderURL = currentFolderURL,
+        } else if !cacheIsAuthoritative || rowShowsPendingState,
+                  let folderURL = currentFolderURL,
                   let loaded = sidecarService.loadSidecar(for: url, in: folderURL) {
             sidecar = loaded
         } else {
@@ -2395,6 +3107,7 @@ final class BrowserViewModel {
         // Camera Raw is still sourced from physical metadata. Only the typed orientation
         // intent overrides the physical display baseline while the rotation remains pending.
         guard let draft = sidecar.orientationDraft, !hasActiveOrientationMutation(for: imageFile.url) else { return }
+        noteAuthoritativeOrientation(for: imageFile.url)
         let previous = imageFile.exifOrientation
         imageFile.exifOrientation = draft.targetOrientation
         imageFile.hasPendingMetadataChanges = true
@@ -2522,7 +3235,8 @@ final class BrowserViewModel {
     private func loadMetadataSnapshot(for url: URL) async -> IPTCMetadata? {
         do {
             var metadata = try await metadataReadService.readFullMetadata(url: url)
-            if let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
+            if let xmpMetadata = PhotoSidecarOwnership.applyingDevelopOwnership(
+                xmpSidecarService.loadSidecar(for: url), for: url) {
                 // Record semantics, matching the panel's reference read: a descriptive
                 // sidecar IS the record (clears stick — don't reseed cleared fields
                 // from embedded); develop-only sidecars overlay additively.
@@ -2879,6 +3593,8 @@ final class BrowserViewModel {
 
     var showTrashSubfolderConfirmation = false
     @ObservationIgnored var pendingTrashSubfolderURL: URL?
+    /// Folder trash/rename/create/move run one after another: a new mutation waits for the
+    /// running one instead of cancelling it (a multi-folder drop issues several moves at once).
     @ObservationIgnored private var folderMutationTask: Task<Void, Never>?
 
     func confirmTrashSubfolder(_ url: URL) {
@@ -2890,8 +3606,9 @@ final class BrowserViewModel {
         guard let subfolderURL = pendingTrashSubfolderURL else { return }
         pendingTrashSubfolderURL = nil
 
-        folderMutationTask?.cancel()
+        let previousMutation = folderMutationTask
         folderMutationTask = Task {
+            await previousMutation?.value
             do {
                 _ = try await fileSystemService.trashFolder(at: subfolderURL)
             } catch is CancellationError {
@@ -2914,17 +3631,37 @@ final class BrowserViewModel {
             // Recursively clean up all cached descendants
             removeSubfolderCacheRecursively(for: subfolderURL)
 
-            // If the trashed folder was the currently viewed folder, navigate away
-            if currentFolderURL == subfolderURL {
-                if let parent = openFolders.first {
-                    loadFolder(url: parent)
-                } else {
-                    currentFolderURL = nil
-                    currentFolderName = nil
-                    images = []
-                    selectedImageIDs.removeAll()
-                }
-            }
+            followRelocatedFolder(from: subfolderURL, to: nil)
+            onFolderRelocated?(subfolderURL, nil)
+        }
+    }
+
+    /// Fired after this pane renamed, moved (`newURL`) or trashed (`nil`) a folder, so the
+    /// owning scene can keep every other split-view pane on a real path.
+    @ObservationIgnored var onFolderRelocated: ((_ oldURL: URL, _ newURL: URL?) -> Void)?
+
+    /// Keeps this pane on a real path after a folder at or above its current folder was
+    /// renamed or moved (follow it to `newURL`) or trashed (`nil`: go to the trashed folder's
+    /// parent, or the first remaining open folder when a root itself was trashed).
+    func followRelocatedFolder(from oldURL: URL, to newURL: URL?) {
+        guard let current = currentFolderURL, isShowingFolder(atOrBelow: oldURL) else { return }
+        if let newURL {
+            let relativeSuffix = current.standardizedFileURL.path
+                .dropFirst(oldURL.standardizedFileURL.path.count)
+            loadFolder(url: relativeSuffix.isEmpty
+                ? newURL
+                : URL(fileURLWithPath: newURL.standardizedFileURL.path + relativeSuffix, isDirectory: true))
+            return
+        }
+        let roots = openFolders + favoriteFolders.map(\.url)
+        let trashedRoot = roots.contains { $0.standardizedFileURL == oldURL.standardizedFileURL }
+        if !trashedRoot {
+            loadFolder(url: oldURL.deletingLastPathComponent(), addToOpenFolders: false)
+        } else if let firstOpen = openFolders.first(where: { !isFolder($0, atOrBelow: oldURL) }) {
+            loadFolder(url: firstOpen)
+        } else {
+            // The full reset also cancels an in-flight scan and clears "Loading images…".
+            resetToNoFolder()
         }
     }
 
@@ -2952,8 +3689,9 @@ final class BrowserViewModel {
         guard trimmed != oldURL.lastPathComponent else { return }
 
         let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(trimmed, isDirectory: true)
-        folderMutationTask?.cancel()
+        let previousMutation = folderMutationTask
         folderMutationTask = Task { [pathContainmentService] in
+            await previousMutation?.value
             let containmentRequestID = UUID()
             let containment = await pathContainmentService.inspect(
                 SafePathContainmentRequest(
@@ -3019,10 +3757,13 @@ final class BrowserViewModel {
                 ensureSubfoldersLoaded(for: newURL)
             }
 
-            // If the renamed folder was the current folder, reload it
-            if currentFolderURL == oldURL {
-                loadFolder(url: newURL)
+            if let openIndex = openFolders.firstIndex(of: oldURL) {
+                openFolders[openIndex] = newURL
             }
+
+            // If the renamed folder is (or contains) the current folder, follow it to its new path.
+            followRelocatedFolder(from: oldURL, to: newURL)
+            onFolderRelocated?(oldURL, newURL)
         }
     }
 
@@ -3050,8 +3791,9 @@ final class BrowserViewModel {
         }
 
         let newFolderURL = parentURL.appendingPathComponent(trimmed, isDirectory: true)
-        folderMutationTask?.cancel()
+        let previousMutation = folderMutationTask
         folderMutationTask = Task {
+            await previousMutation?.value
             do {
                 _ = try await fileSystemService.createFolder(at: newFolderURL)
             } catch is CancellationError {
@@ -3077,6 +3819,15 @@ final class BrowserViewModel {
 
     // MARK: - Move Folder
 
+    /// Moves several dropped folders. The metadata-review gate runs once for the whole drop so a
+    /// deferred review cannot drop every folder after the first; the moves then run serially.
+    func moveFolders(_ sourceURLs: [URL], into destinationURL: URL) {
+        guard prepareMetadataReviewBeforeMutation({ self.moveFolders(sourceURLs, into: destinationURL) }) else { return }
+        for sourceURL in sourceURLs {
+            moveFolder(sourceURL, into: destinationURL)
+        }
+    }
+
     func moveFolder(_ sourceURL: URL, into destinationURL: URL) {
         guard prepareMetadataReviewBeforeMutation({ self.moveFolder(sourceURL, into: destinationURL) }) else { return }
         let sourcePath = sourceURL.path(percentEncoded: false)
@@ -3094,8 +3845,9 @@ final class BrowserViewModel {
 
         let newURL = destinationURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: true)
 
-        folderMutationTask?.cancel()
+        let previousMutation = folderMutationTask
         folderMutationTask = Task {
+            await previousMutation?.value
             do {
                 _ = try await fileSystemService.moveFolder(from: sourceURL, to: newURL)
             } catch is CancellationError {
@@ -3172,16 +3924,9 @@ final class BrowserViewModel {
             openFolders[openIndex] = newURL
         }
 
-        // Handle current folder
-        if currentFolderURL == sourceURL {
-            loadFolder(url: newURL)
-        } else if let current = currentFolderURL,
-                  current.path(percentEncoded: false).hasPrefix(sourcePath + "/") {
-            // Current folder was a descendant of the moved folder — its path is now invalid
-            let relativeSuffix = current.path(percentEncoded: false).dropFirst(sourcePath.count)
-            let newCurrentPath = newURL.path(percentEncoded: false) + relativeSuffix
-            loadFolder(url: URL(fileURLWithPath: String(newCurrentPath)))
-        }
+        // Current folder (or a descendant of it) moved — follow it to the new path.
+        followRelocatedFolder(from: sourceURL, to: newURL)
+        onFolderRelocated?(sourceURL, newURL)
     }
 
     // MARK: - Reorder Favorites
@@ -3201,20 +3946,13 @@ final class BrowserViewModel {
             removeSubfolderCacheRecursively(for: url)
         }
         openFolders.removeAll { $0 == url }
-        folderFilterStates.removeValue(forKey: url)
         // If we closed the current folder (or it was browsing a subfolder of it),
         // switch to another open folder or clear
-        let currentPath = (currentFolderURL ?? URL(fileURLWithPath: "/")).path(percentEncoded: false)
-        let closedPath = url.path(percentEncoded: false)
-        let currentIsDescendant = currentPath.hasPrefix(closedPath + "/")
-        if currentFolderURL == url || currentIsDescendant {
+        if isShowingFolder(atOrBelow: url) {
             if let nextFolder = openFolders.first {
                 loadFolder(url: nextFolder)
             } else {
-                currentFolderURL = nil
-                currentFolderName = nil
-                images = []
-                selectedImageIDs.removeAll()
+                resetToNoFolder()
                 // Only clear subfolder data for non-favorite entries
                 let favoriteURLs = Set(favoriteFolders.map(\.url))
                 for key in subfoldersByOpenFolder.keys {
@@ -3224,6 +3962,30 @@ final class BrowserViewModel {
                 }
             }
         }
+        // After the switch: loadFolder saves the outgoing folder's filters.
+        folderFilterStates.removeValue(forKey: url)
+    }
+
+    /// Split view: the shared sidebar (primary pane) closed `url`. Another pane still
+    /// showing that folder, or one of its subfolders, returns to the no-folder state.
+    func releaseClosedFolder(_ url: URL) {
+        openFolders.removeAll { $0 == url }
+        if isShowingFolder(atOrBelow: url) {
+            resetToNoFolder()
+        }
+        folderFilterStates.removeValue(forKey: url)
+    }
+
+    private func isShowingFolder(atOrBelow url: URL) -> Bool {
+        guard let currentFolderURL else { return false }
+        return isFolder(currentFolderURL, atOrBelow: url)
+    }
+
+    private func isFolder(_ candidate: URL, atOrBelow url: URL) -> Bool {
+        let ancestorPath = url.standardizedFileURL.path
+        let candidatePath = candidate.standardizedFileURL.path
+        return candidatePath == ancestorPath
+            || candidatePath.hasPrefix(ancestorPath.hasSuffix("/") ? ancestorPath : ancestorPath + "/")
     }
 
     private func isSubfolderOfOpenFolder(_ url: URL) -> Bool {
@@ -3282,69 +4044,169 @@ final class BrowserViewModel {
         return names
     }
 
+    /// Re-reads every JSON sidecar in the folder. Use only when the changed photos are
+    /// genuinely unknown; prefer `refreshPendingStatusBatch(for:)`. Requests that arrive
+    /// while a refresh is in flight coalesce into a single follow-up pass instead of
+    /// stacking one whole-folder read per save.
     func refreshPendingStatus() {
         guard let folderURL = currentFolderURL else { return }
-        Task {
-            let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
-            guard self.currentFolderURL == folderURL else { return }
-            var updated = self.images
-            for i in updated.indices {
-                if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
-                    updated[i].hasPendingMetadataChanges = true
-                    updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
-                    applyPendingSidecarOverrides(to: &updated, for: updated[i].url, index: i, cachedSidecar: sidecar)
-                } else {
-                    updated[i].hasPendingMetadataChanges = false
-                    updated[i].pendingFieldNames = []
-                }
+        preparePendingStatusQueue(for: folderURL)
+        pendingStatusNeedsFullRefresh = true
+        startPendingStatusRefreshIfNeeded()
+    }
+
+    /// Re-reads only the given photos' JSON sidecars. Calls that arrive while a refresh is in
+    /// flight are accumulated (never dropped) and served by the next pass.
+    func refreshPendingStatusBatch(for urls: [URL]) {
+        guard let folderURL = currentFolderURL, !urls.isEmpty else { return }
+        preparePendingStatusQueue(for: folderURL)
+        pendingStatusQueuedURLs.formUnion(urls)
+        startPendingStatusRefreshIfNeeded()
+    }
+
+    /// Number of whole-folder pending-status reads actually performed (test observability).
+    @ObservationIgnored private(set) var pendingStatusFullRefreshCount = 0
+    var isPendingStatusRefreshInFlight: Bool { pendingStatusRefreshTask != nil }
+    @ObservationIgnored private var pendingStatusQueueFolderURL: URL?
+    @ObservationIgnored private var pendingStatusNeedsFullRefresh = false
+    @ObservationIgnored private var pendingStatusQueuedURLs: Set<URL> = []
+
+    /// Maps caller-supplied URLs onto the rows' own URL spelling. Callers outside the
+    /// browser (face writes, notifications) may build `/var` vs `/private/var` or other
+    /// non-identical forms; an exact index hit is O(1), and the path scan runs only on a miss.
+    private func rowURLs(matching urls: Set<URL>) -> [URL] {
+        var resolved: [URL] = []
+        resolved.reserveCapacity(urls.count)
+        var byPath: [String: URL]?
+        for url in urls {
+            if validImageIndex(for: url) != nil {
+                resolved.append(url)
+                continue
             }
-            self.images = updated
+            if byPath == nil {
+                var map: [String: URL] = [:]
+                map.reserveCapacity(images.count)
+                for image in images { map[image.url.standardizedFileURL.path] = image.url }
+                byPath = map
+            }
+            resolved.append(byPath?[url.standardizedFileURL.path] ?? url)
+        }
+        return resolved
+    }
+
+    private func preparePendingStatusQueue(for folderURL: URL) {
+        guard pendingStatusQueueFolderURL != folderURL else { return }
+        // Requests queued for a folder that is no longer current are moot.
+        pendingStatusQueueFolderURL = folderURL
+        pendingStatusNeedsFullRefresh = false
+        pendingStatusQueuedURLs.removeAll()
+    }
+
+    private func startPendingStatusRefreshIfNeeded() {
+        guard pendingStatusRefreshTask == nil else { return }
+        pendingStatusRefreshTask = Task { @MainActor [weak self] in
+            await self?.drainPendingStatusRefreshes()
         }
     }
 
-    func refreshPendingStatusBatch(for urls: [URL]) {
-        guard let folderURL = currentFolderURL, !urls.isEmpty else { return }
-        pendingStatusRefreshTask?.cancel()
-        pendingStatusRefreshTask = Task { @MainActor [weak self] in
-            guard let service = self?.sidecarService else { return }
-            let sidecars = await service.loadSidecars(for: urls, in: folderURL)
-            guard let self, !Task.isCancelled, self.currentFolderURL == folderURL else { return }
-            let urlSet = Set(urls)
-            var updated = self.images
-            for i in updated.indices where urlSet.contains(updated[i].url) {
-                if let sidecar = sidecars[updated[i].url], sidecar.pendingChanges {
-                    updated[i].hasPendingMetadataChanges = true
-                    updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
-                    applyPendingSidecarOverrides(to: &updated, for: updated[i].url, index: i, cachedSidecar: sidecar)
-                } else {
-                    updated[i].hasPendingMetadataChanges = false
-                    updated[i].pendingFieldNames = []
-                }
+    private func drainPendingStatusRefreshes() async {
+        defer { pendingStatusRefreshTask = nil }
+        while !Task.isCancelled,
+              let folderURL = pendingStatusQueueFolderURL,
+              currentFolderURL == folderURL,
+              pendingStatusNeedsFullRefresh || !pendingStatusQueuedURLs.isEmpty {
+            if pendingStatusNeedsFullRefresh {
+                // A full pass covers every queued photo too.
+                pendingStatusNeedsFullRefresh = false
+                pendingStatusQueuedURLs.removeAll()
+                pendingStatusFullRefreshCount += 1
+                let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
+                guard !Task.isCancelled, currentFolderURL == folderURL else { continue }
+                applyPendingSidecarStatus(allSidecars, at: images.enumerated().map { ($1.url, $0) })
+            } else {
+                let urls = rowURLs(matching: pendingStatusQueuedURLs)
+                pendingStatusQueuedURLs.removeAll()
+                let sidecars = await sidecarService.loadSidecars(for: urls, in: folderURL)
+                guard !Task.isCancelled, currentFolderURL == folderURL else { continue }
+                let targets = urls.compactMap { url in urlToImageIndex[url].map { (url, $0) } }
+                applyPendingSidecarStatus(sidecars, at: targets)
             }
-            self.images = updated
         }
+    }
+
+    /// Pending-status refreshes change badges/overrides on existing rows, never the URL
+    /// inventory. Mutate in place and publish only the rows that changed, instead of
+    /// replacing `images` (which re-indexes, re-sorts, re-filters and re-diffs the grid).
+    private func applyPendingSidecarStatus(_ sidecars: [URL: MetadataSidecar], at targets: [(url: URL, index: Int)]) {
+        // A metadata load can hold the cascade suppressed across awaits; restore its state.
+        let wasSuppressed = suppressImagesCascade
+        suppressImagesCascade = true
+        var changedURLs: [URL] = []
+        var sortKeyChanged = false
+        for (url, i) in targets {
+            // `urlToImageIndex` is not rebuilt while the cascade is suppressed (for example
+            // during a metadata load), so a row may have moved: never update another photo.
+            guard images.indices.contains(i), images[i].url == url else { continue }
+            let before = images[i]
+            if let sidecar = sidecars[url], sidecar.pendingChanges {
+                images[i].hasPendingMetadataChanges = true
+                images[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
+                applyPendingSidecarOverrides(for: url, index: i, cachedSidecar: sidecar)
+            } else {
+                images[i].hasPendingMetadataChanges = false
+                images[i].pendingFieldNames = []
+            }
+            guard images[i] != before else { continue }
+            changedURLs.append(url)
+            sortKeyChanged = sortKeyChanged
+                || (sortOrder == .rating && images[i].starRating != before.starRating)
+                || (sortOrder == .label && images[i].colorLabel != before.colorLabel)
+        }
+        suppressImagesCascade = wasSuppressed
+        guard !wasSuppressed, !changedURLs.isEmpty else { return }
+        publishMetadataBatch(for: changedURLs, sortKeyChanged: sortKeyChanged)
     }
 
     nonisolated static func metadataReviewKey(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
+    /// Cached `metadataReviewKey`; the cache is dropped with the folder's other per-file state.
+    func cachedMetadataReviewKey(_ url: URL) -> String {
+        if let key = metadataReviewKeyCache[url] { return key }
+        let key = Self.metadataReviewKey(url)
+        if metadataReviewKeyCache.count > 20_000 { metadataReviewKeyCache.removeAll(keepingCapacity: true) }
+        metadataReviewKeyCache[url] = key
+        return key
+    }
+
     func metadataReviewEditor(for url: URL) -> MetadataReviewEditorState? {
-        metadataReviewEditors[Self.metadataReviewKey(url)]
+        metadataReviewEditors[cachedMetadataReviewKey(url)]
+    }
+
+    func metadataReviewEditor(forKey key: String) -> MetadataReviewEditorState? {
+        metadataReviewEditors[key]
     }
 
     var metadataReviewSourceGeneration: UUID { fieldMutationDisplayID }
 
-    func prepareMetadataReviewEditor(for url: URL) async {
-        let key = Self.metadataReviewKey(url)
+    /// `reloadClean: false` (lazy Review rows reappearing) keeps a clean editor loaded under the
+    /// current source generation; explicit callers and metadata changes reload it from disk.
+    func prepareMetadataReviewEditor(for url: URL, reloadClean: Bool = true) async {
+        let key = cachedMetadataReviewKey(url)
         if let editor = metadataReviewEditors[key] {
             guard editor.latestRequestID == nil, editor.draft == editor.previous,
                   editor.textBuffers.isEmpty else { return }
+            // Reuse only while the browser's record still matches the loaded baseline: Caption,
+            // templates, face Apply and external writes all change it without a new generation.
+            if !reloadClean, editor.sourceGeneration == metadataReviewSourceGeneration,
+               let index = metadataReviewImageIndex(for: url), images[index].metadata == editor.previous { return }
             metadataReviewEditors[key] = nil
         }
         guard !metadataReviewLoading.contains(key),
               let folder = currentFolderURL else { return }
         let id = UUID()
+        let generation = metadataReviewSourceGeneration
         metadataReviewLoadIDs[key] = id
         metadataReviewLoading.insert(key)
         defer { if metadataReviewLoadIDs[key] == id { metadataReviewLoading.remove(key) } }
@@ -3381,7 +4243,7 @@ final class BrowserViewModel {
             guard metadataReviewLoadIDs[key] == id, !Task.isCancelled else { return }
             metadataReviewEditors[key] = MetadataReviewEditorState(id: id, imageURL: url, folderURL: folder,
                 previous: baseline.metadata, draft: baseline.metadata, sidecar: baseline.sidecar,
-                creationEvidence: baseline.creationEvidence)
+                creationEvidence: baseline.creationEvidence, sourceGeneration: generation)
         } catch {
             if metadataReviewLoadIDs[key] == id { metadataReviewLoadErrors[key] = error.localizedDescription }
         }
@@ -3396,7 +4258,11 @@ final class BrowserViewModel {
 
     func metadataReviewText(for field: MetadataFieldID, imageURL: URL) -> String {
         guard let editor = metadataReviewEditor(for: imageURL) else { return "" }
-        return editor.textBuffers[field] ?? field.textValue(in: editor.draft) ?? ""
+        return Self.metadataReviewText(for: field, in: editor)
+    }
+
+    static func metadataReviewText(for field: MetadataFieldID, in editor: MetadataReviewEditorState) -> String {
+        editor.textBuffers[field] ?? field.reviewTextValue(in: editor.draft) ?? ""
     }
 
     func updateMetadataReviewText(_ text: String, field: MetadataFieldID, for url: URL, editorID: UUID? = nil) {
@@ -3404,7 +4270,7 @@ final class BrowserViewModel {
         guard var editor = metadataReviewEditors[key], !isMetadataReviewFrozen(for: url),
               editorID == nil || editor.id == editorID else { return }
         editor.textBuffers[field] = text
-        field.setTextValue(text, in: &editor.draft)
+        field.setReviewTextValue(text, in: &editor.draft)
         metadataReviewEditors[key] = editor
     }
 
@@ -3416,7 +4282,7 @@ final class BrowserViewModel {
         guard var editor = metadataReviewEditor(for: url), !isMetadataReviewFrozen(for: url),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         var metadata = editor.draft
-        for (field, value) in editor.textBuffers { field.setTextValue(value, in: &metadata) }
+        for (field, value) in editor.textBuffers { field.setReviewTextValue(value, in: &metadata) }
         guard proposal.request.canApply(imageURL: url, editorLoadID: editor.id,
             description: metadataReviewText(for: .description, imageURL: url),
             metadata: DescriptionAssistantMetadata(metadata)) else { return false }
@@ -3438,7 +4304,7 @@ final class BrowserViewModel {
 
     func isMetadataReviewFrozen(for url: URL) -> Bool {
         metadataReviewCoordinator.isTransitioning
-            || metadataReviewFreezeOwners[Self.metadataReviewKey(url)] != nil || metadataReviewCoordinator.isReviewing(url)
+            || metadataReviewFreezeOwners[cachedMetadataReviewKey(url)] != nil || metadataReviewCoordinator.isReviewing(url)
     }
 
     /// Freeze synchronously before capturing the final live buffer, with an owner token that
@@ -3458,6 +4324,19 @@ final class BrowserViewModel {
         if metadataReviewFreezeOwners[key] == owner { metadataReviewFreezeOwners[key] = nil }
     }
 
+    func setMetadataReviewFocus(_ focused: Bool, key: String) {
+        if focused { metadataReviewFocusedKey = key }
+        else if metadataReviewFocusedKey == key { metadataReviewFocusedKey = nil }
+    }
+
+    func clearMetadataReviewFocus() { metadataReviewFocusedKey = nil }
+
+    /// True only when one of this browser's Review fields is focused and composing: an IME
+    /// composition in Caption or another window never blocks this Review's captures.
+    var metadataReviewHasActiveComposition: Bool {
+        metadataReviewFocusedKey != nil && !Self.metadataReviewCompositionIsCommitted
+    }
+
     static var metadataReviewCompositionIsCommitted: Bool {
         guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return true }
         return !editor.hasMarkedText()
@@ -3465,7 +4344,7 @@ final class BrowserViewModel {
 
     /// Retained row buffers are captured before navigation/quit or review, even after lazy rows unmount.
     func captureMetadataReviewDrafts(for photo: URL? = nil) throws {
-        guard Self.metadataReviewCompositionIsCommitted else {
+        guard !metadataReviewHasActiveComposition else {
             throw CaptionWorkspaceFlushError.persistenceFailed("Finish the active text composition before saving or reviewing queued edits.")
         }
         let key = photo.map(Self.metadataReviewKey)
@@ -3489,7 +4368,7 @@ final class BrowserViewModel {
                 baselineSidecar: editor.sidecar, imageURL: editor.imageURL, folderURL: editor.folderURL,
                 creationEvidence: editor.creationEvidence) else { return }
         guard currentFolderURL.map(Self.metadataReviewKey) != Self.metadataReviewKey(editor.folderURL)
-            || images.contains(where: { Self.metadataReviewKey($0.url) == key }) else {
+            || metadataReviewImageIndex(for: editor.imageURL) != nil else {
             throw CaptionWorkspaceFlushError.persistenceFailed("This photo is no longer in the current folder. Its unsaved Review draft was retained.")
         }
         let editorID = editor.id
@@ -3539,16 +4418,31 @@ final class BrowserViewModel {
         publishMetadataReviewEditor(editor)
     }
 
+    /// Resolves a Review row's photo to its `images` index. An exact URL hit through
+    /// `urlToImageIndex` is O(1); the symlink-resolving scan (filesystem calls per row) only
+    /// runs when the editor holds a different spelling of the photo's path.
+    private func metadataReviewImageIndex(for url: URL) -> Int? {
+        if let index = validImageIndex(for: url) { return index }
+        let key = Self.metadataReviewKey(url)
+        return images.firstIndex(where: { Self.metadataReviewKey($0.url) == key })
+    }
+
     private func publishMetadataReviewEditor(_ editor: MetadataReviewEditorState) {
         guard currentFolderURL.map(Self.metadataReviewKey) == Self.metadataReviewKey(editor.folderURL),
-              let index = images.firstIndex(where: { Self.metadataReviewKey($0.url) == Self.metadataReviewKey(editor.imageURL) }) else { return }
-        var updated = images
-        updated[index].metadata = editor.draft
-        updated[index].keywords = editor.draft.keywords
-        updated[index].personShown = editor.draft.personShown
-        updated[index].hasPendingMetadataChanges = editor.sidecar?.pendingChanges == true || editor.draft != editor.previous
-        updated[index].pendingFieldNames = extractPendingFieldNames(from: editor.sidecar)
-        images = updated
+              let index = metadataReviewImageIndex(for: editor.imageURL) else { return }
+        // Edit the row in place and publish just that row, rather than replacing the whole
+        // array (which re-indexes, re-sorts and re-filters the folder). Review never changes
+        // sort keys (rating/label); a metadata-dependent filter is re-evaluated by the publish.
+        let wasSuppressed = suppressImagesCascade
+        suppressImagesCascade = true
+        images[index].metadata = editor.draft
+        images[index].keywords = editor.draft.keywords
+        images[index].personShown = editor.draft.personShown
+        images[index].hasPendingMetadataChanges = editor.sidecar?.pendingChanges == true || editor.draft != editor.previous
+        images[index].pendingFieldNames = extractPendingFieldNames(from: editor.sidecar)
+        suppressImagesCascade = wasSuppressed
+        guard !wasSuppressed else { return }
+        publishMetadataBatch(for: [images[index].url], sortKeyChanged: false)
     }
 
     func finishMetadataReviewDiscard(for photo: URL, editorID: UUID?) async {
@@ -3557,8 +4451,8 @@ final class BrowserViewModel {
         metadataReviewEditors[key] = nil
         metadataReviewLoadIDs[key] = nil
         metadataReviewLoadErrors[key] = nil
-        if selectedImageIDs.contains(where: { Self.metadataReviewKey($0) == key }),
-           images.contains(where: { Self.metadataReviewKey($0.url) == key }) {
+        if selectedImageIDs.contains(photo) || selectedImageIDs.contains(where: { Self.metadataReviewKey($0) == key }),
+           metadataReviewImageIndex(for: photo) != nil {
             await prepareMetadataReviewEditor(for: photo)
             if let editor = metadataReviewEditors[key] { publishMetadataReviewEditor(editor) }
         }
@@ -3619,10 +4513,34 @@ final class BrowserViewModel {
     // MARK: - Delete
 
     var showDeleteConfirmation = false
+    /// Set while the pending confirmation targets only the photo shown in full screen,
+    /// not the (possibly larger) selection kept behind the viewer.
+    private(set) var deleteConfirmationFullScreenURL: URL?
 
     func confirmDeleteSelectedImages() {
         guard !selectedImageIDs.isEmpty else { return }
+        deleteConfirmationFullScreenURL = nil
         showDeleteConfirmation = true
+    }
+
+    func confirmDeleteFullScreenImage() {
+        guard let url = fullScreenImage?.url else { return }
+        deleteConfirmationFullScreenURL = url
+        showDeleteConfirmation = true
+    }
+
+    var deleteConfirmationCount: Int {
+        deleteConfirmationFullScreenURL == nil ? selectedImageIDs.count : 1
+    }
+
+    /// Runs the delete the confirmation was raised for.
+    func deleteConfirmedImages() {
+        if let url = deleteConfirmationFullScreenURL {
+            deleteConfirmationFullScreenURL = nil
+            deleteImages([url])
+        } else {
+            deleteSelectedImages()
+        }
     }
 
     /// Finds the nearest item to the active image in the pre-deletion filmstrip order. The next
@@ -3656,19 +4574,27 @@ final class BrowserViewModel {
     }
 
     func deleteSelectedImages() {
-        guard prepareMetadataReviewBeforeMutation({ self.deleteSelectedImages() }) else { return }
-        let urlsToDelete = selectedImageIDs
+        deleteImages(selectedImageIDs)
+    }
+
+    private func deleteImages(_ urlsToDelete: Set<URL>) {
+        guard prepareMetadataReviewBeforeMutation({ self.deleteImages(urlsToDelete) }) else { return }
         guard !urlsToDelete.isEmpty else { return }
         let orderedURLs = visibleImages.map(\.url)
         let anchorURL = lastClickedImageURL.flatMap { urlsToDelete.contains($0) ? $0 : nil }
             ?? orderedURLs.first(where: urlsToDelete.contains)
         let handler = imageTrashHandler
+        let folderURL = currentFolderURL
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             let result = await fileSystemService.trashItems(Array(urlsToDelete), using: handler)
             let deletedURLs = result.completedSourceURLs
             if !deletedURLs.isEmpty {
+                let survivingSelection = selectedImageIDs.subtracting(deletedURLs)
                 images.removeAll { deletedURLs.contains($0.url) }
                 manualOrder.removeAll { deletedURLs.contains($0) }
                 pendingMetadataURLs.subtract(deletedURLs)
@@ -3678,18 +4604,24 @@ final class BrowserViewModel {
                 // while their embedded manifests are parsed. A deletion during the window must
                 // therefore rebuild identity/sort/visible caches explicitly; otherwise the file
                 // is in the Trash but its stale thumbnail remains visible and appears undeletable.
-                urlToImageIndex = Dictionary(
-                    uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) }
-                )
-                rebuildSortedCache(forceSort: true)
+                reindexAfterInventoryChange()
 
-                let closestURL = Self.closestSurvivingImageURL(
-                    in: orderedURLs,
-                    around: anchorURL,
-                    deleting: deletedURLs
-                )
-                selectedImageIDs = closestURL.map { Set([$0]) } ?? []
-                lastClickedImageURL = closestURL
+                // Deleting the shown photo of a kept full-screen multi-selection: the rebuild
+                // kept the rest of the selection and moved to the nearest selected photo.
+                let keptSurvivingSelection = !selectedImageIDs.isEmpty
+                    && selectedImageIDs.isSubset(of: survivingSelection)
+
+                // A queued delete can finish after the user navigated away or after an
+                // earlier move removed neighbours; only reselect among files still shown.
+                if currentFolderURL == folderURL, !keptSurvivingSelection {
+                    let closestURL = Self.closestSurvivingImageURL(
+                        in: orderedURLs,
+                        around: anchorURL,
+                        deleting: deletedURLs.union(orderedURLs.filter { urlToImageIndex[$0] == nil })
+                    )
+                    selectedImageIDs = closestURL.map { Set([$0]) } ?? []
+                    lastClickedImageURL = closestURL
+                }
                 onImagesDeleted?(deletedURLs)
 
                 for url in deletedURLs {
@@ -3714,6 +4646,18 @@ final class BrowserViewModel {
     func waitForPendingImageMutation() async {
         await metadataReviewMutationPreparationTask?.value
         await imageMutationTask?.value
+    }
+
+    /// Test seam: reproduces the window where `loadBasicMetadata` holds the `images`
+    /// cascade suppressed across an await.
+    func setImagesCascadeSuppressedForTesting(_ suppressed: Bool) {
+        suppressImagesCascade = suppressed
+    }
+
+    /// Test/UI coordination seam for the serialized folder trash/rename/create/move chain.
+    func waitForPendingFolderMutation() async {
+        await metadataReviewMutationPreparationTask?.value
+        await folderMutationTask?.value
     }
 
     // MARK: - Move to Subfolder
@@ -3756,8 +4700,11 @@ final class BrowserViewModel {
         let xmpService = xmpSidecarService
         let metaService = sidecarService
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             let result: FileSystemService.ImageMoveResult
             do {
                 result = try await fileSystemService.moveImageItems(
@@ -3768,6 +4715,7 @@ final class BrowserViewModel {
                     metadataSidecarService: metaService
                 )
             } catch is CancellationError {
+                reportMoveCancellation(moved: 0, requested: urlsToMove.count)
                 return
             } catch FileSystemService.Error.destinationIsNotDirectory {
                 presentMoveErrorAlert(message: "A file named \"\(name)\" already exists in this folder.")
@@ -3781,6 +4729,7 @@ final class BrowserViewModel {
             if !moved.isEmpty {
                 images.removeAll { moved.contains($0.url) }
                 manualOrder.removeAll { moved.contains($0) }
+                reindexAfterInventoryChange()
                 selectedImageIDs.subtract(moved)
                 if let last = lastClickedImageURL, moved.contains(last) {
                     lastClickedImageURL = nil
@@ -3790,6 +4739,9 @@ final class BrowserViewModel {
 
             if !result.failures.isEmpty {
                 presentMoveIssues(result)
+            }
+            if result.cancellationStoppedRemainingItems {
+                reportMoveCancellation(moved: moved.count, requested: urlsToMove.count)
             }
 
             if result.destinationWasCreated || !moved.isEmpty {
@@ -3850,8 +4802,11 @@ final class BrowserViewModel {
         let xmpService = xmpSidecarService
         let metaService = sidecarService
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             do {
                 let result = try await fileSystemService.moveImageItems(
                     urlsToMove,
@@ -3864,6 +4819,7 @@ final class BrowserViewModel {
                 if !result.movedSourceURLs.isEmpty {
                     images.removeAll { result.movedSourceURLs.contains($0.url) }
                     manualOrder.removeAll { result.movedSourceURLs.contains($0) }
+                    reindexAfterInventoryChange()
                     selectedImageIDs.subtract(result.movedSourceURLs)
                     if let last = lastClickedImageURL, result.movedSourceURLs.contains(last) {
                         lastClickedImageURL = nil
@@ -3874,8 +4830,11 @@ final class BrowserViewModel {
                 if !result.failures.isEmpty {
                     presentMoveIssues(result)
                 }
+                if result.cancellationStoppedRemainingItems {
+                    reportMoveCancellation(moved: result.movedSourceURLs.count, requested: urlsToMove.count)
+                }
             } catch is CancellationError {
-                return
+                reportMoveCancellation(moved: 0, requested: urlsToMove.count)
             } catch {
                 presentMoveErrorAlert(message: "Failed to move items: \(error.localizedDescription)")
             }
@@ -3883,6 +4842,10 @@ final class BrowserViewModel {
     }
 
     // MARK: - Metadata helpers
+
+    private func reportMoveCancellation(moved: Int, requested: Int) {
+        errorMessage = "Move cancelled: \(moved) of \(requested) photo(s) moved; the rest stayed in place."
+    }
 
     private func presentMoveIssues(_ result: FileSystemService.ImageMoveResult) {
         let moved = result.movedSourceURLs.count
@@ -3934,6 +4897,7 @@ final class BrowserViewModel {
         renamePlanningTask?.cancel()
         renamePlanningRequestID = requestID
         batchRenameSheetRequest = nil
+        isPreparingRename = true
         let planningService = voiceMemoRenamePlanningService
         renamePlanningTask = Task { [weak self] in
             let snapshot = await planningService.plan(request)
@@ -3944,11 +4908,18 @@ final class BrowserViewModel {
                   snapshot.folderURL == folderURL else { return }
             self.renamePlanningTask = nil
             self.renamePlanningRequestID = nil
+            self.isPreparingRename = false
             guard self.currentFolderURL == folderURL,
-                  self.selectedImageIDs == selectedURLs else { return }
+                  self.selectedImageIDs == selectedURLs else {
+                self.errorMessage = "Rename was not opened because the folder or selection changed while it was being prepared. Choose Rename… again."
+                return
+            }
             switch snapshot.completion {
             case .complete:
-                guard snapshot.items.count == items.count else { return }
+                guard snapshot.items.count == items.count else {
+                    self.errorMessage = "Rename could not be prepared for every selected photo. Choose Rename… again."
+                    return
+                }
                 self.batchRenameSheetRequest = BatchRenameSheetRequest(
                     folderURL: folderURL,
                     items: snapshot.items
@@ -3965,18 +4936,21 @@ final class BrowserViewModel {
         renamePlanningTask?.cancel()
         renamePlanningTask = nil
         renamePlanningRequestID = nil
+        isPreparingRename = false
     }
 
     /// Applies only the executor's successful source→destination mapping. Building a complete
     /// replacement array first makes cycles (A↔B) safe and avoids transient duplicate URL keys.
-    func applySuccessfulRename(_ presentation: BatchRenameExecutionPresentation) {
+    /// `dismissSheet` is false when app-reference reassociation needs review: the sheet stays
+    /// open to show that report and the user closes it.
+    func applySuccessfulRename(_ presentation: BatchRenameExecutionPresentation, dismissSheet: Bool = true) {
         guard presentation.status == .succeeded else { return }
         defer { endRenameQuiescence() }
         let mapping = Dictionary(uniqueKeysWithValues: presentation.mappings.map {
             ($0.sourceURL.standardizedFileURL, $0.destinationURL.standardizedFileURL)
         })
         guard !mapping.isEmpty else {
-            batchRenameSheetRequest = nil
+            if dismissSheet { batchRenameSheetRequest = nil }
             return
         }
 
@@ -4008,7 +4982,7 @@ final class BrowserViewModel {
             }
         }
         rebuildNow()
-        batchRenameSheetRequest = nil
+        if dismissSheet { batchRenameSheetRequest = nil }
     }
 
     /// A failed or cancelled multi-file operation is authoritative only about its residual report.
@@ -4077,13 +5051,25 @@ final class BrowserViewModel {
         let requests = sorted.map { FileSystemService.DuplicateRequest(source: $0) }
         let metaService = sidecarService
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             let result = await fileSystemService.duplicateImages(
                 requests,
                 in: folderURL,
                 metadataSidecarService: metaService
             )
+            if let firstFailure = result.failures.first {
+                let suffix = result.failures.count == 1
+                    ? ""
+                    : " and \(result.failures.count - 1) other operation(s)"
+                errorMessage = "Couldn’t fully duplicate \(firstFailure.sourceURL.lastPathComponent)\(suffix): \(firstFailure.message)"
+            }
+            // A queued duplicate can finish after the user opened another folder; the
+            // copies are on disk there and appear when that folder is shown again.
+            guard currentFolderURL == folderURL else { return }
             let completedBySource = Dictionary(uniqueKeysWithValues: result.completed.map {
                 ($0.sourceURL, $0.duplicate)
             })
@@ -4103,30 +5089,27 @@ final class BrowserViewModel {
             images = updatedImages
 
             // Update manual order — single-pass O(N+M) rebuild instead of O(N*M) repeated scans.
+            // An empty manual order means "name order" and must stay empty.
             let duplicateURLBySource = completedBySource.mapValues(\.url)
-            var newManualOrder: [URL] = []
-            newManualOrder.reserveCapacity(manualOrder.count + result.completed.count)
-            for url in manualOrder {
-                newManualOrder.append(url)
-                if let duplicateURL = duplicateURLBySource[url] {
-                    newManualOrder.append(duplicateURL)
+            if !manualOrder.isEmpty {
+                var newManualOrder: [URL] = []
+                newManualOrder.reserveCapacity(manualOrder.count + result.completed.count)
+                for url in manualOrder {
+                    newManualOrder.append(url)
+                    if let duplicateURL = duplicateURLBySource[url] {
+                        newManualOrder.append(duplicateURL)
+                    }
                 }
+                let addedURLs = Set(newManualOrder)
+                for completion in result.completed where !addedURLs.contains(completion.duplicate.url) {
+                    newManualOrder.append(completion.duplicate.url)
+                }
+                manualOrder = newManualOrder
             }
-            let addedURLs = Set(newManualOrder)
-            for completion in result.completed where !addedURLs.contains(completion.duplicate.url) {
-                newManualOrder.append(completion.duplicate.url)
-            }
-            manualOrder = newManualOrder
+            reindexAfterInventoryChange()
 
             selectedImageIDs = newSelectionURLs
             lastClickedImageURL = newSelectionURLs.first
-
-            if let firstFailure = result.failures.first {
-                let suffix = result.failures.count == 1
-                    ? ""
-                    : " and \(result.failures.count - 1) other operation(s)"
-                errorMessage = "Couldn’t fully duplicate \(firstFailure.sourceURL.lastPathComponent)\(suffix): \(firstFailure.message)"
-            }
         }
     }
 
@@ -4231,7 +5214,12 @@ final class BrowserViewModel {
             let fileURLs = urls.filter { !SupportedImageFormats.isRaw(url: $0) }
             guard !fileURLs.isEmpty else { return }
             do {
-                try await writeEngine.writeFields(clearFields, to: fileURLs, structuredData: structuredData)
+                // Camera Raw-only: no descriptive rewrite, refused (not degraded) when the file's
+                // metadata wouldn't fit or, outside Simple, when it carries Content Credentials.
+                let report = try await writeEngine.writeDevelopFields(clearFields, to: fileURLs,
+                    structuredData: structuredData,
+                    allowsCredentialedEmbed: MetadataWritePreset.current == .simple)
+                if let message = report.message { errorMessage = "Reset All Edits: " + message }
             } catch {
                 logger.error("Failed to clear camera raw XMP fields: \(error.localizedDescription)")
             }
@@ -4368,7 +5356,7 @@ final class BrowserViewModel {
     }
 
     private func updateSimilaritySortIfNeeded() {
-        let inputs = images.sorted(by: Self.similarityNameOrder).map(ImageSimilarityService.Input.init)
+        let inputs = similarityNameOrderedImages().map(ImageSimilarityService.Input.init)
         guard inputs != similarityInputs else { return }
         similaritySortTask?.cancel()
         similarityInputs = inputs
@@ -4412,6 +5400,21 @@ final class BrowserViewModel {
 
     func initializeManualOrder(from currentSorted: [ImageFile]) {
         manualOrder = currentSorted.map(\.url)
+    }
+
+    /// Applies an in-grid drag reorder. This is the only drag outcome that switches the
+    /// browser to Manual sort — drags to Finder, Mail, or a folder must leave the sort alone.
+    /// The new order is seeded from what the user currently sees.
+    func reorderManually(_ draggedURLs: Set<URL>, to targetURL: URL, insertBefore: Bool) {
+        guard !draggedURLs.isEmpty, !draggedURLs.contains(targetURL) else { return }
+        var order = sortedImages.map(\.url)
+        let draggedItems = order.filter { draggedURLs.contains($0) }
+        guard !draggedItems.isEmpty else { return }
+        order.removeAll { draggedURLs.contains($0) }
+        guard let targetIndex = order.firstIndex(of: targetURL) else { return }
+        order.insert(contentsOf: draggedItems, at: insertBefore ? targetIndex : targetIndex + 1)
+        manualOrder = order
+        if sortOrder != .manual { sortOrder = .manual }
     }
 
     /// The sole user-action path for changing browser sort order. Keeping this as an explicit

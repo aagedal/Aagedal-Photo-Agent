@@ -16,7 +16,7 @@ private nonisolated final class ImportMetadataScanGate: @unchecked Sendable {
         didStart = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         activeCount -= 1
         condition.unlock()

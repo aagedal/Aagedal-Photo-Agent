@@ -106,6 +106,35 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     private var loadError: Error?
     private var installationGeneration = UUID()
     private let instanceID = UUID()
+    /// Installation generation that has loaded successfully at least once. Native-scan
+    /// capabilities are validated against this rather than `loadedModel`, so an idle unload
+    /// does not revoke a capability for an installation that is proven loadable.
+    private var verifiedGeneration: UUID?
+
+    // MARK: Idle unload
+    //
+    // The ~125 MB AuraFace model used to stay resident for the whole session after the first
+    // face scan. It is now released after `idleUnloadDelay` without embedding requests and on
+    // critical memory pressure, and transparently reloaded (via `model()`) by the next request.
+    // A request counts as active from before `model()` until its prediction returns, so the
+    // model is never unloaded mid-request; a request that captured the model keeps its own
+    // reference alive regardless.
+    private let idleUnloadDelay: TimeInterval
+    private var activeRequests = 0
+    private var lastRequestEnded = DispatchTime.now()
+    private var idleCheckScheduled = false
+    private var unloadWhenIdle = false
+    private var pressureRegistration: ImageMemoryCoordinator.Registration?
+
+    /// Loads a compiled model. Injectable so tests can simulate a reload failure.
+    typealias ModelLoader = @Sendable (URL) throws -> MLModel
+    private let modelLoader: ModelLoader
+
+    nonisolated static func loadCompiledModel(at url: URL) throws -> MLModel {
+        let config = MLModelConfiguration()
+        config.computeUnits = .all
+        return try MLModel(contentsOf: url, configuration: config)
+    }
 
     nonisolated var availability: FaceRecognitionModelAvailability {
         lock.lock(); defer { lock.unlock() }
@@ -128,11 +157,85 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     nonisolated init(
         modelURL: URL?,
         allowsDynamicResolution: Bool = false,
-        isResolutionPending: Bool = false
+        isResolutionPending: Bool = false,
+        idleUnloadDelay: TimeInterval = 120,
+        memoryCoordinator: ImageMemoryCoordinator = .shared,
+        modelLoader: @escaping ModelLoader = CoreMLFaceEmbedder.loadCompiledModel
     ) {
         self.modelURL = modelURL
         self.allowsDynamicResolution = allowsDynamicResolution
         self.isResolutionPending = isResolutionPending
+        self.idleUnloadDelay = idleUnloadDelay
+        self.modelLoader = modelLoader
+        pressureRegistration = memoryCoordinator.registerPressureEviction(level: .critical) { [weak self] in
+            self?.unloadModelForMemoryPressure()
+        }
+    }
+
+    /// Whether the compiled model is currently resident (diagnostics/tests).
+    var isModelLoaded: Bool {
+        lock.withLock { loadedModel != nil }
+    }
+
+    /// Critical memory pressure: drop the model now unless a request is using it, in which case
+    /// it is dropped as soon as the last in-flight request finishes.
+    func unloadModelForMemoryPressure() {
+        lock.withLock {
+            if activeRequests == 0 {
+                loadedModel = nil
+            } else {
+                unloadWhenIdle = true
+            }
+        }
+    }
+
+    private func beginRequest() {
+        lock.withLock { activeRequests += 1 }
+    }
+
+    private func endRequest() {
+        let scheduleCheck: Bool = lock.withLock {
+            activeRequests -= 1
+            guard activeRequests == 0 else { return false }
+            if unloadWhenIdle {
+                unloadWhenIdle = false
+                loadedModel = nil
+                return false
+            }
+            lastRequestEnded = .now()
+            // One pending check at a time: a scan's thousands of sequential requests must not
+            // each enqueue a timer. The check re-arms itself for the remaining idle time.
+            guard loadedModel != nil, !idleCheckScheduled else { return false }
+            idleCheckScheduled = true
+            return true
+        }
+        if scheduleCheck { scheduleIdleCheck(after: idleUnloadDelay) }
+    }
+
+    private func scheduleIdleCheck(after delay: TimeInterval) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.runIdleCheck()
+        }
+    }
+
+    private func runIdleCheck() {
+        let remaining: TimeInterval? = lock.withLock {
+            guard loadedModel != nil else {
+                idleCheckScheduled = false
+                return nil
+            }
+            // Never unload under a running request; look again after a full idle period.
+            guard activeRequests == 0 else { return idleUnloadDelay }
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds
+                - lastRequestEnded.uptimeNanoseconds) / 1_000_000_000
+            if elapsed >= idleUnloadDelay {
+                loadedModel = nil
+                idleCheckScheduled = false
+                return nil
+            }
+            return idleUnloadDelay - elapsed
+        }
+        if let remaining { scheduleIdleCheck(after: remaining) }
     }
 
     /// Publishes a URL that was already resolved and verified by the serialized component probe.
@@ -144,6 +247,7 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
         installationGeneration = UUID()
         loadedModel = nil
         loadError = nil
+        verifiedGeneration = nil
         modelURL = resolvedURL
         isResolutionPending = false
     }
@@ -157,9 +261,13 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
 
     /// Call on an I/O executor before presenting native consent, never on MainActor.
     func prepareNativeScanModel() throws -> NativeScanModelCapability {
+        beginRequest()
+        defer { endRequest() }
         _ = try model()
         return try lock.withLock {
-            guard loadedModel != nil, loadError == nil, modelURL != nil else { throw EmbedError.modelNotFound }
+            guard verifiedGeneration == installationGeneration, loadError == nil, modelURL != nil else {
+                throw EmbedError.modelNotFound
+            }
             return .init(instanceID: instanceID, generation: installationGeneration)
         }
     }
@@ -168,7 +276,9 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     func validateNativeScanModel(_ capability: NativeScanModelCapability) throws {
         try lock.withLock {
             guard capability.instanceID == instanceID, capability.generation == installationGeneration,
-                  loadedModel != nil, loadError == nil, modelURL != nil else { throw EmbedError.modelNotFound }
+                  verifiedGeneration == installationGeneration, loadError == nil, modelURL != nil else {
+                throw EmbedError.modelNotFound
+            }
         }
     }
 
@@ -197,25 +307,36 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
             return (nil, modelURL, installationGeneration)
         }
         if let loaded = captured.0 { return loaded }
+        // A reload after an idle/pressure unload of an installation that already loaded in this
+        // process. Its failure is treated as transient (memory pressure, a busy disk): it is
+        // retried once and, if still failing, thrown without being cached, so the next request
+        // tries again instead of face recognition staying dead until relaunch.
+        let isReload = lock.withLock { verifiedGeneration == captured.2 }
         do {
             guard let url = captured.1 else { throw EmbedError.modelNotFound }
-            let config = MLModelConfiguration()
-            config.computeUnits = .all
-            let loaded = try MLModel(contentsOf: url, configuration: config)
+            let loaded: MLModel
+            if isReload {
+                loaded = try (try? modelLoader(url)) ?? modelLoader(url)
+            } else {
+                loaded = try modelLoader(url)
+            }
             return try lock.withLock {
                 guard installationGeneration == captured.2 else { throw EmbedError.modelNotFound }
                 loadedModel = loaded
+                verifiedGeneration = captured.2
                 return loaded
             }
         } catch {
             lock.withLock {
-                if installationGeneration == captured.2 { loadError = error }
+                if installationGeneration == captured.2, !isReload { loadError = error }
             }
             throw error
         }
     }
 
     func embed(_ alignedFace: CGImage) async throws -> [Float] {
+        beginRequest()
+        defer { endRequest() }
         let model = try model()
         guard let input = Self.makeInput(from: alignedFace) else { throw EmbedError.badInput }
         let provider = try MLDictionaryFeatureProvider(dictionary: [Self.inputName: MLFeatureValue(multiArray: input)])

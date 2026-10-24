@@ -66,6 +66,20 @@ private struct HSLChannelColumn: View {
     var onDragAdjustment: ((HSLColorAdjustment) -> Void)?
     var onDragEnded: (() -> Void)?
 
+    /// Spoken / Undo name for the abbreviated column label.
+    private var channelName: String {
+        switch label {
+        case "R": return "Red"
+        case "Y": return "Yellow"
+        case "G": return "Green"
+        case "C": return "Cyan"
+        case "B": return "Blue"
+        case "M": return "Magenta"
+        case "Sk": return "Skin Tone"
+        default: return label
+        }
+    }
+
     var body: some View {
         VStack(spacing: 2) {
             Circle()
@@ -90,7 +104,8 @@ private struct HSLChannelColumn: View {
                     onReset: {
                         satBinding.wrappedValue = 0
                         onDragEnded?()
-                    }
+                    },
+                    label: "\(channelName) Saturation"
                 )
                 .frame(width: 16)
 
@@ -111,7 +126,8 @@ private struct HSLChannelColumn: View {
                     onReset: {
                         densBinding.wrappedValue = 0
                         onDragEnded?()
-                    }
+                    },
+                    label: "\(channelName) Density"
                 )
                 .frame(width: 16)
             }
@@ -141,7 +157,8 @@ private struct HSLChannelColumn: View {
                 onReset: {
                     hueBinding.wrappedValue = 0
                     onDragEnded?()
-                }
+                },
+                label: "\(channelName) Hue"
             )
             .frame(height: 16)
             .padding(.horizontal, 2)

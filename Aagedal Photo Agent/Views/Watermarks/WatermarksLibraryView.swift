@@ -1,4 +1,5 @@
 import SwiftUI
+import Synchronization
 import UniformTypeIdentifiers
 
 /// The watermark list + editor split, embedded in Settings (Library & Metadata ▸
@@ -123,7 +124,7 @@ struct WatermarksLibraryContent: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the watermark image from the library on all your devices. Develop layers already using it will show a missing-asset placeholder.")
+            Text("This removes the watermark image from the library on all your devices. Develop layers already using it are marked \u{201C}Missing watermark\u{201D} and render without it, and exports of those photos report a warning.")
         }
         .alert(
             "Deletion Not Completed",
@@ -162,7 +163,7 @@ struct WatermarksLibraryContent: View {
         importRequestID = requestID
         importTask = Task {
             var latestSelection: UUID?
-            var latestError: String?
+            var failures: [String] = []
             for url in urls {
                 guard !Task.isCancelled else { break }
                 let defaultName = url.deletingPathExtension().lastPathComponent
@@ -176,7 +177,7 @@ struct WatermarksLibraryContent: View {
                         latestSelection = commit.asset.id
                     }
                 } catch {
-                    latestError = "Could not import \(url.lastPathComponent): \(error.localizedDescription)"
+                    failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
                 }
             }
 
@@ -186,7 +187,13 @@ struct WatermarksLibraryContent: View {
             if let latestSelection {
                 selection = latestSelection
             }
-            importErrorMessage = latestError
+            if !failures.isEmpty {
+                // Report every failed file, not just the last one.
+                let heading = failures.count == 1
+                    ? "Could not import 1 file:"
+                    : "Could not import \(failures.count) files:"
+                importErrorMessage = ([heading] + failures).joined(separator: "\n")
+            }
         }
     }
 
@@ -223,6 +230,7 @@ private struct WatermarkAssetEditorView: View {
     @State private var sizeValue: Double
     @State private var marginUnit: WatermarkMarginUnit
     @State private var marginValue: Double
+    @FocusState private var isNameFocused: Bool
 
     init(asset: WatermarkAsset, store: WatermarkStore) {
         self.asset = asset
@@ -244,11 +252,10 @@ private struct WatermarkAssetEditorView: View {
             }
             Section("Details") {
                 TextField("Name", text: $name)
-                    .onSubmit {
-                        Task { try? await store.rename(asset.id, to: name) }
-                    }
-                    .onChange(of: name) { _, newValue in
-                        Task { try? await store.rename(asset.id, to: newValue) }
+                    .focused($isNameFocused)
+                    .onSubmit(commitName)
+                    .onChange(of: isNameFocused) { _, focused in
+                        if !focused { commitName() }
                     }
                 Text("\(asset.pixelWidth) × \(asset.pixelHeight) px")
                     .foregroundStyle(.secondary)
@@ -259,28 +266,28 @@ private struct WatermarkAssetEditorView: View {
                     Text("Height").tag(WatermarkDimension.height)
                 }
                 HStack {
-                    Picker("Unit", selection: $sizeUnit) {
+                    Picker("Unit", selection: sizeUnitBinding) {
                         Text("Percent").tag(WatermarkSizeUnit.percent)
                         Text("Pixels").tag(WatermarkSizeUnit.pixel)
                     }
                     .labelsHidden()
                     .frame(width: 110)
                     TextField(
-                        "Size", value: $sizeValue,
+                        "Size", value: sizeValueBinding,
                         format: .number.precision(.fractionLength(0))
                     )
                     .labelsHidden()
                     Text(sizeUnit == .percent ? "%" : "px").foregroundStyle(.secondary)
                 }
                 HStack {
-                    Picker("Margin unit", selection: $marginUnit) {
+                    Picker("Margin unit", selection: marginUnitBinding) {
                         Text("Percent").tag(WatermarkMarginUnit.percent)
                         Text("Pixels").tag(WatermarkMarginUnit.pixel)
                     }
                     .labelsHidden()
                     .frame(width: 110)
                     TextField(
-                        "Margin", value: $marginValue,
+                        "Margin", value: marginValueBinding,
                         format: .number.precision(.fractionLength(0))
                     )
                     .labelsHidden()
@@ -300,6 +307,79 @@ private struct WatermarkAssetEditorView: View {
         .onChange(of: sizeValue) { _, _ in saveDefaults() }
         .onChange(of: marginUnit) { _, _ in saveDefaults() }
         .onChange(of: marginValue) { _, _ in saveDefaults() }
+        .onDisappear(perform: commitName)
+    }
+
+    /// Commits the name on Return or focus loss — not per keystroke, which wrote meta.json
+    /// (and an iCloud sync) for every character. Blank names revert to the saved one.
+    private func commitName() {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            name = asset.name
+            return
+        }
+        if trimmed != name { name = trimmed }
+        guard trimmed != asset.name else { return }
+        Task { try? await store.rename(asset.id, to: trimmed) }
+    }
+
+    /// Geometry view of the default-placement fields, so unit switches reuse the edit view's
+    /// conversion (against a nominal frame — there's no target image here).
+    private var defaultGeometry: WatermarkGeometry {
+        WatermarkGeometry(
+            sizeDimension: sizeDimension, sizeUnit: sizeUnit, sizeValue: sizeValue,
+            marginUnit: marginUnit, marginValue: marginValue
+        )
+    }
+
+    private var sizeUnitBinding: Binding<WatermarkSizeUnit> {
+        Binding(
+            get: { sizeUnit },
+            set: { newUnit in
+                let reference = WatermarkGeometry.nominalReferenceImageSize
+                let converted = defaultGeometry.convertingSizeUnit(
+                    to: newUnit, imageWidth: reference.width, imageHeight: reference.height
+                )
+                sizeValue = converted.sizeValue
+                sizeUnit = converted.sizeUnit
+            }
+        )
+    }
+
+    private var marginUnitBinding: Binding<WatermarkMarginUnit> {
+        Binding(
+            get: { marginUnit },
+            set: { newUnit in
+                let reference = WatermarkGeometry.nominalReferenceImageSize
+                let converted = defaultGeometry.convertingMarginUnit(
+                    to: newUnit, imageWidth: reference.width, imageHeight: reference.height
+                )
+                marginValue = converted.marginValue
+                marginUnit = converted.marginUnit
+            }
+        )
+    }
+
+    /// Typed values are clamped into the edit-view slider's range, so zero/negative sizes
+    /// (an invisible watermark) and negative margins can't be saved.
+    private var sizeValueBinding: Binding<Double> {
+        Binding(
+            get: { sizeValue },
+            set: { newValue in
+                let range = WatermarkGeometry.sizeRange(for: sizeUnit)
+                sizeValue = min(max(newValue, range.lowerBound), range.upperBound)
+            }
+        )
+    }
+
+    private var marginValueBinding: Binding<Double> {
+        Binding(
+            get: { marginValue },
+            set: { newValue in
+                let range = WatermarkGeometry.marginRange(for: marginUnit)
+                marginValue = min(max(newValue, range.lowerBound), range.upperBound)
+            }
+        )
     }
 
     private func saveDefaults() {
@@ -319,7 +399,7 @@ private struct WatermarkAssetEditorView: View {
     private var preview: some View {
         ZStack {
             CheckerboardBackground()
-            if let data = store.imageData(forAssetID: asset.id), let nsImage = NSImage(data: data) {
+            if let nsImage = WatermarkThumbnailCache.shared.image(forAssetID: asset.id, store: store) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -340,13 +420,38 @@ private struct WatermarkThumbnail: View {
     var body: some View {
         ZStack {
             CheckerboardBackground(tileSize: 4)
-            if let data = store.imageData(forAssetID: assetID), let nsImage = NSImage(data: data) {
+            if let nsImage = WatermarkThumbnailCache.shared.image(forAssetID: assetID, store: store) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+/// Decoded watermark images for the library list and preview, so `body` doesn't re-decode
+/// each PNG on every re-render. Dropped wholesale whenever the library revision changes
+/// (import, delete, sync), which is rare.
+@MainActor
+private final class WatermarkThumbnailCache {
+    static let shared = WatermarkThumbnailCache()
+    private var revision = -1
+    private var images: [UUID: NSImage] = [:]
+
+    func image(forAssetID id: UUID, store: WatermarkStore) -> NSImage? {
+        // Read through the store even on a hit so the caller's body keeps its observation
+        // dependency and re-renders when this asset's bytes change.
+        guard let data = store.imageData(forAssetID: id) else { return nil }
+        let current = WatermarkStore.libraryRevision.load(ordering: .relaxed)
+        if current != revision {
+            images = [:]
+            revision = current
+        }
+        if let cached = images[id] { return cached }
+        guard let image = NSImage(data: data) else { return nil }
+        images[id] = image
+        return image
     }
 }
 

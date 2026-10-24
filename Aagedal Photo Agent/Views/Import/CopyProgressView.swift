@@ -13,6 +13,9 @@ struct CopyProgressView: View {
     let mismatchedCount: Int
     let currentFile: String
     let isApplyingMetadata: Bool
+    /// Metadata-phase progress (photos written of total). Ignored when the total is zero.
+    var metadataProcessed: Int = 0
+    var metadataTotal: Int = 0
     let onCancel: () -> Void
 
     var body: some View {
@@ -23,6 +26,9 @@ struct CopyProgressView: View {
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 10) {
+                if isApplyingMetadata && metadataTotal > 0 {
+                    metadataRow
+                }
                 primaryRow
                 if let backupCopied, let backupTotal {
                     backupRow(copied: backupCopied, total: backupTotal)
@@ -64,6 +70,22 @@ struct CopyProgressView: View {
                     .monospacedDigit()
             }
             ProgressView(value: progress(primaryCopied, totalFiles))
+        }
+    }
+
+    @ViewBuilder
+    private var metadataRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Metadata")
+                    .font(.caption.bold())
+                Spacer()
+                Text("\(metadataProcessed) of \(metadataTotal)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            ProgressView(value: progress(metadataProcessed, metadataTotal))
         }
     }
 

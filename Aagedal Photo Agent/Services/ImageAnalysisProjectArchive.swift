@@ -108,6 +108,10 @@ nonisolated enum ImageAnalysisProjectArchive {
 
     private static let service = ImageAnalysisProjectArchiveService.shared
 
+    /// `analysisCases` and `folderMapDocument` are the Analysis repository's current documents for
+    /// the folder. They are written into the archive's `.photo_analysis` ahead of the folder copy,
+    /// so cases and folder maps kept in Application Support for a read-only folder are included
+    /// and win over any stale folder-local copy at the same path.
     @discardableResult
     static func export(
         sourceFolderURL: URL,
@@ -115,7 +119,9 @@ nonisolated enum ImageAnalysisProjectArchive {
         title: String,
         destinationURL: URL,
         appVersion: String,
-        appBuild: String
+        appBuild: String,
+        analysisCases: [AnalysisCase] = [],
+        folderMapDocument: AnalysisFolderMapDocument? = nil
     ) async throws -> Manifest {
         let commit = try await service.export(ImageAnalysisProjectArchiveExportRequest(
             requestID: UUID(),
@@ -124,7 +130,9 @@ nonisolated enum ImageAnalysisProjectArchive {
             title: title,
             destinationURL: destinationURL,
             appVersion: appVersion,
-            appBuild: appBuild
+            appBuild: appBuild,
+            analysisCases: analysisCases,
+            folderMapDocument: folderMapDocument
         ))
         return commit.manifest
     }
@@ -170,6 +178,29 @@ nonisolated enum ImageAnalysisProjectArchive {
                     entries: &entries
                 )
             }
+        }
+
+        let analysisEncoder = JSONEncoder()
+        analysisEncoder.dateEncodingStrategy = .iso8601
+        analysisEncoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        for analysisCase in request.analysisCases {
+            try Task.checkCancellation()
+            try stageData(
+                analysisEncoder.encode(analysisCase),
+                relativePath: ".photo_analysis/cases/\(analysisCase.id.uuidString.lowercased()).analysis.json",
+                kind: .analysisMetadata,
+                payloadRoot: payloadRoot,
+                entries: &entries
+            )
+        }
+        if let folderMapDocument = request.folderMapDocument {
+            try stageData(
+                analysisEncoder.encode(folderMapDocument),
+                relativePath: ".photo_analysis/folder-map.analysis.json",
+                kind: .analysisMetadata,
+                payloadRoot: payloadRoot,
+                entries: &entries
+            )
         }
 
         for metadataDirectory in metadataDirectories {
@@ -440,6 +471,31 @@ nonisolated enum ImageAnalysisProjectArchive {
         return fileComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
+    private static func stageData(
+        _ data: Data,
+        relativePath: String,
+        kind: FileKind,
+        payloadRoot: URL,
+        entries: inout [Manifest.File]
+    ) throws {
+        if entries.contains(where: { $0.path == relativePath }) { return }
+        guard let target = safeURL(for: relativePath, inside: payloadRoot) else {
+            throw ArchiveError.unsafePath(relativePath)
+        }
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: target, options: .atomic)
+        let digest = try hashFile(at: target).lowercaseHexString
+        entries.append(Manifest.File(
+            path: relativePath,
+            kind: kind,
+            byteCount: Int64(data.count),
+            sha256: digest
+        ))
+    }
+
     private static func stageFile(
         at source: URL,
         relativePath: String,
@@ -640,6 +696,8 @@ nonisolated struct ImageAnalysisProjectArchiveExportRequest: Sendable {
     let destinationURL: URL
     let appVersion: String
     let appBuild: String
+    var analysisCases: [AnalysisCase] = []
+    var folderMapDocument: AnalysisFolderMapDocument?
 }
 
 nonisolated struct ImageAnalysisProjectArchiveImportRequest: Sendable {

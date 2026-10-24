@@ -95,7 +95,10 @@ struct MetadataEditorXMPBaselineTests {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.folder) }
         try await load(f.model, image: f.image, folder: f.folder)
         let reparsed = try #require(XMPSidecarService().loadSidecar(for: f.image))
-        #expect(f.model.xmpMetadata?.cameraRaw != reparsed.cameraRaw)
+        // Mask identities are restored from CorrectionSyncID, so a reparse is now stable; the
+        // save routes below must still work from the loaded bytes, not parsed equality.
+        #expect(f.model.xmpMetadata?.cameraRaw?.localAdjustments?.map(\.id)
+            == reparsed.cameraRaw?.localAdjustments?.map(\.id))
         try #require(f.model.editingMetadata.cameraRaw?.localAdjustments?.count == 1)
         f.model.editingMetadata.cameraRaw?.exposure2012 = 0.75
         f.model.markChanged()
@@ -243,6 +246,82 @@ struct MetadataEditorXMPBaselineTests {
         #expect(message.contains("Reload"))
         #expect(try Data(contentsOf: f.xmp) == preserved)
         #expect(try Data(contentsOf: f.json) == json)
+    }
+
+    @Test("Keyword and person picks made while the editor loads are applied and saved after the load")
+    func picksDuringLoadAreAppliedAfterLoad() async throws {
+        let f = try fixture(masked: false); defer { try? FileManager.default.removeItem(at: f.folder) }
+        f.model.loadMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        try #require(f.model.isEditorLoading)
+        #expect(f.model.isShowingLoadPlaceholder)
+        var commits = 0
+        #expect(!f.model.hasDeferredEditorActions)
+        f.model.performAfterEditorLoad(commit: { commits += 1 }) { f.model.appendKeywords(["Picked"]) > 0 }
+        f.model.performAfterEditorLoad(commit: { commits += 1 }) { f.model.appendPersonShown(["Doe, Jane"]) > 0 }
+        #expect(f.model.editingMetadata.keywords.isEmpty)
+        // Queued picks are edits a Caption flush must not navigate away from.
+        #expect(f.model.hasDeferredEditorActions)
+        await f.model.waitForMetadataLoad()
+        #expect(!f.model.hasDeferredEditorActions)
+        #expect(!f.model.isEditorLoading)
+        #expect(f.model.editingMetadata.title == "Pending headline")
+        #expect(f.model.editingMetadata.keywords == ["Picked"])
+        #expect(f.model.editingMetadata.personShown == ["Doe, Jane"])
+        #expect(commits == 1)
+        #expect(await save(f, route: .xmp) == .succeeded)
+        let physical = try #require(XMPSidecarService().loadSidecar(for: f.image))
+        #expect(physical.keywords == ["Picked"])
+        #expect(physical.personShown == ["Doe, Jane"])
+    }
+
+    @Test("A Caption-held photo survives the browser's emptied selection load until released")
+    func heldSelectionSurvivesEmptiedBrowserSelection() async throws {
+        let f = try fixture(masked: false); defer { try? FileManager.default.removeItem(at: f.folder) }
+        f.model.loadMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        await f.model.waitForMetadataLoad()
+        f.model.editingMetadata.title = "Uncaptured draft"
+        f.model.markChanged()
+        f.model.holdSelection(on: f.image.standardizedFileURL)
+        f.model.loadSelectionMetadata(for: [], folderURL: f.folder)
+        #expect(f.model.selectedURLs == [f.image])
+        #expect(f.model.editingMetadata.title == "Uncaptured draft")
+        // Reselecting the held photo when it returns to the filter must not reload over it either.
+        f.model.loadSelectionMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        #expect(!f.model.isLoading)
+        #expect(f.model.editingMetadata.title == "Uncaptured draft")
+        f.model.releaseSelectionHold()
+        f.model.loadSelectionMetadata(for: [], folderURL: f.folder)
+        #expect(f.model.selectedURLs.isEmpty)
+    }
+
+    @Test("A load that bails out early still ends, so queued picks cannot block flushes forever")
+    func earlyReturningLoadStillEnds() async throws {
+        let f = try fixture(masked: false); defer { try? FileManager.default.removeItem(at: f.folder) }
+        f.model.loadMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        f.model.performAfterEditorLoad(commit: {}) { f.model.appendKeywords(["Queued"]) > 0 }
+        #expect(f.model.hasDeferredEditorActions)
+        // The folder moving under the in-flight request makes it return before its normal tail.
+        f.model.currentFolderURL = f.folder.appendingPathComponent("elsewhere", isDirectory: true)
+        await f.model.waitForMetadataLoad()
+        #expect(!f.model.isLoading)
+        #expect(!f.model.hasDeferredEditorActions)
+    }
+
+    @Test("Picks deferred for one photo are dropped when the selection moves to another photo")
+    func deferredPicksDroppedOnSelectionChange() async throws {
+        let f = try fixture(masked: false); defer { try? FileManager.default.removeItem(at: f.folder) }
+        let other = f.folder.appendingPathComponent("other.png")
+        try FileManager.default.copyItem(at: f.image, to: other)
+        f.model.loadMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        var commits = 0
+        f.model.performAfterEditorLoad(commit: { commits += 1 }) { f.model.appendKeywords(["Wrong photo"]) > 0 }
+        #expect(f.model.hasDeferredEditorActions)
+        f.model.loadMetadata(for: [ImageFile(url: other)], folderURL: f.folder)
+        #expect(!f.model.hasDeferredEditorActions)
+        await f.model.waitForMetadataLoad()
+        #expect(f.model.selectedURLs == [other])
+        #expect(f.model.editingMetadata.keywords.isEmpty)
+        #expect(commits == 0)
     }
 
 }

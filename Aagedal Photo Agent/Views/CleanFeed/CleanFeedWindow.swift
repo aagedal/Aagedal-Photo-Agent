@@ -19,7 +19,7 @@ private final class FeedWindowHolder {
 /// `controller.isEnabled`, and keeps it positioned across display hot-plug.
 struct CleanFeedPresenter: ViewModifier {
     @Bindable var controller: CleanFeedController
-    let browserViewModel: BrowserViewModel
+    let panes: BrowserPanesModel
 
     @State private var holder = FeedWindowHolder()
     @State private var screenObserver: NSObjectProtocol?
@@ -75,7 +75,7 @@ struct CleanFeedPresenter: ViewModifier {
         window.ignoresMouseEvents = true  // passive output — no interaction
 
         let hostingView = NSHostingView(
-            rootView: CleanFeedContentView(controller: controller, browserViewModel: browserViewModel)
+            rootView: CleanFeedContentView(controller: controller, panes: panes)
         )
         hostingView.wantsLayer = true
         window.contentView = hostingView
@@ -121,8 +121,8 @@ struct CleanFeedPresenter: ViewModifier {
 extension View {
     func cleanFeedPresenter(
         controller: CleanFeedController,
-        browserViewModel: BrowserViewModel
+        panes: BrowserPanesModel
     ) -> some View {
-        modifier(CleanFeedPresenter(controller: controller, browserViewModel: browserViewModel))
+        modifier(CleanFeedPresenter(controller: controller, panes: panes))
     }
 }

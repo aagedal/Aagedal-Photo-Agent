@@ -253,8 +253,17 @@ final class DescriptionAssistantModelSetup {
     }
     var isInstalling = false
     var progress: Double = 0
-    var message: String?
+    var message: String? {
+        didSet { messageIsError = false }
+    }
+    /// True when `message` reports a failure, so views can style it as an error.
+    private(set) var messageIsError = false
     @ObservationIgnored private var task: Task<Void, Never>?
+
+    func reportError(_ text: String) {
+        message = text
+        messageIsError = true
+    }
 
     init(defaults: UserDefaults? = nil) {
         let defaults = defaults ?? FFmpegWhisperSetupModel.sessionDefaults
@@ -267,7 +276,7 @@ final class DescriptionAssistantModelSetup {
             directory = try URL(resolvingBookmarkData: data, options: .withSecurityScope,
                                 bookmarkDataIsStale: &stale)
             if stale, let directory { try select(directory, activateProvider: false) }
-        } catch { message = error.localizedDescription }
+        } catch { reportError(error.localizedDescription) }
     }
 
     /// Apple's model when this Mac and build can use it; otherwise the local model, so a fresh
@@ -354,11 +363,34 @@ final class DescriptionAssistantModelSetup {
                 try Task.checkCancellation()
                 message = "\(model.title) is ready. Select it in Description Assistant."
             } catch is CancellationError { message = "Download cancelled. You can retry when ready." }
-            catch { message = error.localizedDescription }
+            catch { reportError(error.localizedDescription) }
         }
     }
 
     func cancelInstall() { task?.cancel() }
+
+    /// Deletes one of this app's own downloads: only the pinned file in `storageDirectory`.
+    /// Copies in shared model caches and user-chosen files or folders are never touched.
+    func removeDownloaded(_ model: DescriptionAssistantDownloadModel) async {
+        guard !isInstalling else { return }
+        let file = model.installedFile
+        let wasSelected = directory?.resolvingSymlinksInPath().path == file.resolvingSymlinksInPath().path
+        do {
+            try await Task.detached(priority: .utility) {
+                try FileManager.default.removeItem(at: file)
+            }.value
+            if wasSelected {
+                directory = nil
+                defaults.removeObject(forKey: Self.bookmarkKey)
+                try? await DescriptionAssistantService.shared.unload()
+            }
+            message = "\(model.title) was removed from this Mac."
+        } catch {
+            reportError("Could not remove \(model.title): \(error.localizedDescription)")
+        }
+        refreshDownloadedModels()
+        refreshDiscoveredModels()
+    }
 }
 
 /// Decode an upright, aspect-preserving thumbnail without loading full-resolution pixels.
@@ -378,7 +410,12 @@ nonisolated enum DescriptionAssistantImageInput {
         return dimension
     }
 
-    static func load(_ url: URL) throws -> CGImage {
+    /// The thumbnail bakes in the file's embedded tag; a rotation that lives only in the
+    /// sidecar (RAW culling) is applied on top so the model sees the photo as the user does.
+    static func load(
+        _ url: URL,
+        sidecarOrientation: @Sendable (URL) -> Int? = ThumbnailSourceAccess.system.sidecarOrientation
+    ) throws -> CGImage {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -394,6 +431,14 @@ nonisolated enum DescriptionAssistantImageInput {
               ] as CFDictionary), image.width * image.height <= maximumPixels else {
             throw DescriptionAssistantError.imageUnavailable
         }
-        return image
+        let fileOrientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let orientation = FaceDisplayOrientation(
+            fileOrientation: fileOrientation,
+            displayOrientation: sidecarOrientation(url) ?? fileOrientation
+        )
+        guard let upright = orientation.orientImage(image) else {
+            throw DescriptionAssistantError.imageUnavailable
+        }
+        return upright
     }
 }

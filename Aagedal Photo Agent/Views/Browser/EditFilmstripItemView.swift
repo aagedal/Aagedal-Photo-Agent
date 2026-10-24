@@ -6,6 +6,13 @@ struct EditFilmstripItemView: View {
     let isSelected: Bool
 
     @State private var thumbnail: NSImage?
+    @State private var thumbnailURL: URL?
+
+    /// Re-render when the image or its Develop settings change, like the browser grid.
+    private struct ThumbnailRequest: Equatable {
+        let url: URL
+        let settings: CameraRawSettings?
+    }
 
     var body: some View {
         VStack(spacing: 4) {
@@ -105,8 +112,29 @@ struct EditFilmstripItemView: View {
                 .lineLimit(1)
                 .frame(width: 94)
         }
-        .task(id: image.url) {
-            thumbnail = await thumbnailService.loadThumbnail(for: image.url)
+        .task(id: ThumbnailRequest(url: image.url, settings: image.cameraRawSettings)) {
+            let url = image.url
+            let orientation = image.exifOrientation
+            guard let settings = image.cameraRawSettings, !settings.isEmpty else {
+                let original = await thumbnailService.loadThumbnail(for: url)
+                guard !Task.isCancelled else { return }
+                thumbnail = original
+                thumbnailURL = url
+                return
+            }
+            // Show the original first only when nothing for this image is on screen yet; a
+            // settings change keeps the previous render until the edited one replaces it.
+            if thumbnailURL != url || thumbnail == nil {
+                let original = await thumbnailService.loadThumbnail(for: url)
+                guard !Task.isCancelled else { return }
+                thumbnail = original
+                thumbnailURL = url
+            }
+            let edited = await thumbnailService.renderEditedThumbnail(
+                for: url, settings: settings, exifOrientation: orientation
+            )
+            guard !Task.isCancelled, let edited else { return }
+            thumbnail = edited
         }
     }
 }

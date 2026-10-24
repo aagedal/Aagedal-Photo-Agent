@@ -59,6 +59,869 @@ struct AnalysisCaseTests {
         await model.flushPendingSaves()
     }
 
+    @Test("A failed case save keeps the workspace and Retry Save persists the in-memory edit")
+    func failedSaveKeepsWorkspaceAndRetries() async throws {
+        let fixture = try AnalysisFixture(contents: "save failure workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        // Block the folder-local cases directory with a plain file so the next save fails
+        // with an error that does not trigger the Application Support fallback.
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try blockAnalysisCasesDirectory(casesDirectory)
+
+        let annotation = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(.init(x: 0.4, y: 0.4)),
+            text: "Unsaved"
+        )
+        model.setAnnotation(annotation)
+        await model.flushPendingSaves()
+
+        #expect(model.saveError != nil)
+        #expect(model.loadState == .ready)
+        #expect(model.annotations.map(\.id) == [annotation.id])
+
+        try FileManager.default.removeItem(at: casesDirectory)
+        model.retryFailedSave()
+        await model.flushPendingSaves()
+
+        #expect(model.saveError == nil)
+        #expect(model.loadState == .ready)
+        #expect(model.annotations.map(\.id) == [annotation.id])
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Retry Save must persist the in-memory case")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+    }
+
+    @Test("The banner's Discard drops the open photo's failed edits instead of saving them later")
+    func bannerDiscardReloadsOpenPhoto() async throws {
+        let fixture = try AnalysisFixture(contents: "banner discard workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try blockAnalysisCasesDirectory(casesDirectory)
+        let discarded = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.2, y: 0.2)), text: "Discarded"
+        )
+        model.setAnnotation(discarded)
+        await model.flushPendingSaves()
+        #expect(model.saveError != nil)
+
+        try FileManager.default.removeItem(at: casesDirectory)
+        model.discardFailedSaves()
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.saveError == nil)
+        #expect(model.annotations.isEmpty)
+
+        let kept = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.6, y: 0.6)), text: "Kept"
+        )
+        model.setAnnotation(kept)
+        await model.flushPendingSaves()
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("The new edit must persist after Discard")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [kept.id])
+    }
+
+    @Test("After a failed save, navigation and close wait for Retry Save, Discard, or Cancel")
+    func failedSaveGatesNavigationAndClose() async throws {
+        let fixture = try AnalysisFixture(contents: "gated first image")
+        defer { fixture.remove() }
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("gated second image".utf8).write(to: secondURL)
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try blockAnalysisCasesDirectory(casesDirectory)
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.3, y: 0.3)), text: "Unsaved"
+        )
+        model.setAnnotation(annotation)
+        await model.flushPendingSaves()
+        #expect(model.saveError != nil)
+
+        // Selecting another rail photo asks instead of reloading; Cancel keeps everything.
+        model.requestOpenInCurrentWorkspace(ImageFile(url: secondURL))
+        guard case .openImage(let target, _) = model.pendingUnsavedChangesExit else {
+            Issue.record("Navigation after a failed save must ask first")
+            return
+        }
+        #expect(target.url == secondURL)
+        #expect(model.sourceURL == fixture.fileURL)
+        model.dismissUnsavedChangesPrompt()
+        #expect(model.pendingUnsavedChangesExit == nil)
+        #expect(model.annotations.map(\.id) == [annotation.id])
+
+        // Close asks too, and a retry that still fails keeps the workspace open.
+        #expect(model.requestClose() == false)
+        guard case .close = model.pendingUnsavedChangesExit else {
+            Issue.record("Close after a failed save must ask first")
+            return
+        }
+        #expect(await model.completeUnsavedChangesExit(.close, retryingSave: true) == false)
+        #expect(model.saveError != nil)
+        #expect(model.annotations.map(\.id) == [annotation.id])
+
+        // A successful Retry Save persists the edit, then performs the navigation.
+        try FileManager.default.removeItem(at: casesDirectory)
+        model.requestOpen(ImageFile(url: secondURL))
+        let exit = try #require(model.pendingUnsavedChangesExit)
+        #expect(await model.completeUnsavedChangesExit(exit, retryingSave: true) == false)
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.sourceURL == secondURL)
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Retry Save must persist the edit before navigating")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+        #expect(model.requestClose())
+    }
+
+    @Test("Discard Changes after a failed save closes without persisting the edit")
+    func failedSaveDiscardCloses() async throws {
+        let fixture = try AnalysisFixture(contents: "discard workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try blockAnalysisCasesDirectory(casesDirectory)
+        model.setAnnotation(AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Discarded"
+        ))
+        await model.flushPendingSaves()
+        #expect(model.requestClose() == false)
+
+        #expect(await model.completeUnsavedChangesExit(.close, retryingSave: false))
+        #expect(model.saveError == nil)
+        #expect(model.pendingUnsavedChangesExit == nil)
+    }
+
+    @Test("Project export saving retries a failed save and reports whether disk is current")
+    func savePendingChangesRetriesFailedSave() async throws {
+        let fixture = try AnalysisFixture(contents: "export save workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(await model.savePendingChanges())
+        let revision = try #require(model.currentRevision)
+
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try blockAnalysisCasesDirectory(casesDirectory)
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.2, y: 0.6)), text: "Export me"
+        )
+        model.setAnnotation(annotation)
+        #expect(await model.savePendingChanges() == false)
+        #expect(model.saveError != nil)
+
+        try FileManager.default.removeItem(at: casesDirectory)
+        #expect(await model.savePendingChanges())
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Export must see the retried case on disk")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+    }
+
+    @Test("Switching photos waits for a pending read-only save instead of cancelling it")
+    func switchingPhotosKeepsPendingFallbackSave() async throws {
+        let fixture = try AnalysisFixture(contents: "pending fallback first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("pending fallback second".utf8).write(to: secondURL)
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false
+            )
+        })
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.4, y: 0.6)), text: "Last edit"
+        )
+        model.setAnnotation(annotation)
+        model.open(ImageFile(url: secondURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("The first photo's case must still be on disk")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+    }
+
+    @Test("Saves are chained so the newest snapshot lands last and superseded ones are skipped")
+    func chainedSavesLandNewestLast() async throws {
+        let fixture = try AnalysisFixture(contents: "chained saves")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { await gate.passIfArmed() }
+            )
+        })
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        await gate.arm()
+        let first = AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.1, y: 0.1)), text: "1")
+        let second = AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.2, y: 0.2)), text: "2")
+        let third = AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.3, y: 0.3)), text: "3")
+        model.setAnnotation(first)
+        await gate.waitUntilEntered()
+        model.setAnnotation(second)
+        model.setAnnotation(third)
+        await gate.open()
+        await model.flushPendingSaves()
+
+        #expect(model.saveError == nil)
+        // The blocked first save and the newest one write; the superseded middle one is skipped.
+        #expect(await gate.passCount == 2)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the chained case on disk")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [first.id, second.id, third.id])
+    }
+
+    @Test("A new case resolves loading even when an edit is saved right after it")
+    func createCaseIsNotCancelledByLaterSave() async throws {
+        let fixture = try AnalysisFixture(contents: "create case then edit")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let firstCaseID = try #require(model.analysisCase?.id)
+
+        model.createCaseForCurrentRevision()
+        #expect(model.loadState == .loading)
+        model.selectWorkspaceMode(.osint)
+        await model.flushPendingSaves()
+
+        #expect(model.loadState == .ready)
+        #expect(model.analysisCase?.id != firstCaseID)
+        #expect(model.analysisCase?.workspaceMode == .osint)
+    }
+
+    @Test("A paste that finishes after another photo opened leaves the new workspace untouched")
+    func pasteAfterSwitchKeepsNewWorkspace() async throws {
+        let fixture = try AnalysisFixture(contents: "paste generation first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("paste generation second".utf8).write(to: secondURL)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { await gate.passIfArmed() }
+            )
+        })
+        let firstImage = ImageFile(url: fixture.fileURL)
+        model.open(firstImage)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let firstRevision = try #require(model.currentRevision)
+
+        await gate.arm()
+        let pasted = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Pasted"
+        )
+        let paste = Task { try await model.pastePhotoAnnotations([pasted], to: firstImage) }
+        await gate.waitUntilEntered()
+        model.open(ImageFile(url: secondURL))
+        await gate.open()
+        try await paste.value
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        #expect(model.sourceURL == secondURL)
+        #expect(model.analysisCase?.source.canonicalURL.lastPathComponent == "second.jpg")
+        #expect(model.annotations.isEmpty)
+        #expect(!model.canUndoPhotoAnnotation)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let firstCase) = await repository.loadMostRelevantCase(for: firstRevision) else {
+            Issue.record("The paste must still be durable for its target photo")
+            return
+        }
+        #expect(firstCase.annotations.count == 1)
+    }
+
+    @Test("Place lookups that finish after another case opened are dropped")
+    func lookupResultsRequireTheRequestingCase() async throws {
+        let fixture = try AnalysisFixture(contents: "lookup first")
+        defer { fixture.remove() }
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("lookup second".utf8).write(to: secondURL)
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        let firstCaseID = try #require(model.analysisCase?.id)
+        model.open(ImageFile(url: secondURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        let secondCaseID = try #require(model.analysisCase?.id)
+
+        let searched = AnalysisLocationEvidence(
+            coordinate: AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.75),
+            source: .placeSearch,
+            sourceDetail: "Oslo",
+            placeName: "Oslo",
+            placeNameSource: .placeSearch
+        )
+        #expect(!model.setInvestigationLocation(searched, requestedForCaseID: firstCaseID))
+        #expect(!model.setInvestigationLocation(searched, requestedForCaseID: nil))
+        #expect(model.mapState.investigationLocation == nil)
+        #expect(model.setInvestigationLocation(searched, requestedForCaseID: secondCaseID))
+        #expect(model.mapState.investigationLocation?.coordinate == searched.coordinate)
+
+        #expect(!model.applyReverseGeocodedPlaceName(
+            "Stale", at: searched.coordinate, requestedForCaseID: firstCaseID
+        ))
+        #expect(!model.applyReverseGeocodedPlaceName(
+            "Moved",
+            at: AnalysisGeoCoordinate(latitude: 1, longitude: 1),
+            requestedForCaseID: secondCaseID
+        ))
+        #expect(model.mapState.investigationLocation?.placeName == "Oslo")
+        #expect(model.applyReverseGeocodedPlaceName(
+            "Oslo, Norway", at: searched.coordinate, requestedForCaseID: secondCaseID
+        ))
+        #expect(model.mapState.investigationLocation?.placeName == "Oslo, Norway")
+        #expect(model.mapState.investigationLocation?.placeNameSource == .reverseGeocoded)
+        await model.flushPendingSaves()
+    }
+
+    @Test("Leaving Analysis from outside after a failed save waits for the prompt")
+    func externalCloseWaitsForUnsavedPrompt() async throws {
+        let fixture = try AnalysisFixture(contents: "external close workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        var transitions = 0
+        model.requestClose { transitions += 1 }
+        #expect(transitions == 1)
+
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try blockAnalysisCasesDirectory(casesDirectory)
+        model.setAnnotation(AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Unsaved"
+        ))
+        await model.flushPendingSaves()
+        #expect(model.saveError != nil)
+
+        // Cancel drops the queued transition; the workspace's own Close then closes normally.
+        model.requestClose { transitions += 1 }
+        #expect(transitions == 1)
+        guard case .close = model.pendingUnsavedChangesExit else {
+            Issue.record("An external close after a failed save must ask first")
+            return
+        }
+        model.cancelUnsavedChangesExit()
+        #expect(model.requestClose() == false)
+        #expect(await model.completeUnsavedChangesExit(.close, retryingSave: false))
+        #expect(transitions == 1)
+
+        // Discard runs the external transition itself instead of the workspace's Close, even
+        // though SwiftUI's alert binding dismisses the prompt before the async button work runs.
+        model.setAnnotation(AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.6, y: 0.6)), text: "Unsaved again"
+        ))
+        await model.flushPendingSaves()
+        model.requestClose { transitions += 1 }
+        let exit = try #require(model.pendingUnsavedChangesExit)
+        model.dismissUnsavedChangesPrompt()
+        #expect(await model.completeUnsavedChangesExit(exit, retryingSave: false) == false)
+        #expect(transitions == 2)
+    }
+
+    @Test("A rapid reopen still waits for an in-flight folder-map save")
+    func reopenWaitsForFolderMapSave() async throws {
+        let fixture = try AnalysisFixture(contents: "folder map chain")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { await gate.passIfArmed() }
+            )
+        })
+        let image = ImageFile(url: fixture.fileURL)
+        model.open(image)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        await gate.arm()
+        let marker = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.75)),
+            text: "Folder marker"
+        )
+        model.setGlobalMapAnnotation(marker)
+        await gate.waitUntilEntered()
+        model.open(image)
+        model.open(image)
+        try await Task.sleep(for: .milliseconds(100))
+        // The reload must not read the folder map before the blocked save lands.
+        #expect(model.loadState == .loading)
+        await gate.open()
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        #expect(model.globalMapAnnotations.map(\.id) == [marker.id])
+    }
+
+    @Test("Termination saving does not wait for a stalled photo load")
+    func terminationSaveSkipsStalledLoad() async throws {
+        let fixture = try AnalysisFixture(contents: "stalled load")
+        defer { fixture.remove() }
+        let gate = AnalysisRepositoryConstructionGate()
+        defer { Task { await gate.open() } }
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            await gate.wait()
+            return try await AnalysisCaseRepository.open(sourceFolderURL: folderURL)
+        })
+        model.open(ImageFile(url: fixture.fileURL))
+        await gate.waitUntilEntered()
+        #expect(model.loadState == .loading)
+
+        #expect(await model.savePendingChanges(waitingForLoad: false))
+        #expect(model.loadState == .loading)
+        await gate.open()
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+    }
+
+    @Test("Paste into the open photo keeps edits made while earlier saves are pending")
+    func pasteKeepsConcurrentEdits() async throws {
+        let fixture = try AnalysisFixture(contents: "paste concurrent edits")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { await gate.passIfArmed() }
+            )
+        })
+        let image = ImageFile(url: fixture.fileURL)
+        model.open(image)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        await gate.arm()
+        let first = AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.1, y: 0.1)), text: "Before")
+        model.setAnnotation(first)
+        await gate.waitUntilEntered()
+        let source = AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Pasted")
+        let paste = Task { try await model.pastePhotoAnnotations([source], to: image) }
+        // The paste lands in the live case while the earlier save is still blocked.
+        try await waitForAnalysisState { model.annotations.count == 2 }
+        let during = AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.9, y: 0.9)), text: "During")
+        model.setAnnotation(during)
+        await gate.open()
+        try await paste.value
+        await model.flushPendingSaves()
+
+        #expect(model.annotations.count == 3)
+        #expect(model.canUndoPhotoAnnotation)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the pasted case on disk")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == model.annotations.map(\.id))
+        #expect(persisted.annotations.first?.id == first.id)
+        #expect(persisted.annotations.last?.id == during.id)
+    }
+
+    @Test("A previous photo's save that fails after switching is reported and retried")
+    func backgroundSaveFailureIsReported() async throws {
+        let fixture = try AnalysisFixture(contents: "background failure first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("background failure second".utf8).write(to: secondURL)
+        let failures = AnalysisSaveFailureInjector()
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { try await failures.consume() }
+            )
+        })
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        await failures.failNext()
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.3, y: 0.7)), text: "Left behind"
+        )
+        model.setAnnotation(annotation)
+        model.open(ImageFile(url: secondURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        let message = try #require(model.saveError)
+        #expect(message.contains("source.jpg"))
+        #expect(model.requestClose() == false)
+        model.cancelUnsavedChangesExit()
+
+        // Try Again reloads the open photo but keeps the earlier photo's failed save.
+        model.retry()
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.saveError?.contains("source.jpg") == true)
+
+        // A rename of that folder is refused while the failed save is outstanding.
+        await #expect(throws: AnalysisRenameQuiescenceError.self) {
+            try await model.beginRenameQuiescence(in: fixture.directoryURL)
+        }
+
+        model.retryFailedSave()
+        await model.flushPendingSaves()
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Retry Save must persist the previous photo's case")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+    }
+
+    @Test("Pasting into a photo whose earlier save failed pastes into its unsaved copy")
+    func pasteIntoBackgroundFailedPhoto() async throws {
+        let fixture = try AnalysisFixture(contents: "background paste first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("background paste second".utf8).write(to: secondURL)
+        let failures = AnalysisSaveFailureInjector()
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { try await failures.consume() }
+            )
+        })
+        let firstImage = ImageFile(url: fixture.fileURL)
+        model.open(firstImage)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        await failures.failNext()
+        let leftBehind = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.3, y: 0.7)), text: "Left behind"
+        )
+        model.setAnnotation(leftBehind)
+        model.open(ImageFile(url: secondURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        #expect(model.saveError?.contains("source.jpg") == true)
+
+        let pasted = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.6, y: 0.2)), text: "Pasted"
+        )
+        try await model.pastePhotoAnnotations([pasted], to: firstImage)
+        await model.flushPendingSaves()
+
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("The paste must land on the previous photo's case")
+            return
+        }
+        #expect(persisted.annotations.count == 2)
+        #expect(persisted.annotations.first?.id == leftBehind.id)
+    }
+
+    @Test("Reopening a photo whose save failed while it was left adopts the unsaved edits")
+    func reopenAdoptsFailedBackgroundSave() async throws {
+        let fixture = try AnalysisFixture(contents: "reopen adoption first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("reopen adoption second".utf8).write(to: secondURL)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let failures = AnalysisSaveFailureInjector()
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: {
+                    await gate.passIfArmed()
+                    try await failures.consume()
+                }
+            )
+        })
+        let firstImage = ImageFile(url: fixture.fileURL)
+        model.open(firstImage)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        await gate.arm()
+        await failures.failNext()
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.4, y: 0.4)), text: "Slow then failed"
+        )
+        model.setAnnotation(annotation)
+        await gate.waitUntilEntered()
+        model.open(ImageFile(url: secondURL))
+        model.open(firstImage)
+        await gate.open()
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        // The reload shows the unsaved edits as this case's failed save, not the older disk copy.
+        #expect(model.annotations.map(\.id) == [annotation.id])
+        #expect(model.saveError != nil)
+
+        model.retryFailedSave()
+        await model.flushPendingSaves()
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Retry Save must persist the adopted edits")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+    }
+
+    @Test("Termination saves every window before reporting a failing one")
+    func terminationFlushSavesAllWindows() async throws {
+        let failing = try AnalysisFixture(contents: "termination failing window")
+        defer { failing.remove() }
+        let healthy = try AnalysisFixture(contents: "termination healthy window")
+        defer { healthy.remove() }
+        let failingModel = AnalysisWorkspaceModel(analyzers: [])
+        let healthyModel = AnalysisWorkspaceModel(analyzers: [])
+        failingModel.open(ImageFile(url: failing.fileURL))
+        healthyModel.open(ImageFile(url: healthy.fileURL))
+        try await waitForAnalysisState {
+            failingModel.loadState == .ready && healthyModel.loadState == .ready
+        }
+        await failingModel.flushPendingSaves()
+        await healthyModel.flushPendingSaves()
+        let healthyRevision = try #require(healthyModel.currentRevision)
+
+        let casesDirectory = failing.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try blockAnalysisCasesDirectory(casesDirectory)
+        failingModel.setAnnotation(AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Cannot save"
+        ))
+        let healthyEdit = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.2, y: 0.2)), text: "Saved on quit"
+        )
+        healthyModel.setAnnotation(healthyEdit)
+
+        let flush = AnalysisWorkspaceTerminationFlush()
+        flush.register(failingModel)
+        flush.register(healthyModel)
+        await #expect(throws: AnalysisTerminationSaveError.self) { try await flush.flush() }
+
+        #expect(failingModel.saveError != nil)
+        #expect(healthyModel.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: healthy.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: healthyRevision) else {
+            Issue.record("The healthy window's edit must be saved")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [healthyEdit.id])
+    }
+
+    @Test("A slow Retry Save does not perform an exit that was replaced meanwhile")
+    func supersededExitDoesNotRunAfterSlowRetry() async throws {
+        let fixture = try AnalysisFixture(contents: "superseded exit first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("superseded exit second".utf8).write(to: secondURL)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let failures = AnalysisSaveFailureInjector()
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: {
+                    try await failures.consume()
+                    await gate.passIfArmed()
+                }
+            )
+        })
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        await failures.failNext()
+        model.setAnnotation(AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Unsaved"
+        ))
+        await model.flushPendingSaves()
+        #expect(model.saveError != nil)
+
+        var transitions: [Int] = []
+        model.requestClose { transitions.append(1) }
+        let exit = try #require(model.pendingUnsavedChangesExit)
+        model.dismissUnsavedChangesPrompt()
+        await gate.arm()
+        let completion = Task { await model.completeUnsavedChangesExit(exit, retryingSave: true) }
+        await gate.waitUntilEntered()
+        // While the retry is still writing, the user leaves another way.
+        model.requestClose { transitions.append(2) }
+        #expect(transitions == [2])
+        await gate.open()
+
+        #expect(await completion.value == false)
+        #expect(transitions == [2])
+        #expect(model.saveError == nil)
+    }
+
+    @Test("Browser commands that would change the hidden selection's files are ignored in Analysis")
+    func analysisSuppressesHiddenSelectionCommands() {
+        let suppressed: [AppCommand] = [
+            .deleteSelected, .moveRejectedToFolder, .rotateClockwise, .rotateCounterclockwise,
+            .renameSelected, .setRating(.five), .setLabel(.red), .removeAllIPTC, .pasteIPTCMetadata,
+        ]
+        for command in suppressed {
+            #expect(MainViewMode.imageAnalysis.suppressesHiddenSelectionCommand(command))
+            #expect(!MainViewMode.browser.suppressesHiddenSelectionCommand(command))
+        }
+        #expect(!MainViewMode.imageAnalysis.suppressesHiddenSelectionCommand(.selectNextImage))
+        #expect(!MainViewMode.imageAnalysis.suppressesHiddenSelectionCommand(.openFolder))
+    }
+
+    @Test("Pixel readout samples full resolution only when it matches the displayed source")
+    func inspectionColorSourceSelection() throws {
+        let context = try #require(CGContext(
+            data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let fullResolution = try #require(context.makeImage())
+        let preview = try #require(context.makeImage())
+
+        let matched = ImageInspectionColorSource.select(
+            fullResolution: fullResolution, fullResolutionMatchesSource: true, preview: preview
+        )
+        #expect(matched?.source == .fullResolution)
+        #expect(matched?.image === fullResolution)
+
+        let stale = ImageInspectionColorSource.select(
+            fullResolution: fullResolution, fullResolutionMatchesSource: false, preview: preview
+        )
+        #expect(stale?.source == .preview)
+        #expect(stale?.image === preview)
+
+        let loading = ImageInspectionColorSource.select(
+            fullResolution: nil, fullResolutionMatchesSource: true, preview: preview
+        )
+        #expect(loading?.source == .preview)
+        #expect(ImageInspectionColorSource.select(
+            fullResolution: nil, fullResolutionMatchesSource: false, preview: nil
+        ) == nil)
+    }
+
     @Test("Version nine annotations decode without counter metadata")
     func migratesVersionNineCounterMetadata() async throws {
         let fixture = try AnalysisFixture(contents: "legacy annotations")
@@ -538,6 +1401,174 @@ struct AnalysisCaseTests {
         #expect(model.caseStorage == .applicationSupport)
         #expect(model.storagePortabilityWarning?.contains("Application Support") == true)
         #expect(counter.count == 1)
+    }
+
+    @Test("Navigating a folder decodes each case file once instead of once per photo")
+    func navigationDecodesCasesLinearly() async throws {
+        let fixture = try AnalysisFixture(contents: "linear navigation 0")
+        defer { fixture.remove() }
+        var imageURLs = [fixture.fileURL]
+        for index in 1..<6 {
+            let url = fixture.directoryURL.appendingPathComponent("photo-\(index).jpg")
+            try Data("linear navigation \(index)".utf8).write(to: url)
+            imageURLs.append(url)
+        }
+        let setup = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        for url in imageURLs {
+            try await setup.save(AnalysisCase.create(for: try await SourceImageRevision.capture(at: url)))
+        }
+        // Settle the stamps the way files written in an earlier session would be.
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        let past = Date(timeIntervalSinceNow: -3_600)
+        for file in try FileManager.default.contentsOfDirectory(atPath: casesDirectory.path) {
+            try FileManager.default.setAttributes(
+                [.modificationDate: past],
+                ofItemAtPath: casesDirectory.appendingPathComponent(file).path
+            )
+        }
+        try FileManager.default.setAttributes([.modificationDate: past], ofItemAtPath: casesDirectory.path)
+
+        let opened = AnalysisOpenedRepositories()
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            let repository = try await AnalysisCaseRepository.open(sourceFolderURL: folderURL)
+            opened.repositories.append(repository)
+            return repository
+        })
+        for url in imageURLs + imageURLs.reversed() {
+            model.open(ImageFile(url: url))
+            try await waitForAnalysisState { model.loadState == .ready }
+            #expect(model.analysisCase?.source.canonicalURL.lastPathComponent == url.lastPathComponent)
+            #expect(model.folderAnalysisCases.count == imageURLs.count)
+        }
+
+        #expect(opened.repositories.count == 1)
+        let repository = try #require(opened.repositories.first)
+        // The old load path decoded every case twice per photo: 2 × 6 × 12 = 144 decodes.
+        #expect(await repository.caseDecodeCount == imageURLs.count)
+    }
+
+    @Test("A viewed photo gets no case file until it is edited; badges and folder map stay correct")
+    func viewedPhotoCreatesNoCaseUntilEdited() async throws {
+        let fixture = try AnalysisFixture(contents: "lazy case first")
+        defer { fixture.remove() }
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("lazy case second".utf8).write(to: secondURL)
+        let first = ImageFile(url: fixture.fileURL)
+        let second = ImageFile(url: secondURL)
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        func caseFiles() -> [String] {
+            ((try? FileManager.default.contentsOfDirectory(atPath: casesDirectory.path)) ?? [])
+                .filter { $0.hasSuffix(".analysis.json") }
+        }
+        let counter = AnalysisInvocationCounter()
+        let model = AnalysisWorkspaceModel(analyzers: [ImmediateAnalysisAnalyzer(counter: counter)])
+
+        model.open(first)
+        try await waitForAnalysisState { model.loadState == .ready }
+        try await waitForAnalysisState {
+            model.analysisRunner.runs.first?.status == .completed
+        }
+        model.open(second)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        #expect(caseFiles().isEmpty)
+        #expect(model.photoAnnotations(for: first).isEmpty)
+
+        // A folder-map edit on a viewed photo writes only the folder map.
+        let marker = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.75)),
+            text: "Folder marker"
+        )
+        model.setGlobalMapAnnotation(marker)
+        await model.flushPendingSaves()
+        #expect(caseFiles().isEmpty)
+
+        model.open(first)
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.globalMapAnnotations.map(\.id) == [marker.id])
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.3, y: 0.3)), text: "Edited"
+        )
+        model.setAnnotation(annotation)
+        await model.flushPendingSaves()
+        #expect(caseFiles().count == 1)
+        #expect(model.photoAnnotations(for: first).map(\.id) == [annotation.id])
+
+        let revision = try #require(model.currentRevision)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("The first edit must create the case")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+        // The analyzer result held in memory is written with the case.
+        #expect(persisted.analyzerRuns.map(\.status) == [.completed])
+
+        // Leaving the edited photo keeps its rail badge and folder map.
+        model.open(second)
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.photoAnnotations(for: first).map(\.id) == [annotation.id])
+        #expect(model.globalMapAnnotations.map(\.id) == [marker.id])
+        #expect(caseFiles().count == 1)
+    }
+
+    @Test("Analyzer queued and running states are not written to an existing case")
+    func analyzerProgressIsNotPersisted() async throws {
+        let fixture = try AnalysisFixture(contents: "progress not persisted")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        try await repository.save(AnalysisCase.create(for: revision))
+        let model = AnalysisWorkspaceModel(analyzers: [SuspendedAnalysisAnalyzer()])
+
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        try await waitForAnalysisState { model.analysisRunner.runs.first?.status == .running }
+        await model.flushPendingSaves()
+
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the existing case")
+            return
+        }
+        #expect(persisted.analyzerRuns.isEmpty)
+        #expect(model.analysisCase?.analyzerRuns.first?.status == .running)
+        model.cancelAnalyzer(SuspendedAnalysisAnalyzer().identifier)
+        try await waitForAnalysisState { model.analysisRunner.runs.first?.status == .cancelled }
+        await model.flushPendingSaves()
+    }
+
+    @Test("The case index picks up another writer's saves and deletions")
+    func caseIndexSeesExternalWriters() async throws {
+        let fixture = try AnalysisFixture(contents: "external writer source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let reader = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        let writer = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        var analysisCase = AnalysisCase.create(for: revision)
+        analysisCase.title = "First"
+        try await writer.save(analysisCase)
+        guard case .exact(let initial) = await reader.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the written case")
+            return
+        }
+        #expect(initial.title == "First")
+
+        analysisCase.title = "Second"
+        try await writer.save(analysisCase)
+        guard case .exact(let updated) = await reader.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the rewritten case")
+            return
+        }
+        #expect(updated.title == "Second")
+
+        try FileManager.default.removeItem(at: fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+            .appendingPathComponent("\(analysisCase.id.uuidString.lowercased()).analysis.json"))
+        #expect(await reader.loadMostRelevantCase(for: revision) == AnalysisCaseMatch.none)
+        #expect(await reader.loadAllCases().isEmpty)
     }
 
     @Test("a superseded repository construction cannot replace the same-source workspace", arguments: [false, true])
@@ -2945,6 +3976,11 @@ private struct AnalysisFixture {
     }
 }
 
+@MainActor
+private final class AnalysisOpenedRepositories {
+    var repositories: [AnalysisCaseRepository] = []
+}
+
 private final class AnalysisInvocationCounter {
     var count = 0
 }
@@ -3027,6 +4063,18 @@ private struct GatedAnalysisAnalyzer: AnalysisAnalyzer {
 
 private enum AnalysisTestTimeout: Error {
     case timedOut
+}
+
+/// Replaces the folder-local cases directory with a plain file so the next case save fails
+/// with an error that does not trigger the Application Support fallback. Viewing a photo no
+/// longer creates a case, so the directory may not exist yet.
+private func blockAnalysisCasesDirectory(_ casesDirectory: URL) throws {
+    try? FileManager.default.removeItem(at: casesDirectory)
+    try FileManager.default.createDirectory(
+        at: casesDirectory.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try Data("blocker".utf8).write(to: casesDirectory)
 }
 
 private func waitForAnalysisState(
@@ -3420,6 +4468,42 @@ struct AnalysisCaseRepositoryExecutorTests {
 
 private nonisolated enum AnalysisRepositoryExecutorContext {
     @TaskLocal static var marker: String?
+}
+
+private enum AnalysisInjectedSaveFailure: Error {
+    case failed
+}
+
+/// Fails the next fallback write after `failNext()`, then lets writes through again.
+private actor AnalysisSaveFailureInjector {
+    private var remainingFailures = 0
+
+    func failNext() { remainingFailures += 1 }
+
+    func consume() throws {
+        guard remainingFailures > 0 else { return }
+        remainingFailures -= 1
+        throw AnalysisInjectedSaveFailure.failed
+    }
+}
+
+/// Blocks fallback writes only after `arm()`, so a test can hold one specific save in flight.
+private actor AnalysisArmableSaveGate {
+    private var isArmed = false
+    private(set) var passCount = 0
+    private let gate = AnalysisRepositoryConstructionGate()
+
+    func arm() { isArmed = true }
+
+    func passIfArmed() async {
+        guard isArmed else { return }
+        passCount += 1
+        await gate.wait()
+    }
+
+    func waitUntilEntered() async { await gate.waitUntilEntered() }
+
+    func open() async { await gate.open() }
 }
 
 private actor AnalysisRepositoryConstructionGate {

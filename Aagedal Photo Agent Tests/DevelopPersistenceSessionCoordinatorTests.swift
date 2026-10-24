@@ -167,6 +167,86 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(coordinator.activeImageURL == second)
     }
 
+    @Test("a slider double-click reset folds into its first click for one undo step")
+    func doubleClickResetCoalesces() {
+        let imageURL = URL(fileURLWithPath: "/tmp/develop-persistence-coalesce.raw")
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(imageURL)
+
+        let original = CameraRawSettings(exposure2012: 0.4)
+        let clicked = CameraRawSettings(exposure2012: 2.1)
+        let reset: CameraRawSettings? = nil
+        var published: [CameraRawSettings?] = []
+        let publisher: DevelopPersistenceSessionCoordinator.SettingsPublisher = { settings, _ in
+            published.append(settings)
+        }
+
+        _ = coordinator.recordMutation(
+            before: original, after: clicked, editsNamedVersion: false, publisher: publisher
+        )
+        _ = coordinator.recordMutation(
+            before: clicked, after: reset, editsNamedVersion: false,
+            coalescesWithPrevious: true, publisher: publisher
+        )
+        #expect(published.isEmpty)
+
+        coordinator.undo()
+        #expect(published == [original])
+        #expect(!coordinator.canUndo)
+
+        coordinator.redo()
+        #expect(published == [original, reset])
+    }
+
+    @Test("coalescing never folds into an unrelated or undone transition")
+    func coalescingRequiresContinuation() {
+        let imageURL = URL(fileURLWithPath: "/tmp/develop-persistence-no-coalesce.raw")
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(imageURL)
+
+        let first = CameraRawSettings(exposure2012: 1)
+        let second = CameraRawSettings(exposure2012: 2)
+        let other = CameraRawSettings(contrast2012: 30)
+        var published: [CameraRawSettings?] = []
+        let publisher: DevelopPersistenceSessionCoordinator.SettingsPublisher = { settings, _ in
+            published.append(settings)
+        }
+
+        _ = coordinator.recordMutation(before: nil, after: first, editsNamedVersion: false, publisher: publisher)
+        _ = coordinator.recordMutation(
+            before: other, after: second, editsNamedVersion: false,
+            coalescesWithPrevious: true, publisher: publisher
+        )
+        coordinator.undo()
+        coordinator.undo()
+        #expect(published == [other, nil])
+    }
+
+    @Test("clearing history when a new photo's load completes leaves no placeholder undo")
+    func loadCompletionDiscardsPlaceholderHistory() {
+        let imageURL = URL(fileURLWithPath: "/tmp/develop-persistence-load.raw")
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(imageURL)
+
+        var publicationCount = 0
+        _ = coordinator.recordMutation(
+            before: nil,
+            after: CameraRawSettings(exposure2012: 1),
+            editsNamedVersion: false
+        ) { _, _ in publicationCount += 1 }
+        let retainedManager = coordinator.undoManager
+
+        coordinator.removeAllUndoActions()
+        retainedManager.undo()
+        coordinator.undo()
+
+        #expect(publicationCount == 0)
+        #expect(!coordinator.canUndo)
+    }
+
     @Test("primary persistence owns success failure and cancellation publication")
     func primaryPersistenceOutcomes() async throws {
         let imageURL = URL(fileURLWithPath: "/tmp/develop-primary-persistence.raw")
@@ -318,6 +398,192 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(didFinishDurableWork)
         #expect(coordinator.latestBatchPersistenceOutcome == nil)
         #expect(coordinator.pendingBatchPersistenceCount == 0)
+    }
+
+    @Test("undo steps carry action names for the Edit menu")
+    func undoStepsAreNamed() {
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(URL(fileURLWithPath: "/tmp/develop-persistence-named.raw"))
+        #expect(!coordinator.canUndoFromMenu)
+
+        let revision = coordinator.historyRevision
+        _ = coordinator.recordMutation(
+            before: nil,
+            after: CameraRawSettings(exposure2012: 1),
+            editsNamedVersion: false,
+            actionName: "Exposure"
+        ) { _, _ in }
+        #expect(coordinator.historyRevision != revision)
+        #expect(coordinator.canUndoFromMenu)
+        #expect(coordinator.undoMenuTitle == coordinator.undoManager.undoMenuTitle(forUndoActionName: "Exposure"))
+
+        coordinator.undo()
+        #expect(coordinator.canRedoFromMenu)
+        #expect(coordinator.redoMenuTitle == coordinator.undoManager.redoMenuTitle(forUndoActionName: "Exposure"))
+        coordinator.removeAllUndoActions()
+        #expect(!coordinator.canUndoFromMenu && !coordinator.canRedoFromMenu)
+    }
+
+    @Test("history ends when another photo loads or the settings are replaced from outside")
+    func undoHistoryPolicy() throws {
+        let photo = URL(fileURLWithPath: "/tmp/develop-history-a.raw")
+        let other = URL(fileURLWithPath: "/tmp/develop-history-b.raw")
+        var edited = CameraRawSettings(exposure2012: 1.2)
+        edited.localAdjustments = [MaskAdjustment(name: "Sky", exposure: -0.5)]
+
+        // An explicit outside replacement (Reset All Edits) ends it even when settings match.
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: edited, loadedSettings: edited,
+            settingsReplacedExternally: true))
+        // Another photo always starts a fresh history.
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: other,
+            settingsDevelopPublished: edited, loadedSettings: edited))
+        // Reset All Edits (settings cleared from outside): Undo must not bring the edits back.
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: edited, loadedSettings: nil))
+        // A multi-photo paste that included the active photo reloads different settings.
+        var pasted = edited
+        pasted.exposure2012 = 0.4
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: edited, loadedSettings: pasted))
+        // A same-photo reload of what Develop itself published (descriptive change, own save)
+        // keeps Undo, even with the loader's per-image decode facts attached.
+        var reloaded = try #require(DevelopUndoHistoryPolicy.roundTripped(edited))
+        reloaded.asShotNeutralTemperature = 5_200
+        reloaded.sourceHasHDRHeadroom = true
+        #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: edited, loadedSettings: reloaded))
+        #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: CameraRawSettings(), loadedSettings: nil))
+    }
+
+    @Test("history survives a real XMP write/read round trip of a masked photo")
+    func undoHistorySurvivesXMPRoundTrip() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DevelopHistoryRoundTrip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let photo = directory.appendingPathComponent("capture.arw")
+        try Data([0x52, 0x41, 0x57, 0x00]).write(to: photo)
+
+        var sky = MaskAdjustment(name: "Sky", exposure: -0.37)
+        sky.contrast = 12
+        sky.geometry.centerX = 0.3333333
+        sky.geometry.radiusX = 0.21
+        sky.geometry.feather = 62
+        var face = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 65, blackOut: nil))
+        face.geometry.centerY = 0.27
+        var brush = MaskAdjustment(name: "Brush", exposure: 0.4)
+        brush.brush = BrushMaskGeometry(strokes: [BrushStroke(dabs: [
+            BrushDab(x: 0.111111, y: 0.222222, flow: 0.8, hardness: 0.5),
+            BrushDab(x: 0.123457, y: 0.234568, flow: 0.8, hardness: 0.5),
+        ], radius: 0.05)])
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        var published = CameraRawSettings(exposure2012: 0.37)
+        published.contrast2012 = 18
+        published.whiteBalance = "Custom"
+        published.temperature = 5600
+        published.crop = CameraRawCrop(top: 0.1234567, left: 0.05, bottom: 0.9, right: 0.95, angle: 0, hasCrop: true)
+        published.toneCurve = ToneCurve(
+            master: [ToneCurvePoint(x: 0, y: 0.03), ToneCurvePoint(x: 0.5, y: 0.55), ToneCurvePoint(x: 1, y: 1)],
+            red: nil, green: nil, blue: nil
+        )
+        published.hslAdjustments = HSLAdjustments(blue: HSLColorAdjustment(saturation: -25))
+        published.localAdjustments = [sky, face, brush]
+        published.watermarkLayers = [watermark]
+        published.layerOrder = [.mask(sky.id), .global, .mask(face.id), .mask(brush.id), .watermark(watermark.id)]
+
+        let service = XMPSidecarService()
+        try service.saveCameraRawOnly(published, orientation: nil, for: photo)
+        let reloaded = try #require(service.loadSidecar(for: photo)?.cameraRaw)
+
+        #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: published, loadedSettings: reloaded))
+        // Mask identities now survive the reload (CorrectionSyncID), keeping the explicit order.
+        #expect(reloaded.localAdjustments?.map(\.id) == published.localAdjustments?.map(\.id))
+        #expect(reloaded.resolvedLayerOrder() == published.resolvedLayerOrder())
+
+        // A different develop state on disk (an outside edit) ends the history.
+        var external = published
+        external.exposure2012 = 1.2
+        try service.saveCameraRawOnly(external, orientation: nil, for: photo)
+        let changed = try #require(service.loadSidecar(for: photo)?.cameraRaw)
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: published, loadedSettings: changed))
+    }
+
+    private func historyWorkspace() throws -> (URL, URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DevelopHistoryRoundTrip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let photo = directory.appendingPathComponent("capture.arw")
+        try Data([0x52, 0x41, 0x57, 0x00]).write(to: photo)
+        return (directory, photo)
+    }
+
+    @Test("history survives a reload of a long brush stroke at continuous coordinates")
+    func undoHistorySurvivesLongBrushStrokeRoundTrip() throws {
+        let (directory, photo) = try historyWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var generator = SystemRandomNumberGenerator()
+        for trial in 0..<5 {
+            let dabs = (0..<300).map { _ in
+                BrushDab(x: Double.random(in: 0...1, using: &generator),
+                         y: Double.random(in: 0...1, using: &generator),
+                         flow: Double.random(in: 0.05...1, using: &generator),
+                         hardness: Double.random(in: 0...1, using: &generator))
+            }
+            var brush = MaskAdjustment(name: "Stroke \(trial)", exposure: Double.random(in: -2...2, using: &generator))
+            brush.brush = BrushMaskGeometry(strokes: [BrushStroke(
+                dabs: dabs, radius: Double.random(in: 0.01...0.2, using: &generator))])
+            var published = CameraRawSettings(exposure2012: 0.25)
+            published.localAdjustments = [brush]
+
+            let service = XMPSidecarService()
+            try service.saveCameraRawOnly(published, orientation: nil, for: photo)
+            let reloaded = try #require(service.loadSidecar(for: photo)?.cameraRaw)
+            #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+                historyImageURL: photo, loadedImageURL: photo,
+                settingsDevelopPublished: published, loadedSettings: reloaded))
+        }
+    }
+
+    @Test("history survives a reload after reordering masks and keeps muted masks")
+    func undoHistorySurvivesReorderAndMutedMasks() throws {
+        let (directory, photo) = try historyWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var first = MaskAdjustment(name: "First", exposure: 0.5)
+        first.geometry.centerX = 0.2
+        var second = MaskAdjustment(name: "Second", exposure: -0.5)
+        second.geometry.centerX = 0.7
+        var muted = MaskAdjustment(name: "Muted face", anonymizer: AnonymizerSettings(amount: 70, blackOut: nil))
+        muted.enabled = false
+        var published = CameraRawSettings(exposure2012: 0.1)
+        published.localAdjustments = [first, second, muted]
+        // Reorder only changes the chain, not the array (as the layer strip does).
+        published.layerOrder = [.mask(second.id), .global, .mask(first.id), .mask(muted.id)]
+
+        let service = XMPSidecarService()
+        try service.saveCameraRawOnly(published, orientation: nil, for: photo)
+        let reloaded = try #require(service.loadSidecar(for: photo)?.cameraRaw)
+
+        #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: published, loadedSettings: reloaded))
+        // The muted mask is written (CorrectionActive=false) and comes back muted.
+        let reloadedMuted = try #require(reloaded.localAdjustments?.first { $0.name == "Muted face" })
+        #expect(!reloadedMuted.enabled)
+        #expect(reloadedMuted.anonymizer == muted.anonymizer)
+        #expect(reloaded.resolvedLayerOrder() == published.resolvedLayerOrder())
     }
 
     @Test("edit workspace delegates undo and dirty URL ownership")

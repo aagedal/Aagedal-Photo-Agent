@@ -1,6 +1,9 @@
 import Foundation
 
 struct PresetVariableInterpolator: Sendable {
+    /// Resolves city and country for a coordinate; nil leaves the place tokens unresolved.
+    typealias PlaceLookup = @Sendable (Double, Double) async -> (city: String, country: String)?
+
     private static let gpsCityToken = "{gps:city}"
     private static let gpsCountryToken = "{gps:country}"
 
@@ -47,7 +50,12 @@ struct PresetVariableInterpolator: Sendable {
     /// Resolves the two place-name variables with one reverse-geocode lookup, then returns a
     /// metadata copy that can continue through the normal synchronous variable interpolator.
     /// On lookup failure the tokens are deliberately preserved so processing can be retried.
-    func resolvingGPSPlaceVariables(in metadata: IPTCMetadata) async -> IPTCMetadata {
+    /// `placeLookup` replaces the default uncached lookup (Import passes a per-import cache with
+    /// a bounded timeout).
+    func resolvingGPSPlaceVariables(
+        in metadata: IPTCMetadata,
+        placeLookup: PlaceLookup? = nil
+    ) async -> IPTCMetadata {
         let strings = [
             metadata.title, metadata.description, metadata.extendedDescription,
             metadata.creatorJobTitle, metadata.descriptionWriter,
@@ -66,6 +74,10 @@ struct PresetVariableInterpolator: Sendable {
         }) else { return metadata }
         guard let latitude = metadata.latitude, let longitude = metadata.longitude else {
             return replacingGPSPlaceTokens(in: metadata, city: "", country: "")
+        }
+        if let placeLookup {
+            guard let place = await placeLookup(latitude, longitude) else { return metadata }
+            return replacingGPSPlaceTokens(in: metadata, city: place.city, country: place.country)
         }
         do {
             let location = try await GeocodingService().reverseGeocode(

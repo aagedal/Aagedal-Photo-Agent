@@ -11,13 +11,29 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     /// Called when the user clicks into this grid — split-view container uses it to
     /// mark the pane active.
     var onFocus: (() -> Void)?
+    /// Whether this grid belongs to the active split pane. Only the active pane's grid takes
+    /// keyboard focus; an inactive pane appearing (e.g. a new split) must not steal it.
+    var isActivePane = true {
+        didSet {
+            collectionView?.isActivePane = isActivePane
+            guard isActivePane, !oldValue else { return }
+            // Activated from pane chrome or the tab bar: keyboard follows the active pane.
+            DispatchQueue.main.async { [weak self] in self?.takeKeyboardFocusIfAppropriate() }
+        }
+    }
     var onExtractVideoStills: ((URL) -> Void)?
     var onImproveDescriptions: (() -> Void)?
     private var collectionView: ThumbnailCollectionView!
     private var dataSource: NSCollectionViewDiffableDataSource<Section, URL>!
     private var observationTasks: [Task<Void, Never>] = []
     private var lastSnapshotURLs: [URL] = []
-    private var lastImageStates: [URL: ImageFile] = [:]
+    /// Rows as last handed to the data source, in snapshot order.
+    private var lastImages: [ImageFile] = []
+    private var hasAppliedSnapshot = false
+    /// `showOriginalThumbnails` as of the last data apply. Flipping it changes no row, so
+    /// the row diff alone would leave every visible thumbnail in the old mode.
+    private var lastShowOriginalThumbnails: Bool?
+    private var lastDataApply: ContinuousClock.Instant?
     /// A grid rebuilt after leaving Develop inherits the active selection, but observation
     /// only reports future changes. Keep this pending until the first laid-out snapshot can
     /// scroll that already-selected image back into view.
@@ -54,6 +70,33 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         for task in observationTasks {
             task.cancel()
         }
+        for task in prefetchTasks.values {
+            task.cancel()
+        }
+    }
+
+    /// Set once SwiftUI dismantles the hosting representable. A dismantled grid stops all
+    /// observation and prefetch work immediately (rather than whenever ARC gets to it) and must
+    /// never touch shared view-model state such as the one-shot reveal request again.
+    private(set) var isTornDown = false
+    /// Number of data updates this grid has applied (diagnostics/tests).
+    private(set) var dataApplyCount = 0
+
+    /// Stops every observation loop and speculative prefetch. Called from
+    /// `dismantleNSViewController`, which SwiftUI invokes when the grid is replaced (folder
+    /// loads swap it for a progress view, workspace switches remove it).
+    func tearDown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+        for task in observationTasks {
+            task.cancel()
+        }
+        observationTasks.removeAll()
+        for task in prefetchTasks.values {
+            task.cancel()
+        }
+        prefetchTasks.removeAll()
+        NotificationCenter.default.removeObserver(self, name: .rawDecodeSettingsDidChange, object: nil)
     }
 
     // MARK: - View Lifecycle
@@ -69,6 +112,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         collectionView.viewModel = viewModel
         collectionView.commandRouter = commandRouter
         collectionView.onFocus = { [weak self] in self?.onFocus?() }
+        collectionView.isActivePane = isActivePane
         collectionView.onExtractVideoStills = { [weak self] url in self?.onExtractVideoStills?(url) }
         collectionView.onImproveDescriptions = { [weak self] in self?.onImproveDescriptions?() }
         collectionView.isSelectable = false // We handle selection ourselves
@@ -97,13 +141,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        // Filtering can recreate the grid when results reappear. Preserve an active
-        // text editor (especially toolbar search) instead of interrupting typing.
-        if let window = view.window,
-           !(window.firstResponder is NSText),
-           !(window.firstResponder is NSTextField) {
-            window.makeFirstResponder(collectionView)
-        }
+        takeKeyboardFocusIfAppropriate()
         if viewModel.shouldRestoreGridFocus {
             viewModel.shouldRestoreGridFocus = false
         }
@@ -111,6 +149,18 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         for item in collectionView.visibleItems() {
             (item as? ThumbnailCollectionViewItem)?.refreshVoiceMemoStatus()
         }
+    }
+
+    /// Filtering can recreate the grid when results reappear. Preserve an active text editor
+    /// (especially toolbar search) instead of interrupting typing. In split view both grids
+    /// appear together; only the active pane's grid may take focus.
+    private func takeKeyboardFocusIfAppropriate() {
+        guard isActivePane,
+              let window = view.window,
+              window.firstResponder !== collectionView,
+              !(window.firstResponder is NSText),
+              !(window.firstResponder is NSTextField) else { return }
+        window.makeFirstResponder(collectionView)
     }
 
     // MARK: - Data Source
@@ -166,22 +216,27 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     // MARK: - Observation
 
     private func startObservation() {
+        // Every loop captures the view model, never `self`, across its suspension and
+        // re-acquires a weak `self` after each change. Holding `self` while suspended kept every
+        // replaced grid alive (and re-applying snapshots) for the rest of the session.
+        let viewModel = self.viewModel
+
         // 1. Data loop — watch visibleImages and showOriginalThumbnails
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                let (images, _) = await withCheckedContinuation { continuation in
-                    withObservationTracking {
-                        _ = self.viewModel.visibleImages
-                        _ = self.viewModel.showOriginalThumbnails
-                    } onChange: {
-                        Task { @MainActor [self] in
-                            continuation.resume(returning: (self.viewModel.visibleImages, self.viewModel.showOriginalThumbnails))
-                        }
-                    }
+                await awaitObservationChange {
+                    _ = viewModel.visibleImages
+                    _ = viewModel.showOriginalThumbnails
                 }
-                guard !Task.isCancelled else { return }
-                self.applyDataUpdate(images: images)
+                // Batch writes publish one row per awaited completion. Apply at most once per
+                // display frame so a 2,000-photo rating run doesn't walk the grid per photo;
+                // the latest rows are read after the wait, so nothing is dropped.
+                let frame = Duration.milliseconds(16)
+                if let last = self?.lastDataApply, last.duration(to: .now) < frame {
+                    try? await Task.sleep(for: frame - last.duration(to: .now))
+                }
+                guard !Task.isCancelled, let self, !self.isTornDown else { return }
+                self.applyDataUpdate(images: viewModel.visibleImages)
             }
         })
 
@@ -194,42 +249,52 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         // 3. Layout loop — watch thumbnailScale
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                let scale = await withCheckedContinuation { continuation in
-                    withObservationTracking {
-                        _ = self.viewModel.thumbnailScale
-                    } onChange: {
-                        Task { @MainActor [self] in
-                            continuation.resume(returning: self.viewModel.thumbnailScale)
-                        }
-                    }
+                await awaitObservationChange {
+                    _ = viewModel.thumbnailScale
                 }
-                guard !Task.isCancelled else { return }
-                self.updateLayout(scale: scale)
+                guard !Task.isCancelled, let self, !self.isTornDown else { return }
+                self.updateLayout(scale: viewModel.thumbnailScale)
             }
         })
 
         // 4. Focus loop — watch shouldRestoreGridFocus
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                let shouldRestore = await withCheckedContinuation { continuation in
-                    withObservationTracking {
-                        _ = self.viewModel.shouldRestoreGridFocus
-                    } onChange: {
-                        Task { @MainActor [self] in
-                            continuation.resume(returning: self.viewModel.shouldRestoreGridFocus)
-                        }
-                    }
+                await awaitObservationChange {
+                    _ = viewModel.shouldRestoreGridFocus
                 }
-                guard !Task.isCancelled, shouldRestore else { continue }
+                guard !Task.isCancelled, let self, !self.isTornDown else { return }
+                guard viewModel.shouldRestoreGridFocus else { continue }
                 self.view.window?.makeFirstResponder(self.collectionView)
-                self.viewModel.shouldRestoreGridFocus = false
+                viewModel.shouldRestoreGridFocus = false
             }
         })
 
+        // A new RAW decode profile drops the edited-thumbnail cache without changing any
+        // row; re-render what is on screen instead of waiting for it to scroll back in.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(rawDecodeSettingsDidChange(_:)),
+            name: .rawDecodeSettingsDidChange, object: nil
+        )
+
         // Trigger initial data load
         applyDataUpdate(images: viewModel.visibleImages)
+    }
+
+    @objc private func rawDecodeSettingsDidChange(_ notification: Notification) {
+        reconfigureVisibleItems()
+    }
+
+    /// Re-runs cell configuration for every on-screen item (thumbnail mode or decode
+    /// settings changed for all rows at once).
+    private func reconfigureVisibleItems() {
+        for indexPath in collectionView.indexPathsForVisibleItems() {
+            // Index paths follow the applied snapshot, which can lag `visibleImages` inside the
+            // update throttle; resolve the URL through the snapshot so no cell shows another photo.
+            guard let item = collectionView.item(at: indexPath) as? ThumbnailCollectionViewItem,
+                  let url = dataSource.itemIdentifier(for: indexPath) else { continue }
+            configureItem(item, url: url)
+        }
     }
 
     /// Lightweight observation for selection changes from external sources (menus, notifications).
@@ -240,7 +305,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
             _ = self.viewModel.lastClickedImageURL
         } onChange: { [weak self] in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, !self.isTornDown else { return }
                 self.updateVisibleSelections(
                     selectedIDs: self.viewModel.selectedImageIDs,
                     lastClicked: self.viewModel.lastClickedImageURL
@@ -253,13 +318,26 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     // MARK: - Data Updates
 
     private func applyDataUpdate(images: [ImageFile]) {
+        guard !isTornDown else { return }
+        dataApplyCount &+= 1
+        lastDataApply = .now
+        // Consumed by every data update, so a stale request can't make a later refresh scroll.
+        let userInitiated = viewModel.consumeRevealActiveRequest()
+        let showOriginals = viewModel.showOriginalThumbnails
+        let showOriginalsChanged = lastShowOriginalThumbnails.map { $0 != showOriginals } ?? false
+        lastShowOriginalThumbnails = showOriginals
+        if hasAppliedSnapshot, reconfigureInPlaceIfOrderUnchanged(images) {
+            if showOriginalsChanged { reconfigureVisibleItems() }
+            return
+        }
+
         let newURLs = images.map(\.url)
-        let newStates = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+        let oldStates = Dictionary(lastImages.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
 
         // Find items that changed properties (need reconfigure, not insert/delete)
         var changedURLs: [URL] = []
         for image in images {
-            if let old = lastImageStates[image.url], old != image {
+            if let old = oldStates[image.url], old != image {
                 changedURLs.append(image.url)
             }
         }
@@ -276,6 +354,8 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         // Only animate when items are added/removed, not when just reordered (sort change).
         // Animating reorder of hundreds of items causes layout thrashing and constraint conflicts.
         let itemsAddedOrRemoved = isStructuralChange && Set(newURLs) != Set(lastSnapshotURLs)
+        let keepsActiveInView = hasAppliedSnapshot && isStructuralChange
+            && shouldKeepActiveInView(oldURLs: lastSnapshotURLs, userInitiated: userInitiated)
         dataSource.apply(snapshot, animatingDifferences: itemsAddedOrRemoved) { [weak self] in
             // Diffable-data-source completions can arrive while the surrounding SwiftUI
             // hosting view is still in its layout pass. Forcing AppKit layout here re-enters
@@ -289,12 +369,71 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
                     selectedIDs: self.viewModel.selectedImageIDs,
                     activeURL: self.viewModel.lastClickedImageURL
                 )
+                if showOriginalsChanged { self.reconfigureVisibleItems() }
                 self.restoreInitialSelectionIfPossible()
+                if keepsActiveInView { self.scrollActiveItemIntoView() }
             }
         }
 
         lastSnapshotURLs = newURLs
-        lastImageStates = newStates
+        lastImages = images
+        hasAppliedSnapshot = true
+    }
+
+    /// A user-initiated change (sort/filter setting, the user's own rating/label, move or
+    /// delete) keeps the selected photo in view. Refreshes, imports and background metadata
+    /// re-sorts only follow it when it was on screen before, so a user who scrolled
+    /// elsewhere (or is mid-momentum-scroll) is never pulled back.
+    private func shouldKeepActiveInView(oldURLs: [URL], userInitiated: Bool) -> Bool {
+        guard let activeURL = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first else {
+            return false
+        }
+        if userInitiated { return true }
+        guard let oldIndex = oldURLs.firstIndex(of: activeURL),
+              let frame = collectionView.collectionViewLayout?
+                .layoutAttributesForItem(at: IndexPath(item: oldIndex, section: 0))?.frame,
+              let visibleRect = collectionView.enclosingScrollView?.documentVisibleRect else {
+            return false
+        }
+        let intersection = frame.intersection(visibleRect)
+        return !intersection.isNull && intersection.height >= frame.height / 2
+    }
+
+    /// Scrolls the active photo into view (minimum scroll; no-op when mostly visible).
+    /// Resolved through the applied snapshot, which can lag `visibleImages`.
+    private func scrollActiveItemIntoView() {
+        guard view.window != nil,
+              let activeURL = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first,
+              let indexPath = dataSource.indexPath(for: activeURL) else { return }
+        collectionView.scrollToItemIfNeeded(at: indexPath)
+    }
+
+    /// Rating/label/badge updates keep order and membership. Rebuilding and diffing an
+    /// n-item snapshot for those is O(n) hashing per update; instead re-run the cell
+    /// configuration for the changed rows that currently have an item. Rows without an
+    /// item are configured from the view model when they scroll in.
+    private func reconfigureInPlaceIfOrderUnchanged(_ images: [ImageFile]) -> Bool {
+        guard images.count == lastImages.count else { return false }
+        var changed: [Int] = []
+        for index in images.indices {
+            let new = images[index], old = lastImages[index]
+            guard new.url == old.url else { return false }
+            if new != old { changed.append(index) }
+        }
+        lastImages = images
+        guard !changed.isEmpty else { return true }
+        for index in changed {
+            guard let item = collectionView.item(at: IndexPath(item: index, section: 0))
+                as? ThumbnailCollectionViewItem else { continue }
+            configureItem(item, url: images[index].url)
+        }
+        // Same post-update selection reconciliation the snapshot path performs.
+        ThumbnailCollectionView.refreshSelection(
+            in: Array(collectionView.visibleItems()),
+            selectedIDs: viewModel.selectedImageIDs,
+            activeURL: viewModel.lastClickedImageURL
+        )
+        return true
     }
 
     // MARK: - Selection Updates
@@ -334,6 +473,8 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         }
 
         layout.invalidateLayout()
+        // A thumbnail-size change reflows every row; keep the selected photo in view.
+        DispatchQueue.main.async { [weak self] in self?.scrollActiveItemIntoView() }
     }
 
     private func updateLayoutItemSize(_ layout: NSCollectionViewFlowLayout, scale: Double) {
@@ -378,6 +519,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     // MARK: - NSCollectionViewPrefetching
 
     func collectionView(_ collectionView: NSCollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        guard !isTornDown else { return }
         let service = viewModel.thumbnailService
         let showOriginals = viewModel.showOriginalThumbnails
         for indexPath in indexPaths {

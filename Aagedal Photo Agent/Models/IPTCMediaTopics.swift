@@ -57,7 +57,8 @@ nonisolated struct IPTCMediaTopics: Codable, Sendable {
     let roots: [String]
     let concepts: [String: Concept]
 
-    @MainActor func tree(language: IPTCMediaTopicsLanguage) -> [StructuredKeyword] {
+    /// Pure; the library builds it off the main actor (thousands of localized, sorted nodes).
+    func tree(language: IPTCMediaTopicsLanguage) -> [StructuredKeyword] {
         func node(_ id: String, ancestors: Set<String>) -> StructuredKeyword? {
             guard !ancestors.contains(id), let concept = concepts[id],
                   let name = concept.labels[language.rawValue] ?? concept.labels["en-US"] ?? concept.labels["en-GB"] else { return nil }

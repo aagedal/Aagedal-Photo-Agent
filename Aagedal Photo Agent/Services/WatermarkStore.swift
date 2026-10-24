@@ -1,6 +1,7 @@
 import Foundation
 import os.log
 import AppKit
+import Synchronization
 
 nonisolated private let watermarkLog = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent",
@@ -557,13 +558,37 @@ final class WatermarkStore {
     @ObservationIgnored static var deletionIO = DurableDeletionIO.live
 
     @ObservationIgnored private let injectedStorageRoot: URL?
-    @ObservationIgnored private var didLoad = false
+    /// Observed (not `@ObservationIgnored`) so views that flag missing assets re-evaluate once
+    /// the first load completes — before that an empty `assets` list means "not loaded yet",
+    /// not "every referenced asset is missing".
+    private var didLoad = false
     @ObservationIgnored private var cachedDirectory: URL?
     @ObservationIgnored private var recentLocalWrites: [String: Date] = [:]
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var loadRequestID = UUID()
     @ObservationIgnored private var storageGeneration = UUID()
     @ObservationIgnored private let persistence: WatermarkLibraryPersistenceService
+
+    /// Bumped on every library change (load, import, rename, delete, storage-route change).
+    /// The Metal texture loader keys its decoded-PNG cache on this alongside the asset IDs, so
+    /// a deleted or replaced asset stops rendering from a stale cached texture. Atomic because
+    /// the loader also runs on the offscreen export queue.
+    nonisolated static let libraryRevision = Atomic<Int>(0)
+
+    /// Snapshot of `libraryRevision` for callers that memoize on it without importing
+    /// Synchronization.
+    nonisolated static var currentLibraryRevision: Int {
+        libraryRevision.load(ordering: .relaxed)
+    }
+
+    nonisolated private static func bumpLibraryRevision() {
+        libraryRevision.add(1, ordering: .relaxed)
+    }
+
+    private func postLibraryDidChange() {
+        Self.bumpLibraryRevision()
+        NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
+    }
 
     private static let selfWriteWindow: TimeInterval = 10
     private static let selfWriteTolerance: TimeInterval = 3
@@ -591,7 +616,7 @@ final class WatermarkStore {
         } else if let override = Self.storageOverrideURL {
             url = override
         } else {
-            let syncEnabled = UserDefaults.standard.bool(
+            let syncEnabled = AppDefaults.store.bool(
                 forKey: UserDefaultsKeys.watermarksICloudEnabled
             )
             url = await LibraryICloudRoutingService.watermarks.storageURL(
@@ -629,7 +654,7 @@ final class WatermarkStore {
         let root: URL
         if let override = storageOverrideURL {
             root = override
-        } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled),
+        } else if AppDefaults.store.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled),
                   let cloud = AppPaths.iCloudWatermarksURL {
             root = cloud
         } else {
@@ -680,6 +705,7 @@ final class WatermarkStore {
         loadTask = nil
         assets = []
         imageDataByAssetID = [:]
+        Self.bumpLibraryRevision()
     }
 
     func loadIfNeeded() async {
@@ -712,7 +738,7 @@ final class WatermarkStore {
                 self.assets = snapshot.assets
                 self.imageDataByAssetID = snapshot.imageDataByAssetID
                 self.didLoad = true
-                NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
+                self.postLibraryDidChange()
             case .cancelledBeforeAccess, .cancelledAfterPrefix, .loaded:
                 break
             }
@@ -739,6 +765,15 @@ final class WatermarkStore {
         return assets.first { $0.id == id }
     }
 
+    /// True once the library has loaded and `id` has no usable PNG — deleted from the library,
+    /// or its metadata synced but the image hasn't downloaded yet. False while still loading,
+    /// so layer cards don't flash a "missing" badge on launch.
+    func isAssetMissing(_ id: UUID) -> Bool {
+        scheduleLoadIfNeeded()
+        guard didLoad else { return false }
+        return imageDataByAssetID[id] == nil
+    }
+
     /// The PNG bytes for an asset — used by the Settings preview and, at render time, by
     /// the Metal texture loader.
     func imageData(forAssetID id: UUID) -> Data? {
@@ -757,7 +792,7 @@ final class WatermarkStore {
 
     private func sortAndNotify() {
         assets.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
+        postLibraryDidChange()
     }
 
     // MARK: - CRUD
@@ -910,7 +945,7 @@ final class WatermarkStore {
         guard storageGeneration == generation else { return }
         assets.removeAll { $0.id == id }
         imageDataByAssetID[id] = nil
-        NotificationCenter.default.post(name: .watermarkLibraryDidChange, object: nil)
+        postLibraryDidChange()
     }
 
     // MARK: - Remote changes

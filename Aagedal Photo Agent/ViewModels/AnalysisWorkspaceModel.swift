@@ -10,6 +10,12 @@ struct AnalysisImageMapAnnotation: Identifiable, Sendable {
     var id: String { "\(caseID.uuidString)-\(annotation.id.uuidString)" }
 }
 
+/// Leaving the current case that would discard edits whose save failed.
+enum AnalysisUnsavedChangesExit {
+    case openImage(ImageFile, preferredWorkspaceMode: AnalysisWorkspaceMode?)
+    case close
+}
+
 enum AnalysisRenameQuiescenceError: LocalizedError, Equatable {
     case persistenceFailed(String)
 
@@ -31,8 +37,16 @@ final class AnalysisWorkspaceModel {
     }
 
     private(set) var loadState: LoadState = .idle
+    /// A failed background save keeps the in-memory case editable; the workspace offers
+    /// Retry Save, which re-persists the current in-memory documents.
+    private(set) var saveError: String?
+    /// Navigation or close requested while `saveError` is set; the workspace asks first.
+    private(set) var pendingUnsavedChangesExit: AnalysisUnsavedChangesExit?
     private(set) var analysisCase: AnalysisCase? {
-        didSet { rebuildPhotoAnnotationCaseIndex() }
+        didSet {
+            rebuildPhotoAnnotationCaseIndex()
+            workingFolderMapAnnotationsCache = nil
+        }
     }
     private(set) var currentRevision: SourceImageRevision?
     private(set) var sourceChanged = false
@@ -40,10 +54,43 @@ final class AnalysisWorkspaceModel {
         didSet { rebuildPhotoAnnotationCaseIndex() }
     }
     private(set) var hasDevelopedRepresentation = false
-    private(set) var developSettings: CameraRawSettings?
+    private(set) var developSettings: CameraRawSettings? {
+        didSet {
+            developedRenderToken = FullScreenImageCache.renderToken(
+                settings: developSettings,
+                isEdited: true
+            )
+        }
+    }
+    /// Render token of `developSettings` for the developed representation, computed once per
+    /// settings change instead of JSON-encoding the settings on every view update.
+    private(set) var developedRenderToken: String? = FullScreenImageCache.renderToken(
+        settings: nil,
+        isEdited: true
+    )
     private(set) var sourceOrientation = 1
     private(set) var folderAnalysisCases: [AnalysisCase] = [] {
-        didSet { rebuildPhotoAnnotationCaseIndex() }
+        didSet {
+            rebuildPhotoAnnotationCaseIndex()
+            workingFolderMapAnnotationsCache = nil
+        }
+    }
+    @ObservationIgnored private var workingFolderMapAnnotationsCache: [AnalysisImageMapAnnotation]?
+    @ObservationIgnored private var timestampEvidenceCache: (
+        key: TimestampEvidenceCacheKey,
+        value: [AnalysisTimestampEvidence]
+    )?
+
+    private struct TimestampEvidenceCacheKey: Equatable {
+        struct Run: Equatable {
+            let analyzerID: String
+            let cacheKey: String
+            let status: AnalysisAnalyzerRunStatus
+            let completedAt: Date?
+        }
+
+        let runs: [Run]
+        let caseEvidence: [AnalysisTimestampEvidence]
     }
     private(set) var folderMapDocument = AnalysisFolderMapDocument.create()
     private(set) var caseStorage: AnalysisCaseStorage?
@@ -51,13 +98,43 @@ final class AnalysisWorkspaceModel {
     let analysisRunner: AnalysisRunner
 
     @ObservationIgnored private var repository: AnalysisCaseRepository?
+    /// The repository of the last opened folder, reused while navigating inside it so its
+    /// in-memory case index survives photo changes.
+    @ObservationIgnored private var folderRepository: (folderURL: URL, repository: AnalysisCaseRepository)?
+    /// The open case while it exists only in memory: a photo that was viewed but not yet edited.
+    /// The first `persist` writes it.
+    @ObservationIgnored private var unpersistedCaseID: UUID?
     @ObservationIgnored private var openedImage: ImageFile?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
+    /// Tail of the chained case-save queue. Saves are never cancelled: each waits for the one
+    /// before it, so an older snapshot can never land on disk after a newer one.
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var folderMapSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var saveSequence = 0
+    /// Newest queued save per case/folder-map document ID; superseded snapshots skip their write.
+    @ObservationIgnored private var latestCaseSaveSequence: [UUID: Int] = [:]
+    @ObservationIgnored private var latestFolderMapSaveSequence: [UUID: Int] = [:]
+    /// A workspace switch requested from outside Analysis that waits on the unsaved-changes prompt.
+    @ObservationIgnored private var pendingExternalCloseTransition: (@MainActor () -> Void)?
     @ObservationIgnored private var workspaceGeneration = UUID()
     @ObservationIgnored private var renameQuiescenceFolderURL: URL?
     @ObservationIgnored private var renameQuiescenceNeedsCaseSave = false
+    /// Messages of the open case's and the folder map's failed saves; nil when durable.
+    @ObservationIgnored private var caseSaveFailure: String?
+    @ObservationIgnored private var folderMapSaveFailure: String?
+    /// Saves of a previously open photo's case that failed after the workspace moved on. They are
+    /// reported through `saveError`, retried by Retry Save, adopted when that photo is reopened,
+    /// and dropped only by Discard (or a failed-rename reset).
+    @ObservationIgnored private var failedBackgroundCaseSaves: [UUID: BackgroundCaseSaveFailure] = [:]
+    /// Changes whenever an unsaved-changes exit is requested or cancelled, so a slow Retry Save
+    /// cannot perform an exit the user has since replaced or abandoned.
+    @ObservationIgnored private var unsavedExitRequestID = UUID()
+
+    private struct BackgroundCaseSaveFailure {
+        let analysisCase: AnalysisCase
+        let repository: AnalysisCaseRepository
+        let message: String
+    }
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
     @ObservationIgnored private let repositoryFactory: (URL) async throws -> AnalysisCaseRepository
     private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
@@ -74,8 +151,8 @@ final class AnalysisWorkspaceModel {
         self.repositoryFactory = repositoryFactory ?? {
             try await AnalysisCaseRepository.open(sourceFolderURL: $0)
         }
-        analysisRunner.onPersistableRunChanged = { [weak self] run in
-            self?.persistAnalyzerRun(run)
+        analysisRunner.onPersistableRunChanged = { [weak self] run, isUserEdit in
+            self?.persistAnalyzerRun(run, isUserEdit: isUserEdit)
         }
     }
 
@@ -133,6 +210,9 @@ final class AnalysisWorkspaceModel {
         to image: ImageFile
     ) async throws {
         guard !sourceAnnotations.isEmpty else { return }
+        // Opening another photo while this paste is in flight must not let its result replace the
+        // newly opened case, its storage state, or its undo history.
+        let generation = workspaceGeneration
 
         let targetRevision = try await SourceImageRevision.capture(
             at: image.url,
@@ -145,57 +225,101 @@ final class AnalysisWorkspaceModel {
             targetRepository = try await repositoryFactory(image.url.deletingLastPathComponent())
             try Task.checkCancellation()
         }
-        let isCurrentSource = sourceURL?.standardizedFileURL == image.url.standardizedFileURL
-        var targetCase: AnalysisCase
-        if isCurrentSource,
-           let currentCase = analysisCase,
-           currentCase.source.relationship(to: targetRevision) == .exactRevision {
-            targetCase = currentCase
-        } else {
-            let match = await targetRepository.loadMostRelevantCase(for: targetRevision)
-            switch match {
+        let copies = AnalysisAnnotationTransfer.copies(of: sourceAnnotations)
+
+        // Pasting into the open photo edits the live case read here, after every suspension, and
+        // saves through the chained queue, so edits made while the revision was captured are kept
+        // and no write can race the workspace's own saves.
+        if workspaceGeneration == generation,
+           sourceURL?.standardizedFileURL == image.url.standardizedFileURL,
+           var liveCase = analysisCase,
+           liveCase.source.relationship(to: targetRevision) == .exactRevision {
+            let before = liveCase.annotations
+            liveCase.replaceAnnotations(before + copies)
+            try liveCase.validateForPersistence()
+            photoAnnotationHistory.record(
+                before: before,
+                after: liveCase.annotations,
+                actionName: "Paste Annotations"
+            )
+            persist(liveCase)
+            await saveTask?.value
+            return
+        }
+
+        // Another photo: queue behind pending saves so none of them can land after the paste.
+        let previousSave = saveTask
+        let pasteSave = Task { [weak self] () throws -> AnalysisCase in
+            await previousSave?.value
+            // A failed earlier save of this photo holds edits newer than its disk copy; paste into
+            // that copy, which then replaces the failed record once it is durable.
+            if let self,
+               let record = self.failedBackgroundCaseSaves.values.first(where: {
+                   $0.analysisCase.source.relationship(to: targetRevision) == .exactRevision
+               }) {
+                var updated = record.analysisCase
+                updated.replaceAnnotations(updated.annotations + copies)
+                try updated.validateForPersistence()
+                self.failedBackgroundCaseSaves[updated.id] = nil
+                do {
+                    try await record.repository.save(updated)
+                } catch {
+                    self.failedBackgroundCaseSaves[updated.id] = record
+                    self.refreshSaveError()
+                    throw error
+                }
+                self.refreshSaveError()
+                return updated
+            }
+            var targetCase: AnalysisCase
+            switch await targetRepository.loadMostRelevantCase(for: targetRevision) {
             case .exact(let existing):
                 targetCase = existing
             case .sourceChanged, .none:
                 targetCase = AnalysisCase.create(for: targetRevision)
             }
+            targetCase.replaceAnnotations(targetCase.annotations + copies)
+            try targetCase.validateForPersistence()
+            try await targetRepository.save(targetCase)
+            return targetCase
         }
-
-        let before = targetCase.annotations
-        let copies = AnalysisAnnotationTransfer.copies(of: sourceAnnotations)
-        targetCase.replaceAnnotations(before + copies)
-        try targetCase.validateForPersistence()
-        if isCurrentSource {
-            saveTask?.cancel()
-            await saveTask?.value
-        }
-        let storage = try await targetRepository.save(targetCase)
+        saveTask = Task { _ = try? await pasteSave.value }
+        let targetCase = try await pasteSave.value
+        // The pasted copies are durable on disk; a workspace that moved on keeps its own state.
+        guard workspaceGeneration == generation else { return }
 
         if let index = folderAnalysisCases.firstIndex(where: { $0.id == targetCase.id }) {
             folderAnalysisCases[index] = targetCase
         } else {
             folderAnalysisCases.append(targetCase)
         }
-
-        if isCurrentSource {
-            analysisCase = targetCase
-            caseStorage = storage
-            sourceChanged = false
-            photoAnnotationHistory.record(
-                before: before,
-                after: targetCase.annotations,
-                actionName: "Paste Annotations"
-            )
-        }
     }
 
+    /// Cached; the inputs are compared cheaply on each read so SwiftUI bodies that read it
+    /// several times per update do not re-resolve and re-sort the timeline.
     var timestampEvidence: [AnalysisTimestampEvidence] {
+        let key = TimestampEvidenceCacheKey(
+            runs: analysisRunner.runs.map {
+                TimestampEvidenceCacheKey.Run(
+                    analyzerID: $0.analyzerID,
+                    cacheKey: $0.cacheKey,
+                    status: $0.status,
+                    completedAt: $0.completedAt
+                )
+            },
+            caseEvidence: analysisCase?.timestampEvidence ?? []
+        )
+        if let cached = timestampEvidenceCache, cached.key == key {
+            return cached.value
+        }
         let sourceEvidence = sourceFacts.map {
             AnalysisTimelineResolver.sourceEvidence(from: $0, rawMetadata: rawMetadata)
         } ?? []
-        return AnalysisTimelineResolver.sorted(
+        let value = AnalysisTimelineResolver.sorted(
             sourceEvidence + (analysisCase?.timestampEvidence ?? [])
         )
+        timestampEvidenceCache = (key, value)
+        return value
     }
 
     var timestampConflicts: [AnalysisTimestampConflict] {
@@ -221,7 +345,18 @@ final class AnalysisWorkspaceModel {
         folderMapDocument.annotations
     }
 
+    /// Cached until the open case or the folder's cases change (both invalidate it).
     var workingFolderMapAnnotations: [AnalysisImageMapAnnotation] {
+        // Register the observed inputs even when the cached value is returned.
+        _ = folderAnalysisCases.count
+        _ = analysisCase?.updatedAt
+        if let workingFolderMapAnnotationsCache { return workingFolderMapAnnotationsCache }
+        let value = buildWorkingFolderMapAnnotations()
+        workingFolderMapAnnotationsCache = value
+        return value
+    }
+
+    private func buildWorkingFolderMapAnnotations() -> [AnalysisImageMapAnnotation] {
         var newestCaseBySource: [URL: AnalysisCase] = [:]
         for analysisCase in folderAnalysisCases + (self.analysisCase.map { [$0] } ?? []) {
             let sourceURL = analysisCase.source.canonicalURL
@@ -276,11 +411,30 @@ final class AnalysisWorkspaceModel {
     /// Project export calls this before it snapshots the working folder.
     func flushPendingSaves() async {
         let pendingLoad = loadTask
+        await pendingLoad?.value
+        await flushPendingSaveChains()
+    }
+
+    /// Waits only for the chained case and folder-map writes, never for a photo load (which may
+    /// be hashing a file on a stalled volume). Termination uses this so Quit cannot hang.
+    func flushPendingSaveChains() async {
         let pendingCaseSave = saveTask
         let pendingFolderMapSave = folderMapSaveTask
-        await pendingLoad?.value
         await pendingCaseSave?.value
         await pendingFolderMapSave?.value
+    }
+
+    /// Every case and the folder map the repository holds for the open folder, including the
+    /// Application Support fallback used for read-only folders. Project export writes these into
+    /// the archive instead of relying on the folder's own `.photo_analysis` directory.
+    func persistedDocumentsForProjectExport() async -> (
+        cases: [AnalysisCase],
+        folderMap: AnalysisFolderMapDocument?
+    ) {
+        guard let repository else { return ([], nil) }
+        let cases = await repository.loadAllCases()
+        let folderMapLoad = await repository.loadFolderMapDocumentWithStorage()
+        return (cases, folderMapLoad.storage == nil ? nil : folderMapLoad.document)
     }
 
     /// Prevents analyzer callbacks from starting a path-bearing save while a browser rename is
@@ -292,10 +446,21 @@ final class AnalysisWorkspaceModel {
         renameQuiescenceNeedsCaseSave = false
         await flushPendingSaves()
 
-        if sourceURL?.deletingLastPathComponent().standardizedFileURL == normalizedFolder,
-           case .failed(let detail) = loadState {
+        // A failed save of a photo in this folder would be retried with its old path hint.
+        if let failed = failedBackgroundCaseSaves.values.first(where: {
+            isInRenameQuiescedFolder($0.analysisCase)
+        }) {
             renameQuiescenceFolderURL = nil
-            throw AnalysisRenameQuiescenceError.persistenceFailed(detail)
+            throw AnalysisRenameQuiescenceError.persistenceFailed(failed.message)
+        }
+
+        if sourceURL?.deletingLastPathComponent().standardizedFileURL == normalizedFolder {
+            var failureDetail = saveError
+            if case .failed(let detail) = loadState { failureDetail = detail }
+            if let failureDetail {
+                renameQuiescenceFolderURL = nil
+                throw AnalysisRenameQuiescenceError.persistenceFailed(failureDetail)
+            }
         }
     }
 
@@ -344,16 +509,21 @@ final class AnalysisWorkspaceModel {
         saveTask = nil
         folderMapSaveTask = nil
         repository = nil
+        folderRepository = nil
         openedImage = nil
         sourceURL = nil
         currentRevision = nil
         analysisCase = nil
+        unpersistedCaseID = nil
         folderAnalysisCases = []
         folderMapDocument = .create()
         caseStorage = nil
         folderMapStorage = nil
         sourceChanged = false
         loadState = .idle
+        clearSaveFailures()
+        pendingUnsavedChangesExit = nil
+        pendingExternalCloseTransition = nil
         renameQuiescenceFolderURL = nil
         renameQuiescenceNeedsCaseSave = false
     }
@@ -471,8 +641,8 @@ final class AnalysisWorkspaceModel {
     }
 
     deinit {
+        // Pending saves are left to finish so the last edit is never dropped.
         loadTask?.cancel()
-        saveTask?.cancel()
     }
 
     /// Sidebar navigation keeps the current tab, including while a previous image is loading.
@@ -486,10 +656,11 @@ final class AnalysisWorkspaceModel {
     ) {
         sessionWorkspaceMode = preferredWorkspaceMode
         workspaceGeneration = UUID()
+        // Wait for (never cancel) the previous case's saves so its last edit is durable and the
+        // reload below reads it back.
+        let pendingCaseSaveTask = saveTask
         let pendingFolderMapSaveTask = folderMapSaveTask
         loadTask?.cancel()
-        saveTask?.cancel()
-        folderMapSaveTask = nil
 
         sourceURL = image.url
         openedImage = image
@@ -497,7 +668,22 @@ final class AnalysisWorkspaceModel {
         sourceOrientation = image.exifOrientation
         hasDevelopedRepresentation = image.hasDevelopEdits && image.cameraRawSettings != nil
         loadState = .loading
+        // Failed saves are never dropped by navigation or Try Again: an open case whose save
+        // failed becomes a background record, which the reload adopts if it is the same case.
+        if let failure = caseSaveFailure, let analysisCase, let repository, !sourceChanged {
+            failedBackgroundCaseSaves[analysisCase.id] = BackgroundCaseSaveFailure(
+                analysisCase: analysisCase,
+                repository: repository,
+                message: Self.backgroundFailureMessage(for: analysisCase, detail: failure)
+            )
+        }
+        caseSaveFailure = nil
+        folderMapSaveFailure = nil
+        refreshSaveError()
+        pendingUnsavedChangesExit = nil
+        pendingExternalCloseTransition = nil
         analysisCase = nil
+        unpersistedCaseID = nil
         currentRevision = nil
         sourceChanged = false
         photoAnnotationHistory.removeAll()
@@ -513,32 +699,67 @@ final class AnalysisWorkspaceModel {
         let orientation = image.exifOrientation
         let repositoryFactory = repositoryFactory
         let generation = workspaceGeneration
+        let folderURL = url.deletingLastPathComponent().standardizedFileURL
+        // One repository per folder keeps its in-memory case index across navigation.
+        let reusableRepository = folderRepository?.folderURL == folderURL
+            ? folderRepository?.repository
+            : nil
         repository = nil
 
         loadTask = Task { [weak self] in
             do {
+                await pendingCaseSaveTask?.value
                 await pendingFolderMapSaveTask?.value
                 try Task.checkCancellation()
-                let repository = try await repositoryFactory(url.deletingLastPathComponent())
+                let repository: AnalysisCaseRepository
+                if let reusableRepository {
+                    repository = reusableRepository
+                } else {
+                    repository = try await repositoryFactory(url.deletingLastPathComponent())
+                }
                 try Task.checkCancellation()
                 guard let self, self.workspaceGeneration == generation else { return }
                 self.repository = repository
+                self.folderRepository = (folderURL, repository)
                 let revision = try await SourceImageRevision.capture(
                     at: url,
                     exifOrientation: orientation
                 )
                 try Task.checkCancellation()
-                let caseLoad = await repository.loadMostRelevantCaseWithStorage(for: revision)
+                let snapshot = await repository.loadWorkspaceSnapshot(for: revision)
                 try Task.checkCancellation()
 
                 guard self.workspaceGeneration == generation else { return }
                 self.currentRevision = revision
 
+                var caseLoad = snapshot.caseLoad
+                switch caseLoad.match {
+                case .exact:
+                    break
+                case .sourceChanged, .none:
+                    // A case whose first save failed after the photo was left is not on disk
+                    // at all. Reopen it like any other failed background save (below).
+                    if let failed = self.failedBackgroundCaseSaves.values.first(where: {
+                        $0.analysisCase.source.relationship(to: revision) == .exactRevision
+                    }) {
+                        caseLoad = AnalysisCaseLoad(
+                            match: .exact(failed.analysisCase),
+                            storage: snapshot.newDocumentStorage
+                        )
+                    }
+                }
                 self.caseStorage = caseLoad.storage
                 switch caseLoad.match {
                 case .exact(var existing):
                     let normalizationDate = Date()
-                    if AnalysisLinkedMapMarkerNaming.normalize(
+                    if let failed = self.failedBackgroundCaseSaves.removeValue(forKey: existing.id) {
+                        // This case's last save failed after it was left, so its disk copy is
+                        // older than the edits still held in memory. Reopen those edits and show
+                        // them as this case's failed save for Retry Save / Discard.
+                        existing = failed.analysisCase
+                        self.caseSaveFailure = failed.message
+                        self.refreshSaveError()
+                    } else if AnalysisLinkedMapMarkerNaming.normalize(
                         &existing.mapState.annotations,
                         using: existing.annotations,
                         now: normalizationDate
@@ -559,9 +780,11 @@ final class AnalysisWorkspaceModel {
                     self.sourceChanged = true
                     self.configureAnalysis(for: existing, autoStart: false)
                 case .none:
+                    // Viewing a photo does not write a case. It is created on disk by the
+                    // first edit or analyzer result worth keeping (see `persist`).
                     let newCase = AnalysisCase.create(for: revision)
-                    self.caseStorage = try await repository.save(newCase)
-                    try Task.checkCancellation()
+                    self.unpersistedCaseID = newCase.id
+                    self.caseStorage = snapshot.newDocumentStorage
                     self.analysisCase = newCase
                     self.sourceChanged = false
                     self.configureAnalysis(for: newCase, autoStart: true)
@@ -572,16 +795,22 @@ final class AnalysisWorkspaceModel {
                    var preferredCase = self.analysisCase,
                    preferredCase.workspaceMode != preferredWorkspaceMode {
                     preferredCase.setWorkspaceMode(preferredWorkspaceMode)
-                    self.caseStorage = try await repository.save(preferredCase)
+                    if self.unpersistedCaseID != preferredCase.id {
+                        self.caseStorage = try await repository.save(preferredCase)
+                        try Task.checkCancellation()
+                        guard self.workspaceGeneration == generation else { return }
+                    }
                     self.analysisCase = preferredCase
                 }
-                let folderCases = await repository.loadAllCases()
-                let folderMapLoad = await repository.loadFolderMapDocumentWithStorage()
-                try Task.checkCancellation()
-                guard self.workspaceGeneration == generation else { return }
+                var folderCases = snapshot.folderCases
+                if let openCase = self.analysisCase,
+                   let index = folderCases.firstIndex(where: { $0.id == openCase.id }) {
+                    // The snapshot predates this load's own normalization/mode saves.
+                    folderCases[index] = openCase
+                }
                 self.folderAnalysisCases = folderCases
-                self.folderMapDocument = folderMapLoad.document
-                self.folderMapStorage = folderMapLoad.storage
+                self.folderMapDocument = snapshot.folderMap.document
+                self.folderMapStorage = snapshot.folderMap.storage
                 self.loadState = .ready
             } catch is CancellationError {
                 return
@@ -599,6 +828,217 @@ final class AnalysisWorkspaceModel {
     func retry() {
         guard let openedImage else { return }
         open(openedImage)
+    }
+
+    /// Re-persists the in-memory documents whose last save failed. Unlike `retry()`, this never
+    /// reloads from disk, so edits made after the failure are kept.
+    func retryFailedSave() {
+        let retryCase = caseSaveFailure != nil
+        let retryFolderMap = folderMapSaveFailure != nil
+        caseSaveFailure = nil
+        folderMapSaveFailure = nil
+        var retryRecords: [BackgroundCaseSaveFailure] = []
+        for (id, record) in failedBackgroundCaseSaves {
+            // A record that cannot be written now stays reported rather than being cleared.
+            let isOpenEditableCase = id == analysisCase?.id && !sourceChanged
+            guard !isOpenEditableCase, !isInRenameQuiescedFolder(record.analysisCase) else {
+                continue
+            }
+            failedBackgroundCaseSaves[id] = nil
+            retryRecords.append(record)
+        }
+        refreshSaveError()
+        for record in retryRecords {
+            enqueueCaseSave(record.analysisCase, repository: record.repository, isBackgroundRetry: true)
+        }
+        if retryCase, let analysisCase {
+            persist(analysisCase)
+        }
+        if retryFolderMap {
+            persistFolderMapDocument(folderMapDocument)
+        }
+    }
+
+    /// Retries any failed save and waits until every pending document write has finished.
+    /// Returns false when the current edits are still not durable on disk.
+    func savePendingChanges(waitingForLoad: Bool = true) async -> Bool {
+        await flushPendingSaves(waitingForLoad: waitingForLoad)
+        if saveError != nil {
+            retryFailedSave()
+            await flushPendingSaves(waitingForLoad: waitingForLoad)
+        }
+        return saveError == nil
+    }
+
+    private func flushPendingSaves(waitingForLoad: Bool) async {
+        if waitingForLoad {
+            await flushPendingSaves()
+        } else {
+            await flushPendingSaveChains()
+        }
+    }
+
+    /// Opening another photo reloads the workspace from disk, so after a failed save it waits
+    /// for the user's Retry Save / Discard Changes / Cancel choice instead of dropping edits.
+    func requestOpen(_ image: ImageFile, preferredWorkspaceMode: AnalysisWorkspaceMode? = nil) {
+        unsavedExitRequestID = UUID()
+        guard saveError == nil else {
+            pendingExternalCloseTransition = nil
+            pendingUnsavedChangesExit = .openImage(image, preferredWorkspaceMode: preferredWorkspaceMode)
+            return
+        }
+        open(image, preferredWorkspaceMode: preferredWorkspaceMode)
+    }
+
+    func requestOpenInCurrentWorkspace(_ image: ImageFile) {
+        requestOpen(image, preferredWorkspaceMode: workspaceMode)
+    }
+
+    /// Returns true when the workspace may close now; otherwise the unsaved-changes prompt is
+    /// raised and the caller closes only if `completeUnsavedChangesExit` says so.
+    func requestClose() -> Bool {
+        unsavedExitRequestID = UUID()
+        guard saveError == nil else {
+            pendingExternalCloseTransition = nil
+            pendingUnsavedChangesExit = .close
+            return false
+        }
+        return true
+    }
+
+    /// Workspace switches that start outside Analysis (Workspace menu, toolbar, shortcuts) close
+    /// through the same unsaved-changes gate as the Close button. After a failed save the
+    /// transition waits for the prompt and runs only after a successful Retry Save or Discard.
+    func requestClose(thenPerform transition: @escaping @MainActor () -> Void) {
+        guard requestClose() else {
+            pendingExternalCloseTransition = transition
+            return
+        }
+        transition()
+    }
+
+    /// Hides the prompt. SwiftUI also calls this from the alert binding when Retry Save or
+    /// Discard is chosen, before their async completion runs, so it keeps a queued external
+    /// transition; only `cancelUnsavedChangesExit()` abandons it.
+    func dismissUnsavedChangesPrompt() {
+        pendingUnsavedChangesExit = nil
+    }
+
+    /// The prompt's Cancel: stay in Analysis and drop any queued workspace switch.
+    func cancelUnsavedChangesExit() {
+        unsavedExitRequestID = UUID()
+        pendingUnsavedChangesExit = nil
+        pendingExternalCloseTransition = nil
+    }
+
+    /// The save-error banner's Discard: forget every failed save, including earlier photos'.
+    /// The open photo stays on screen, so its in-memory edits are dropped by reloading it from
+    /// disk; otherwise the next annotation would save the discarded changes anyway.
+    func discardFailedSaves() {
+        let openDocumentFailed = caseSaveFailure != nil || folderMapSaveFailure != nil
+        clearSaveFailures()
+        if openDocumentFailed { retry() }
+    }
+
+    /// Finishes an exit the user confirmed from the unsaved-changes prompt. A failed retry keeps
+    /// the workspace (and its Retry Save banner) in place. Returns true when the caller should
+    /// now close the workspace; a close requested from outside Analysis runs its own transition
+    /// here instead and returns false.
+    func completeUnsavedChangesExit(
+        _ exit: AnalysisUnsavedChangesExit,
+        retryingSave: Bool
+    ) async -> Bool {
+        pendingUnsavedChangesExit = nil
+        let requestID = unsavedExitRequestID
+        let generation = workspaceGeneration
+        let externalTransition = pendingExternalCloseTransition
+        pendingExternalCloseTransition = nil
+        if retryingSave {
+            guard await savePendingChanges() else { return false }
+            // The retry can take long. A newer exit request, a cancelled prompt, or another
+            // photo opened meanwhile supersedes this exit.
+            guard unsavedExitRequestID == requestID, workspaceGeneration == generation else {
+                return false
+            }
+        } else {
+            clearSaveFailures()
+        }
+        switch exit {
+        case .openImage(let image, let preferredWorkspaceMode):
+            open(image, preferredWorkspaceMode: preferredWorkspaceMode)
+            return false
+        case .close:
+            if let externalTransition {
+                externalTransition()
+                return false
+            }
+            return true
+        }
+    }
+
+    private func clearSaveFailures() {
+        caseSaveFailure = nil
+        folderMapSaveFailure = nil
+        failedBackgroundCaseSaves = [:]
+        saveError = nil
+    }
+
+    private func refreshSaveError() {
+        saveError = caseSaveFailure
+            ?? folderMapSaveFailure
+            ?? failedBackgroundCaseSaves.values
+                .map(\.message)
+                .sorted()
+                .first
+    }
+
+    private static func backgroundFailureMessage(for failedCase: AnalysisCase, detail: String) -> String {
+        "Changes to \(failedCase.source.filenameAtCreation) could not be saved: \(detail)"
+    }
+
+    private func recordBackgroundSaveFailure(
+        _ error: Error,
+        for failedCase: AnalysisCase,
+        repository: AnalysisCaseRepository
+    ) {
+        let detail = error.localizedDescription.isEmpty
+            ? "The analysis case could not be saved."
+            : error.localizedDescription
+        failedBackgroundCaseSaves[failedCase.id] = BackgroundCaseSaveFailure(
+            analysisCase: failedCase,
+            repository: repository,
+            message: Self.backgroundFailureMessage(for: failedCase, detail: detail)
+        )
+        refreshSaveError()
+    }
+
+    private func recordSaveFailure(_ error: Error, isFolderMap: Bool) {
+        let message = error.localizedDescription.isEmpty
+            ? "Analysis changes could not be saved."
+            : error.localizedDescription
+        if isFolderMap {
+            folderMapSaveFailure = message
+        } else {
+            caseSaveFailure = message
+        }
+        refreshSaveError()
+    }
+
+    private func recordSaveSuccess(isFolderMap: Bool) {
+        if isFolderMap {
+            folderMapSaveFailure = nil
+        } else {
+            caseSaveFailure = nil
+        }
+        refreshSaveError()
+    }
+
+    private func isInRenameQuiescedFolder(_ analysisCase: AnalysisCase) -> Bool {
+        guard let quiescedFolder = renameQuiescenceFolderURL else { return false }
+        let caseFolder = analysisCase.source.canonicalURL.deletingLastPathComponent()
+            .standardizedFileURL
+        return caseFolder == quiescedFolder
+            || caseFolder.resolvingSymlinksInPath() == quiescedFolder.resolvingSymlinksInPath()
     }
 
     /// Keeps an open analysis workspace attached to the same source bytes after a successful
@@ -656,18 +1096,23 @@ final class AnalysisWorkspaceModel {
 
     func createCaseForCurrentRevision() {
         guard let currentRevision, let repository else { return }
-        saveTask?.cancel()
 
         let newCase = AnalysisCase.create(for: currentRevision)
         analysisCase = newCase
+        unpersistedCaseID = nil
         sourceChanged = false
         photoAnnotationHistory.removeAll()
         mapAnnotationHistory.removeAll()
         loadState = .loading
         analysisRunner.configure(existingRuns: [])
 
+        // Chained behind earlier saves, and later edits chain behind it, so neither cancels the
+        // other and the loading state always resolves once the new case is on disk.
+        let previousSave = saveTask
         saveTask = Task { [weak self] in
+            await previousSave?.value
             do {
+                try Task.checkCancellation()
                 let storage = try await repository.save(newCase)
                 try Task.checkCancellation()
                 guard let self, self.analysisCase?.id == newCase.id else { return }
@@ -785,6 +1230,35 @@ final class AnalysisWorkspaceModel {
               updatedCase.mapState.investigationLocation != location else { return }
         updatedCase.setInvestigationLocation(location)
         persist(updatedCase)
+    }
+
+    /// Applies a place-search result only when the case that started the lookup is still open.
+    /// Returns false (and changes nothing) when the result arrived for a case that was left.
+    @discardableResult
+    func setInvestigationLocation(
+        _ location: AnalysisLocationEvidence?,
+        requestedForCaseID caseID: UUID?
+    ) -> Bool {
+        guard caseID != nil, analysisCase?.id == caseID else { return false }
+        setInvestigationLocation(location)
+        return true
+    }
+
+    /// Names the investigation location from a reverse-geocode response, but only if the same
+    /// case is open and its location is still the coordinate that was looked up.
+    @discardableResult
+    func applyReverseGeocodedPlaceName(
+        _ placeName: String,
+        at coordinate: AnalysisGeoCoordinate,
+        requestedForCaseID caseID: UUID?
+    ) -> Bool {
+        guard caseID != nil, analysisCase?.id == caseID,
+              var location = mapState.investigationLocation,
+              location.coordinate == coordinate else { return false }
+        location.placeName = placeName
+        location.placeNameSource = .reverseGeocoded
+        setInvestigationLocation(location)
+        return true
     }
 
     func setSolarOverlay(_ overlay: AnalysisSolarOverlayState) {
@@ -1224,15 +1698,38 @@ final class AnalysisWorkspaceModel {
         }
     }
 
-    private func persistAnalyzerRun(_ run: AnalysisAnalyzerRun) {
+    /// Queued/running transitions stay in memory; only terminal results are written. A photo that
+    /// was merely viewed gets a case file only for a result worth keeping: a user edit of the run
+    /// (a finding's report inclusion) or a completed analyzer that is not cheap to recompute.
+    private func persistAnalyzerRun(_ run: AnalysisAnalyzerRun, isUserEdit: Bool) {
         guard var updatedCase = analysisCase,
               !sourceChanged else { return }
         updatedCase.setAnalyzerRun(run)
-        persist(updatedCase)
+        let isTerminal = run.status != .queued && run.status != .running
+        let createsCase = isUserEdit || (
+            run.status == .completed
+                && analyzers.first(where: { $0.identifier == run.analyzerID })?.cost != .fast
+        )
+        let isPersisted = unpersistedCaseID != updatedCase.id
+        if isUserEdit || (isTerminal && (isPersisted || createsCase)) {
+            persist(updatedCase)
+        } else {
+            replaceOpenCaseInMemory(updatedCase)
+        }
+    }
+
+    private func replaceOpenCaseInMemory(_ updatedCase: AnalysisCase) {
+        analysisCase = updatedCase
+        if let index = folderAnalysisCases.firstIndex(where: { $0.id == updatedCase.id }) {
+            folderAnalysisCases[index] = updatedCase
+        }
     }
 
     private func persist(_ updatedCase: AnalysisCase) {
         analysisCase = updatedCase
+        if unpersistedCaseID == updatedCase.id {
+            unpersistedCaseID = nil
+        }
         if let index = folderAnalysisCases.firstIndex(where: { $0.id == updatedCase.id }) {
             folderAnalysisCases[index] = updatedCase
         } else {
@@ -1247,18 +1744,50 @@ final class AnalysisWorkspaceModel {
             return
         }
 
-        saveTask?.cancel()
+        enqueueCaseSave(updatedCase, repository: repository)
+    }
+
+    private func enqueueCaseSave(
+        _ updatedCase: AnalysisCase,
+        repository: AnalysisCaseRepository,
+        isBackgroundRetry: Bool = false
+    ) {
+        saveSequence += 1
+        let sequence = saveSequence
+        latestCaseSaveSequence[updatedCase.id] = sequence
+        let previousSave = saveTask
         saveTask = Task { [weak self] in
+            await previousSave?.value
+            // A newer snapshot of the same case is queued behind this one and will write it.
+            guard !Task.isCancelled,
+                  (self?.latestCaseSaveSequence[updatedCase.id] ?? sequence) == sequence else {
+                return
+            }
             do {
                 let storage = try await repository.save(updatedCase)
-                guard let self, self.analysisCase?.id == updatedCase.id else { return }
+                guard let self else { return }
+                self.finishCaseSave(id: updatedCase.id, sequence: sequence)
+                guard !isBackgroundRetry, self.analysisCase?.id == updatedCase.id else { return }
                 self.caseStorage = storage
+                self.recordSaveSuccess(isFolderMap: false)
             } catch is CancellationError {
-                return
+                self?.finishCaseSave(id: updatedCase.id, sequence: sequence)
             } catch {
-                guard let self, self.analysisCase?.id == updatedCase.id else { return }
-                self.loadState = .failed(error.localizedDescription)
+                guard let self else { return }
+                self.finishCaseSave(id: updatedCase.id, sequence: sequence)
+                if !isBackgroundRetry, self.analysisCase?.id == updatedCase.id {
+                    self.recordSaveFailure(error, isFolderMap: false)
+                } else {
+                    // The photo was left before its last save failed; still tell the user.
+                    self.recordBackgroundSaveFailure(error, for: updatedCase, repository: repository)
+                }
             }
+        }
+    }
+
+    private func finishCaseSave(id: UUID, sequence: Int) {
+        if latestCaseSaveSequence[id] == sequence {
+            latestCaseSaveSequence[id] = nil
         }
     }
 
@@ -1283,18 +1812,37 @@ final class AnalysisWorkspaceModel {
         folderMapDocument = document
         guard let repository else { return }
 
-        folderMapSaveTask?.cancel()
+        saveSequence += 1
+        let sequence = saveSequence
+        latestFolderMapSaveSequence[document.id] = sequence
+        let previousSave = folderMapSaveTask
         folderMapSaveTask = Task { [weak self] in
+            await previousSave?.value
+            guard !Task.isCancelled,
+                  (self?.latestFolderMapSaveSequence[document.id] ?? sequence) == sequence else {
+                return
+            }
             do {
                 let storage = try await repository.saveFolderMapDocument(document)
-                guard let self, self.folderMapDocument.id == document.id else { return }
+                guard let self else { return }
+                self.finishFolderMapSave(id: document.id, sequence: sequence)
+                guard self.folderMapDocument.id == document.id else { return }
                 self.folderMapStorage = storage
+                self.recordSaveSuccess(isFolderMap: true)
             } catch is CancellationError {
-                return
+                self?.finishFolderMapSave(id: document.id, sequence: sequence)
             } catch {
-                guard let self, self.folderMapDocument.id == document.id else { return }
-                self.loadState = .failed(error.localizedDescription)
+                guard let self else { return }
+                self.finishFolderMapSave(id: document.id, sequence: sequence)
+                guard self.folderMapDocument.id == document.id else { return }
+                self.recordSaveFailure(error, isFolderMap: true)
             }
+        }
+    }
+
+    private func finishFolderMapSave(id: UUID, sequence: Int) {
+        if latestFolderMapSaveSequence[id] == sequence {
+            latestFolderMapSaveSequence[id] = nil
         }
     }
 
@@ -1343,6 +1891,49 @@ final class AnalysisWorkspaceModel {
         case .informational: 0
         case .notable: 1
         case .caution: 2
+        }
+    }
+}
+
+nonisolated struct AnalysisTerminationSaveError: LocalizedError, Sendable {
+    let message: String
+
+    var errorDescription: String? { message }
+}
+
+/// Lets application termination wait for, and after a failure retry, the Analysis case and
+/// folder-map saves of every open window, so Quit cannot silently drop an Analysis edit.
+@MainActor
+final class AnalysisWorkspaceTerminationFlush {
+    static let shared = AnalysisWorkspaceTerminationFlush()
+    private let models = NSHashTable<AnalysisWorkspaceModel>.weakObjects()
+    /// Models whose window closed while the app keeps running. Held strongly so their pending
+    /// saves and failed-save records stay reachable for the quit flush instead of vanishing
+    /// with the window.
+    private var closedWindowModels: [AnalysisWorkspaceModel] = []
+
+    func register(_ model: AnalysisWorkspaceModel) {
+        models.add(model)
+    }
+
+    func retainUntilTermination(_ model: AnalysisWorkspaceModel) {
+        guard !closedWindowModels.contains(where: { $0 === model }) else { return }
+        closedWindowModels.append(model)
+    }
+
+    /// Every window is saved before any failure is reported, so one failing window cannot stop
+    /// the others' edits from becoming durable.
+    func flush() async throws {
+        var failures: [String] = []
+        var all = models.allObjects
+        for model in closedWindowModels where !all.contains(where: { $0 === model }) { all.append(model) }
+        for model in all {
+            if await !model.savePendingChanges(waitingForLoad: false) {
+                failures.append(model.saveError ?? "Analysis changes could not be saved.")
+            }
+        }
+        guard failures.isEmpty else {
+            throw AnalysisTerminationSaveError(message: failures.joined(separator: "\n"))
         }
     }
 }

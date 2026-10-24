@@ -129,10 +129,21 @@ struct DeliveryWorkflowCoordinatorTests {
 
     @Test("upload, remote confirmation, and receipt writes fail with exact recoverable evidence")
     func terminalBoundaryFailures() async throws {
+        // A file the server no longer lists after an acknowledged upload (drop box, hot
+        // folder) is sent-but-not-visible: the workflow completes with a receipt.
+        let missingFixture = try await WorkflowFixture(itemCount: 1)
+        let missingHarness = WorkflowHarness(
+            plan: missingFixture.plan,
+            injection: .remoteMissing(itemIndex: 0)
+        )
+        let missing = try await makeCoordinator(fixture: missingFixture, harness: missingHarness)
+            .start(missingFixture.request)
+        #expect(missing.isSent)
+        #expect(missing.receipt?.items.first?.remoteStatAcknowledgement.status == .notVisibleAfterUpload)
+
         for injection in [
             WorkflowHarness.Injection.inspect,
             .upload(itemIndex: 0),
-            .remoteMissing(itemIndex: 0),
             .receiptWrite,
         ] {
             let fixture = try await WorkflowFixture(itemCount: 1)

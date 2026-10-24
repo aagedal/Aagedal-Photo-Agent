@@ -314,7 +314,7 @@ actor FavoriteFolderBookmarkService {
 @MainActor
 @Observable
 final class RecentFoldersStore {
-    static let shared = RecentFoldersStore(defaults: .standard)
+    static let shared = RecentFoldersStore(defaults: AppDefaults.store)
 
     private(set) var folders: [RecentFolder] = []
 

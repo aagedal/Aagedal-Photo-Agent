@@ -125,9 +125,12 @@ actor ThumbnailImageRenderWorker {
         cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int
     ) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
-        let edited = await access.edit(CIImage(cgImage: cgImage), settings, exifOrientation)
-        guard !Task.isCancelled else { return nil }
-        let rendered = access.materialize(edited)
+        // A failed-GPU placeholder is registered so the edited-thumbnail cache never keeps it.
+        let rendered = await RedactionPlaceholderTracking.track {
+            let edited = await access.edit(CIImage(cgImage: cgImage), settings, exifOrientation)
+            guard !Task.isCancelled else { return nil }
+            return access.materialize(edited)
+        }
         return Task.isCancelled ? nil : rendered
     }
 }
@@ -155,6 +158,9 @@ final class ThumbnailService {
     /// held arrow key spawns hundreds of QuickLook/ImageIO decodes at once, saturating `thumbnailsd`
     /// and the cooperative pool so the thumbnails actually on screen queue behind off-screen ones.
     private let decodeGate = ThumbnailDecodeGate(limit: 6)
+    /// Bounds the post-decode sidecar-orientation stage separately, so a slow volume can't pile
+    /// up blocked workers (and decoded images) behind the freed decode slots.
+    private let orientationGate = ThumbnailDecodeGate(limit: 6)
 
     init(
         memoryCoordinator: ImageMemoryCoordinator = .shared,
@@ -264,14 +270,22 @@ final class ThumbnailService {
             await decodeGate.release()
             return nil
         }
-        var oriented: NSImage?
+        var decoded: NSImage?
         if let ql = await generateQLThumbnail(for: url) {
-            oriented = await ThumbnailImageRenderWorker().orientedToSidecar(ql, fileURL: url)
-        } else if !Task.isCancelled,
-                  let cg = await loadCGImageSourceThumbnail(for: url) {
-            oriented = await ThumbnailImageRenderWorker().orientedToSidecar(cg, fileURL: url)
+            decoded = ql
+        } else if !Task.isCancelled {
+            decoded = await loadCGImageSourceThumbnail(for: url)
         }
+        // The gate bounds decodes only. Release the slot before the sidecar lookup (JSON
+        // existence checks plus an .xmp read/parse per thumbnail — slow on NAS/SD cards) so
+        // the next decode can start. The lookup still happens after the decode, exactly as
+        // before, so a rotation written meanwhile is still picked up: sidecar orientation wins.
         await decodeGate.release()
+        guard !Task.isCancelled, let decoded else { return nil }
+        guard await orientationGate.acquire() else { return nil }
+        let oriented = Task.isCancelled
+            ? nil : await ThumbnailImageRenderWorker().orientedToSidecar(decoded, fileURL: url)
+        await orientationGate.release()
         return Task.isCancelled ? nil : oriented
     }
 
@@ -322,7 +336,10 @@ final class ThumbnailService {
                 // so a render for the old orientation can't clobber the rotated cache entry.
                 guard !Task.isCancelled else { return nil }
                 let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
-                editedCache.setObject(edited, forKey: url as NSURL, cost: Self.decodedCost(of: edited))
+                // A failed-GPU placeholder is shown but not cached: the next request retries.
+                if !RedactionPlaceholderTracking.isPlaceholder(outputCG) {
+                    editedCache.setObject(edited, forKey: url as NSURL, cost: Self.decodedCost(of: edited))
+                }
                 return edited
             }
 
@@ -355,7 +372,9 @@ final class ThumbnailService {
             // so a render for the old orientation can't clobber the rotated cache entry.
             guard !Task.isCancelled else { return nil }
             let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
-            editedCache.setObject(edited, forKey: url as NSURL, cost: Self.decodedCost(of: edited))
+            if !RedactionPlaceholderTracking.isPlaceholder(outputCG) {
+                editedCache.setObject(edited, forKey: url as NSURL, cost: Self.decodedCost(of: edited))
+            }
             return edited
         }
 
@@ -515,7 +534,11 @@ final class ThumbnailService {
 
     /// Rotates the cached thumbnail in-place for instant visual feedback during rotation.
     /// Falls back to invalidation if no cached thumbnail exists.
-    func rotateThumbnailInCache(for url: URL, clockwise: Bool) {
+    /// `editedHasDisplayFrameArtwork`: the edited render carries artwork drawn upright in the
+    /// display frame (watermark layers). Turning those pixels would leave the artwork sideways,
+    /// so the edited entry is dropped and re-rendered through `decodedEditedPreview`
+    /// (`applyEditsInDisplayFrame`) at the new orientation instead.
+    func rotateThumbnailInCache(for url: URL, clockwise: Bool, editedHasDisplayFrameArtwork: Bool = false) {
         // Cancel any in-flight edited render: it captured the pre-rotation orientation and,
         // for a slow gated RAW decode, would finish *after* this rotation and overwrite the
         // freshly-rotated cache entry with a stale-orientation image — leaving the grid
@@ -528,7 +551,8 @@ final class ThumbnailService {
         } else {
             cache.removeObject(forKey: url as NSURL)
         }
-        if let existing = editedCache.object(forKey: url as NSURL),
+        if !editedHasDisplayFrameArtwork,
+           let existing = editedCache.object(forKey: url as NSURL),
            let rotated = rotateImage90(existing, clockwise: clockwise) {
             editedCache.setObject(rotated, forKey: url as NSURL, cost: Self.decodedCost(of: rotated))
         } else {
@@ -570,6 +594,16 @@ final class ThumbnailService {
         cache.removeAllObjects()
         editedCache.removeAllObjects()
         cancelInFlightWork()
+    }
+
+    /// Drops every edited (Develop-rendered) thumbnail and its producers, keeping originals —
+    /// for changes such as the RAW decode profile that alter every edited render.
+    func clearEditedCache() {
+        editedCache.removeAllObjects()
+        for request in editedInFlightTasks.values {
+            request.task.cancel()
+        }
+        editedInFlightTasks.removeAll()
     }
 
     /// Cancels producers without discarding completed thumbnails. Warning pressure uses this

@@ -5,13 +5,20 @@ import SwiftUI
 struct ImageSupplierMetadataEditor: View {
     @Binding var suppliers: [EditorialImageSupplier]
     var onChange: () -> Void
+    /// Saves like the panel's other fields: on Return, on leaving a field, and on Remove.
+    var onCommit: () -> Void = {}
 
     @State private var isExpanded = false
+    @FocusState private var focusedRow: String?
 
     var body: some View {
         DisclosureGroup("Image Supplier", isExpanded: $isExpanded) {
-            supplierRows(suppliers: $suppliers, onChange: onChange)
+            supplierRows(suppliers: $suppliers, onChange: onChange, onRemove: onCommit, focus: $focusedRow)
                 .padding(.top, 6)
+        }
+        .onSubmit { onCommit() }
+        .onChange(of: focusedRow) { oldValue, newValue in
+            if oldValue != nil, oldValue != newValue { onCommit() }
         }
         .metadataField(.imageSupplier)
         .accessibilityIdentifier("metadata.imageSupplier")
@@ -125,7 +132,9 @@ struct BatchImageSupplierMetadataEditor: View {
 @ViewBuilder
 private func supplierRows(
     suppliers: Binding<[EditorialImageSupplier]>,
-    onChange: @escaping () -> Void
+    onChange: @escaping () -> Void,
+    onRemove: @escaping () -> Void = {},
+    focus: FocusState<String?>.Binding? = nil
 ) -> some View {
     VStack(alignment: .leading, spacing: 8) {
         if suppliers.wrappedValue.isEmpty {
@@ -143,11 +152,14 @@ private func supplierRows(
                         guard suppliers.wrappedValue.indices.contains(index) else { return }
                         suppliers.wrappedValue.remove(at: index)
                         onChange()
+                        onRemove()
                     }
                     .buttonStyle(.borderless)
                 }
                 TextField("Supplier name", text: supplierText(at: index, keyPath: \.name, in: suppliers, onChange: onChange))
+                    .trackingFocus(focus, key: "supplier.\(index).name")
                 TextField("Supplier identifier", text: supplierText(at: index, keyPath: \.identifier, in: suppliers, onChange: onChange))
+                    .trackingFocus(focus, key: "supplier.\(index).identifier")
             }
             .textFieldStyle(.roundedBorder)
             .padding(8)
@@ -178,6 +190,14 @@ private func supplierText(
             onChange()
         }
     )
+}
+
+extension View {
+    /// Binds a text field to a shared focus key when its editor tracks focus loss.
+    @ViewBuilder
+    func trackingFocus(_ focus: FocusState<String?>.Binding?, key: String) -> some View {
+        if let focus { focused(focus, equals: key) } else { self }
+    }
 }
 
 private func supplierSummary(_ suppliers: [EditorialImageSupplier]) -> String {

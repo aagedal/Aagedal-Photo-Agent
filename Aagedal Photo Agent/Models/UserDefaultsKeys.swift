@@ -23,6 +23,10 @@ nonisolated enum UserDefaultsKeys {
     /// Settings ▸ Automation shows its review, history and recovery sections.
     static let automationShowsAdvanced = "automationShowsAdvanced"
 
+    // MARK: - Description Assistant
+    /// Last caption language chosen in the Description Assistant (single and batch).
+    static let descriptionAssistantLanguage = "descriptionAssistant.language"
+
     // MARK: - Face Recognition
     static let browserFaceBarCollapsed = "browserFaceBarCollapsed"
     static let faceCleanupPolicy = "faceCleanupPolicy"
@@ -184,6 +188,7 @@ nonisolated enum UserDefaultsKeys {
     // MARK: - Import Verification & Backup
     static let importVerificationMode = "importVerificationMode"
     static let importDestinationBookmark = "importDestinationBookmark"
+    static let webImportDestinationBookmark = "webImportDestinationBookmark"
     static let importBackupBookmark = "importBackupBookmark"
     static let importBackupVerifyAfterWrite = "importBackupVerifyAfterWrite"
     static let editedFolderBackupBookmark = "editedFolderBackupBookmark"
@@ -228,6 +233,9 @@ nonisolated enum UserDefaultsKeys {
     /// Stable per-list migration identifiers. Successful lists remain complete
     /// while failed sources retry on a later launch.
     static let keywordListsMigrationCompletedKeys = "keywordLists.migrationCompletedKeys"
+    /// Relative paths of keyword lists the user emptied on purpose. The launch recovery
+    /// prompt ignores them until they have content again.
+    static let keywordListsDeliberatelyCleared = "keywordLists.deliberatelyCleared"
 
     // MARK: - iCloud Sync (per-category opt-in; local-only, never synced)
     /// True when app preferences are mirrored via NSUbiquitousKeyValueStore.

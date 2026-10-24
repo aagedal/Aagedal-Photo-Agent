@@ -142,7 +142,7 @@ struct KnownPeopleListView: View {
             }
             .disabled(deletingPersonIDs.contains(person.id))
         } message: { person in
-            Text("Are you sure you want to delete \"\(person.name)\"? This will remove all \(person.embeddings.count) face sample(s). This cannot be undone.")
+            Text("Are you sure you want to delete \"\(person.name)\"? This will remove all \(person.embeddings.count) face sample(s). This cannot be undone.\n\nFace groups in your folders keep the name \"\(person.name)\", and Person Shown in your photos is not changed unless you update it.")
         }
         .alert(
             "Deletion Not Completed",

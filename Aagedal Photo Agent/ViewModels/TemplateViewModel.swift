@@ -30,6 +30,9 @@ final class TemplateViewModel {
     var editingTemplate = MetadataTemplate()
     var errorMessage: String?
     private(set) var saveError: TemplateSaveError?
+    /// Templates sync is on but iCloud Drive is unreachable: the list shows the local fallback
+    /// read-only and saves are refused. Refreshed on every inventory load.
+    private(set) var isCloudStorageUnavailable = false
 
     @ObservationIgnored private var editingBaseline: MetadataTemplate?
     @ObservationIgnored private var inventoryAuthorities: [UUID: TemplateFileAuthority] = [:]
@@ -49,6 +52,9 @@ final class TemplateViewModel {
     @ObservationIgnored private var importCommitRequestID: UUID?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var loadRequestID: UUID?
+    /// Waiters for the inventory. A superseded load leaves them for its replacement, so a
+    /// shortcut pressed while the list reloads still runs; `nil` reports a failed load.
+    @ObservationIgnored private var loadCompletions: [([MetadataTemplate]?) -> Void] = []
     @ObservationIgnored private var mutationTask: Task<TemplateMutationOperationResult<MetadataTemplate>, Error>?
     @ObservationIgnored private var mutationRequestID: UUID?
     @ObservationIgnored private var exportTask: Task<Void, Never>?
@@ -68,11 +74,35 @@ final class TemplateViewModel {
             ?? TemplateImportCommitService(storage: storage)
     }
 
+    /// Runs `completion` with a freshly read inventory: the result of the pending load, or of a
+    /// new one. Templates are edited through Settings' own view model, so this instance's
+    /// in-memory copy can be stale. `nil` means the inventory could not be read.
+    func withLoadedTemplates(_ completion: @escaping ([MetadataTemplate]?) -> Void) {
+        loadCompletions.append(completion)
+        if loadTask == nil { loadTemplates() }
+    }
+
+    private func finishLoadCompletions(_ templates: [MetadataTemplate]?) {
+        let completions = loadCompletions
+        loadCompletions = []
+        completions.forEach { $0(templates) }
+    }
+
+    /// `onLoaded` runs once the inventory is read, by this load or one that supersedes it.
     func loadTemplates(onLoaded: (([MetadataTemplate]) -> Void)? = nil) {
+        if let onLoaded {
+            loadCompletions.append { templates in
+                if let templates { onLoaded(templates) }
+            }
+        }
         loadTask?.cancel()
         let requestID = UUID()
         loadRequestID = requestID
         loadTask = Task { [weak self, crudService] in
+            let cloudUnavailable = await Self.probeTemplatesCloudUnavailable()
+            if let self, self.loadRequestID == requestID {
+                self.isCloudStorageUnavailable = cloudUnavailable
+            }
             do {
                 let result = try await crudService.load(requestID: requestID)
                 guard let self,
@@ -80,13 +110,16 @@ final class TemplateViewModel {
                       !Task.isCancelled else { return }
                 self.loadTask = nil
                 self.loadRequestID = nil
-                guard case .loaded(let snapshot) = result else { return }
+                guard case .loaded(let snapshot) = result else {
+                    self.finishLoadCompletions(self.hasInventoryProvenance ? self.templates : nil)
+                    return
+                }
                 self.templates = snapshot.templates
                 self.inventoryDirectoryURL = snapshot.directoryURL
                 self.inventoryAuthorities = snapshot.authorities
                 self.hasInventoryProvenance = true
                 self.errorMessage = nil
-                onLoaded?(snapshot.templates)
+                self.finishLoadCompletions(snapshot.templates)
             } catch {
                 guard let self,
                       self.loadRequestID == requestID,
@@ -94,8 +127,14 @@ final class TemplateViewModel {
                 self.loadTask = nil
                 self.loadRequestID = nil
                 self.errorMessage = error.localizedDescription
+                self.finishLoadCompletions(nil)
             }
         }
+    }
+
+    /// The ubiquity lookup can block, so it never runs on the main actor.
+    @concurrent nonisolated static func probeTemplatesCloudUnavailable() async -> Bool {
+        AppPaths.templatesCloudUnavailable
     }
 
     @discardableResult
@@ -384,6 +423,8 @@ final class TemplateViewModel {
         loadTask?.cancel()
         loadTask = nil
         loadRequestID = nil
+        // No replacement load will deliver these; answer them from the current inventory.
+        finishLoadCompletions(hasInventoryProvenance ? templates : nil)
     }
 
     func preparePreview(from source: URL) {

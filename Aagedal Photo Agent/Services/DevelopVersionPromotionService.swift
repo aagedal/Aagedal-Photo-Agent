@@ -39,6 +39,12 @@ nonisolated enum DevelopVersionPromotionError: Error, Equatable, LocalizedError,
     }
 }
 
+/// A promotion refused before any write (no recovery version, no Primary change).
+nonisolated struct DevelopVersionPromotionRefusal: LocalizedError, Sendable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 nonisolated struct DevelopVersionPromotionResult: Equatable, Sendable {
     let catalog: DevelopVersionCatalog
     let storage: DevelopVersionCatalogStorage
@@ -57,17 +63,32 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
     private let writePrimary: PrimaryWrite
     private let readPrimary: PrimaryRead
     private let orientation: Int?
+    /// Set when this source has no safe Primary destination for a promotion; checked before
+    /// anything (including the recovery catalog) is written.
+    private let refusal: String?
 
     init(
         saveCatalog: @escaping CatalogSave,
         writePrimary: @escaping PrimaryWrite,
         readPrimary: @escaping PrimaryRead,
-        orientation: Int? = nil
+        orientation: Int? = nil,
+        refusal: String? = nil
     ) {
         self.saveCatalog = saveCatalog
         self.writePrimary = writePrimary
         self.readPrimary = readPrimary
         self.orientation = orientation
+        self.refusal = refusal
+    }
+
+    /// The JPEG of a RAW+JPEG pair keeps its Primary Develop in its own embedded XMP, and the
+    /// shared stem sidecar's crs belongs to the RAW. Promotion writes Primary through the sidecar,
+    /// so it is refused for such a JPEG rather than writing a recovery version it can't complete.
+    nonisolated static func pairedJPEGRefusal(for imageURL: URL) -> String? {
+        guard !SupportedImageFormats.isRaw(url: imageURL),
+              let raw = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL, requiringFreshListing: true) else { return nil }
+        return "\(imageURL.lastPathComponent) shares its XMP sidecar with \(raw.lastPathComponent) and keeps its Primary Develop settings in the file itself, "
+            + "so named versions can't be promoted to Primary on it. Nothing was changed. Switch to the version and keep editing, or promote on the RAW file."
     }
 
     init(
@@ -85,14 +106,16 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
                     for: imageURL
                 )
             },
-            readPrimary: { sidecars.loadSidecar(for: imageURL)?.cameraRaw },
-            orientation: orientation
+            readPrimary: { sidecars.loadDevelopSettings(for: imageURL) },
+            orientation: orientation,
+            refusal: Self.pairedJPEGRefusal(for: imageURL)
         )
     }
 
     func promote(
         _ preparation: DevelopVersionPromotionPreparation
     ) async throws -> DevelopVersionPromotionResult {
+        if let refusal { throw DevelopVersionPromotionRefusal(message: refusal) }
         do {
             _ = try await saveCatalog(preparation.catalog)
         } catch {

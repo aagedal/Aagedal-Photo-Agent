@@ -12,6 +12,21 @@ struct CaptionSessionTests {
         URL(fileURLWithPath: "/tmp/caption-c.jpg"),
     ]
 
+    @Test("Photo list keeps browser order, drops non-photos, and looks up the current photo by URL")
+    func photoListCache() {
+        let video = URL(fileURLWithPath: "/tmp/caption-clip.mov")
+        let list = CaptionPhotoList(browserImages: [
+            ImageFile(url: urls[1]), ImageFile(url: video), ImageFile(url: urls[0]),
+        ])
+        #expect(list.urls == [urls[1], urls[0]])
+        #expect(list.images.map(\.url) == [urls[1], urls[0]])
+        #expect(list.image(forStandardizedURL: urls[0].standardizedFileURL)?.url == urls[0])
+        #expect(list.image(forStandardizedURL: video) == nil)
+        #expect(list.contains(URL(fileURLWithPath: "/tmp/./caption-b.jpg")))
+        #expect(!list.contains(video))
+        #expect(!list.contains(urls[2]))
+    }
+
     @Test("Preparation awaits retained writes, excludes commands and rejects replaced context", arguments: [false, true])
     func durablePreparation(replaceContext: Bool) async throws {
         let queue = CaptionDraftPersistenceQueue(label: "caption.prepare")
@@ -242,6 +257,28 @@ struct CaptionSessionTests {
         let current = try #require(session.beginLoad())
         #expect(current.imageURL == urls[1])
         #expect(session.accepts(load: current))
+    }
+
+    @Test("In-place actions keep the preview load; only a focus change invalidates it")
+    func previewLoadSurvivesInPlaceActions() async throws {
+        let session = CaptionSession(imageURLs: urls)
+        let preview = try #require(session.beginPreviewLoad())
+        for action in [CaptionSessionAction.write, .applyTemplate, .copyPrevious, .codeReplacement] {
+            let editorLoad = try #require(session.beginLoad())
+            try await session.prepare(for: action) {}
+            #expect(!session.accepts(load: editorLoad))
+            #expect(session.acceptsPreview(load: preview))
+        }
+        // A list refresh that keeps the focused photo keeps its preview too.
+        session.replaceImages([urls[0], urls[2], urls[1]])
+        #expect(session.acceptsPreview(load: preview))
+
+        #expect(try await session.goNext {})
+        #expect(!session.acceptsPreview(load: preview))
+        let next = try #require(session.beginPreviewLoad())
+        #expect(session.acceptsPreview(load: next))
+        session.replaceImages([urls[0], urls[1]])
+        #expect(!session.acceptsPreview(load: next))
     }
 
     @Test("Navigation returns while serialized sidecar persistence is still blocked")
@@ -515,6 +552,57 @@ struct CaptionSessionTests {
             try await coordinator.flushAsync()
         }
     }
+
+    @Test("Each mounted editor keeps its own flush handler; quit and workspace transitions flush them all")
+    func flushHandlersAreKeyedByOwner() async throws {
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        let firstReview = UUID()
+        let secondReview = UUID()
+        var flushed: [String] = []
+        coordinator.register(owner: firstReview) { flushed.append("first") }
+        coordinator.register(owner: secondReview) { flushed.append("second") }
+
+        // Caption-style calls still address the most recent editor only.
+        try coordinator.enqueueFlush()
+        #expect(flushed == ["second"])
+
+        // A workspace transition captures both panes' drafts.
+        flushed = []
+        try await coordinator.prepareForTransition(hasLiveEditor: true, isCurrent: { true })
+        #expect(flushed == ["first", "second"])
+
+        // Termination captures every editor once, even across a retry.
+        flushed = []
+        let termination = CaptionWorkspaceTerminationFlushOperation(coordinator: coordinator)
+        try await termination.flush()
+        try await termination.flush()
+        #expect(flushed == ["first", "second"])
+
+        // One editor's refusal does not stop the others from being captured.
+        flushed = []
+        let refusing = UUID()
+        coordinator.register(owner: refusing) { throw FlushFailure() }
+        #expect(throws: FlushFailure.self) { try coordinator.enqueueFlushAll() }
+        #expect(flushed == ["first", "second"])
+        let retry = CaptionWorkspaceTerminationFlushOperation(coordinator: coordinator)
+        flushed = []
+        await #expect(throws: FlushFailure.self) { try await retry.flush() }
+        #expect(flushed == ["first", "second"])
+        coordinator.unregister(owner: refusing)
+
+        // Caption addresses its own editor even when a Review pane registered after it.
+        flushed = []
+        try coordinator.enqueueFlush(owner: firstReview)
+        #expect(flushed == ["first"])
+        #expect(throws: CaptionWorkspaceFlushError.handlerUnavailable) { try coordinator.enqueueFlush(owner: UUID()) }
+
+        // Unmounting one pane leaves the other registered.
+        coordinator.unregister(owner: secondReview)
+        #expect(coordinator.hasRegisteredHandler)
+        flushed = []
+        try coordinator.enqueueFlushAll()
+        #expect(flushed == ["first"])
+    }
 }
 
 private struct FlushFailure: Error {}
@@ -531,7 +619,7 @@ private nonisolated final class BlockingGate: @unchecked Sendable {
     }
 
     func wait() {
-        semaphore.wait()
+        semaphore.waitBounded()
     }
 
 }
@@ -1133,7 +1221,7 @@ struct MetadataReviewPersistenceTests {
         let release = DispatchSemaphore(value: 0)
         let queue = CaptionDraftPersistenceQueue(label: "review.in-flight")
         let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
-        queue.enqueue(operation: { started.signal(); release.wait() })
+        queue.enqueue(operation: { started.signal(); release.waitBounded() })
         defer { release.signal() }
         let didStart = await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
@@ -1168,7 +1256,7 @@ struct MetadataReviewPersistenceTests {
 
 @Suite("Variable draft lifecycle integration")
 struct VariableDraftLifecycleIntegrationTests {
-    @Test("Close and Quit block before capturing another editor until variable drafts are durable")
+    @Test("Close blocks before capturing until variable drafts are durable; Quit captures first and still reports them")
     @MainActor
     func unpersistedVariableDraftBlocksLifecycle() async throws {
         let lifecycle = VariableDraftLifecycleCoordinator()
@@ -1190,10 +1278,12 @@ struct VariableDraftLifecycleIntegrationTests {
         } catch {
             #expect(error.localizedDescription == "Variable draft is not saved")
         }
-        #expect(captures == 0)
+        // Quit captures every editor before checking variable drafts, so Quit Without Saving on
+        // the Caption stage abandons only the variable draft, never the other editors' buffers.
+        #expect(captures == 1)
         lifecycle.unregister(ownerID: owner)
         try await termination.flush()
-        #expect(captures == 1)
+        #expect(captures == 1, "a retry drains the retained capture without recapturing")
         #expect(!coordinator.hasPendingPersistence)
     }
 }

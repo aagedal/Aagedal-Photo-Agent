@@ -15,7 +15,7 @@ final class ScopeViewModel {
         didSet {
             guard scopeMode != oldValue else { return }
             if persistsScopeMode {
-                UserDefaults.standard.set(scopeMode.rawValue, forKey: UserDefaultsKeys.lastScopeMode)
+                AppDefaults.store.set(scopeMode.rawValue, forKey: UserDefaultsKeys.lastScopeMode)
             }
             rerender()
         }
@@ -34,7 +34,7 @@ final class ScopeViewModel {
 
         if let scopeMode {
             self.scopeMode = scopeMode
-        } else if let raw = UserDefaults.standard.string(
+        } else if let raw = AppDefaults.store.string(
             forKey: UserDefaultsKeys.lastScopeMode
         ), let mode = ScopeMode(rawValue: raw) {
             self.scopeMode = mode
@@ -91,13 +91,36 @@ final class ScopeViewModel {
     /// so the idle presentation matches the adjusting presentation without continuously
     /// consuming GPU time.
     var isMetalScopeActive: Bool {
-        metalScopePipeline != nil && metalEditPipeline?.hasSourceTexture == true
+        // The pipelines and their texture are not observable; reading the revision makes every
+        // view that branches on this re-evaluate when the source texture appears or goes away.
+        _ = metalSourceRevision
+        return metalScopePipeline != nil && metalEditPipeline?.hasSourceTexture == true
+    }
+
+    /// Observable stand-in for the edit pipeline's source-texture state. Bumped by
+    /// `refreshMetalSourceRevision()` whenever the pipeline's texture revision changes (upload,
+    /// precache promotion, clear) or the Metal objects are replaced.
+    private(set) var metalSourceRevision = 0
+    @ObservationIgnored private var lastSeenPipelineSourceRevision: UInt64?
+    @ObservationIgnored private var lastSeenHasScopePipeline = false
+
+    /// Call after anything that may have published or cleared the edit pipeline's source
+    /// texture, or replaced the Metal objects. Notifies observers only when that state changed.
+    func refreshMetalSourceRevision() {
+        let current = metalEditPipeline?.sourceTextureRevision
+        let hasScopePipeline = metalScopePipeline != nil
+        guard current != lastSeenPipelineSourceRevision
+                || hasScopePipeline != lastSeenHasScopePipeline else { return }
+        lastSeenPipelineSourceRevision = current
+        lastSeenHasScopePipeline = hasScopePipeline
+        metalSourceRevision &+= 1
     }
 
     func clearMetal() {
         metalScopePipeline = nil
         metalEditPipeline = nil
         metalScopeCoordinator = nil
+        refreshMetalSourceRevision()
     }
 
     // MARK: - CPU Scope

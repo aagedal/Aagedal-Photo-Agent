@@ -50,16 +50,23 @@ nonisolated struct DescriptionAssistantRequest: Identifiable, Sendable {
     let sourceDescription: String
     let action: DescriptionAssistantAction
     let language: DescriptionAssistantLanguage
+    /// Display-oriented rects (see `CaptionConfirmedPersonOrdering`), so the re-sort below
+    /// orders names as the user sees the photo, not in the stored file-tag frame.
     let people: [CaptionConfirmedPerson]
     let editorialPrompt: String
     let metadata: DescriptionAssistantMetadata
     let reportingNotes: String
+    /// The editor's Develop settings for the photo, used only to keep blurred people out of the
+    /// face context (`RedactedFaceFilter`). Never sent to the model.
+    let developSettings: CameraRawSettings?
 
     init(id: UUID = UUID(), imageURL: URL, editorLoadID: UUID?, originalDescription: String,
          action: DescriptionAssistantAction, language: DescriptionAssistantLanguage,
          sourceDescription: String? = nil, people: [CaptionConfirmedPerson] = [],
          metadata: DescriptionAssistantMetadata = .init(), reportingNotes: String = "",
-         editorialPrompt: String = DescriptionAssistantPresets.load().selectedPrompt) {
+         editorialPrompt: String = DescriptionAssistantPresets.load().selectedPrompt,
+         developSettings: CameraRawSettings? = nil) {
+        self.developSettings = developSettings
         self.id = id
         self.imageURL = imageURL
         self.editorLoadID = editorLoadID
@@ -337,7 +344,7 @@ nonisolated struct DescriptionAssistantPresets: Codable, Equatable, Sendable {
         return DescriptionAssistantBuiltInPreset.allCases.first { $0.id == selectedID }?.title ?? "Archival"
     }
 
-    static func load(defaults: UserDefaults = .standard) -> Self {
+    static func load(defaults: UserDefaults = AppDefaults.store) -> Self {
         if let data = defaults.data(forKey: storageKey),
            var library = try? JSONDecoder().decode(Self.self, from: data) {
             if library.selectedCustomIndex == nil,
@@ -356,7 +363,7 @@ nonisolated struct DescriptionAssistantPresets: Codable, Equatable, Sendable {
         return library
     }
 
-    func save(defaults: UserDefaults = .standard) {
+    func save(defaults: UserDefaults = AppDefaults.store) {
         if let data = try? JSONEncoder().encode(self) { defaults.set(data, forKey: Self.storageKey) }
     }
 

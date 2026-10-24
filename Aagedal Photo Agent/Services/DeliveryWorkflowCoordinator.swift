@@ -107,8 +107,12 @@ nonisolated struct DeliveryWorkflowManifest: VersionedJSONDocument, Equatable, S
                   checkpoint.items.count <= itemCount else {
                 throw DeliveryWorkflowError.invalidManifest
             }
-            for (expectedIndex, item) in checkpoint.items.enumerated() {
-                guard item.itemIndex == expectedIndex,
+            // Delivered items, strictly in plan order but not necessarily contiguous: the
+            // upload continues past file-level failures.
+            var previousIndex = -1
+            for item in checkpoint.items {
+                defer { previousIndex = item.itemIndex }
+                guard item.itemIndex > previousIndex, item.itemIndex < itemCount,
                       Self.isSHA256(item.stageInputFingerprint),
                       Self.isSHA256(item.localEvidence.sha256),
                       item.localEvidence.byteCount >= 0,
@@ -159,11 +163,12 @@ nonisolated struct DeliveryWorkflowManifest: VersionedJSONDocument, Equatable, S
             case .notRequested:
                 return true
             case let .unavailable(checkedAt: .some(checkedAt)),
-                 let .existsSizeUnknown(checkedAt):
+                 let .existsSizeUnknown(checkedAt),
+                 let .missing(checkedAt):
                 return checkedAt >= acknowledgedAt
             case let .sizeMatches(checkedAt, observedByteCount):
                 return checkedAt >= acknowledgedAt && observedByteCount == evidence.byteCount
-            case .unavailable(checkedAt: nil), .missing, .sizeMismatch:
+            case .unavailable(checkedAt: nil), .sizeMismatch:
                 return false
             }
         default:
@@ -1088,21 +1093,33 @@ private actor DeliveryWorkflowJournal {
         batchIdentifier: UUID,
         items: [DeliveryUploadItemResult]
     ) -> DeliveryUploadCheckpoint {
+        // Every delivered item, not just a contiguous prefix, so a relaunch Resume skips items
+        // delivered after a file-level failure. Voice-memo evidence is carried too, or the
+        // resumed upload would refuse the checkpoint for items with a memo.
         var completed: [DeliveryUploadCheckpointItem] = []
-        for item in items {
-            guard item.itemIndex == completed.count,
-                  item.stage == .sent,
+        for item in items.sorted(by: { $0.itemIndex < $1.itemIndex }) {
+            guard item.stage == .sent,
                   let evidence = item.localEvidence,
                   item.uploadAcknowledgement.status == .protocolAcknowledged,
                   let acknowledgedAt = item.uploadAcknowledgement.acknowledgedAt else {
-                break
+                continue
+            }
+            let memoAcknowledgedAt = item.voiceMemoUploadAcknowledgement?.acknowledgedAt
+            if item.voiceMemoLocalEvidence != nil,
+               item.voiceMemoUploadAcknowledgement?.status != .protocolAcknowledged
+                || memoAcknowledgedAt == nil || item.voiceMemoRemoteConfirmation == nil {
+                continue
             }
             completed.append(DeliveryUploadCheckpointItem(
                 itemIndex: item.itemIndex,
                 stageInputFingerprint: item.stageInputFingerprint,
                 localEvidence: evidence,
                 uploadAcknowledgedAt: acknowledgedAt,
-                remoteConfirmation: item.remoteConfirmation
+                remoteConfirmation: item.remoteConfirmation,
+                voiceMemoLocalEvidence: item.voiceMemoLocalEvidence,
+                voiceMemoUploadAcknowledgedAt: item.voiceMemoLocalEvidence == nil ? nil : memoAcknowledgedAt,
+                voiceMemoRemoteConfirmation: item.voiceMemoLocalEvidence == nil
+                    ? nil : item.voiceMemoRemoteConfirmation
             ))
         }
         return DeliveryUploadCheckpoint(

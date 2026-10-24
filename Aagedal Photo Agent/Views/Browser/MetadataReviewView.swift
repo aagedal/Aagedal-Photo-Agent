@@ -55,15 +55,18 @@ struct MetadataReviewView: View {
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         ForEach(viewModel.visibleImages) { image in
-                            let editorID = viewModel.metadataReviewEditor(for: image.url)?.id
+                            // Resolve the row's key and editor once per render, not per field.
+                            let key = viewModel.cachedMetadataReviewKey(image.url)
+                            let editor = viewModel.metadataReviewEditor(forKey: key)
+                            let editorID = editor?.id
                             VStack(alignment: .leading, spacing: 4) {
                                 MetadataReviewRow(
                                     image: image, thumbnailService: viewModel.thumbnailService,
                                     levels: levels, minimumLengths: minimumLengths,
                                     isSelected: viewModel.selectedImageIDs.contains(image.url),
-                                    isEditable: !coordinator.isTransitioning && viewModel.metadataReviewEditor(for: image.url) != nil && !viewModel.isMetadataReviewFrozen(for: image.url),
-                                    draft: viewModel.metadataReviewEditor(for: image.url)?.draft ?? image.metadata ?? IPTCMetadata(),
-                                    text: { viewModel.metadataReviewText(for: $0, imageURL: image.url) },
+                                    isEditable: !coordinator.isTransitioning && editor != nil && !viewModel.isMetadataReviewFrozen(for: image.url),
+                                    draft: editor?.draft ?? image.metadata ?? IPTCMetadata(),
+                                    text: { field in editor.map { BrowserViewModel.metadataReviewText(for: field, in: $0) } ?? "" },
                                     onTextChange: { field, text in
                                         guard let editorID else { return }
                                         viewModel.updateMetadataReviewText(text, field: field, for: image.url, editorID: editorID)
@@ -71,14 +74,14 @@ struct MetadataReviewView: View {
                                     onSave: {
                                         guard let editorID else { return }
                                         viewModel.commitMetadataReviewEditor(for: image.url, editorID: editorID)
-                                    })
-                                if let error = viewModel.metadataReviewEditor(for: image.url)?.error
-                                    ?? viewModel.metadataReviewLoadErrors[BrowserViewModel.metadataReviewKey(image.url)] {
+                                    },
+                                    onFocusChanged: { focused in viewModel.setMetadataReviewFocus(focused, key: key) })
+                                if let error = editor?.error ?? viewModel.metadataReviewLoadErrors[key] {
                                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                                 }
-                                if viewModel.metadataReviewEditor(for: image.url) == nil {
+                                if editor == nil {
                                     HStack {
-                                        if viewModel.metadataReviewLoading.contains(BrowserViewModel.metadataReviewKey(image.url)) {
+                                        if viewModel.metadataReviewLoading.contains(key) {
                                             ProgressView().controlSize(.small)
                                             Text("Loading saved metadata…").font(.caption)
                                         } else {
@@ -87,7 +90,11 @@ struct MetadataReviewView: View {
                                     }
                                 }
                             }
-                            .task(id: viewModel.metadataReviewSourceGeneration) { await viewModel.prepareMetadataReviewEditor(for: image.url) }
+                            .task(id: viewModel.metadataReviewSourceGeneration) {
+                                // A clean editor loaded under this generation is reused when the
+                                // lazy row scrolls back in; metadata changes reload below.
+                                await viewModel.prepareMetadataReviewEditor(for: image.url, reloadClean: false)
+                            }
                             .onChange(of: image.metadata) { _, metadata in
                                 guard let editor = viewModel.metadataReviewEditor(for: image.url),
                                       editor.latestRequestID == nil, editor.draft == editor.previous,
@@ -111,12 +118,13 @@ struct MetadataReviewView: View {
             discardInFlight = false
             reloadRequirements()
             coordinator.register(owner: owner,
-                compositionState: { BrowserViewModel.metadataReviewCompositionIsCommitted ? .committed : .active },
+                compositionState: { viewModel.metadataReviewHasActiveComposition ? .active : .committed },
                 handler: { try viewModel.captureMetadataReviewDrafts() })
         }
         .onDisappear {
             lifetime = nil
             operation = nil
+            viewModel.clearMetadataReviewFocus()
             coordinator.unregister(owner: owner)
             if let review { Task { await coordinator.endConflictReview(review) } }
             if !discardInFlight, let frozenPhoto, let freezeOwner { viewModel.endMetadataReviewRecovery(for: frozenPhoto, owner: freezeOwner) }
@@ -285,6 +293,7 @@ private struct MetadataReviewRow: View {
     let text: (MetadataFieldID) -> String
     let onTextChange: (MetadataFieldID, String) -> Void
     let onSave: () -> Void
+    var onFocusChanged: (Bool) -> Void = { _ in }
     @FocusState private var focusedField: MetadataFieldID?
 
     private let columns = [GridItem(.adaptive(minimum: 185, maximum: 320), spacing: 8, alignment: .top)]
@@ -315,14 +324,16 @@ private struct MetadataReviewRow: View {
             RoundedRectangle(cornerRadius: 9)
                 .stroke(isSelected ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isSelected ? 2 : 1)
         }
-        .onChange(of: focusedField) { oldField, _ in
+        .onChange(of: focusedField) { oldField, newField in
+            if newField != nil { onFocusChanged(true) }
             if oldField != nil { commitDraft() }
+            if newField == nil { onFocusChanged(false) }
         }
     }
 
     @ViewBuilder
     private func fieldCell(_ field: MetadataFieldID) -> some View {
-        let value = field.textValue(in: draft) ?? ""
+        let value = field.reviewTextValue(in: draft) ?? ""
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let level = levels[field] ?? .optional
         let failures = MetadataReviewValidation.failures(
@@ -345,7 +356,7 @@ private struct MetadataReviewRow: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            TextField(trimmed.isEmpty ? "Missing" : field.displayName, text: binding(for: field), axis: .vertical)
+            TextField(placeholder(for: field, isEmpty: trimmed.isEmpty), text: binding(for: field), axis: .vertical)
                 .textFieldStyle(.plain)
                 .disabled(!isEditable)
                 .font(.caption)
@@ -370,6 +381,13 @@ private struct MetadataReviewRow: View {
                         : failures.map(\.accessibleDescription).joined(separator: "; ")
                 )
 
+            if let hint = field.reviewNameListHint(for: text(field)) {
+                Label(hint, systemImage: "info.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("metadataReview.nameListHint")
+            }
+
             ForEach(failures) { failure in
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Image(systemName: failure.systemImageName)
@@ -383,7 +401,19 @@ private struct MetadataReviewRow: View {
                 .accessibilityLabel(failure.accessibleDescription)
             }
         }
-        .help(failures.isEmpty ? value : failures.map(\.accessibleDescription).joined(separator: "\n"))
+        .help(helpText(for: field, value: value, failures: failures))
+    }
+
+    private func placeholder(for field: MetadataFieldID, isEmpty: Bool) -> String {
+        guard isEmpty else { return field.displayName }
+        return field.usesReviewNameListSeparator ? "Missing (separate names with ;)" : "Missing"
+    }
+
+    private func helpText(for field: MetadataFieldID, value: String, failures: [MetadataReviewFieldFailure]) -> String {
+        let base = failures.isEmpty ? value : failures.map(\.accessibleDescription).joined(separator: "\n")
+        guard field.usesReviewNameListSeparator else { return base }
+        let hint = "Separate names with a semicolon (;). Commas stay inside a name, e.g. “Støre, Jonas Gahr”."
+        return base.isEmpty ? hint : base + "\n\n" + hint
     }
 
     private func binding(for field: MetadataFieldID) -> Binding<String> {

@@ -27,6 +27,8 @@ struct ComparisonWorkspaceView: View {
 
     @State private var coordinator: ComparisonCoordinator?
     @State private var renderedImages: [ComparisonPane: CGImage] = [:]
+    /// Whether each pane's pixels were rendered with redacting settings (Clean Feed privacy).
+    @State private var paneRendersRedaction: [ComparisonPane: Bool] = [:]
     @State private var geometries: [ComparisonPane: ComparisonPaneGeometry] = [:]
     @State private var loadError: String?
     @State private var interactionError: String?
@@ -384,6 +386,8 @@ struct ComparisonWorkspaceView: View {
                 rightImage: rightImage,
                 leftSource: leftSource,
                 rightSource: rightSource,
+                leftFile: imageFile(in: .left),
+                rightFile: imageFile(in: .right),
                 leftViewport: session.left.viewport,
                 rightViewport: session.right.viewport,
                 focusedPane: session.focusedPane,
@@ -408,6 +412,7 @@ struct ComparisonWorkspaceView: View {
                 pane: pane,
                 image: image,
                 source: source,
+                file: imageFile(in: pane),
                 viewport: session[pane].viewport,
                 isFocused: session.focusedPane == pane,
                 onFocus: { focus(pane) },
@@ -454,6 +459,7 @@ struct ComparisonWorkspaceView: View {
         }
         coordinator = nil
         renderedImages = [:]
+        paneRendersRedaction = [:]
         geometries = [:]
         let selectedImages = images
         let cache = fullScreenImageCache
@@ -513,6 +519,10 @@ struct ComparisonWorkspaceView: View {
                 )
                 coordinator = try ComparisonCoordinator(session: session)
                 renderedImages = [.left: leftResult.image, .right: rightResult.image]
+                paneRendersRedaction = [
+                    .left: leftResult.rendersRedaction,
+                    .right: rightResult.rendersRedaction
+                ]
                 isLoading = false
                 onFocusedImageChange(selectedImages[0])
                 publishComparisonToCleanFeed()
@@ -582,6 +592,7 @@ struct ComparisonWorkspaceView: View {
         let excludedURL = session[session.focusedPane.other].source?.revision.canonicalURL
         return ComparisonNavigationResolver.replacement(
             in: navigationImages,
+            availableImages: availableImages,
             currentURL: currentURL,
             excluding: excludedURL,
             direction: direction
@@ -620,6 +631,7 @@ struct ComparisonWorkspaceView: View {
 
                 mutateCoordinator { $0.replaceSource(result.source, in: pane) }
                 renderedImages[pane] = result.image
+                paneRendersRedaction[pane] = result.rendersRedaction
                 geometries[pane] = nil
                 missingReplacement[pane] = nil
                 replacingPane = nil
@@ -658,6 +670,7 @@ struct ComparisonWorkspaceView: View {
         }
         mutateCoordinator { $0.replaceSource(liveSource.source, in: .left) }
         renderedImages[.left] = liveSource.image
+        paneRendersRedaction[.left] = liveSource.rendersRedaction
         geometries[.left] = nil
         publishComparisonToCleanFeed()
     }
@@ -741,6 +754,7 @@ struct ComparisonWorkspaceView: View {
             }
             if result.missingPanes.contains(pane) {
                 renderedImages[pane] = nil
+                paneRendersRedaction[pane] = nil
                 geometries[pane] = nil
             }
         }
@@ -851,9 +865,22 @@ struct ComparisonWorkspaceView: View {
         guard let session else { return }
         CleanFeedController.shared.presentComparison(
             session: session,
-            images: renderedImages
+            images: cleanFeedSafeImages
         )
         publishedCleanFeedSessionID = session.id
+    }
+
+    /// Panes the audience display may show. A pane of a photo with Anonymizer redactions (or
+    /// whose settings are not known) is shown only when its pixels were rendered with redacting
+    /// settings — never an Original pane, a muted live edit or a version saved before the
+    /// faces were blurred. A withheld pane stays black on the feed; the main display is unchanged.
+    private var cleanFeedSafeImages: [ComparisonPane: CGImage] {
+        renderedImages.filter { pane, _ in
+            RedactionPrivacyGuard.mayPublishToCleanFeed(
+                rendersRedaction: paneRendersRedaction[pane] == true,
+                photo: imageFile(in: pane).map(RedactionPrivacyGuard.knowledge(for:)) ?? .unknown
+            )
+        }
     }
 
     private func handleCullingShortcut(_ press: KeyPress) -> KeyPress.Result {
@@ -878,6 +905,9 @@ struct ComparisonWorkspaceView: View {
             ),
             profile: KeyboardShortcutProfileRegistry.shared.selectedProfile
         ) else { return .ignored }
+        // Until the previews are ready the Browser selection still holds both photos, so a
+        // rating would land on both. Swallow the key rather than let it reach that selection.
+        guard !isLoading, session != nil else { return .handled }
         switch action {
         case let .rating(value):
             guard let rating = StarRating(rawValue: value) else { return .ignored }
@@ -890,10 +920,32 @@ struct ComparisonWorkspaceView: View {
     }
 }
 
+/// Rating and color label of a compared photo, so culling keys give visible feedback.
+private struct ComparisonCullingBadge: View {
+    let file: ImageFile?
+
+    var body: some View {
+        if let file {
+            if file.starRating != .none {
+                Text(String(repeating: "\u{2605}", count: file.starRating.rawValue))
+                    .foregroundStyle(.yellow)
+                    .accessibilityLabel("\(file.starRating.rawValue) star rating")
+            }
+            if let color = file.colorLabel.color {
+                Circle()
+                    .fill(color)
+                    .frame(width: 9, height: 9)
+                    .accessibilityLabel("\(file.colorLabel.displayName) color label")
+            }
+        }
+    }
+}
+
 private struct ComparisonImagePane: View {
     let pane: ComparisonPane
     let image: CGImage
     let source: ComparisonSource
+    let file: ImageFile?
     let viewport: ViewportState
     let isFocused: Bool
     let onFocus: () -> Void
@@ -989,6 +1041,7 @@ private struct ComparisonImagePane: View {
                     .lineLimit(1)
                 Text(source.representationLabel)
                     .foregroundStyle(.secondary)
+                ComparisonCullingBadge(file: file)
             }
             if source.dynamicRange != .unknown {
                 Text(source.dynamicRange == .hdr ? "HDR" : "SDR")
@@ -1086,6 +1139,8 @@ private struct WipeComparisonPane: View {
     let rightImage: CGImage
     let leftSource: ComparisonSource
     let rightSource: ComparisonSource
+    let leftFile: ImageFile?
+    let rightFile: ImageFile?
     let leftViewport: ViewportState
     let rightViewport: ViewportState
     let focusedPane: ComparisonPane
@@ -1249,6 +1304,7 @@ private struct WipeComparisonPane: View {
             Text(pane == .left ? "A" : "B").fontWeight(.bold)
             Text(source.filename).lineLimit(1)
             Text(source.representationLabel).foregroundStyle(.secondary)
+            ComparisonCullingBadge(file: pane == .left ? leftFile : rightFile)
         }
         .font(.caption)
         .padding(.horizontal, 9)

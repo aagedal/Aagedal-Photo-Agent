@@ -61,7 +61,10 @@ nonisolated struct BrowserFolderChangeImpact: OptionSet, Sendable {
             default:
                 // Ordinary content changes require the image diff. Other dotfiles are Finder,
                 // cloud-provider, or atomic-write bookkeeping with no browser-visible effect.
-                if !first.hasPrefix(".") {
+                // The importer's hidden staging files can sit in subfolders (RAW/, JPEG/);
+                // they never become visible under that name either.
+                if !first.hasPrefix("."),
+                   !ImportCopyService.isStagingFileName(path.lastPathComponent) {
                     impact.insert(.browserContent)
                 }
             }
@@ -160,11 +163,15 @@ nonisolated final class FolderChangeMonitor: @unchecked Sendable {
     private let onChange: @Sendable (FolderChangeBatch) -> Void
     private let lock = NSLock()
     private var stream: FSEventStreamRef?
+    /// FSEvents is authoritative only for local volumes; network shares can miss changes
+    /// made by other machines, so the coordinator keeps its slow fallback scan for those.
+    let watchesLocalVolume: Bool
 
     init?(url: URL, onChange: @escaping @Sendable (FolderChangeBatch) -> Void) {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               isDirectory.boolValue else { return nil }
+        self.watchesLocalVolume = (try? url.resourceValues(forKeys: [.volumeIsLocalKey]))?.volumeIsLocal ?? false
 
         self.callbackQueue = DispatchQueue(
             label: "com.aagedal.photo-agent.folder-events.\(UUID().uuidString)",

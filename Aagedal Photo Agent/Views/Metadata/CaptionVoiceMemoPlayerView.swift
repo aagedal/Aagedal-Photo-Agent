@@ -7,7 +7,10 @@ import UniformTypeIdentifiers
 struct CaptionVoiceMemoPlayerView: View {
     let imageURL: URL?
     let isMetadataReviewOrSaveBusy: Bool
-    var onVoiceMemoChange: () -> Void = {}
+    /// Called with the photo whose voice-memo badge may have changed (relationship created,
+    /// recovered or replaced; transcript appeared or was cleared). Only that photo's filmstrip
+    /// badge is re-queried.
+    var onVoiceMemoChange: (URL) -> Void = { _ in }
     let openTranscriptionSettings: () -> Void
     @State private var model = CaptionVoiceMemoPlaybackModel()
     @State private var recoveryModel = CaptionVoiceMemoRecoveryModel()
@@ -38,9 +41,18 @@ struct CaptionVoiceMemoPlayerView: View {
         let canAssociate: Bool
     }
 
+    private var isTranscriptBusy: Bool {
+        transcriptModel.isTranscribing || transcriptModel.isDownloading || transcriptModel.isSavingTranscript
+    }
+
     private var isPlaying: Bool {
         if case .available(let playback) = model.state { return playback.isPlaying }
         return false
+    }
+
+    private func notifyVoiceMemoChange() {
+        guard let imageURL else { return }
+        onVoiceMemoChange(imageURL.standardizedFileURL)
     }
 
     var body: some View {
@@ -54,9 +66,13 @@ struct CaptionVoiceMemoPlayerView: View {
                     refreshID = UUID()
                 }
                 .labelStyle(.iconOnly)
-                .help("Reload the saved voice-memo relationship for this photo")
+                .help(isTranscriptBusy
+                    ? "Available when the current transcription finishes"
+                    : "Reload the saved voice-memo relationship for this photo")
                 .accessibilityIdentifier("caption.voiceMemo.refresh")
-                .disabled(imageURL == nil)
+                // Reloading the same photo cancels the transcript model's running work, which
+                // would silently throw away a Whisper transcription that may take minutes.
+                .disabled(imageURL == nil || isTranscriptBusy)
             }
             switch model.state {
             case .idle, .loading:
@@ -131,6 +147,7 @@ struct CaptionVoiceMemoPlayerView: View {
                     transcriptionPanel
                 }
             }
+            sharedTranscriptionStatus
             if associationModel.isWorking {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -192,8 +209,19 @@ struct CaptionVoiceMemoPlayerView: View {
                   !transcriptModel.isSavingTranscript, !transcriptModel.isDownloading else { return }
             Task { await transcriptModel.reloadPersistedDraftIfIdle(for: url) }
         }
-        .onChange(of: transcriptModel.draft) { _, _ in onVoiceMemoChange() }
-        .onChange(of: refreshID) { _, _ in onVoiceMemoChange() }
+        // Badge-relevant projection only: re-loading a draft, or a draft change that keeps
+        // whether reviewed text exists, must not re-query filmstrip badges.
+        .onChange(of: transcriptModel.draft.map {
+            !$0.reviewedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) { _, _ in notifyVoiceMemoChange() }
+        .onChange(of: whisperSetup.detachedTranscription) { finished, current in
+            // A transcription that kept running after the user left this photo saved its draft
+            // without this panel; show it now that the user is back on that photo.
+            guard let finished, current == nil,
+                  finished.imageURL == imageURL?.standardizedFileURL else { return }
+            Task { await transcriptModel.refreshPersistedDraftIfEmpty(for: finished.imageURL) }
+        }
+        .onChange(of: refreshID) { _, _ in notifyVoiceMemoChange() }
         .fileImporter(
             isPresented: $isSelectingRecoveryMemo,
             allowedContentTypes: [UTType(filenameExtension: "wav") ?? .audio],
@@ -293,6 +321,7 @@ struct CaptionVoiceMemoPlayerView: View {
             recoveryModel.cancel()
             associationModel.cancel()
             reassociationModel.cancel()
+            transcriptModel.detachRunningTranscription()
             transcriptModel.cancel(resetDraft: true)
             isSelectingRecoveryMemo = false
             isSelectingRelationshipFolder = false
@@ -308,6 +337,7 @@ struct CaptionVoiceMemoPlayerView: View {
             recoveryModel.cancel()
             associationModel.cancel()
             reassociationModel.cancel()
+            transcriptModel.detachRunningTranscription()
             transcriptModel.cancel(resetDraft: true)
             recoveryImageURL = nil
             reassociationImageURL = nil
@@ -462,6 +492,36 @@ struct CaptionVoiceMemoPlayerView: View {
             .accessibilityIdentifier("caption.voiceMemo.transcribe")
             if !isWhisperReady {
                 Text("Set up Whisper in Settings.").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The shared transcription lock is also held by work this panel no longer owns: a Caption
+    /// transcription that continued after navigation, or batch transcription/dictation. Explain
+    /// it for both providers and let the user cancel a detached job.
+    @ViewBuilder
+    private var sharedTranscriptionStatus: some View {
+        if let detached = whisperSetup.detachedTranscription {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(detached.imageURL == imageURL?.standardizedFileURL
+                     ? "Finishing this photo's transcription…"
+                     : "Transcribing \(detached.imageURL.lastPathComponent)…")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Button("Cancel") { whisperSetup.cancelDetachedTranscription() }
+                    .accessibilityIdentifier("caption.voiceMemo.cancelDetachedTranscription")
+            }
+        } else if whisperSetup.isTranscribing, !transcriptModel.isTranscribing,
+                  !transcriptModel.isDownloading, case .available = model.state {
+            Text("Another transcription is running. Transcribe is available again when it finishes.")
+                .foregroundStyle(.secondary)
+        }
+        if let failure = whisperSetup.detachedTranscriptionFailure {
+            HStack(spacing: 6) {
+                Text(failure).foregroundStyle(.red).textSelection(.enabled)
+                Button("Dismiss") { whisperSetup.dismissDetachedTranscriptionFailure() }
+                    .accessibilityIdentifier("caption.voiceMemo.dismissDetachedFailure")
             }
         }
     }

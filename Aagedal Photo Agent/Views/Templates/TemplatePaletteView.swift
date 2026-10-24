@@ -165,7 +165,8 @@ struct TemplatePaletteView: View {
 
     private func templateRow(_ template: MetadataTemplate, index: Int) -> some View {
         Button {
-            onApply(template, false)
+            // Option-click appends, matching Option-Return.
+            onApply(template, NSEvent.modifierFlags.contains(.option))
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {

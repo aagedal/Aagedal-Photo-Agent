@@ -93,30 +93,30 @@ struct ImportConfiguration {
     var destinationBaseURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Photos")
     var importTitle: String = ""
     var fileTypeFilter: ImportFileTypeFilter = .both {
-        didSet { UserDefaults.standard.set(fileTypeFilter.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter) }
+        didSet { AppDefaults.store.set(fileTypeFilter.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter) }
     }
     var conflictPolicy: ImportConflictPolicy = .renameWithSuffix {
-        didSet { UserDefaults.standard.set(conflictPolicy.rawValue, forKey: UserDefaultsKeys.importConflictPolicy) }
+        didSet { AppDefaults.store.set(conflictPolicy.rawValue, forKey: UserDefaultsKeys.importConflictPolicy) }
     }
     var createSubFolders: Bool = true {
-        didSet { UserDefaults.standard.set(createSubFolders, forKey: UserDefaultsKeys.importCreateSubFolders) }
+        didSet { AppDefaults.store.set(createSubFolders, forKey: UserDefaultsKeys.importCreateSubFolders) }
     }
     var applyMetadata: Bool = false
     var processVariables: Bool = false
     var metadata: IPTCMetadata = IPTCMetadata()
     var openFolderAfterImport: Bool = true
     var verificationMode: CopyVerificationMode = .on {
-        didSet { UserDefaults.standard.set(verificationMode.rawValue, forKey: UserDefaultsKeys.importVerificationMode) }
+        didSet { AppDefaults.store.set(verificationMode.rawValue, forKey: UserDefaultsKeys.importVerificationMode) }
     }
     var backupDestination: BackupDestination? {
         didSet {
             if let backupDestination {
-                UserDefaults.standard.set(backupDestination.verifyAfterWrite, forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
+                AppDefaults.store.set(backupDestination.verifyAfterWrite, forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
             }
         }
     }
     var skipPreviouslyImported: Bool = true {
-        didSet { UserDefaults.standard.set(skipPreviouslyImported, forKey: UserDefaultsKeys.importSkipPreviouslyImported) }
+        didSet { AppDefaults.store.set(skipPreviouslyImported, forKey: UserDefaultsKeys.importSkipPreviouslyImported) }
     }
 
     var destinationFolderName: String {

@@ -50,7 +50,7 @@ struct ImageSimilarityServiceTests {
 
     @Test("browser keeps the reference fixed, supports reverse, and cancels when leaving similarity")
     func browserIntegration() async throws {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let keys = [UserDefaultsKeys.thumbnailSortOrder, UserDefaultsKeys.thumbnailSortReversed]
         let saved = keys.map { defaults.object(forKey: $0) }
         defer {

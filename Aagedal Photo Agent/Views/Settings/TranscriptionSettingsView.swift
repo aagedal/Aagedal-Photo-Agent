@@ -7,6 +7,7 @@ struct TranscriptionSettingsView: View {
     @State private var managedWhisper = ManagedWhisperSetupModel.shared
     @State private var isSelectingWhisperExecutable = false
     @State private var isSelectingWhisperModel = false
+    @State private var showModelRemovalConfirmation = false
 
     var body: some View {
         Form {
@@ -145,7 +146,7 @@ struct TranscriptionSettingsView: View {
                     .accessibilityIdentifier("settings.transcription.whisper.download")
                 }
                 if managedWhisper.canRemoveModel {
-                    Button("Remove Downloaded Model") { Task { await managedWhisper.removeSelectedModel() } }
+                    Button("Remove Downloaded Model…") { showModelRemovalConfirmation = true }
                         .accessibilityIdentifier("settings.transcription.whisper.removeModel")
                 }
             }
@@ -157,6 +158,14 @@ struct TranscriptionSettingsView: View {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
                     .accessibilityIdentifier("settings.transcription.whisper.inventoryError")
             }
+        }
+        .alert("Remove \(managedWhisper.selectedModel.title)?", isPresented: $showModelRemovalConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                Task { await managedWhisper.removeSelectedModel() }
+            }
+        } message: {
+            Text("The downloaded model (\(ByteCountFormatter.string(fromByteCount: managedWhisper.selectedModel.byteCount, countStyle: .file))) is deleted from this Mac. You can download it again later.")
         }
     }
 

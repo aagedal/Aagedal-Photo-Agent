@@ -224,8 +224,44 @@ nonisolated struct FaceGroup: Codable, Identifiable {
     /// Reversible "do not write Person Shown" choice for referees, coaches, supporters, etc.
     /// The group and its faces remain available for later correction/re-inclusion.
     var excludedFromPersonShown: Bool? = nil
+    /// The exact name this app wrote into Person Shown for this group, per photo (keyed by
+    /// filename, so a moved or copied folder keeps it). Recorded only from completed writes
+    /// (Apply, or a confirmed "Update Person Shown"). Corrections only ever replace or remove
+    /// these exact strings in these photos, so a name typed by hand elsewhere — including in a
+    /// photo whose face joined the group later — is never touched. Nil for older data.
+    var appliedPersonShownNames: [String: String]? = nil
+    /// The shown name (empty string for "no name": cleared or excluded) for which the user
+    /// answered "Leave Photos Unchanged". An unanswered offer is re-offered on folder load; a
+    /// declined one only again once the group's shown name changes. Nil for older data.
+    var declinedPersonShownName: String? = nil
 
     var isExcludedFromPersonShown: Bool { excludedFromPersonShown ?? false }
+
+    /// The name this app wrote for this group into the photo with `filename`, if any.
+    func appliedPersonShownName(forPhoto filename: String) -> String? {
+        appliedPersonShownNames?[filename]
+    }
+
+    /// Whether this group's name has been written to at least one photo by this app.
+    var hasAppliedPersonShownName: Bool { !(appliedPersonShownNames ?? [:]).isEmpty }
+
+    /// Sets (or, with nil, clears) the recorded applied name for one photo.
+    mutating func setAppliedPersonShownName(_ name: String?, forPhoto filename: String) {
+        var names = appliedPersonShownNames ?? [:]
+        names[filename] = name
+        appliedPersonShownNames = names.isEmpty ? nil : names
+    }
+
+    /// A merge keeps the source's per-photo records whose name the surviving group also shows:
+    /// those photos really carry that string from this app, so a later rename of the merged
+    /// group can still correct them. Records for any other name are not inherited.
+    mutating func inheritAppliedName(from source: FaceGroup) {
+        guard let shown = name?.trimmingCharacters(in: .whitespacesAndNewlines), !shown.isEmpty else { return }
+        for (photo, applied) in source.appliedPersonShownNames ?? [:]
+        where applied == shown && appliedPersonShownName(forPhoto: photo) == nil {
+            setAppliedPersonShownName(applied, forPhoto: photo)
+        }
+    }
 }
 
 // MARK: - Lenses
@@ -301,6 +337,32 @@ nonisolated struct FaceLensState: Codable, Sendable {
 nonisolated struct FileSignature: Codable, Equatable, Sendable {
     let modificationDate: Date
     let fileSize: Int64
+    /// Metadata-independent content identity (see `FaceScanContentFingerprint`). A metadata-only
+    /// write changes the date and size but not this value, so faces detected in the unchanged
+    /// pixels stay valid. Nil for legacy signatures and formats without a fingerprint.
+    var contentFingerprint: String? = nil
+
+    init(modificationDate: Date, fileSize: Int64, contentFingerprint: String? = nil) {
+        self.modificationDate = modificationDate
+        self.fileSize = fileSize
+        self.contentFingerprint = contentFingerprint
+    }
+
+    /// Same file-system facts (date and size), ignoring the content fingerprint.
+    func hasSameFileFacts(as other: FileSignature) -> Bool {
+        modificationDate == other.modificationDate && fileSize == other.fileSize
+    }
+
+    /// The one staleness rule shared by incremental face scans and caption face context: the
+    /// stored face geometry is current when the file facts are unchanged, or when both sides
+    /// carry the same metadata-independent content fingerprint (a metadata-only write).
+    static func storedFacesAreCurrent(stored: FileSignature?, current: FileSignature?) -> Bool {
+        guard let stored, let current else { return false }
+        if stored.hasSameFileFacts(as: current) { return true }
+        guard let storedPrint = stored.contentFingerprint,
+              let currentPrint = current.contentFingerprint else { return false }
+        return storedPrint == currentPrint
+    }
 }
 
 /// Represents a suggestion to merge two similar face groups
@@ -406,6 +468,37 @@ nonisolated struct FolderFaceData: Codable {
         lensStates = states
     }
 
+    /// A moved or copied folder carries its `.face_data` with the old absolute URLs. Rebase the
+    /// folder, every face/number image URL and every scan signature key onto `folderURL` by
+    /// filename so edits, Apply and persistence target the folder actually opened.
+    /// Returns whether anything changed.
+    @discardableResult
+    mutating func rebase(toFolder folderURL: URL) -> Bool {
+        let target = folderURL.standardizedFileURL
+        // Only a genuinely different folder is rebased; symlink spellings of the same folder
+        // keep their stored URLs (the browser looks faces up by exact URL).
+        guard self.folderURL.standardizedFileURL.resolvingSymlinksInPath().path
+                != target.resolvingSymlinksInPath().path else { return false }
+        func rebased(_ url: URL) -> URL { target.appendingPathComponent(url.lastPathComponent) }
+        self.folderURL = target
+        for index in faces.indices {
+            faces[index].imageURL = rebased(faces[index].imageURL)
+        }
+        if var detections = numberDetections {
+            for index in detections.indices {
+                detections[index].imageURL = rebased(detections[index].imageURL)
+            }
+            numberDetections = detections
+        }
+        var signatures: [String: FileSignature] = [:]
+        signatures.reserveCapacity(scannedFiles.count)
+        for (path, signature) in scannedFiles {
+            signatures[rebased(URL(fileURLWithPath: path)).path] = signature
+        }
+        scannedFiles = signatures
+        return true
+    }
+
     /// Replaces filename-derived image references simultaneously, so swaps and longer rename
     /// cycles cannot collapse through an intermediate path. Face/group identities and embedding
     /// bytes are deliberately left untouched.
@@ -446,6 +539,17 @@ nonisolated struct FolderFaceData: Codable {
             if reassociated != source { changedReferenceCount += 1 }
         }
         scannedFiles = reassociatedScannedFiles
+
+        // Per-photo applied Person Shown records follow the renamed files.
+        let renamedFilenames = Dictionary(mappings.map {
+            ($0.sourceURL.lastPathComponent, $0.destinationURL.lastPathComponent)
+        }, uniquingKeysWith: { first, _ in first })
+        for index in groups.indices {
+            guard let applied = groups[index].appliedPersonShownNames else { continue }
+            var renamed: [String: String] = [:]
+            for (photo, name) in applied { renamed[renamedFilenames[photo] ?? photo] = name }
+            groups[index].appliedPersonShownNames = renamed
+        }
         return changedReferenceCount
     }
 }

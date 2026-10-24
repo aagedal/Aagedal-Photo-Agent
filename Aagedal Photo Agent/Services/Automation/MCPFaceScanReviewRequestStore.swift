@@ -459,7 +459,7 @@ nonisolated final class MCPFaceScanReviewRequestStore: Sendable {
         guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 1, size <= 128 else { return nil }
         var buffer = [CChar](repeating: 0, count: size)
         guard sysctlbyname("kern.bootsessionuuid", &buffer, &size, nil, 0) == 0 else { return nil }
-        let id = String(cString: buffer).lowercased()
+        let id = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self).lowercased()
         guard canonicalUUID(id) else { return nil }
         var timebase = mach_timebase_info_data_t()
         guard mach_timebase_info(&timebase) == KERN_SUCCESS, timebase.denom != 0 else { return nil }

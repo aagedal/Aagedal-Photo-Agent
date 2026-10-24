@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 import Observation
@@ -16,10 +17,10 @@ struct CaptionVoiceMemoAssociationServiceTests {
         return (folder, image, memo)
     }
 
-    private func service() -> CaptionVoiceMemoAssociationService {
+    private func service(capture: SourceImageRevisionCaptureService = .shared) -> CaptionVoiceMemoAssociationService {
         CaptionVoiceMemoAssociationService(scanner: ImportVoiceMemoAssociationScanService(
             imageEvidenceReader: { .init(url: $0, captureSignature: "SONY|fixture", capturedAt: Date(timeIntervalSince1970: 100)) },
-            memoDateReader: { _ in Date(timeIntervalSince1970: 200) }))
+            memoDateReader: { _ in Date(timeIntervalSince1970: 200) }), revisionCapture: capture)
     }
 
     @MainActor @Test("Opening Caption automatically links a unique adjacent WAV without confirmation")
@@ -68,6 +69,116 @@ struct CaptionVoiceMemoAssociationServiceTests {
         })
         #expect(await badges.status(for: image) == .needsTranscription)
         #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .none)
+    }
+
+    @Test("An unlinked memo badge reads no file content and is cached per folder revision")
+    func unlinkedBadgeDoesNotHash() async throws {
+        let (folder, image, memo) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let hashes = CountingRevisionIO()
+        let associationService = service(capture: SourceImageRevisionCaptureService(io: hashes.io))
+        #expect(try await associationService.hasUnlinkedMatch(imageURL: image))
+        #expect(hashes.hashedURLs.isEmpty)
+
+        // An old folder date lets the status service reuse its listing and probe result.
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)],
+                                              ofItemAtPath: folder.path)
+        let probes = OSAllocatedUnfairLock(initialState: 0)
+        let badges = CaptionVoiceMemoStatusService(discoverAssociation: {
+            probes.withLock { $0 += 1 }
+            return try await associationService.hasUnlinkedMatch(imageURL: $0)
+        })
+        #expect(await badges.status(for: image) == .needsTranscription)
+        #expect(await badges.status(for: image) == .needsTranscription)
+        #expect(probes.withLock { $0 } == 1)
+        #expect(hashes.hashedURLs.isEmpty)
+        #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .none)
+
+        // A changed same-stem file changes the probe's key and is probed again.
+        try Data("longer audio".utf8).write(to: memo)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)],
+                                              ofItemAtPath: folder.path)
+        #expect(await badges.status(for: image) == .needsTranscription)
+        #expect(probes.withLock { $0 } == 2)
+    }
+
+    @Test("Ambiguous groups end discovery before any content hash")
+    func ambiguousDiscoveryDoesNotHash() async throws {
+        let (folder, image, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try Data("duplicate".utf8).write(to: folder.appendingPathComponent("TRA08907.jpeg"))
+        let hashes = CountingRevisionIO()
+        let service = service(capture: SourceImageRevisionCaptureService(io: hashes.io))
+        await #expect(throws: CaptionVoiceMemoAssociationService.Failure.self) {
+            try await service.discover(imageURL: image)
+        }
+        #expect(try await service.hasUnlinkedMatch(imageURL: image) == false)
+        #expect(hashes.hashedURLs.isEmpty)
+    }
+
+    @Test("Linking hashes each source once; repeated revalidation answers from the digest cache")
+    func confirmationUsesDigestCache() async throws {
+        let (folder, image, memo) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let hashes = CountingRevisionIO()
+        let service = service(capture: SourceImageRevisionCaptureService(io: hashes.io))
+        let preview = try await service.discover(imageURL: image)
+        #expect(Set(hashes.hashedURLs) == [image, memo])
+        #expect(hashes.hashedURLs.count == 2)
+        try await service.confirm(preview)
+        // Discovery revalidation, confirmation, the three installation checks and the identity
+        // record all reuse the two verified digests.
+        #expect(hashes.hashedURLs.count == 2)
+        #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .available(preview.association))
+        let record = try JSONDecoder().decode(VoiceMemoCompanionRecord.self,
+            from: Data(contentsOf: VoiceMemoCompanionRepository().recordURL(for: image)))
+        #expect(record.memoIdentity?.sha256 == SHA256.hash(data: Data("audio".utf8))
+            .map { String(format: "%02x", $0) }.joined())
+    }
+
+    @Test("A cached digest never hides a changed memo when linking")
+    func cachedDigestStillDetectsChangedMemo() async throws {
+        let (folder, image, memo) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let hashes = CountingRevisionIO()
+        let service = service(capture: SourceImageRevisionCaptureService(io: hashes.io))
+        let preview = try await service.discover(imageURL: image)
+        // Same size, different bytes: the stat identity changes, so the bytes are re-read.
+        try Data("AUDIO".utf8).write(to: memo)
+        await #expect(throws: (any Error).self) { try await service.confirm(preview) }
+        #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .none)
+    }
+
+    @Test("Badges skip lookup and discovery when the folder has neither a record nor a same-stem WAV")
+    func badgeShortCircuitsWithoutCandidates() async throws {
+        let (folder, image, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let other = folder.appendingPathComponent("TRA08908.JPG")
+        try Data("other photo".utf8).write(to: other)
+        // An old folder date lets the service reuse its listing across cells.
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)],
+                                              ofItemAtPath: folder.path)
+        let calls = OSAllocatedUnfairLock(initialState: [URL]())
+        let badges = CaptionVoiceMemoStatusService(lookup: { url in
+            calls.withLock { $0.append(url) }
+            return try VoiceMemoCompanionRepository().lookup(for: url)
+        }, discoverAssociation: { _ in true })
+
+        #expect(await badges.status(for: other) == CaptionVoiceMemoTranscriptionStatus.none)
+        #expect(await badges.status(for: other) == CaptionVoiceMemoTranscriptionStatus.none)
+        #expect(calls.withLock { $0 }.isEmpty)
+        #expect(await badges.status(for: image) == .needsTranscription)
+        #expect(calls.withLock { $0 } == [image])
+
+        // A newly added same-stem WAV changes the folder date and is seen immediately.
+        try Data("audio".utf8).write(to: folder.appendingPathComponent("TRA08908.wav"))
+        #expect(await badges.status(for: other) == .needsTranscription)
+        // A relationship record alone (memo gone) still reaches lookup and reports missing.
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("TRA08908.wav"))
+        let record = VoiceMemoCompanionRecord(profileIdentifier: "test", imageFilename: "TRA08908.JPG",
+                                              memoFilename: "TRA08908.wav")
+        try JSONEncoder().encode(record).write(to: VoiceMemoCompanionRepository().recordURL(for: other))
+        #expect(await badges.status(for: other) == .missing)
     }
 
     @Test("Discovery is read-only; reviewed confirmation installs identities and preserves originals")
@@ -227,5 +338,26 @@ struct CaptionVoiceMemoAssociationServiceTests {
             #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .available(preview.association))
         }
         for (file, bytes) in originals { #expect(try Data(contentsOf: file) == bytes) }
+    }
+}
+
+/// Real filesystem primitives with counted content hashes. The clock runs a minute ahead so
+/// freshly written fixtures count as settled and their digests may be cached.
+nonisolated private final class CountingRevisionIO: Sendable {
+    private let hashes = OSAllocatedUnfairLock(initialState: [URL]())
+
+    var hashedURLs: [URL] { hashes.withLock { $0 } }
+
+    var io: SourceImageRevisionCaptureIO {
+        let system = SourceImageRevisionCaptureIO.system
+        return SourceImageRevisionCaptureIO(
+            canonicalURL: system.canonicalURL,
+            snapshot: system.snapshot,
+            hash: { [hashes] url in
+                hashes.withLock { $0.append(url.standardizedFileURL) }
+                return try system.hash(url)
+            },
+            now: { Date().addingTimeInterval(60) }
+        )
     }
 }

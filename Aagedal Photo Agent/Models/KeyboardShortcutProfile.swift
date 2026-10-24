@@ -582,7 +582,7 @@ final class KeyboardShortcutProfileRegistry {
     private(set) var customBindings: [KeyboardShortcutBinding]
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppDefaults.store,
         storageKey: String = "keyboardShortcutProfile.v1"
     ) {
         self.defaults = defaults
@@ -745,7 +745,7 @@ final class CaptionAdvanceShortcutRegistry {
     ]
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppDefaults.store,
         storageKey: String = "captionAdvanceShortcuts.v1"
     ) {
         self.defaults = defaults
@@ -868,5 +868,13 @@ extension KeyboardShortcutProfile {
 extension KeyboardShortcutProfile {
     nonisolated func menuShortcut(for command: KeyboardShortcutCommand?) -> KeyboardShortcut? {
         command.flatMap { menuChord(for: $0)?.swiftUIShortcut }
+    }
+}
+
+extension KeyboardShortcutProfileRegistry {
+    /// A template slot's chord in the active profile; users can rebind the default ⌃1–⌃9.
+    func templateShortcutDisplayName(slot: Int) -> String {
+        KeyboardShortcutCommand.templateCommand(slot: slot)
+            .flatMap { selectedProfile.menuChord(for: $0) }?.displayName ?? "Slot \(slot) (no shortcut)"
     }
 }

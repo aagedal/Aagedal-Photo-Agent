@@ -27,6 +27,10 @@ struct KeywordListEditor: View {
     @State private var importRequestID: UUID?
     @State private var exportTask: Task<Void, Never>?
     @State private var exportRequestID: UUID?
+    /// The list as loaded or last durably saved. Each instant save is refused if the file no
+    /// longer matches, so an edit made elsewhere (another Mac, MCP) is never silently replaced.
+    @State private var persistedEntries: [String]?
+    @State private var showingSaveConflict = false
 
     /// Indices to highlight from the filtered view back to `entries`. Computed
     /// lazily — recomputed when search text changes.
@@ -63,6 +67,12 @@ struct KeywordListEditor: View {
         .frame(minWidth: 460, idealWidth: 520, minHeight: 460, idealHeight: 560)
         .onAppear {
             loadEntries()
+        }
+        .alert("List Changed Elsewhere", isPresented: $showingSaveConflict) {
+            Button("Reload") { loadEntries() }
+            Button("Overwrite", role: .destructive) { persist(overwriting: true) }
+        } message: {
+            Text("This list was changed elsewhere after you opened it (for example on another Mac), so your last edit wasn't saved. Reload to see the current list, or Overwrite to replace it with the list shown here.")
         }
         .onDisappear {
             loadedDestinationURL = nil
@@ -145,6 +155,8 @@ struct KeywordListEditor: View {
             Button("Export to File…") {
                 exportToFile()
             }
+            // A failed load leaves `entries` empty; exporting then would write an empty file.
+            .disabled(!canEdit)
             if let feedback {
                 Text(feedback)
                     .font(.caption)
@@ -169,6 +181,7 @@ struct KeywordListEditor: View {
 
     private func loadEntries() {
         loadedDestinationURL = nil
+        feedback = nil
         loadTask?.cancel()
         let requestID = UUID()
         loadRequestID = requestID
@@ -190,9 +203,11 @@ struct KeywordListEditor: View {
                 switch result {
                 case .loaded(let snapshot):
                     entries = snapshot.entries
+                    persistedEntries = snapshot.entries
                     loadedDestinationURL = sourceURL
                 case .missing:
                     entries = []
+                    persistedEntries = []
                     loadedDestinationURL = sourceURL
                 case .cancelledBeforeAccess, .cancelledBeforeRead, .cancelledAfterRead:
                     break
@@ -242,35 +257,43 @@ struct KeywordListEditor: View {
 
     /// Persists the current entries through the serialized filesystem owner. Called after every
     /// mutation so the editor saves instantly — there is no explicit Save step.
-    private func persist() {
+    private func persist(overwriting: Bool = false) {
         guard admitMutation() else { return }
         loadRequestID = nil
         loadTask?.cancel()
         loadTask = nil
+        let previousSave = persistenceTask
         persistenceTask?.cancel()
+        // Each save replaces the previous outcome, so an old "Save failed" never lingers.
+        feedback = nil
 
         let requestID = UUID()
         let snapshot = entries
         let destinationURL = KeywordListsStore.shared.currentURL(for: storeKey)
         persistenceRequestID = requestID
         persistenceTask = Task {
+            // The baseline is whatever the previous instant save left durable.
+            await previousSave?.value
+            let expectedEntries = overwriting ? nil : persistedEntries
             do {
                 let activeDestination = try await KeywordListsStore.shared.resolveURL(for: storeKey)
                 guard persistenceRequestID == requestID, !Task.isCancelled else { return }
                 guard activeDestination == destinationURL else {
                     persistenceTask = nil
                     persistenceRequestID = nil
-                    feedback = "List storage changed. Apply the edit again."
                     loadEntries()
+                    feedback = "List storage changed. Apply the edit again."
                     return
                 }
                 let result = try await KeywordListEditorPersistenceService.shared.saveEntries(
                     snapshot,
                     to: destinationURL,
+                    expectedEntries: expectedEntries,
                     requestID: requestID
                 )
                 switch result {
                 case .committed(let commit):
+                    persistedEntries = commit.entries
                     // Durable effects are published even after dismissal invalidates this view's
                     // request. The approved-list cache can install the exact committed payload
                     // without reading the file again; only UI callbacks remain request-gated.
@@ -289,6 +312,12 @@ struct KeywordListEditor: View {
                     persistenceRequestID = nil
                     feedback = "Save cancelled"
                 }
+            } catch is KeywordListBaselineConflictError {
+                guard persistenceRequestID == requestID else { return }
+                persistenceTask = nil
+                persistenceRequestID = nil
+                feedback = "Not saved: the list changed elsewhere"
+                showingSaveConflict = true
             } catch {
                 guard persistenceRequestID == requestID else { return }
                 persistenceTask = nil
@@ -324,8 +353,8 @@ struct KeywordListEditor: View {
                 importRequestID = nil
                 guard loadedDestinationURL == destinationURL,
                       KeywordListsStore.shared.currentURL(for: storeKey) == destinationURL else {
-                    feedback = "List storage changed. Import the file again."
                     loadEntries()
+                    feedback = "List storage changed. Import the file again."
                     return
                 }
                 var seen = Set(entries.map { $0.lowercased() })
@@ -334,8 +363,8 @@ struct KeywordListEditor: View {
                     entries.append(entry)
                     added += 1
                 }
-                feedback = "Imported \(added) new \(added == 1 ? "entry" : "entries")"
                 if added > 0 { persist() }
+                feedback = "Imported \(added) new \(added == 1 ? "entry" : "entries")"
             } catch {
                 guard importRequestID == requestID, !Task.isCancelled else { return }
                 importTask = nil
@@ -346,6 +375,7 @@ struct KeywordListEditor: View {
     }
 
     private func exportToFile() {
+        guard canEdit else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = defaultExportFilename()
@@ -369,7 +399,7 @@ struct KeywordListEditor: View {
                 exportRequestID = nil
                 switch result {
                 case .committed:
-                    feedback = "Exported \(entryCount) entries"
+                    feedback = "Exported \(entryCount) \(entryCount == 1 ? "entry" : "entries")"
                 case .cancelledBeforeWrite:
                     feedback = "Export cancelled"
                 }

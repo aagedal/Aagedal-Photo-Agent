@@ -200,11 +200,13 @@ struct Aagedal_Photo_AgentApp: App {
 
             CommandGroup(replacing: .printItem) { }
 
+            DevelopUndoCommands()
+
             RatingLabelCommands(commandRouter: commandRouter)
 
             CommandGroup(after: .newItem) {
                 Button("Open in Editor") {
-                    let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultEditDestination)
+                    let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultEditDestination)
                         ?? DefaultEditDestination.internalEditor.rawValue
                     let destination = DefaultEditDestination(rawValue: raw) ?? .internalEditor
                     if destination == .internalEditor {
@@ -223,7 +225,7 @@ struct Aagedal_Photo_AgentApp: App {
                 }
                 .keyboardShortcut(keyboardProfile.menuShortcut(for: .deleteSelected))
 
-                Button("Move Rejected to Folder…") {
+                Button("Move Rejected to Folder") {
                     commandRouter.send(.moveRejectedToFolder)
                 }
                 .keyboardShortcut(keyboardProfile.menuShortcut(for: .moveRejectedToFolder))
@@ -481,24 +483,63 @@ final class BackgroundOperationMonitor {
     var isImporting = false
     var isUploading = false
     var isRenderingForUpload = false
+    /// Polled sources for work owned by window models (metadata batch writes, Person Shown
+    /// writes, voice memo transcriptions, face scans). Each returns descriptions of what is
+    /// running now, such as "a face scan".
+    private var sources: [(key: String, activities: @MainActor () -> [String])] = []
 
-    var hasActiveOperation: Bool {
-        isImporting || isUploading || isRenderingForUpload
+    /// Registers (or replaces, by key) a source of running background work.
+    func registerSource(_ key: String, activities: @escaping @MainActor () -> [String]) {
+        sources.removeAll { $0.key == key }
+        sources.append((key, activities))
     }
 
-    var activeOperationSummary: String {
+    var activeOperations: [String] {
         var parts: [String] = []
         if isImporting { parts.append("an import") }
         if isUploading { parts.append("an upload") }
         if isRenderingForUpload { parts.append("upload rendering") }
-        return parts.joined(separator: " and ")
+        for source in sources { parts.append(contentsOf: source.activities()) }
+        return parts
     }
 
-    private init() {}
+    var hasActiveOperation: Bool { !activeOperations.isEmpty }
+
+    var activeOperationSummary: String { Self.summary(of: activeOperations) }
+
+    /// "an import", "an import and a face scan", "an import, an upload and a face scan".
+    nonisolated static func summary(of operations: [String]) -> String {
+        guard let last = operations.last else { return "" }
+        guard operations.count > 1 else { return last }
+        return operations.dropLast().joined(separator: ", ") + " and " + last
+    }
+
+    /// Alert text for the quit warning: "A face scan is still running. …".
+    nonisolated static func quitWarningText(for operations: [String]) -> String {
+        let summary = summary(of: operations)
+        let subject = summary.isEmpty ? "Background work" : summary.prefix(1).uppercased() + summary.dropFirst()
+        let verb = operations.count > 1 ? "are" : "is"
+        return "\(subject) \(verb) still running. Quit anyway? Quitting first waits for metadata writes, and offers to stop waiting if they take long; other work stops."
+    }
+
+    init() {}
+}
+
+/// Whether the "still saving" alert is on screen, so a late flush completion never ends a
+/// different modal session.
+@MainActor
+private final class TerminationModalPresence {
+    var isShowing = true
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private let terminationReplyLatch = ApplicationTerminationReplyLatch()
+
+    @MainActor
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Off-main, and skipped in test processes.
+        FFmpegWhisperVerifiedSnapshotCache.sweepStaleSessionsAtLaunch()
+    }
 
     @MainActor
     func applicationWillBecomeActive(_ notification: Notification) {
@@ -521,12 +562,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if terminationReplyLatch.isPending { return .terminateLater }
 
         let monitor = BackgroundOperationMonitor.shared
-        if monitor.hasActiveOperation {
+        let operations = monitor.activeOperations
+        if !operations.isEmpty {
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Import or upload still in progress"
-            let summary = monitor.activeOperationSummary.isEmpty ? "background work" : monitor.activeOperationSummary
-            alert.informativeText = "Quitting now will stop \(summary). Wait for it to finish, or quit anyway?"
+            alert.messageText = "Background Work Still Running"
+            alert.informativeText = BackgroundOperationMonitor.quitWarningText(for: operations)
             alert.addButton(withTitle: "Keep Running")
             alert.addButton(withTitle: "Quit Anyway")
             if alert.runModal() == .alertFirstButtonReturn { return .terminateCancel }
@@ -534,42 +575,117 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard terminationReplyLatch.begin() else { return .terminateLater }
         let captionOperation = CaptionWorkspaceTerminationFlushOperation()
+        // Writes a cancelled quit left running finish before this quit starts its own, so the
+        // same photo is never committed twice concurrently.
+        var precedingWork: (@MainActor () async -> Void)?
+        if let earlierAttempt = unfinishedTerminationFlush {
+            precedingWork = { await earlierAttempt.value }
+        }
         let coordinator = ApplicationTerminationFlushCoordinator(
-            captionFlush: { try await captionOperation.flush() },
+            browserEditorFlush: {
+                // Its own stage, ahead of Caption: abandoning one never skips the other.
+                try await MetadataEditorTerminationFlush.shared.flush()
+            },
+            captionFlush: {
+                try await captionOperation.flush()
+            },
+            analysisFlush: {
+                try await AnalysisWorkspaceTerminationFlush.shared.flush()
+            },
             developFlush: {
                 await DevelopVersionFlushCoordinator.shared.flush(.applicationTermination)
+            },
+            precedingWork: precedingWork,
+            waitTimeout: .seconds(4),
+            describeActivity: { stage in
+                switch stage {
+                case .browserEditor: MetadataEditorTerminationFlush.shared.pendingActivityDescription
+                default: nil
+                }
+            },
+            canAbandonStage: { stage in
+                // Captured Primary Develop edits must never be abandoned from this prompt; the
+                // failure prompt forbids it too.
+                !(stage == .develop && DevelopPrimaryLifecycleCoordinator.shared.hasPendingWork)
             }
         )
         Task { @MainActor in
-            let shouldTerminate = await coordinator.resolve { failure in
-                terminationChoice(for: failure)
-            }
+            let shouldTerminate = await coordinator.resolve(
+                chooseWhileWaiting: { context in terminationWaitChoice(context) },
+                chooseFailure: { failure in terminationChoice(for: failure) }
+            )
+            // Keep Open after a failure leaves nothing running; Cancel Quit may.
+            unfinishedTerminationFlush = shouldTerminate ? nil : coordinator.unfinishedAttempt
             guard terminationReplyLatch.finish() else { return }
             sender.reply(toApplicationShouldTerminate: shouldTerminate)
         }
         return .terminateLater
     }
 
+    /// The flush a Cancel Quit left running; the next quit waits for it first.
+    @MainActor private var unfinishedTerminationFlush: Task<Void, Never>?
+
+    /// Shown when a quit flush is still running after the timeout. AppKit is in its
+    /// terminate-later modal loop and further Cmd-Q presses are ignored, so without this prompt a
+    /// stalled write (an unplugged card, a hung network volume) would freeze the app for good.
+    @MainActor
+    private func terminationWaitChoice(
+        _ context: ApplicationTerminationWaitContext
+    ) -> ApplicationTerminationWaitChoice {
+        // Another prompt (a folder switch's discard question the flush is waiting on) is already
+        // asking the user; never stack this one on top of it. The timeout re-arms.
+        guard NSApp.modalWindow == nil else { return .keepWaiting }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Saving Changes…"
+        alert.addButton(withTitle: "Keep Waiting")
+        if context.allowsQuitWithoutSaving {
+            alert.informativeText = "Still saving \(context.activityDescription). Keep waiting for it to finish, quit without saving this (the remaining changes are still saved first), or cancel quitting and keep working."
+            alert.addButton(withTitle: "Quit Without Saving")
+            alert.buttons[1].hasDestructiveAction = true
+        } else {
+            alert.informativeText = "Still saving \(context.activityDescription). Captured Develop edits cannot be abandoned: keep waiting, or cancel quitting and use Retry Develop Writes or Review Develop Conflicts."
+        }
+        alert.addButton(withTitle: "Cancel Quit")
+        let presence = TerminationModalPresence()
+        context.whenFlushFinishes {
+            guard presence.isShowing else { return }
+            presence.isShowing = false
+            NSApp.stopModal(withCode: Self.flushFinishedModalResponse)
+            // stopModal takes effect when the modal loop next processes an event.
+            if let wake = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [],
+                                             timestamp: 0, windowNumber: 0, context: nil,
+                                             subtype: 0, data1: 0, data2: 0) {
+                NSApp.postEvent(wake, atStart: false)
+            }
+        }
+        let response = alert.runModal()
+        presence.isShowing = false
+        switch response {
+        case .alertSecondButtonReturn: return context.allowsQuitWithoutSaving ? .quitWithoutSaving : .cancelQuit
+        case .alertThirdButtonReturn: return .cancelQuit
+        default: return .keepWaiting // Keep Waiting, or dismissed because the flush finished
+        }
+    }
+
+    private static let flushFinishedModalResponse = NSApplication.ModalResponse(rawValue: 9_001)
+
     @MainActor
     private func terminationChoice(
         for failure: ApplicationTerminationFlushFailure
     ) -> ApplicationTerminationFailureChoice {
+        let presentation = ApplicationTerminationFailurePresentation.make(
+            for: failure,
+            developHasPendingPrimaryWork: DevelopPrimaryLifecycleCoordinator.shared.hasPendingWork
+        )
         let alert = NSAlert()
         alert.alertStyle = .critical
-        if DevelopPrimaryLifecycleCoordinator.shared.hasPendingWork {
-            alert.messageText = "Develop Save Failed"
-            alert.informativeText = "Captured Primary Develop edits still need attention: \(failure.message)\n\nKeep the app open and use Retry Develop Writes, or Review Develop Conflicts to export the captured edits before discarding them."
+        alert.messageText = presentation.title
+        alert.informativeText = presentation.message
+        guard presentation.offersRetryAndQuit else {
             alert.addButton(withTitle: "Keep App Open")
             alert.runModal()
             return .keepOpen
-        }
-        switch failure.stage {
-        case .caption:
-            alert.messageText = "Caption Save Failed"
-            alert.informativeText = "Caption sidecar changes could not be saved: \(failure.message)\n\nRetry the retained drafts, keep the app open, or explicitly quit without saving them."
-        case .develop:
-            alert.messageText = "Named Version Save Failed"
-            alert.informativeText = "The active Develop version could not be saved: \(failure.message)\n\nRetry saving, keep the app open, or explicitly quit without saving these changes."
         }
         alert.addButton(withTitle: "Retry Save")
         alert.addButton(withTitle: "Keep App Open")
@@ -590,8 +706,27 @@ extension Notification.Name {
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
+    /// The RAW decode profile or decoder version changed; caches keyed by URL alone are stale.
+    static let rawDecodeSettingsDidChange = Notification.Name("rawDecodeSettingsDidChange")
 }
 
+
+/// Edit ▸ Undo/Redo. In Develop (no text field editing) they drive the Develop history and show
+/// its step names ("Undo Exposure"); everywhere else they send the standard responder-chain
+/// `undo:`/`redo:`, like the system items they replace. Never disabled: a text field's undo
+/// relies on the menu key equivalent even when the Develop history is empty.
+private struct DevelopUndoCommands: Commands {
+    @State private var router = DevelopUndoMenuRouter.shared
+
+    var body: some Commands {
+        CommandGroup(replacing: .undoRedo) {
+            Button(router.undoTitle) { router.undo() }
+                .keyboardShortcut("z", modifiers: .command)
+            Button(router.redoTitle) { router.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+        }
+    }
+}
 
 /// Observes profile edits directly so native menu key equivalents update with the editor.
 private struct RatingLabelCommands: Commands {

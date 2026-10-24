@@ -524,6 +524,7 @@ final class CaptionSession {
     private(set) var isTransitioning = false
 
     @ObservationIgnored private var loadGeneration = UUID()
+    @ObservationIgnored private var previewGeneration = UUID()
 
     var currentURL: URL? {
         guard let currentIndex, orderedImageURLs.indices.contains(currentIndex) else { return nil }
@@ -595,6 +596,7 @@ final class CaptionSession {
             selectedURLs = [currentURL]
         }
         invalidateLoads()
+        if currentURL != oldURL { previewGeneration = UUID() }
     }
 
     func markCurrentDirty() {
@@ -626,6 +628,19 @@ final class CaptionSession {
 
     func invalidateLoads() {
         loadGeneration = UUID()
+    }
+
+    /// Starts the preview/face load for the focused image. Unlike ``beginLoad()``, this token is
+    /// only invalidated when focus moves to another image: an in-place action (Write, Apply
+    /// Template, Copy Previous, code replacement) re-invalidates editor loads but must not strand
+    /// the preview of the photo still on screen, whose `.task(id:)` would never rerun.
+    func beginPreviewLoad() -> CaptionLoadToken? {
+        guard let currentURL else { return nil }
+        return CaptionLoadToken(imageURL: currentURL, generation: previewGeneration)
+    }
+
+    func acceptsPreview(load: CaptionLoadToken) -> Bool {
+        load.generation == previewGeneration && load.imageURL == currentURL
     }
 
     /// Flushes buffered editor state before an action that does not itself change focus.
@@ -702,8 +717,10 @@ final class CaptionSession {
         isTransitioning = true
         defer { isTransitioning = false }
         try await flush()
+        let previousURL = currentURL
         mutation()
         invalidateLoads()
+        if currentURL != previousURL { previewGeneration = UUID() }
     }
 
     private static func uniqueStandardizedURLs(_ urls: [URL]) -> [URL] {
@@ -761,7 +778,10 @@ final class CaptionWorkspaceFlushCoordinator {
         defer { if transitionOwner == token { transitionOwner = nil } }
         try Task.checkCancellation()
         guard isCurrent() else { throw CancellationError() }
-        if hasLiveEditor { try await flushAsync() }
+        // A workspace transition must not lose another mounted editor's buffers (two Review
+        // panes, Review + Caption), so every registered owner is captured, not just the latest.
+        if hasLiveEditor, hasRegisteredHandler { try await flushAllAsync() }
+        else if hasLiveEditor { try await flushAsync() }
         else if hasPendingPersistence { try await flushQueuedPersistenceAsync() }
         try Task.checkCancellation()
         guard isCurrent() else { throw CancellationError() }
@@ -781,16 +801,26 @@ final class CaptionWorkspaceFlushCoordinator {
         transitionOwner = nil
         operation()
     }
-    @ObservationIgnored private var currentImageURLHandler: (() -> URL?)?
-    private var owner: UUID?
-    private var handler: (() throws -> Void)?
-    private var compositionStateHandler: (() -> CodeReplacementCompositionState)?
-    private var persistenceCaptureHandler: (() throws -> CaptionDraftPersistence?)?
-    private var persistenceFailureHandler: (@MainActor @Sendable (String) -> Void)?
+    /// One mounted editor's flush surface. Several can be mounted at once (Caption, one Review
+    /// per pane/window); each keeps its own handlers so no registration replaces another's.
+    private struct Registration {
+        let owner: UUID
+        let currentImageURL: () -> URL?
+        let compositionState: () -> CodeReplacementCompositionState
+        let capturePersistence: () throws -> CaptionDraftPersistence?
+        let persistenceFailure: @MainActor @Sendable (String) -> Void
+        let handler: () throws -> Void
+    }
+
+    /// Registration order; the most recent registration is the "current" editor that
+    /// Caption-specific calls (`enqueueFlush`, `editorCompositionState`) address.
+    @ObservationIgnored private var registrations: [Registration] = []
+    private var registeredOwners: [UUID] = []
     private let persistenceQueue: CaptionDraftPersistenceQueue
     private let variableLifecycle: VariableDraftLifecycleCoordinator
 
-    var hasRegisteredHandler: Bool { handler != nil }
+    private var current: Registration? { registrations.last }
+    var hasRegisteredHandler: Bool { !registeredOwners.isEmpty }
     var hasPendingPersistence: Bool { persistenceQueue.hasPendingWork || variableLifecycle.hasPendingWork }
     var currentQueueFailure: CaptionQueueFailure? { persistenceQueue.currentFailure }
 
@@ -856,22 +886,17 @@ final class CaptionWorkspaceFlushCoordinator {
         persistenceFailure: @escaping @MainActor @Sendable (String) -> Void = { _ in },
         handler: @escaping () throws -> Void
     ) {
-        self.owner = owner
-        self.currentImageURLHandler = currentImageURL
-        self.compositionStateHandler = compositionState
-        self.persistenceCaptureHandler = capturePersistence
-        self.persistenceFailureHandler = persistenceFailure
-        self.handler = handler
+        registrations.removeAll { $0.owner == owner }
+        registrations.append(Registration(owner: owner, currentImageURL: currentImageURL,
+            compositionState: compositionState, capturePersistence: capturePersistence,
+            persistenceFailure: persistenceFailure, handler: handler))
+        registeredOwners = registrations.map(\.owner)
     }
 
+    /// Removes only this owner's handlers; other mounted editors stay registered.
     func unregister(owner: UUID) {
-        guard self.owner == owner else { return }
-        self.owner = nil
-        currentImageURLHandler = nil
-        compositionStateHandler = nil
-        persistenceCaptureHandler = nil
-        persistenceFailureHandler = nil
-        handler = nil
+        registrations.removeAll { $0.owner == owner }
+        registeredOwners = registrations.map(\.owner)
     }
 
     /// Async durable barrier for transitions that can suspend while JSON/XMP is verified.
@@ -881,9 +906,23 @@ final class CaptionWorkspaceFlushCoordinator {
         try await persistenceQueue.drainAsync()
     }
 
-    /// Cross the mounted buffered editor barrier, or drain retained drafts after it unmounts.
+    /// Owner-addressed `flushAsync`: Caption flushes its own editor, never another pane's Review.
+    func flushAsync(owner: UUID) async throws {
+        try requireVariableDraftsPersisted()
+        try enqueueFlush(owner: owner)
+        try await persistenceQueue.drainAsync()
+    }
+
+    /// Like `flushAsync`, but captures every registered editor (quit and workspace transitions).
+    func flushAllAsync() async throws {
+        try requireVariableDraftsPersisted()
+        try enqueueFlushAll()
+        try await persistenceQueue.drainAsync()
+    }
+
+    /// Cross every mounted buffered editor barrier, or drain retained drafts after they unmount.
     func flushForTransitionAsync() async throws {
-        if hasRegisteredHandler { try await flushAsync() }
+        if hasRegisteredHandler { try await flushAllAsync() }
         else { try await flushQueuedPersistenceAsync() }
     }
 
@@ -894,35 +933,96 @@ final class CaptionWorkspaceFlushCoordinator {
     }
 
     /// Navigation flush: commits AppKit's buffered text and snapshots persistence without waiting
-    /// for sidecar disk I/O. A capture failure still prevents navigation.
-    func enqueueFlush() throws {
-        if let current = currentImageURLHandler?(), isReviewing(current) {
-            throw CaptionConflictRecoveryError.reviewInProgress
-        }
-        guard let handler,
-              let persistenceCaptureHandler,
-              let persistenceFailureHandler else {
+    /// for sidecar disk I/O. A capture failure still prevents navigation. Returns whether a draft
+    /// was captured (false when the editor had nothing new to save).
+    @discardableResult
+    func enqueueFlush() throws -> Bool {
+        guard let current else { throw CaptionWorkspaceFlushError.handlerUnavailable }
+        return try enqueueFlush(current)
+    }
+
+    /// Captures one specific editor. Caption uses this for its own blur, navigation and actions
+    /// so it can never capture (or be blocked by) a Review pane registered after it.
+    @discardableResult
+    func enqueueFlush(owner: UUID) throws -> Bool {
+        guard let registration = registrations.last(where: { $0.owner == owner }) else {
             throw CaptionWorkspaceFlushError.handlerUnavailable
         }
-        try handler()
-        if let persistence = try persistenceCaptureHandler() {
-            persistenceQueue.enqueue(persistence, onFailure: persistenceFailureHandler)
+        return try enqueueFlush(registration)
+    }
+
+    /// Captures every registered editor in registration order. One editor's refusal (an active
+    /// input-method composition, a review in progress) does not stop the others from being
+    /// captured; the failures are reported together afterwards. Returns whether any draft was
+    /// captured.
+    @discardableResult
+    func enqueueFlushAll() throws -> Bool {
+        guard !registrations.isEmpty else { throw CaptionWorkspaceFlushError.handlerUnavailable }
+        var captured = false
+        var failures: [any Error] = []
+        for registration in registrations {
+            do { if try enqueueFlush(registration) { captured = true } }
+            catch { failures.append(error) }
         }
+        try Self.throwCombined(failures)
+        return captured
+    }
+
+    /// Captures the given owners' editors that are still registered, continuing past failures.
+    /// Returns the owners that were captured (termination retries skip them).
+    fileprivate func enqueueFlush(owners: [UUID]) -> (captured: [UUID], failures: [any Error]) {
+        var captured: [UUID] = []
+        var failures: [any Error] = []
+        for registration in registrations where owners.contains(registration.owner) {
+            do {
+                _ = try enqueueFlush(registration)
+                captured.append(registration.owner)
+            } catch { failures.append(error) }
+        }
+        return (captured, failures)
+    }
+
+    /// A single failure keeps its exact error; several are combined into one message.
+    fileprivate static func throwCombined(_ failures: [any Error]) throws {
+        guard let first = failures.first else { return }
+        guard failures.count > 1 else { throw first }
+        throw CaptionWorkspaceFlushError.persistenceFailed(
+            failures.map(\.localizedDescription).joined(separator: "\n"))
+    }
+
+    fileprivate var registeredOwnerIDs: [UUID] { registrations.map(\.owner) }
+
+    private func enqueueFlush(_ registration: Registration) throws -> Bool {
+        if let photo = registration.currentImageURL(), isReviewing(photo) {
+            throw CaptionConflictRecoveryError.reviewInProgress
+        }
+        try registration.handler()
+        if let persistence = try registration.capturePersistence() {
+            persistenceQueue.enqueue(persistence, onFailure: registration.persistenceFailure)
+            return true
+        }
+        return false
     }
 
     func editorCompositionState() throws -> CodeReplacementCompositionState {
-        guard handler != nil, let compositionStateHandler else {
+        guard let current else { throw CaptionWorkspaceFlushError.handlerUnavailable }
+        return current.compositionState()
+    }
+
+    func editorCompositionState(owner: UUID) throws -> CodeReplacementCompositionState {
+        guard let registration = registrations.last(where: { $0.owner == owner }) else {
             throw CaptionWorkspaceFlushError.handlerUnavailable
         }
-        return compositionStateHandler()
+        return registration.compositionState()
     }
 
     fileprivate func requireVariableDraftsPersisted() throws {
         try variableLifecycle.requirePersisted()
     }
 
+    /// Termination drains first and checks variable drafts separately afterwards, so a retained
+    /// variable draft cannot keep already captured caption drafts from being written.
     fileprivate func drainQueuedPersistenceForTermination() async throws {
-        try requireVariableDraftsPersisted()
         try await persistenceQueue.drainAsync()
     }
 }
@@ -932,21 +1032,29 @@ final class CaptionWorkspaceFlushCoordinator {
 @MainActor
 final class CaptionWorkspaceTerminationFlushOperation {
     private let coordinator: CaptionWorkspaceFlushCoordinator
-    private var didCaptureCurrentDraft = false
+    /// Owners whose live editor was already captured by this termination attempt; a retry
+    /// drains their retained FIFO items without appending duplicates.
+    private var capturedOwners: Set<UUID> = []
 
     init(coordinator: CaptionWorkspaceFlushCoordinator = .shared) {
         self.coordinator = coordinator
     }
 
     func flush() async throws {
-        try coordinator.requireVariableDraftsPersisted()
-        if !didCaptureCurrentDraft {
-            if coordinator.hasRegisteredHandler {
-                try coordinator.enqueueFlush()
-            }
-            didCaptureCurrentDraft = true
-        }
-        try await coordinator.drainQueuedPersistenceForTermination()
+        // Every mounted editor (Caption and each Review pane) is captured, not only the latest,
+        // and the FIFO is drained, before anything can fail the stage: a retained variable draft
+        // or one editor's refusal must not stop the others' edits from becoming durable (Quit
+        // Without Saving on this stage would otherwise drop them). Failures are reported together.
+        var failures: [any Error] = []
+        let pending = coordinator.registeredOwnerIDs.filter { !capturedOwners.contains($0) }
+        let result = coordinator.enqueueFlush(owners: pending)
+        capturedOwners.formUnion(result.captured)
+        failures.append(contentsOf: result.failures)
+        do { try await coordinator.drainQueuedPersistenceForTermination() }
+        catch { failures.append(error) }
+        do { try coordinator.requireVariableDraftsPersisted() }
+        catch { failures.append(error) }
+        try CaptionWorkspaceFlushCoordinator.throwCombined(failures)
     }
 }
 
@@ -1022,5 +1130,33 @@ nonisolated enum MetadataReviewDraftCapture {
     private static func editorialBytes(_ metadata: IPTCMetadata) throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(metadata)
+    }
+}
+
+/// The Caption workspace's photo-only view of the browser's visible items, built once per
+/// browser change so rendering (which happens on every keystroke) never refilters the folder.
+struct CaptionPhotoList {
+    let images: [ImageFile]
+    let urls: [URL]
+    private let indexByStandardizedURL: [URL: Int]
+
+    init(browserImages: [ImageFile]) {
+        let images = browserImages.filter(\.isImageFile)
+        self.images = images
+        urls = images.map(\.url)
+        var index: [URL: Int] = [:]
+        index.reserveCapacity(images.count)
+        for (offset, image) in images.enumerated() where index[image.url.standardizedFileURL] == nil {
+            index[image.url.standardizedFileURL] = offset
+        }
+        indexByStandardizedURL = index
+    }
+
+    func image(forStandardizedURL url: URL) -> ImageFile? {
+        indexByStandardizedURL[url].map { images[$0] }
+    }
+
+    func contains(_ url: URL) -> Bool {
+        indexByStandardizedURL[url.standardizedFileURL] != nil
     }
 }

@@ -23,6 +23,7 @@ struct VideoStillExtractionView: View {
     private let playbackClock = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
     @State private var format = "jpg"
     @State private var saving = false
+    @State private var saveTask: Task<Void, Never>?
     @State private var message: String?
     @State private var loadFailed = false
     @State private var filesystem = VideoStillFilesystemService()
@@ -84,8 +85,14 @@ struct VideoStillExtractionView: View {
                     Text("JPEG XL (16-bit lossless)").tag("jxl")
                 }.frame(width: 260).disabled(saving)
                 Spacer()
-                if saving { ProgressView().controlSize(.small) }
-                Button("Close") { dismiss() }.disabled(saving)
+                if saving {
+                    ProgressView().controlSize(.small)
+                    // Stops after the frame in flight; stills already written are kept.
+                    Button("Cancel") { saveTask?.cancel() }
+                        .keyboardShortcut(.cancelAction)
+                } else {
+                    Button("Close") { dismiss() }
+                }
                 Button("Extract marked frames…") { chooseDestination() }
                     .buttonStyle(.borderedProminent)
                     .disabled(frames.isEmpty || saving || loadFailed || pendingMarkers > 0)
@@ -110,7 +117,11 @@ struct VideoStillExtractionView: View {
             let seconds = player.currentTime().seconds
             if !scrubbing, seconds.isFinite { position = min(max(seconds, 0), duration) }
         }
-        .onDisappear { player.pause(); player.replaceCurrentItem(with: nil) }
+        .onDisappear {
+            saveTask?.cancel()
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+        }
         .interactiveDismissDisabled(saving)
     }
 
@@ -163,9 +174,11 @@ struct VideoStillExtractionView: View {
         let selectedFrames = frames
         let selectedFormat = format
         guard let timecode else { saving = false; return }
-        Task {
+        saveTask = Task {
             var saved = 0
             do {
+                // Date, GPS and rights/descriptive fields travel from the clip onto each still.
+                let sourceMetadata = await VideoStillSourceMetadata.read(videoURL: url)
                 let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
                 generator.appliesPreferredTrackTransform = true
                 generator.requestedTimeToleranceBefore = .zero
@@ -186,21 +199,29 @@ struct VideoStillExtractionView: View {
                     if selectedFormat == "jxl" {
                         try await VideoJXLStillExporter.export(source: url, seconds: result.actualTime.seconds,
                                                                destination: outputURL, description: description,
+                                                               sourceMetadata: sourceMetadata,
                                                                filesystem: filesystem)
                     } else {
                         try await filesystem.write(image: result.image, format: selectedFormat,
-                                                   destination: outputURL, description: description)
+                                                   destination: outputURL, description: description,
+                                                   sourceMetadata: sourceMetadata,
+                                                   frameOffset: result.actualTime.seconds)
                     }
                     saved += 1
                 }
                 frames.removeAll()
                 message = "Saved \(saved) still(s) to \(destination.path)."
+            } catch let error where error is CancellationError || Task.isCancelled {
+                // AVFoundation may surface cancellation as its own error type.
+                frames.removeFirst(saved)
+                message = "Cancelled. Saved \(saved) of \(selectedFrames.count) still(s)."
             } catch {
                 frames.removeFirst(saved)
                 message = "Saved \(saved) of \(selectedFrames.count) still(s). \(error.localizedDescription)"
             }
             if saved > 0 { onSaved() }
             saving = false
+            saveTask = nil
         }
     }
 }

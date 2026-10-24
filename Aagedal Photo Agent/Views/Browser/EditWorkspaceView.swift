@@ -135,6 +135,95 @@ nonisolated enum GlobalLayerResetBehavior {
     }
 }
 
+/// "Reset develop adjustments (keep crop)": everything "Reset All Edits" clears except framing.
+/// The Global node is reset with the shared Global semantics, and every local layer (masks,
+/// watermarks, preserved ACR masks) goes with it. HDR output mode is display state rather than
+/// an adjustment and survives, like the Global reset.
+nonisolated enum DevelopAdjustmentsResetBehavior {
+    static func reset(_ settings: inout CameraRawSettings, isRaw: Bool) {
+        GlobalLayerResetBehavior.reset(&settings, isRaw: isRaw)
+        settings.localAdjustments = nil
+        settings.watermarkLayers = nil
+        settings.unparsedMaskCorrections = nil
+        settings.layerOrder = nil
+    }
+
+    /// True when `reset` would change something. "As Shot" and an absent white balance are
+    /// the same default, so a RAW whose only difference is that marker counts as already reset.
+    static func hasResettableAdjustments(_ settings: CameraRawSettings?, isRaw: Bool) -> Bool {
+        guard var current = settings else { return false }
+        var reset = current
+        Self.reset(&reset, isRaw: isRaw)
+        if current.whiteBalance == "As Shot" { current.whiteBalance = nil }
+        if reset.whiteBalance == "As Shot" { reset.whiteBalance = nil }
+        return reset != current
+    }
+}
+
+/// The edit-buffer normalization every Develop mutation shares: recompute `hasSettings` and
+/// decide whether the Camera Raw container stays alive.
+nonisolated enum DevelopSettingsMutation {
+    static func applying(
+        _ update: (inout CameraRawSettings) -> Void,
+        to settings: CameraRawSettings?
+    ) -> CameraRawSettings? {
+        var cameraRaw = settings ?? CameraRawSettings()
+        update(&cameraRaw)
+        cameraRaw.hasSettings = hasEdits(cameraRaw) ? true : nil
+        // Keep the settings alive while the crop tool is active (crop.hasCrop) even if
+        // the crop is still a full-frame no-op — the overlay reads `crop.hasCrop` — but
+        // an identity crop must NOT set hasSettings above, or it lights the edit badge.
+        // HDR mode is display state rather than an adjustment, so it deliberately does not
+        // contribute to `hasSettings`. It must still keep the Camera Raw container alive:
+        // otherwise resetting the last adjustment (for example by double-clicking an exposure
+        // slider) drops `hdrEditMode` with the container and silently switches the image to SDR.
+        // Preserve both explicit values: `0` also prevents native/RAW auto-enable from turning
+        // HDR back on after the user has deliberately disabled it.
+        let shouldKeepSettings = hasEdits(cameraRaw)
+            || cameraRaw.crop?.hasCrop == true
+            || cameraRaw.hdrEditMode != nil
+        return shouldKeepSettings ? cameraRaw : nil
+    }
+
+    static func hasEdits(_ cameraRaw: CameraRawSettings) -> Bool {
+        (cameraRaw.whiteBalance != nil && cameraRaw.whiteBalance != "As Shot")
+            || cameraRaw.temperature != nil
+            || cameraRaw.tint != nil
+            || cameraRaw.incrementalTemperature != nil
+            || cameraRaw.incrementalTint != nil
+            || cameraRaw.exposure2012 != nil
+            || cameraRaw.contrast2012 != nil
+            || cameraRaw.highlights2012 != nil
+            || cameraRaw.shadows2012 != nil
+            || cameraRaw.whites2012 != nil
+            || cameraRaw.blacks2012 != nil
+            || cameraRaw.saturation != nil
+            || cameraRaw.vibrance != nil
+            || cameraRaw.globalDensity != nil
+            || cameraRaw.sharpness != nil
+            || cameraRaw.clarity2012 != nil
+            || cameraRaw.dehaze != nil
+            || cameraRaw.toneCurve != nil
+            || (cameraRaw.crop?.isEffectiveCrop == true)
+            || !(cameraRaw.localAdjustments?.isEmpty ?? true)
+            || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
+            || !(cameraRaw.hslAdjustments?.isEmpty ?? true)
+            || (cameraRaw.anonymizer?.isEmpty == false)
+            || (cameraRaw.filmEmulation?.isEmpty == false)
+            // Unknown ACR corrections are image-bound and must survive a
+            // template application even when the template resets every edit
+            // this app can model.
+            || !(cameraRaw.unparsedMaskCorrections?.isEmpty ?? true)
+    }
+}
+
+/// A Develop navigation requested while a version transition was flushing.
+private enum PendingDevelopNavigation {
+    case select(URL, modifiers: NSEvent.ModifierFlags)
+    case adjacent(forward: Bool)
+    case exit
+}
+
 /// Crop handles need breathing room around the image while the crop tool is open. Once the
 /// crop is confirmed, the result should use the entire preview pane like any other image.
 nonisolated enum EditCropPreviewFraming {
@@ -153,6 +242,9 @@ struct EditWorkspaceView: View {
     let settingsViewModel: SettingsViewModel
     let scopeViewModel: ScopeViewModel
     let cleanFeedController: CleanFeedController
+    /// A ContentView-level overlay (template palettes) sits above the workspace and owns
+    /// keyboard input while shown; the workspace key monitor must not act on the photo behind.
+    var isOverlayPresented: Bool = false
     let onExit: () -> Void
     var onPendingStatusChanged: (() -> Void)?
 
@@ -197,7 +289,25 @@ struct EditWorkspaceView: View {
     @State private var primaryTransitionRequestID = UUID()
     @State private var primaryRecoveryReloadPending = false
     @State private var primaryTransitionNotice: String?
+    /// Photo whose metadata load last completed; a load for a different photo starts a fresh
+    /// Develop undo history so no entry can restore another photo's (or a placeholder) state.
+    @State private var undoHistoryImageURL: URL?
+    /// The settings Develop itself last published for `undoHistoryImageURL`. A same-photo load
+    /// that replaces them from outside ends the history (see `DevelopUndoHistoryPolicy`).
+    @State private var undoHistorySettings: CameraRawSettings?
+    /// Last seen `MetadataViewModel.developSettingsReplacementGeneration` (Reset All Edits).
+    @State private var undoHistoryReplacementGeneration = 0
+    /// RAW whose Phase 2 decode failed (format unsupported by this macOS): Develop is editing
+    /// its embedded preview. Keyed by URL so it can't leak to another photo.
+    @State private var unsupportedRAWPreviewURL: URL?
+    /// Latest navigation requested while a version transition was still flushing. Coalesced:
+    /// only the most recent request is applied once the transition ends.
+    @State private var pendingDevelopNavigation: PendingDevelopNavigation?
     @State private var watermarkStore = WatermarkStore.shared
+    /// Native pixel size of the last image whose 100% zoom was computed (header read cache).
+    @State private var nativePixelSizeCache: (url: URL, size: CGSize?)?
+    /// SHA-256 watermark diagnostics for the version selector, reused across body evaluations.
+    @State private var versionDiagnosticsMemo = DevelopVersionDiagnosticsMemo()
     /// Owns the live Metal pipeline, AppKit render coordinator, source-generation reset, warmup,
     /// continuous rendering, and workspace teardown.
     @State private var metalSession = DevelopMetalPreviewSessionCoordinator()
@@ -247,7 +357,7 @@ struct EditWorkspaceView: View {
     private var selectedImage: ImageFile? {
         if let anchor = browserViewModel.lastClickedImageURL,
            browserViewModel.selectedImageIDs.contains(anchor),
-           let anchored = browserViewModel.images.first(where: { $0.url == anchor }) {
+           let anchored = browserViewModel.image(at: anchor) {
             return anchored
         }
         if let selected = browserViewModel.selectedImages.first {
@@ -357,6 +467,28 @@ struct EditWorkspaceView: View {
         metadataViewModel.selectedCount == 1 && !metadataViewModel.isBatchEdit
     }
 
+    /// The edit buffer belongs to the selected photo only once its metadata load has finished.
+    /// Before that it is still the previous photo's (selection debounce) or an empty placeholder
+    /// the load will overwrite, so Develop mutations are ignored and the inspector is disabled.
+    private var isSelectedImageMetadataReady: Bool {
+        !metadataViewModel.isLoading && metadataViewModel.selectedURLs.first == selectedImageURL
+    }
+
+    /// Single-image Develop mutations (shortcuts, menu commands) are accepted only when the
+    /// selected photo's saved settings are loaded.
+    private var canMutateSingleImageDevelop: Bool {
+        canEditSingleImage && isSelectedImageMetadataReady
+    }
+
+    /// Settings the preview shows. While the edit buffer is not yet the selected photo's, the
+    /// browser's already-loaded settings for that photo stand in, so navigation doesn't flash
+    /// the unedited (or the previous photo's) rendering.
+    private var displayedCameraRaw: CameraRawSettings? {
+        isSelectedImageMetadataReady
+            ? metadataViewModel.editingMetadata.cameraRaw
+            : selectedImage?.cameraRawSettings
+    }
+
     // Transitional aliases keep presentation and event interpretation compact while the
     // coordinator owns the complete input-session lifetime.
     private var isCursorOverPreview: Bool {
@@ -379,13 +511,8 @@ struct EditWorkspaceView: View {
         nonmutating set { workspaceInput.filmstripKeyboardScrollTarget = newValue }
     }
 
-    private var displayImage: NSImage? {
-        isShowingBefore ? sourceImage : previewRender.previewImage
-    }
-
     /// The SwiftUI fallback always receives the retained source. Interactive adjustments are
-    /// published by the Metal pipeline, while materialized AppKit preview output has the single
-    /// `previewRender` owner above.
+    /// published by the Metal pipeline; `previewRender` only materializes the CPU scope source.
     private var displayCIImage: CIImage? {
         sourceCIImage
     }
@@ -397,7 +524,7 @@ struct EditWorkspaceView: View {
     }
 
     private var isHDREnabled: Bool {
-        metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == 1
+        displayedCameraRaw?.hdrEditMode == 1
     }
 
     // Read aliases keep presentation code compact while the coordinator owns comparison mode,
@@ -553,6 +680,13 @@ struct EditWorkspaceView: View {
         developVersionSession.isTransitioning
     }
 
+    /// The inspector accepts edits only for a decoded, loaded photo outside a version transition.
+    /// Multi-selection shows its own message and is not gated on the single-photo load.
+    private var isDevelopInspectorBusy: Bool {
+        isDecodingFullResolution || isDevelopVersionTransitioning
+            || (canEditSingleImage && !isSelectedImageMetadataReady)
+    }
+
     private var isDevelopComparisonActive: Bool {
         developComparison.isActive
     }
@@ -567,55 +701,33 @@ struct EditWorkspaceView: View {
         Binding(
             get: { metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == 1 },
             set: { newValue in
-                if metadataViewModel.editingMetadata.cameraRaw == nil {
-                    metadataViewModel.editingMetadata.cameraRaw = CameraRawSettings()
+                // HDR output mode is a saved Develop setting: route it through the shared edit
+                // path so it is undoable and reaches the sidecar (or active named version). The
+                // commit publishes it to the ImageFile and drops the cached edited renders —
+                // the RAW decode itself is HDR-state independent (always full EDR headroom).
+                updateCameraRaw(actionName: "HDR") { cameraRaw in
+                    cameraRaw.hdrEditMode = newValue ? 1 : 0
                 }
-                metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode = newValue ? 1 : 0
-
-                // Propagate to ImageFile for immediate thumbnail/fullscreen update
-                if let url = selectedImageURL,
-                   let index = browserViewModel.urlToImageIndex[url] {
-                    if browserViewModel.images[index].cameraRawSettings == nil {
-                        browserViewModel.images[index].cameraRawSettings = CameraRawSettings()
-                    }
-                    browserViewModel.images[index].cameraRawSettings?.hdrEditMode = newValue ? 1 : 0
-                    browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
-                    // The cached edited CGImage was rendered under the old HDR state.
-                    // The RAW decode itself is HDR-state independent (always full EDR
-                    // headroom), so only the rendered outputs need to be dropped.
-                    browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
-                }
+                commitEditAdjustments()
             }
         )
+    }
+
+    private var isEditingEmbeddedRAWPreview: Bool {
+        guard let url = selectedImageURL else { return false }
+        return unsupportedRAWPreviewURL == url
     }
 
     private var isCropEnabled: Bool {
         metadataViewModel.editingMetadata.cameraRaw?.crop?.hasCrop ?? false
     }
 
+    /// Whether "Reset develop adjustments (keep crop)" would change anything.
     private var hasDevelopAdjustments: Bool {
-        guard let cameraRaw = metadataViewModel.editingMetadata.cameraRaw else { return false }
-        return cameraRaw.whiteBalance != nil
-            || cameraRaw.temperature != nil
-            || cameraRaw.tint != nil
-            || cameraRaw.incrementalTemperature != nil
-            || cameraRaw.incrementalTint != nil
-            || cameraRaw.exposure2012 != nil
-            || cameraRaw.contrast2012 != nil
-            || cameraRaw.highlights2012 != nil
-            || cameraRaw.shadows2012 != nil
-            || cameraRaw.whites2012 != nil
-            || cameraRaw.blacks2012 != nil
-            || cameraRaw.saturation != nil
-            || cameraRaw.vibrance != nil
-            || cameraRaw.globalDensity != nil
-            || cameraRaw.sharpness != nil
-            || cameraRaw.clarity2012 != nil
-            || cameraRaw.dehaze != nil
-            || cameraRaw.toneCurve != nil
-            || !(cameraRaw.filmEmulation?.isEmpty ?? true)
-            || !(cameraRaw.localAdjustments?.isEmpty ?? true)
-            || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
+        DevelopAdjustmentsResetBehavior.hasResettableAdjustments(
+            metadataViewModel.editingMetadata.cameraRaw,
+            isRaw: isSelectedImageRaw
+        )
     }
 
     private var selectedImageOrientation: Int {
@@ -630,16 +742,31 @@ struct EditWorkspaceView: View {
             displayImageSize: currentImageSize ?? .zero,
             crop: displayCrop,
             straightenAngle: displayCropAngle,
+            straightenPivot: straightenPivot,
             zoomScale: editZoomScale
+        )
+    }
+
+    /// The display-UV point the preview's straighten rotation pivots on. Confirmed crops render
+    /// through the Metal crop viewport, which rotates sampling around the viewport centre (crop
+    /// centre shifted by pan); elsewhere the frame centre is kept.
+    private var straightenPivot: CGPoint {
+        guard isCropEnabled, !showCropControls, !isShowingBefore,
+              let imageSize = metalImageSize ?? currentImageSize else { return CGPoint(x: 0.5, y: 0.5) }
+        let viewport = editCropViewport(in: previewPaneFrame.size, imageSize: imageSize)
+        return CGPoint(
+            x: Double(viewport.origin.x) + Double(viewport.size.x) / 2,
+            y: Double(viewport.origin.y) + Double(viewport.size.y) / 2
         )
     }
 
     /// Sensor (stored) → display geometry for the overlay. Two stacked
     /// transforms, applied in pipeline order: (1) EXIF orientation (the source
-    /// texture is display-oriented), then (2) the crop STRAIGHTEN angle (the
-    /// image view is rotated by `.rotationEffect(.degrees(-displayCropAngle))`,
-    /// so the overlay must bake the same rotation). The straighten step is the
-    /// identity when no angled crop is active (`displayCropAngle` == 0).
+    /// texture is display-oriented), then (2) the crop STRAIGHTEN angle (the Metal
+    /// crop viewport rotates sampling around the viewport/crop centre, while the
+    /// overlay maps through the un-rotated viewport, so it bakes the same rotation
+    /// about `straightenPivot`). The straighten step is the identity when no
+    /// angled crop is active (`displayCropAngle` == 0).
     private func maskGeometryForDisplay(_ geometry: EllipseMaskGeometry) -> EllipseMaskGeometry {
         layerGeometryInteraction.maskForDisplay(
             geometry,
@@ -684,7 +811,7 @@ struct EditWorkspaceView: View {
     }
 
     private var activeCrop: NormalizedCropRegion {
-        guard let crop = metadataViewModel.editingMetadata.cameraRaw?.crop else { return .full }
+        guard let crop = displayedCameraRaw?.crop else { return .full }
         let displayCrop = crop.transformedForDisplay(orientation: selectedImageOrientation)
         return NormalizedCropRegion(
             top: displayCrop.top ?? 0,
@@ -695,7 +822,7 @@ struct EditWorkspaceView: View {
     }
 
     private var activeCropAngle: Double {
-        metadataViewModel.editingMetadata.cameraRaw?.crop?.angle ?? 0
+        displayedCameraRaw?.crop?.angle ?? 0
     }
 
     /// During rotation drag, prefer the local @State over the ViewModel
@@ -793,11 +920,28 @@ struct EditWorkspaceView: View {
                 syncCameraRawToImageFile()
                 loadSelectedImagePreview()
             }
+            let replacedExternally = metadataViewModel.developSettingsReplacementGeneration
+                != undoHistoryReplacementGeneration
+            undoHistoryReplacementGeneration = metadataViewModel.developSettingsReplacementGeneration
+            if metadataViewModel.selectedURLs.count == 1,
+               DevelopUndoHistoryPolicy.shouldClearHistory(
+                historyImageURL: undoHistoryImageURL,
+                loadedImageURL: metadataViewModel.selectedURLs.first,
+                settingsDevelopPublished: undoHistorySettings,
+                loadedSettings: metadataViewModel.editingMetadata.cameraRaw,
+                settingsReplacedExternally: replacedExternally
+               ) {
+                undoHistoryImageURL = metadataViewModel.selectedURLs.first
+                persistenceSession.removeAllUndoActions()
+            }
             // Re-apply HDR auto-enable after metadata load completes.
             // Now safe to include the "Render RAW as HDR" preference because
             // any XMP hdrEditMode value has been loaded and takes priority.
             autoEnableHDRIfNeeded(includeRawPreference: true)
             installLoadedDevelopVersionIfReady()
+            undoHistorySettings = metadataViewModel.editingMetadata.cameraRaw
+            // A crop tool left open across navigation adopts this photo's framing for Esc.
+            captureCropEntryForLoadedPhotoIfNeeded()
             renderPreview()
         }
         .onChange(of: metadataViewModel.primaryDevelopRecoveryReloadGeneration) { _, _ in
@@ -907,17 +1051,33 @@ struct EditWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             releaseHeldDevelopInput()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .rawDecodeSettingsDidChange)) { _ in
+            // Neighbours decoded ahead of navigation used the previous decode settings. Stop the
+            // running precache and reject anything it already decoded (permits are taken before
+            // the decode), then purge the cache.
+            adjacentRAWPrecacheTask?.cancel()
+            metalPipeline?.discardSpeculativeTextures()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .watermarkLibraryDidChange)) { _ in
+            refreshPreviewAfterWatermarkLibraryChange()
+        }
+        .onChange(of: isOverlayPresented, initial: true) { _, presented in
+            // The key monitor closure captured this view value at install time, so the
+            // flag must live in the reference-typed input session to be read live.
+            workspaceInput.isOverlayPresented = presented
+            if presented { releaseHeldDevelopInput() }
+        }
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
             guard let delivery else { return }
             switch delivery.command {
             case .addNewMask:
-                guard canEditSingleImage else { return }
+                guard canMutateSingleImageDevelop else { return }
                 addNewMask(center: maskCenterUnderCursor())
             case .removeOrResetSelectedEditLayer:
-                guard canEditSingleImage else { return }
+                guard canMutateSingleImageDevelop else { return }
                 removeOrResetSelectedEditLayer()
             case .toggleHDR:
-                guard canEditSingleImage else { return }
+                guard canMutateSingleImageDevelop else { return }
                 hdrToggleBinding.wrappedValue.toggle()
                 // Auto-switch soft-proof target gamut and display gamut from format settings
                 if scopeViewModel.showClippedGamut {
@@ -928,8 +1088,8 @@ struct EditWorkspaceView: View {
                 // Refresh gamut clip pipeline so HDR flag is immediately applied/cleared
                 updateGamutClipMode()
             case .applyDevelopTemplate(let template):
-                guard canEditSingleImage else { return }
-                applyDevelopTemplate(template)
+                guard canMutateSingleImageDevelop || browserViewModel.selectedImageIDs.count == 1 else { return }
+                performWhenSelectedImageReady("Template") { applyDevelopTemplate(template) }
             case .openFolder, .openRecentFolder, .setRating, .setLabel,
                  .renderSelected, .advancedExportSelected, .renderAll,
                  .saveAsJPEG, .saveAsPNG, .archiveRAW,
@@ -954,7 +1114,17 @@ struct EditWorkspaceView: View {
         }
         .overlay(alignment: .top) {
             if let feedback = workspaceSession.notice {
-                Text(feedback)
+                HStack(spacing: 10) {
+                    Text(feedback)
+                    if let revealURL = workspaceSession.noticeRevealURL {
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([revealURL])
+                        } label: {
+                            Text("Show in Finder").underline()
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
                     .font(.caption.bold())
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
@@ -1130,13 +1300,9 @@ struct EditWorkspaceView: View {
                                     },
                                     onCommit: {
                                         // Commit accumulated drag state to ViewModel
+                                        // Region and straighten land as one Undo step.
                                         let cropDrag = cropSession.finishInteraction()
-                                        if let region = cropDrag.region {
-                                            updateCrop(region, commit: false)
-                                        }
-                                        if let angle = cropDrag.angle {
-                                            updateCropAngle(angle, commit: false)
-                                        }
+                                        applyCropDrag(region: cropDrag.region, angle: cropDrag.angle)
                                         commitEditAdjustments()
                                     },
                                     onAspectRatioOverride: { newRatio in
@@ -1192,7 +1358,7 @@ struct EditWorkspaceView: View {
                                         },
                                         onCommit: {
                                             if let finalGeo = layerGeometryInteraction.consumeMaskGeometry() {
-                                                updateCameraRaw { cameraRaw in
+                                                updateCameraRaw(actionName: "Move Mask") { cameraRaw in
                                                     cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
                                                 }
                                             }
@@ -1234,7 +1400,7 @@ struct EditWorkspaceView: View {
                                         },
                                         onCommit: {
                                             if let finalGeo = layerGeometryInteraction.consumeWatermarkGeometry() {
-                                                updateCameraRaw { cameraRaw in
+                                                updateCameraRaw(actionName: "Move Watermark") { cameraRaw in
                                                     cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
                                                 }
                                             }
@@ -1252,13 +1418,15 @@ struct EditWorkspaceView: View {
                                         probe: { rect in
                                             probeLinearRGB(
                                                 forPaneRect: rect, paneSize: geometry.size,
-                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size
+                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size,
+                                                rotationDegrees: displayCropAngle
                                             )
                                         },
                                         onPick: { rect in
                                             performWhiteBalancePick(
                                                 inPaneRect: rect, paneSize: geometry.size,
-                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size
+                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size,
+                                                rotationDegrees: displayCropAngle
                                             )
                                         }
                                     )
@@ -1337,7 +1505,7 @@ struct EditWorkspaceView: View {
                                     onCommit: {
                                         // Commit final geometry to ViewModel
                                         if let finalGeo = layerGeometryInteraction.consumeMaskGeometry() {
-                                            updateCameraRaw { cameraRaw in
+                                            updateCameraRaw(actionName: "Move Mask") { cameraRaw in
                                                 cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
                                             }
                                         }
@@ -1375,7 +1543,7 @@ struct EditWorkspaceView: View {
                                     },
                                     onCommit: {
                                         if let finalGeo = layerGeometryInteraction.consumeWatermarkGeometry() {
-                                            updateCameraRaw { cameraRaw in
+                                            updateCameraRaw(actionName: "Move Watermark") { cameraRaw in
                                                 cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
                                             }
                                         }
@@ -1654,8 +1822,9 @@ struct EditWorkspaceView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!persistenceSession.canUndo)
-                        .help("Undo (⌘Z)")
+                        .disabled(!persistenceSession.canUndoFromMenu)
+                        .help("\(persistenceSession.undoMenuTitle) (⌘Z)")
+                        .accessibilityLabel(persistenceSession.undoMenuTitle)
 
                         Button {
                             persistenceSession.redo()
@@ -1665,8 +1834,9 @@ struct EditWorkspaceView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!persistenceSession.canRedo)
-                        .help("Redo (⇧⌘Z)")
+                        .disabled(!persistenceSession.canRedoFromMenu)
+                        .help("\(persistenceSession.redoMenuTitle) (⇧⌘Z)")
+                        .accessibilityLabel(persistenceSession.redoMenuTitle)
                     }
                     if canEditSingleImage, hasDevelopAdjustments {
                         Button {
@@ -1678,7 +1848,20 @@ struct EditWorkspaceView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Reset develop adjustments (keep crop)")
+                        .accessibilityLabel("Reset Develop Adjustments")
                     }
+                }
+
+                if canEditSingleImage, isEditingEmbeddedRAWPreview {
+                    // Persistent: every edit and export of this photo is affected.
+                    Label(
+                        "This RAW format isn't supported by this version of macOS — you're editing its embedded preview; exports use the preview's resolution.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
                 }
 
                 if canEditSingleImage {
@@ -1692,7 +1875,12 @@ struct EditWorkspaceView: View {
                     } else {
                         if metadataViewModel.hasEmbeddedCropNotLoaded {
                             Button {
-                                metadataViewModel.importEmbeddedCrop()
+                                // One undoable, named-version-aware crop mutation like every
+                                // other Develop crop change.
+                                guard let embeddedCrop = metadataViewModel.embeddedCropForImport else { return }
+                                updateCameraRaw(actionName: "Import Crop") { cameraRaw in
+                                    cameraRaw.crop = embeddedCrop
+                                }
                                 if !showCropControls {
                                     toggleCropControls()
                                 }
@@ -1744,8 +1932,8 @@ struct EditWorkspaceView: View {
             // trackpad). ScrollView overlays that scroller, so reserve enough trailing
             // space to keep slider values, reset buttons, and picker edges unobscured.
             .padding(.trailing, 28)
-            .disabled(isDecodingFullResolution || isDevelopVersionTransitioning)
-            .opacity(isDecodingFullResolution || isDevelopVersionTransitioning ? 0.6 : 1.0)
+            .disabled(isDevelopInspectorBusy)
+            .opacity(isDevelopInspectorBusy ? 0.6 : 1.0)
             .animation(.easeInOut(duration: 0.15), value: isDecodingFullResolution)
             .animation(.easeInOut(duration: 0.15), value: isDevelopVersionTransitioning)
         }
@@ -1961,7 +2149,11 @@ struct EditWorkspaceView: View {
         for version: DevelopNamedVersion,
         watermarkData: [UUID: Data]
     ) -> [DevelopVersionDependencyDiagnostic] {
-        version.snapshot.dependencyDiagnostics { watermarkData[$0] }
+        versionDiagnosticsMemo.diagnostics(
+            for: version,
+            libraryRevision: WatermarkStore.currentLibraryRevision,
+            watermarkData: watermarkData
+        )
     }
 
     private func developVersionMenuLabel(
@@ -2078,12 +2270,14 @@ struct EditWorkspaceView: View {
                 EditSlider(
                     value: cropZoomBinding,
                     range: 0.25...3.0,
-                    step: 0.01
+                    step: 0.01,
+                    // The slider's AppKit view consumes mouse-downs, so a SwiftUI tap gesture
+                    // never sees the double-click; the slider reports it through onReset.
+                    onReset: resetCropZoom,
+                    label: "Preview Zoom",
+                    valueText: { "\(Int(($0 * 100).rounded()))%" }
                 )
                 .frame(height: 20)
-                .onTapGesture(count: 2) {
-                    resetCropZoom()
-                }
                 .onChange(of: cropZoomScale) { _, _ in
                     lastCropZoomScale = cropZoomScale
                 }
@@ -2136,7 +2330,9 @@ struct EditWorkspaceView: View {
                 onReset: {
                     resetCropAngle()
                     commitEditAdjustments()
-                }
+                },
+                label: "Straighten",
+                valueText: { signedDoubleString($0, precision: 1) + "°" }
             )
             .frame(width: 130, height: 20)
             .help("Straighten angle. Hold Option for precision; double-click to reset.")
@@ -2477,7 +2673,7 @@ struct EditWorkspaceView: View {
         let sourceHash = preparation.catalog.source.sha256
         developVersionPersistenceState = .saving
         developVersionNotice = nil
-        developVersionSession.startTransition {
+        startDevelopTransition {
             do {
                 let result = try await service.promote(preparation)
                 guard !Task.isCancelled,
@@ -2500,7 +2696,7 @@ struct EditWorkspaceView: View {
                     // The first catalog write is durable. Reflect that recovery snapshot locally
                     // even when a later XMP/read-back/finalization boundary fails.
                     developVersionCatalog = preparation.catalog
-                    let actualPrimary = XMPSidecarService().loadSidecar(for: imageURL)?.cameraRaw
+                    let actualPrimary = XMPSidecarService().loadDevelopSettings(for: imageURL)
                     primaryDevelopSettings = actualPrimary
                 }
                 developVersionPersistenceState = .failed(error.localizedDescription)
@@ -2641,8 +2837,7 @@ struct EditWorkspaceView: View {
         guard selectedImageURL == metadataViewModel.selectedURLs.first,
               metadataViewModel.selectedCount == 1, !metadataViewModel.isLoading else { return }
         let drag = cropSession.finishInteraction()
-        if let region = drag.region { updateCrop(region, commit: false) }
-        if let angle = drag.angle { updateCropAngle(angle, commit: false) }
+        applyCropDrag(region: drag.region, angle: drag.angle)
     }
 
     private var hasUncapturedPrimaryDevelopWork: Bool {
@@ -2666,13 +2861,16 @@ struct EditWorkspaceView: View {
         _ imageURL: URL,
         modifiers: NSEvent.ModifierFlags = []
     ) {
-        guard !developVersionSession.hasTransition else { return }
+        guard !developVersionSession.hasTransition else {
+            pendingDevelopNavigation = .select(imageURL, modifiers: modifiers)
+            return
+        }
         let oldSelectedIDs = browserViewModel.selectedImageIDs
         let oldAnchor = browserViewModel.lastClickedImageURL
         let visibleImages = browserViewModel.visibleImages
         let visibleIndex = browserViewModel.urlToVisibleIndex
 
-        developVersionSession.startTransition {
+        startDevelopTransition {
             let outcome = await flushActiveDevelopVersion(reason: .imageNavigation)
             guard !Task.isCancelled else { return }
             guard outcome == .succeeded else {
@@ -2706,6 +2904,11 @@ struct EditWorkspaceView: View {
     }
 
     private func requestAdjacentDevelopImage(forward: Bool) {
+        guard !developVersionSession.hasTransition else {
+            // Resolved against the selection the running transition leaves behind.
+            pendingDevelopNavigation = .adjacent(forward: forward)
+            return
+        }
         guard let currentURL = selectedImageURL,
               let currentIndex = browserViewModel.urlToVisibleIndex[currentURL] else { return }
         let targetIndex = forward ? currentIndex + 1 : currentIndex - 1
@@ -2714,13 +2917,41 @@ struct EditWorkspaceView: View {
     }
 
     private func requestEditWorkspaceExit() {
-        guard !developVersionSession.hasTransition else { return }
-        developVersionSession.startTransition {
+        guard !developVersionSession.hasTransition else {
+            pendingDevelopNavigation = .exit
+            return
+        }
+        startDevelopTransition {
             let outcome = await flushActiveDevelopVersion(reason: .workspaceExit)
             guard !Task.isCancelled else { return }
             if outcome == .succeeded {
                 onExit()
             }
+        }
+    }
+
+    /// Starts a version transition and, once it has ended, applies the latest navigation the
+    /// user requested meanwhile instead of dropping it.
+    private func startDevelopTransition(_ operation: @escaping @MainActor () async -> Void) {
+        pendingDevelopNavigation = nil
+        developVersionSession.startTransition {
+            await operation()
+            // The coordinator clears its transition right after this operation returns.
+            Task { @MainActor in applyPendingDevelopNavigation() }
+        }
+    }
+
+    private func applyPendingDevelopNavigation() {
+        guard workspaceSession.isWorkspaceActive, !developVersionSession.hasTransition,
+              let pending = pendingDevelopNavigation else { return }
+        pendingDevelopNavigation = nil
+        switch pending {
+        case .select(let url, let modifiers):
+            requestDevelopImageSelection(url, modifiers: modifiers)
+        case .adjacent(let forward):
+            requestAdjacentDevelopImage(forward: forward)
+        case .exit:
+            requestEditWorkspaceExit()
         }
     }
 
@@ -2733,6 +2964,7 @@ struct EditWorkspaceView: View {
         primaryRecoveryReloadPending = false
         DevelopPrimaryLifecycleCoordinator.shared.unregisterEditor(ownerID: primaryEditorOwnerID)
         metadataViewModel.unregisterPrimaryDevelopRecoveryEditorBarrier(owner: primaryEditorOwnerID)
+        DevelopUndoMenuRouter.shared.unregister(ownerID: primaryEditorOwnerID)
         exportSession.endWorkspaceSession()
         colorLUTImport.endImageSession()
         layerSession.endImageSession()
@@ -2843,6 +3075,7 @@ struct EditWorkspaceView: View {
                     scopeViewModel.metalScopeCoordinator = MetalScopeView.Coordinator(scopePipeline: scopePipeline)
                 }
             }
+            scopeViewModel.refreshMetalSourceRevision()
         }
         cleanFeedPublication.beginWorkspace(controller: cleanFeedController)
         // Wire the clean-feed mirror only when the feed is actually enabled, so users
@@ -2863,6 +3096,11 @@ struct EditWorkspaceView: View {
         workspaceSession.beginWorkspace(flushHandler: { reason in
             await flushActiveDevelopVersion(reason: reason)
         })
+        // A photo already loaded on entry owns the history; only a later load of another
+        // photo starts a fresh one (same-photo reloads keep Undo).
+        undoHistoryImageURL = isSelectedImageMetadataReady ? selectedImageURL : nil
+        undoHistorySettings = metadataViewModel.editingMetadata.cameraRaw
+        undoHistoryReplacementGeneration = metadataViewModel.developSettingsReplacementGeneration
         loadDevelopVersionCatalog()
         editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
         loadSelectedImagePreview()
@@ -2872,6 +3110,24 @@ struct EditWorkspaceView: View {
         if let keyMonitor {
             workspaceInput.installKeyMonitor(keyMonitor) { NSEvent.removeMonitor($0) }
         }
+        // Edit ▸ Undo/Redo drive this history (with step names) while Develop owns input; the
+        // menu falls back to the responder chain for text fields and other windows.
+        DevelopUndoMenuRouter.shared.register(.init(
+            ownerID: primaryEditorOwnerID,
+            session: persistenceSession,
+            window: { [self] in keyboardWindow.window },
+            canRoute: { [self] in
+                let window = NSApp.keyWindow
+                return keyboardWindow.ownsKeyEvent(in: window) && !isTextFieldActive()
+                    && !workspaceInput.isOverlayPresented && NSApp.modalWindow == nil
+                    && window?.attachedSheet == nil && window?.sheetParent == nil
+            },
+            perform: { [self] redo in
+                // Same gate as the ⌘Z key handler: history belongs to the loaded photo.
+                guard isSelectedImageMetadataReady else { return }
+                if redo { persistenceSession.redo() } else { persistenceSession.undo() }
+            }
+        ))
         // DaVinci Resolve-style grade copy: middle-click the hovered filmstrip thumbnail to
         // apply its develop settings to the current selection without changing that selection.
         let middleMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [self] event in
@@ -2959,6 +3215,7 @@ struct EditWorkspaceView: View {
             orientation: selectedImageURL == nil ? nil : selectedImageOrientation
         )
         metalSession.beginImageSession(previewSession.sessionGeneration)
+        scopeViewModel.refreshMetalSourceRevision()
         previewRender.beginImageSession()
         interactiveRender.beginImageSession()
         whiteBalanceSession.beginImageSession(selectedImageURL)
@@ -3045,11 +3302,31 @@ struct EditWorkspaceView: View {
                 // instead of stretching the preview to fill the drawable.
                 syncViewportToMetal()
 
-                // Upload Phase 1 preview to Metal for immediate interactive editing
-                // (mirrors non-RAW path so WB/tonal adjustments render as soon as
-                // metadata loads, even before the full RAW decode completes).
-                // sourceCIImage is already target-oriented — no correction here.
-                if let ci = sourceCIImage, let pipeline = metalPipeline {
+                // An adjacent-image precache already produced exactly the texture Phase 2
+                // would upload (same flat CIRAWFilter decode, size, orientation and decode
+                // settings — anything else is a miss). Promote it instead of uploading the
+                // embedded preview and decoding the RAW again.
+                let cachedWB = metalPipeline?.applyCachedTexture(
+                    for: selectedImageURL,
+                    exifOrientation: targetOrientation,
+                    decodeMaxPixelSize: previewMaxPixelSize
+                )
+                if let cachedWB, let pipeline = metalPipeline {
+                    // As-shot WB from the precache decode, so the promoted flat texture
+                    // renders with the correct white balance and tone.
+                    if whiteBalanceSession.publishAsShotNeutral(
+                        temperature: cachedWB.neutralTemperature,
+                        tint: cachedWB.neutralTint,
+                        for: selectedImageURL
+                    ) {
+                        pipeline.asShotTemperature = Double(cachedWB.neutralTemperature)
+                        pipeline.asShotTint = Double(cachedWB.neutralTint)
+                    }
+                } else if let ci = sourceCIImage, let pipeline = metalPipeline {
+                    // Upload Phase 1 preview to Metal for immediate interactive editing
+                    // (mirrors non-RAW path so WB/tonal adjustments render as soon as
+                    // metadata loads, even before the full RAW decode completes).
+                    // sourceCIImage is already target-oriented — no correction here.
                     let didPublishTexture = await Task.detached(priority: .medium) {
                         pipeline.uploadSourceImage(
                             ci,
@@ -3065,29 +3342,37 @@ struct EditWorkspaceView: View {
                 syncViewportToMetal()
                 renderPreview()
                 isLoadingPreview = false
+
+                if cachedWB != nil, let pipeline = metalPipeline {
+                    // Precache hit: no Phase 2 decode, so the inspector is never disabled.
+                    editLog.info("[\(filename)] Phase 2: skipped (precached screen-res texture promoted)")
+                    precacheAdjacentRAWTextures(currentURL: selectedImageURL, pipeline: pipeline)
+                    // Replace the embedded-preview CI source with the flat decode the WB
+                    // eyedropper, AI masks, comparison and CPU scope expect.
+                    guard await publishSourceReadback(
+                        from: pipeline,
+                        fallback: nil,
+                        for: selectedImageURL,
+                        sessionGeneration: previewSessionGeneration,
+                        maxPixelSize: previewMaxPixelSize
+                    ) else { return }
+                    syncViewportToMetal()
+                    renderPreview()
+                    loadFullResEditTextureIfNeeded()
+                    return
+                }
+
                 isDecodingFullResolution = true
+                // A failed or abandoned upload must not leave the inspector disabled.
+                defer {
+                    previewSession.finishFullResolutionDecode(sessionGeneration: previewSessionGeneration)
+                }
 
                 // Phase 2: CIRAWFilter decode at screen resolution → Metal texture.
-                // After upload, materialize sourceCIImage at screen resolution to release
-                // the heavyweight CIRAWFilter pipeline (~260MB per instance).
+                // After upload, the retained CI source is read back from that texture, which
+                // releases the heavyweight CIRAWFilter pipeline (~260MB per instance).
                 if let pipeline = metalPipeline {
-                    let cachedWB = pipeline.applyCachedTexture(for: selectedImageURL, exifOrientation: targetOrientation)
-                    let cacheHit = cachedWB != nil
-                    if let cachedWB {
-                        // Apply cached as-shot WB from the flat RAW pre-decode so the
-                        // precached texture renders with correct white balance and tone.
-                        if whiteBalanceSession.publishAsShotNeutral(
-                            temperature: cachedWB.neutralTemperature,
-                            tint: cachedWB.neutralTint,
-                            for: selectedImageURL
-                        ) {
-                            pipeline.asShotTemperature = Double(cachedWB.neutralTemperature)
-                            pipeline.asShotTint = Double(cachedWB.neutralTint)
-                            syncViewportToMetal()
-                            renderPreview()
-                        }
-                    }
-                    editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
+                    editLog.info("[\(filename)] Phase 2: starting")
 
                     let phase2Start = ContinuousClock.now
                     let rawResult = await DevelopSourceDecodeService.shared.loadRAW(
@@ -3117,10 +3402,10 @@ struct EditWorkspaceView: View {
                     }
                     editLog.info("[\(filename)] Phase 2: decoded in \(decodeElapsed) (result=\(rawCIImage != nil))")
 
+                    // The system RAW decoder can't read this file: the embedded preview stays
+                    // the edit (and export) source. Flag it for the persistent notice.
+                    unsupportedRAWPreviewURL = rawCIImage == nil ? selectedImageURL : nil
                     if let rawCIImage {
-                        if cacheHit {
-                            editLog.info("[\(filename)] Phase 2: upgrading cached texture to full resolution")
-                        }
                         let uploadStart = ContinuousClock.now
                         // Already target-oriented from the decode task.
                         let didPublishTexture = await Task.detached(priority: .medium) {
@@ -3144,18 +3429,24 @@ struct EditWorkspaceView: View {
                     }
                     isDecodingFullResolution = false
 
-                    // Materialize sourceCIImage at screen resolution to release the heavy
-                    // CIRAWFilter decode graph. The Metal texture holds full-res data for
-                    // interactive editing; sourceCIImage is only used for scope/preview CGImage.
+                    // Pre-cache adjacent RAW images at screen resolution for instant navigation.
+                    // Started as soon as this image's decode is done, not after materialization.
+                    precacheAdjacentRAWTextures(
+                        currentURL: selectedImageURL,
+                        pipeline: pipeline
+                    )
+
+                    // Replace the retained CI source with a CPU readback of the texture just
+                    // uploaded — the same flat screen-res pixels — instead of rendering the
+                    // CIRAWFilter graph a second time. sourceCIImage feeds the WB eyedropper,
+                    // AI masks, comparison and the CPU scope fallback.
                     if let rawCIImage {
-                        let materialized = await DevelopSourceDecodeService.shared.materialize(
-                            rawCIImage,
-                            maxPixelSize: previewMaxPixelSize
-                        )
-                        guard previewSession.publishMaterializedSource(
-                            materialized ?? rawCIImage,
+                        guard await publishSourceReadback(
+                            from: pipeline,
+                            fallback: rawCIImage,
                             for: selectedImageURL,
-                            sessionGeneration: previewSessionGeneration
+                            sessionGeneration: previewSessionGeneration,
+                            maxPixelSize: previewMaxPixelSize
                         ) else { return }
                     }
                     let totalPhase2 = ContinuousClock.now - phase2Start
@@ -3163,20 +3454,15 @@ struct EditWorkspaceView: View {
                     syncViewportToMetal()
                     renderPreview()
 
-                    // Pre-cache adjacent RAW images at screen resolution for instant navigation.
-                    precacheAdjacentRAWTextures(
-                        currentURL: selectedImageURL,
-                        pipeline: pipeline
-                    )
-
                     // If the user already zoomed in while Phase 2 was decoding, upgrade
                     // the now-current screen-res texture to full resolution.
                     loadFullResEditTextureIfNeeded()
                 }
             } else {
-                // Non-RAW two-phase load (mirrors RAW strategy):
-                // Phase 1: Quick preview at screen resolution for immediate display.
-                // Phase 2: Full-resolution CIImage → Metal texture for sharp editing.
+                // Non-RAW load (mirrors RAW strategy):
+                // Phase 1: Decode at screen resolution → Metal texture for display and editing.
+                // Full resolution is decoded lazily on zoom (loadFullResEditTextureIfNeeded),
+                // so a 45 MP JPEG no longer pins a ~480 MB mipmapped rgba16F texture.
 
                 // Phase 1: HDR-preserving path (keeps float values >1.0 for HEIC-HLG, AVIF, JXL).
                 // Falls back to SDR CGImageSource path for formats CIImage can't decode.
@@ -3229,60 +3515,59 @@ struct EditWorkspaceView: View {
 
                 renderPreview()
                 isLoadingPreview = false
-                isDecodingFullResolution = true
 
-                // Phase 2: Load full-resolution CIImage → Metal texture.
-                // After upload, materialize sourceCIImage at screen resolution to release
-                // the full-resolution CIImage graph (same strategy as RAW path).
-                if let pipeline = metalPipeline {
+                guard let pipeline = metalPipeline else { return }
+
+                // Like RAW, the editing texture stays at screen resolution; zooming past fit
+                // upgrades it via loadFullResEditTextureIfNeeded(). The Phase 1 decode above
+                // is already that screen-res source (the same CIImage graph the old full-res
+                // Phase 2 downsampled for its materialized copy). Only a thumbnail fallback
+                // needs a real decode — and that one is uploaded at screen resolution too.
+                if previewSource?.image == nil {
+                    isDecodingFullResolution = true
+                    // A failed or abandoned upload must not leave the inspector disabled.
+                    defer {
+                        previewSession.finishFullResolutionDecode(sessionGeneration: previewSessionGeneration)
+                    }
                     let phase2Start = ContinuousClock.now
                     // Oriented to the in-memory target inside the task — see orientedToTarget.
                     let fullRes = await DevelopSourceDecodeService.shared.loadNonRAWFullResolution(
                         from: selectedImageURL,
                         targetOrientation: targetOrientation
                     )
-
                     guard !Task.isCancelled else { return }
-
                     if let fullRes {
-                        let fullResCIImage = fullRes
-                        let extent = fullResCIImage.extent
-                        editLog.info("[\(filename)] Phase 2: full-res decoded in \(ContinuousClock.now - phase2Start) (\(Int(extent.width))x\(Int(extent.height)))")
-
-                        let uploadStart = ContinuousClock.now
-                        // Already target-oriented from the decode task.
+                        let screenRes = FullScreenImageCache.downsample(
+                            fullRes,
+                            maxPixelSize: previewMaxPixelSize
+                        )
                         let didPublishTexture = await Task.detached(priority: .medium) {
                             pipeline.uploadSourceImage(
-                                fullResCIImage,
+                                screenRes,
                                 exifOrientation: targetOrientation,
                                 sessionGeneration: previewSessionGeneration
                             )
                         }.value
                         guard didPublishTexture, !Task.isCancelled else { return }
-                        editLog.info("[\(filename)] Phase 2: texture uploaded in \(ContinuousClock.now - uploadStart)")
-
-                        // Materialize sourceCIImage at screen resolution to release the
-                        // full-res CIImage graph. Metal texture holds full-res for editing.
-                        let materialized = await DevelopSourceDecodeService.shared.materialize(
-                            fullResCIImage,
-                            maxPixelSize: previewMaxPixelSize
-                        )
-                        guard previewSession.publishMaterializedSource(
-                            materialized ?? fullResCIImage,
-                            for: selectedImageURL,
-                            sessionGeneration: previewSessionGeneration
-                        ) else { return }
-
-                        let totalPhase2 = ContinuousClock.now - phase2Start
-                        editLog.info("[\(filename)] Phase 2: complete in \(totalPhase2)")
+                        editLog.info("[\(filename)] Phase 2: decoded + uploaded after thumbnail fallback in \(ContinuousClock.now - phase2Start)")
                     }
-
-                    isDecodingFullResolution = false
-                    syncViewportToMetal()
-                    renderPreview()
-                } else {
                     isDecodingFullResolution = false
                 }
+
+                // Replace the lazy file-backed CI graph with a CPU readback of the uploaded
+                // texture, so scope/eyedropper/AI-mask reads don't re-decode the file.
+                guard await publishSourceReadback(
+                    from: pipeline,
+                    fallback: nil,
+                    for: selectedImageURL,
+                    sessionGeneration: previewSessionGeneration,
+                    maxPixelSize: previewMaxPixelSize
+                ) else { return }
+                syncViewportToMetal()
+                renderPreview()
+
+                // If the user already zoomed in while the source loaded, upgrade now.
+                loadFullResEditTextureIfNeeded()
             }
         }
     }
@@ -3325,35 +3610,51 @@ struct EditWorkspaceView: View {
                     return
                 }
                 let start = ContinuousClock.now
-                // Use the same flat CIRAWFilter decode as Phase 2 so the precached
-                // texture matches the final render (no auto-boost / tone mismatch).
-                // Decode straight to screen resolution (don't decode full sensor then
-                // shrink). Read the tag adjacent to the decode (see Phase 2).
-                guard let rawResult = await DevelopSourceDecodeService.shared.loadRAW(
-                    from: url,
+                // Same flat screen-res CIRAWFilter decode as Phase 2, tagged with its
+                // orientation and size so navigation promotes it only when it is
+                // interchangeable with the foreground decode.
+                let stored = await DevelopSourceDecodeService.shared.precacheRAWTexture(
+                    for: url,
+                    targetOrientation: neighborOrientation,
                     maxPixelSize: screenMaxPx,
-                    targetOrientation: neighborOrientation
-                ) else {
-                    editLog.info("[\(url.lastPathComponent)] precache: decode failed")
-                    continue
-                }
-                guard !Task.isCancelled else {
-                    editLog.info("[\(url.lastPathComponent)] precache: cancelled after decode")
-                    return
-                }
-                let ciImage = FullScreenImageCache.downsample(
-                    rawResult.image,
-                    maxPixelSize: screenMaxPx
-                )
-                pipeline.precacheTexture(
-                    for: url, ciImage: ciImage,
-                    neutralTemperature: rawResult.neutralTemperature,
-                    neutralTint: rawResult.neutralTint
+                    into: pipeline
                 )
                 let elapsed = ContinuousClock.now - start
-                editLog.info("[\(url.lastPathComponent)] precache: done in \(elapsed)")
+                editLog.info("[\(url.lastPathComponent)] precache: \(stored ? "done" : "skipped") in \(elapsed)")
             }
         }
+    }
+
+    /// Replaces the retained Core Image source with a CPU readback of the texture that was just
+    /// published (see `MetalLivePreviewPipeline.readBackSourceTexture`). Returns false only when
+    /// the image session is no longer current; a failed readback keeps `fallback` (or the
+    /// current source when nil).
+    private func publishSourceReadback(
+        from pipeline: MetalLivePreviewPipeline,
+        fallback: CIImage?,
+        for imageURL: URL,
+        sessionGeneration: UInt64,
+        maxPixelSize: CGFloat
+    ) async -> Bool {
+        let handle = pipeline.sourceTextureHandle()
+        let cgImage: CGImage?
+        if let handle {
+            cgImage = await Task.detached(priority: .medium) {
+                pipeline.readBackSourceTexture(handle, maxPixelSize: maxPixelSize)
+            }.value
+        } else {
+            cgImage = nil
+        }
+        guard !Task.isCancelled else { return false }
+        guard let materialized = cgImage.map({ CIImage(cgImage: $0) }) ?? fallback else {
+            editLog.info("[\(imageURL.lastPathComponent)] source readback unavailable; keeping current source")
+            return previewSession.sessionGeneration == sessionGeneration
+        }
+        return previewSession.publishMaterializedSource(
+            materialized,
+            for: imageURL,
+            sessionGeneration: sessionGeneration
+        )
     }
 
     /// Rotate the already-loaded source in place by the `from → to` orientation delta and
@@ -3405,7 +3706,7 @@ struct EditWorkspaceView: View {
     /// soft when the user zooms in to pixel-peep. When zoomed past 100%, lazily re-decode
     /// the current image at full sensor resolution and swap the Metal source texture.
     /// Mirrors FullScreenImageView.loadFullResIfNeeded(). One-shot per image (reset on
-    /// navigation); non-RAW images already load full-res in Phase 2 and short-circuit here.
+    /// navigation). Non-RAW images take the same path: their source texture is screen-res too.
     private func loadFullResEditTextureIfNeeded() {
         guard editZoomScale > 1.0 else { return }
         guard !isEditFullResLoaded, editFullResTask == nil else { return }
@@ -3536,19 +3837,52 @@ struct EditWorkspaceView: View {
         } else {
             proposedCrop = nil
         }
+        let redaction = cleanFeedRedactionKnowledge
+        var redactedSettings: CameraRawSettings?
+        if redaction == .redacts, transientPreview.isTransientComparisonActive {
+            var full = displayedCameraRaw
+            if let asShot = whiteBalanceSession.asShotNeutral {
+                full?.asShotNeutralTemperature = Double(asShot.temperature)
+                full?.asShotNeutralTint = Double(asShot.tint)
+            }
+            let isRawSource = selectedImageURL.map { SupportedImageFormats.isRaw(url: $0) } ?? false
+            redactedSettings = transientPreview.settingsForPipelineIgnoringTransientComparisons(
+                full, isRawSource: isRawSource, sectionMutes: sectionMutes.snapshot
+            )
+        }
         cleanFeedPublication.publish(
             fallbackImage: displayCIImage,
             isHDR: isHDREnabled,
             hasSourceTexture: metalPipeline?.hasSourceTexture == true,
             isShowingBefore: isShowingBefore,
             isMutingDevelop: isMutingDevelop,
+            isMutingLayer: transientPreview.isMutingGlobal || transientPreview.isMutingSelectedMask,
+            redaction: redaction,
+            redactedSettings: redactedSettings,
+            editorPipeline: metalPipeline,
             isCropToolActive: showCropControls,
             proposedCrop: proposedCrop,
             controller: cleanFeedController
         )
     }
 
+    /// Whether the photo on screen redacts, for Clean Feed. Once the edit buffer is this photo's,
+    /// either copy redacting counts (never under-redact the audience display); before that only
+    /// the Browser's copy is available, and its settings may not have loaded yet.
+    private var cleanFeedRedactionKnowledge: RedactionKnowledge {
+        let browserKnowledge = selectedImage.map(RedactionPrivacyGuard.knowledge(for:)) ?? .unknown
+        guard isSelectedImageMetadataReady else { return browserKnowledge }
+        if metadataViewModel.editingMetadata.cameraRaw?.hasActiveRedaction == true
+            || browserKnowledge == .redacts {
+            return .redacts
+        }
+        return .none
+    }
+
     private func renderPreview() {
+        // Every texture upload, precache promotion, zoom upgrade and in-place rotation ends in
+        // a render; let the scope panel notice a source texture that appeared or changed.
+        scopeViewModel.refreshMetalSourceRevision()
         updateDisplayGamut()
         syncCleanFeed()
         let renderStart = ContinuousClock.now
@@ -3562,8 +3896,7 @@ struct EditWorkspaceView: View {
         ))
 
         guard decision.workPath != .sourceFallback, let sourceCIImage else {
-            previewRender.publishFallback(
-                sourceImage,
+            previewRender.publishWithoutImage(
                 isHDR: isHDREnabled,
                 scopePublisher: publishDevelopPreviewToScope
             )
@@ -3574,7 +3907,7 @@ struct EditWorkspaceView: View {
             // "Before" still needs the SDR output tonemap for RAW sources so the
             // unedited baseline matches the previous SDR decode appearance.
             if isShowingBefore { return settingsForPipeline(nil) }
-            var s = metadataViewModel.editingMetadata.cameraRaw
+            var s = displayedCameraRaw
             if let asShot = whiteBalanceSession.asShotNeutral {
                 s?.asShotNeutralTemperature = Double(asShot.temperature)
                 s?.asShotNeutralTint = Double(asShot.tint)
@@ -3628,59 +3961,56 @@ struct EditWorkspaceView: View {
             return
         }
 
-        editLog.debug("renderPreview: full path (CGImage generation)")
-
-        // On release / initial load: produce CGImage for scope display and export
-        let fullSource = sourceCIImage
-        let fallback = sourceImage
-        let orientation = selectedImageOrientation
-
         let hdr = isHDREnabled
+        guard decision.shouldMaterializeScopeSource else {
+            // The Metal scope renders the live pipeline output itself and nothing else in
+            // Develop reads a materialized image, so skip the offscreen render + readback.
+            // Still publish the HDR mode so the scope's waveform scale and gamut follow it.
+            previewRender.publishWithoutImage(isHDR: hdr, scopePublisher: publishDevelopPreviewToScope)
+            return
+        }
+
+        editLog.debug("renderPreview: CPU scope path (downsampled CGImage generation)")
+
+        // CPU scope fallback only (no Metal scope): render a ≤1024 px scope source. The scope
+        // rasterizes into a few hundred pixels, so a full-resolution render bought nothing.
+        let scopeSource = sourceCIImage
+        let orientation = selectedImageOrientation
         previewRender.requestRender(
-            fallback: fallback,
             isHDR: hdr,
             operation: {
-                await Task.detached(priority: .userInitiated) { () -> DevelopPreviewRenderCoordinator.Output? in
-                    let output = CameraRawApproximation.apply(
-                        to: fullSource,
+                let render = Task.detached(priority: .userInitiated) { () -> DevelopPreviewRenderCoordinator.Output? in
+                    let maxDimension: CGFloat = 1024
+                    let extent = scopeSource.extent
+                    guard extent.width > 0, extent.height > 0 else { return nil }
+                    let scale = min(maxDimension / extent.width, maxDimension / extent.height, 1.0)
+                    let small = scale < 1.0
+                        ? scopeSource.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                        : scopeSource
+                    let filtered = await CameraRawApproximation.applyAsync(
+                        to: small,
                         settings: settings,
                         exifOrientation: orientation
                     )
-                    let ctx = CameraRawApproximation.ciContext
-                    guard let cgImage = ctx.createCGImage(
-                        output,
-                        from: output.extent,
-                        format: .RGBAh,
-                        colorSpace: CameraRawApproximation.workingColorSpace
-                    ) else {
-                        return nil
-                    }
-                    let nsImage = NSImage(
-                        cgImage: cgImage,
-                        size: NSSize(width: cgImage.width, height: cgImage.height)
-                    )
-
-                    // Generate cropped CGImage for scope display
+                    guard !Task.isCancelled else { return nil }
                     let cropped = CameraRawApproximation.applyCrop(
-                        to: output, originalExtent: fullSource.extent,
+                        to: filtered, originalExtent: small.extent,
                         settings: settings, exifOrientation: orientation
                     )
-                    let scopeCGImage: CGImage?
-                    if cropped !== output {
-                        scopeCGImage = ctx.createCGImage(
-                            cropped, from: cropped.extent,
-                            format: .RGBAh,
-                            colorSpace: CameraRawApproximation.workingColorSpace
-                        )
-                    } else {
-                        scopeCGImage = nil
-                    }
-
-                    return DevelopPreviewRenderCoordinator.Output(
-                        previewImage: nsImage,
-                        scopeImage: scopeCGImage ?? cgImage
-                    )
-                }.value
+                    guard let cgImage = CameraRawApproximation.ciContext.createCGImage(
+                        cropped, from: cropped.extent,
+                        format: .RGBAh,
+                        colorSpace: CameraRawApproximation.workingColorSpace
+                    ), !Task.isCancelled else { return nil }
+                    return DevelopPreviewRenderCoordinator.Output(scopeImage: cgImage)
+                }
+                // Replacing the request cancels this task; forward that into the detached render
+                // so a superseded job short-circuits on the shared offscreen render queue.
+                return await withTaskCancellationHandler {
+                    await render.value
+                } onCancel: {
+                    render.cancel()
+                }
             },
             scopePublisher: publishDevelopPreviewToScope
         )
@@ -3932,7 +4262,32 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// A RAW+JPEG pair's JPEG with Content Credentials has no Primary Develop destination
+    /// (embedding would break the credentials; the shared sidecar's crs is the RAW's). Revert
+    /// the edit and say why before it's published to the grid or retained for saving.
+    private func refusePrimaryDevelopIfNeeded() -> Bool {
+        guard developVersionCatalog?.activeVersionID == nil, metadataViewModel.hasChanges,
+              let url = selectedImageURL,
+              let refusal = metadataViewModel.primaryDevelopRefusal(for: url) else { return false }
+        // Revert only the Develop part; keep descriptive edits and the undo history.
+        metadataViewModel.revertPrimaryDevelopToPersisted()
+        metadataViewModel.saveError = refusal
+        refreshAfterPrimaryDevelopRevert()
+        workspaceSession.showNotice(refusal)
+        return true
+    }
+
+    private func refreshAfterPrimaryDevelopRevert() {
+        syncCameraRawToImageFile()
+        renderPreview()
+        syncViewportToMetal()
+    }
+
     private func commitEditAdjustments() {
+        // The placeholder buffer of a still-loading photo must never reach its sidecar or a
+        // named version (see `updateCameraRaw`).
+        guard isSelectedImageMetadataReady else { return }
+        guard !refusePrimaryDevelopIfNeeded() else { return }
         persistenceSession.performPersistence(
             hasChanges: metadataViewModel.hasChanges,
             editsNamedVersion: developVersionCatalog?.activeVersionID != nil,
@@ -3942,7 +4297,9 @@ struct EditWorkspaceView: View {
                 // NEVER rewritten in place by the editor. Embedding XMP into the source on every
                 // tweak races with the full-res mmap decode (CGImageSourceCreateWithURL) and
                 // crashes; edits bake into a file only on Export. Sidecar wins over embedded crs
-                // on reload for RAW and non-RAW sources.
+                // on reload for RAW and non-RAW sources. Exception: the JPEG of a RAW+JPEG pair
+                // keeps its develop embedded (atomic metadata-only replace) — MetadataViewModel
+                // routes its commits there because the shared sidecar's crs is the RAW's.
                 schedulePrimaryMetadataCommit(mode: .writeToXMPSidecar)
             },
             commitNamedVersion: scheduleActiveDevelopVersionSave
@@ -3957,6 +4314,8 @@ struct EditWorkspaceView: View {
     /// user-initiated, so this one-off file write carries negligible decode-race risk. RAW is
     /// never written to the file.
     private func commitDevelopReset() {
+        guard isSelectedImageMetadataReady else { return }
+        guard !refusePrimaryDevelopIfNeeded() else { return }
         persistenceSession.performPersistence(
             hasChanges: metadataViewModel.hasChanges,
             editsNamedVersion: developVersionCatalog?.activeVersionID != nil,
@@ -3981,16 +4340,30 @@ struct EditWorkspaceView: View {
     /// request lifetime. The metadata owner still decides whether the transaction fully committed;
     /// this snapshots that result before a later save can replace its mutable presentation state.
     private func schedulePrimaryMetadataCommit(mode: MetadataWriteMode) {
+        let committedURL = selectedImageURL
         persistenceSession.schedulePrimaryPersistence { completion in
             metadataViewModel.commitPrimaryDevelopEdits(mode: mode) { result in
                 onPendingStatusChanged?()
                 switch result {
                 case .succeeded:
                     clearResolvedPrimaryTransitionNotice()
+                    // A RAW+JPEG pair's JPEG stores its develop in its own file; keep its named
+                    // versions bound to the rewritten (metadata-only) revision.
+                    if let committedURL, !SupportedImageFormats.isRaw(url: committedURL),
+                       PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: committedURL) {
+                        Task { await developVersionSession.followMetadataOnlyRewrite(of: committedURL) }
+                    }
                     completion(.succeeded)
                 case .cancelled(let message):
                     completion(.cancelled(message: message))
                 case .failed(let message):
+                    // A write-time Content Credentials refusal reverts the buffer; keep the grid
+                    // and preview in step with it (a no-op for an ordinary retained failure).
+                    if let url = selectedImageURL,
+                       let index = browserViewModel.urlToImageIndex[url],
+                       browserViewModel.images[index].cameraRawSettings != metadataViewModel.editingMetadata.cameraRaw {
+                        refreshAfterPrimaryDevelopRevert()
+                    }
                     completion(.failed(message: message))
                 }
             }
@@ -4045,25 +4418,17 @@ struct EditWorkspaceView: View {
         whiteBalanceSession.asShotTint
     }
 
-    private func updateCameraRaw(_ update: (inout CameraRawSettings) -> Void) {
+    /// `actionName` titles the Undo/Redo menu items ("Undo Crop"). Without one, a slider commit
+    /// supplies its own label (see `DevelopUndoActionName`), else a generic "Adjustment".
+    private func updateCameraRaw(actionName: String? = nil, _ update: (inout CameraRawSettings) -> Void) {
+        // Until the selected photo's metadata has loaded, the edit buffer is a placeholder (or
+        // still the previous photo's) that the load overwrites; an edit — and its Undo entry —
+        // recorded against it would be lost or restore the wrong photo's settings.
+        guard isSelectedImageMetadataReady else { return }
         let oldSettings = metadataViewModel.editingMetadata.cameraRaw
-        var cameraRaw = oldSettings ?? CameraRawSettings()
-        update(&cameraRaw)
-        cameraRaw.hasSettings = cameraRawHasEdits(cameraRaw) ? true : nil
-        // Keep the settings alive while the crop tool is active (crop.hasCrop) even if
-        // the crop is still a full-frame no-op — the overlay reads `crop.hasCrop` — but
-        // an identity crop must NOT set hasSettings above, or it lights the edit badge.
-        // HDR mode is display state rather than an adjustment, so it deliberately does not
-        // contribute to `hasSettings`. It must still keep the Camera Raw container alive:
-        // otherwise resetting the last adjustment (for example by double-clicking an exposure
-        // slider) drops `hdrEditMode` with the container and silently switches the image to SDR.
-        // Preserve both explicit values: `0` also prevents native/RAW auto-enable from turning
-        // HDR back on after the user has deliberately disabled it.
-        let shouldKeepSettings = cameraRawHasEdits(cameraRaw)
-            || cameraRaw.crop?.hasCrop == true
-            || cameraRaw.hdrEditMode != nil
-        let newSettings = shouldKeepSettings ? cameraRaw : nil
+        let newSettings = DevelopSettingsMutation.applying(update, to: oldSettings)
         metadataViewModel.editingMetadata.cameraRaw = newSettings
+        undoHistorySettings = newSettings
         let editsNamedVersion = developVersionCatalog?.activeVersionID != nil
         if editsNamedVersion {
             metadataViewModel.hasChanges = false
@@ -4074,46 +4439,21 @@ struct EditWorkspaceView: View {
         persistenceSession.recordMutation(
             before: oldSettings,
             after: newSettings,
-            editsNamedVersion: editsNamedVersion
+            editsNamedVersion: editsNamedVersion,
+            actionName: actionName ?? DevelopUndoActionName.current ?? "Adjustment",
+            coalescesWithPrevious: EditSliderDoubleClickReset.isActive
         ) { settings, restoresNamedVersion in
             metadataViewModel.editingMetadata.cameraRaw = settings
+            undoHistorySettings = settings
             if restoresNamedVersion {
                 metadataViewModel.hasChanges = false
             } else {
                 metadataViewModel.markChanged()
             }
+            // Undo/Redo is a finished edit like a slider release: publish it to the filmstrip
+            // and caches and persist it to the sidecar or the active named version.
+            commitEditAdjustments()
         }
-    }
-
-    private func cameraRawHasEdits(_ cameraRaw: CameraRawSettings) -> Bool {
-        (cameraRaw.whiteBalance != nil && cameraRaw.whiteBalance != "As Shot")
-            || cameraRaw.temperature != nil
-            || cameraRaw.tint != nil
-            || cameraRaw.incrementalTemperature != nil
-            || cameraRaw.incrementalTint != nil
-            || cameraRaw.exposure2012 != nil
-            || cameraRaw.contrast2012 != nil
-            || cameraRaw.highlights2012 != nil
-            || cameraRaw.shadows2012 != nil
-            || cameraRaw.whites2012 != nil
-            || cameraRaw.blacks2012 != nil
-            || cameraRaw.saturation != nil
-            || cameraRaw.vibrance != nil
-            || cameraRaw.globalDensity != nil
-            || cameraRaw.sharpness != nil
-            || cameraRaw.clarity2012 != nil
-            || cameraRaw.dehaze != nil
-            || cameraRaw.toneCurve != nil
-            || (cameraRaw.crop?.isEffectiveCrop == true)
-            || !(cameraRaw.localAdjustments?.isEmpty ?? true)
-            || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
-            || !(cameraRaw.hslAdjustments?.isEmpty ?? true)
-            || (cameraRaw.anonymizer?.isEmpty == false)
-            || (cameraRaw.filmEmulation?.isEmpty == false)
-            // Unknown ACR corrections are image-bound and must survive a
-            // template application even when the template resets every edit
-            // this app can model.
-            || !(cameraRaw.unparsedMaskCorrections?.isEmpty ?? true)
     }
 
     private var hslAdjustmentsBinding: Binding<HSLAdjustments> {
@@ -4201,7 +4541,7 @@ struct EditWorkspaceView: View {
         Binding(
             get: { metadataViewModel.editingMetadata.cameraRaw?.toneCurve },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Tone Curve") { cameraRaw in
                     cameraRaw.toneCurve = newValue
                 }
             }
@@ -4248,7 +4588,7 @@ struct EditWorkspaceView: View {
                 )
             },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Anonymizer") { cameraRaw in
                     AnonymizerToggleBehavior.setEnabled(
                         newValue,
                         settings: &cameraRaw.anonymizer
@@ -4263,7 +4603,7 @@ struct EditWorkspaceView: View {
         Binding(
             get: { metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.blackOut ?? false },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Black Out") { cameraRaw in
                     if newValue {
                         if cameraRaw.anonymizer == nil { cameraRaw.anonymizer = AnonymizerSettings() }
                         cameraRaw.anonymizer?.blackOut = true
@@ -4407,8 +4747,20 @@ struct EditWorkspaceView: View {
     }
 
     private func toggleCropControls() {
+        // Entering needs the photo's own settings: an entry snapshot taken from a still-loading
+        // buffer would make Esc "restore" no crop over the photo's saved one.
+        guard isSelectedImageMetadataReady || cropSession.isToolActive else { return }
+        let entryCrop = metadataViewModel.editingMetadata.cameraRaw?.crop
         let isActive = cropSession.toggleTool()
         if isActive {
+            // Esc restores this framing (Camera Raw's Cancel); Done/Return keeps the edit.
+            cropSession.captureEntryCrop(entryCrop)
+            // An existing crop keeps its shape: the picker follows it instead of reshaping it.
+            if isCropEnabled { syncCropAspectRatioToCurrentCrop() }
+            // Crop is exclusive with the other image-interaction tools.
+            whiteBalanceSession.deactivatePicker()
+            maskInteraction.stopBrushPainting()
+            if isSelectingAIMask { cancelAIMaskSelection() }
             // Deselect mask and reset edit zoom when entering crop mode
             selectedLayer = .global
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
@@ -4417,13 +4769,17 @@ struct EditWorkspaceView: View {
         if isActive && !isCropEnabled {
             // Showing controls — enable crop if not already active
             resetCropZoom()
-            updateCameraRaw { cameraRaw in
+            updateCameraRaw(actionName: "Crop") { cameraRaw in
                 _ = cropSession.enableCropIfNeeded(in: &cameraRaw)
             }
             if cropAspectRatio != .free {
                 applyAspectRatioToCrop(cropAspectRatio)
             }
             commitEditAdjustments()
+            // Only a single enable step can be reverted by one undo; an aspect reshape adds another.
+            if cropAspectRatio == .free {
+                cropSession.recordAutoEnabledCrop(metadataViewModel.editingMetadata.cameraRaw?.crop)
+            }
         }
         if !isActive {
             // Reset zoom and unlock image rect when hiding controls
@@ -4436,8 +4792,49 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// Selects the aspect preset the current crop already has (Free if none), so entering the
+    /// crop tool never snaps an existing crop to the previously chosen ratio.
+    private func syncCropAspectRatioToCurrentCrop() {
+        // The file's own (display-oriented) dimensions are known before its preview decodes.
+        let imageAspect = nativeDisplayPixelSize().flatMap { size in
+            size.width > 0 && size.height > 0 ? Double(size.width / size.height) : nil
+        } ?? sourceAspectRatio
+        cropAspectRatio = CropAspectRatio.matching(activeCrop, imageAspectRatio: imageAspect)
+    }
+
+    /// The crop tool was left open while switching photos: once the new photo's own settings
+    /// have loaded, take its entry snapshot (so Esc restores its framing) and sync the picker.
+    private func captureCropEntryForLoadedPhotoIfNeeded() {
+        guard isSelectedImageMetadataReady,
+              cropSession.adoptLoadedPhoto(
+                crop: metadataViewModel.editingMetadata.cameraRaw?.crop,
+                isCropEnabled: isCropEnabled
+              ) else { return }
+        syncCropAspectRatioToCurrentCrop()
+    }
+
+    /// Esc in crop mode: close the tool and restore the crop + straighten captured on entry, as one
+    /// undoable step (no undo entry when nothing changed).
+    private func cancelCropControls() {
+        let currentCrop = metadataViewModel.editingMetadata.cameraRaw?.crop
+        if let entry = cropSession.cancelTool(), currentCrop != entry.crop {
+            if entry.crop == nil, let autoEnabled = entry.autoEnabledCrop, currentCrop == autoEnabled {
+                // Untouched since the tool enabled a full-frame crop: undo that step rather than
+                // stacking a second one that leaves a re-enable on the undo stack.
+                persistenceSession.undo()
+            } else {
+                updateCameraRaw(actionName: "Cancel Crop") { cameraRaw in
+                    cameraRaw.crop = entry.crop
+                }
+                commitEditAdjustments()
+            }
+        }
+        syncViewportToMetal()
+        syncCleanFeed()
+    }
+
     private func resetCrop() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Crop") { cameraRaw in
             _ = cropSession.resetCrop(in: &cameraRaw)
         }
         commitEditAdjustments()
@@ -4449,7 +4846,8 @@ struct EditWorkspaceView: View {
     }
 
     private func applyAspectRatioToCrop(_ ratio: CropAspectRatio) {
-        guard isCropEnabled else { return }
+        // Without the photo's preview the image aspect is only a 3:2 placeholder.
+        guard isCropEnabled, isSelectedImageMetadataReady, sourceImage != nil else { return }
         let targetRatio: Double?
         if ratio == .original {
             targetRatio = sourceAspectRatio > 0 ? sourceAspectRatio : nil
@@ -4459,6 +4857,12 @@ struct EditWorkspaceView: View {
         guard let targetRatio, targetRatio > 0 else { return }
 
         let current = activeCrop
+        // Already that shape (e.g. the picker was just synced to the existing crop on tool
+        // entry): reshaping would only add a no-op Undo step and a save.
+        if let visible = CropAspectRatio.visibleAspect(of: current, imageAspectRatio: sourceAspectRatio),
+           abs(visible / targetRatio - 1) <= 0.01 {
+            return
+        }
         let resized = current.resizedToActualAspectRatio(
             targetRatio, angleDegrees: activeCropAngle, imageAspectRatio: sourceAspectRatio
         )
@@ -4466,7 +4870,7 @@ struct EditWorkspaceView: View {
     }
 
     private func updateCrop(_ crop: NormalizedCropRegion, commit: Bool) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Crop") { cameraRaw in
             _ = cropSession.updateCrop(
                 crop,
                 sourceAspectRatio: sourceAspectRatio,
@@ -4480,8 +4884,34 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// A finished crop-tool drag: the reshaped region and the straighten angle (dragging outside
+    /// the crop) are applied in one mutation, so one Undo restores both.
+    private func applyCropDrag(region: NormalizedCropRegion?, angle: Double?) {
+        guard region != nil || angle != nil else { return }
+        updateCameraRaw(actionName: angle != nil ? "Straighten" : "Crop") { cameraRaw in
+            if let region {
+                _ = cropSession.updateCrop(
+                    region,
+                    sourceAspectRatio: sourceAspectRatio,
+                    orientation: selectedImageOrientation,
+                    commit: false,
+                    in: &cameraRaw
+                )
+            }
+            if let angle {
+                _ = cropSession.updateCropAngle(
+                    angle,
+                    sourceAspectRatio: sourceAspectRatio,
+                    orientation: selectedImageOrientation,
+                    commit: false,
+                    in: &cameraRaw
+                )
+            }
+        }
+    }
+
     private func updateCropAngle(_ angle: Double, commit: Bool) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Straighten") { cameraRaw in
             _ = cropSession.updateCropAngle(
                 angle,
                 sourceAspectRatio: sourceAspectRatio,
@@ -5006,7 +5436,8 @@ struct EditWorkspaceView: View {
     /// then UV (top-left origin) → CIImage extent (bottom-left origin) with a Y flip.
     private func sourceRegion(
         forPaneRect rect: CGRect, paneSize: CGSize,
-        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
+        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>,
+        rotationDegrees: Double
     ) -> CGRect? {
         guard let source = sourceCIImage else { return nil }
         return whiteBalanceSession.sourceRegion(
@@ -5014,6 +5445,7 @@ struct EditWorkspaceView: View {
             paneSize: paneSize,
             viewportOrigin: vpOrigin,
             viewportSize: vpSize,
+            rotationRadians: rotationDegrees * .pi / 180,
             sourceExtent: source.extent
         )
     }
@@ -5022,21 +5454,25 @@ struct EditWorkspaceView: View {
     /// Returns the same linear value that would be fed to the solver for this pane rect.
     private func probeLinearRGB(
         forPaneRect rect: CGRect, paneSize: CGSize,
-        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
+        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>,
+        rotationDegrees: Double = 0
     ) -> SIMD3<Float>? {
         guard let source = sourceCIImage,
               let region = sourceRegion(forPaneRect: rect, paneSize: paneSize,
-                                        viewportOrigin: vpOrigin, viewportSize: vpSize) else { return nil }
+                                        viewportOrigin: vpOrigin, viewportSize: vpSize,
+                                        rotationDegrees: rotationDegrees) else { return nil }
         return Self.averageLinearRGB(of: source, in: region)
     }
 
     private func performWhiteBalancePick(
         inPaneRect rect: CGRect, paneSize: CGSize,
-        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
+        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>,
+        rotationDegrees: Double = 0
     ) {
         guard let source = sourceCIImage, let pipeline = metalPipeline, pipeline.hasSourceTexture,
               let region = sourceRegion(forPaneRect: rect, paneSize: paneSize,
-                                        viewportOrigin: vpOrigin, viewportSize: vpSize),
+                                        viewportOrigin: vpOrigin, viewportSize: vpSize,
+                                        rotationDegrees: rotationDegrees),
               let request = whiteBalanceSession.beginPickRequest() else { return }
 
         Task {
@@ -5055,7 +5491,7 @@ struct EditWorkspaceView: View {
 
     private func applyPickedWhiteBalance(temperatureKelvin: Double, tint: Double) {
         var persistenceIntent = DevelopWhiteBalancePersistenceIntent.previewOnly
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "White Balance") { cameraRaw in
             persistenceIntent = whiteBalanceSession.applyPickedWhiteBalance(
                 temperatureKelvin: temperatureKelvin,
                 tint: tint,
@@ -5123,10 +5559,17 @@ struct EditWorkspaceView: View {
                     isHoveringHDR = hovering
                 }
                 .onTapGesture {
-                    guard canEditSingleImage else { return }
+                    guard canMutateSingleImageDevelop else { return }
                     hdrToggleBinding.wrappedValue.toggle()
                 }
                 .help("Toggle HDR mode (\u{2318}H)")
+                .accessibilityLabel("HDR")
+                .accessibilityValue(isHDREnabled ? "On" : "Off")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction {
+                    guard canMutateSingleImageDevelop else { return }
+                    hdrToggleBinding.wrappedValue.toggle()
+                }
         }
         .padding(.top, 2)
     }
@@ -5149,6 +5592,15 @@ struct EditWorkspaceView: View {
                 }
                 .padding(.vertical, 2)
                 .padding(.horizontal, 1)
+            }
+            if DevelopLayerLimits.exceedsMaskLimit(metadataViewModel.editingMetadata.cameraRaw) {
+                Label(
+                    "Only the first \(DevelopLayerLimits.maxEnabledMasks) enabled mask/adjustment layers render. Disable or delete layers to see the rest.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
             }
             if let id = selectedMaskID {
                 maskActionRow(id)
@@ -5249,7 +5701,7 @@ struct EditWorkspaceView: View {
                     value: aiMaskBlurBinding(index),
                     range: 0...2,
                     step: 0.05,
-                    formatter: { String(format: "%.2f%%", $0) },
+                    formatter: { $0.formatted(.number.precision(.fractionLength(2)).grouping(.never)) + "%" },
                     settingsMutator: { settings, value in
                         setAIMaskBlur(value, index: index, settings: &settings)
                     },
@@ -5528,24 +5980,27 @@ struct EditWorkspaceView: View {
     }
 
     private var addLayerButton: some View {
-        Grid(horizontalSpacing: 4, verticalSpacing: 4) {
+        let atLimit = !canAddMaskLayer
+        return Grid(horizontalSpacing: 4, verticalSpacing: 4) {
             GridRow {
-                addLayerTile(kind: .ellipseMask, tint: .blue, help: "Add ellipse mask") {
+                addLayerTile(kind: .ellipseMask, tint: .blue, help: "Add ellipse mask", atMaskLimit: atLimit) {
                     addNewMask()
                 }
-                addLayerTile(kind: .brushMask, tint: .blue, help: "Add brush mask") {
-                    _ = addNewBrushMask()
+                addLayerTile(kind: .brushMask, tint: .blue, help: "Add brush mask", atMaskLimit: atLimit) {
+                    guard addNewBrushMask() != nil else { return }
                     maskInteraction.beginBrushPainting()
                     whiteBalanceSession.deactivatePicker()
                     syncMaskOverlayTarget()
                 }
-                addLayerTile(kind: .aiMask, tint: .blue, help: "Select a person or object with AI") {
+                addLayerTile(
+                    kind: .aiMask, tint: .blue, help: "Select a person or object with AI", atMaskLimit: atLimit
+                ) {
                     startAIMaskSelection()
                 }
             }
             GridRow {
-                addGlobalLayerTile()
-                addLayerTile(kind: .colorTransform, tint: .green, help: "Add LUT or CST layer") {
+                addGlobalLayerTile(atMaskLimit: atLimit)
+                addLayerTile(kind: .colorTransform, tint: .green, help: "Add LUT or CST layer", atMaskLimit: atLimit) {
                     addNewColorTransformLayer()
                 }
                 addLayerTile(kind: .watermark, tint: .yellow, help: "Add watermark layer") {
@@ -5609,6 +6064,7 @@ struct EditWorkspaceView: View {
         kind: LayerKind,
         tint: Color,
         help: String,
+        atMaskLimit: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -5629,11 +6085,12 @@ struct EditWorkspaceView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(atMaskLimit)
         .onHover { hoveredAddLayerKind = $0 ? kind : nil }
-        .help(help)
+        .help(atMaskLimit ? DevelopLayerLimits.limitReachedMessage : help)
     }
 
-    private func addGlobalLayerTile() -> some View {
+    private func addGlobalLayerTile(atMaskLimit: Bool) -> some View {
         Button {
             addNewGlobalLayer()
         } label: {
@@ -5655,8 +6112,9 @@ struct EditWorkspaceView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(atMaskLimit)
         .onHover { hoveredAddLayerKind = $0 ? .secondaryGlobal : nil }
-        .help("Add Global adjustment layer")
+        .help(atMaskLimit ? DevelopLayerLimits.limitReachedMessage : "Add Global adjustment layer")
     }
 
     @ViewBuilder
@@ -5690,6 +6148,17 @@ struct EditWorkspaceView: View {
                     .shadow(color: .black.opacity(0.6), radius: 1.5)
             }
             .frame(width: 56, height: 56)
+            .overlay(alignment: .bottomTrailing) {
+                if let watermark, watermarkStore.isAssetMissing(watermark.libraryAssetID) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.yellow)
+                        .shadow(color: .black.opacity(0.7), radius: 1)
+                        .padding(3)
+                        .help("Missing watermark — its image was deleted from the library or hasn't synced yet")
+                        .accessibilityLabel("Missing watermark")
+                }
+            }
             .overlay(alignment: .topLeading) {
                 if mask?.inverted == true {
                     Image(systemName: "circle.righthalf.filled")
@@ -5771,6 +6240,12 @@ struct EditWorkspaceView: View {
             }
         }
         .help(layerName(ref, mask: mask))
+        // One selectable button per layer for VoiceOver (tap selects; the context menu holds
+        // rename/mute/invert/delete).
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(layerName(ref, mask: mask) + (muted ? ", muted" : ""))
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { selectedLayer = ref }
     }
 
     /// Mute / invert / delete controls for the selected mask, shown beneath the strip.
@@ -5788,6 +6263,7 @@ struct EditWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .help(mask.inverted ? "Inverted: adjustments apply outside the mask" : "Normal: adjustments apply inside the mask")
+                    .accessibilityLabel(mask.inverted ? "Mask Inverted" : "Invert Mask")
                 }
 
                 Button {
@@ -5799,6 +6275,7 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help(mask.enabled ? "Mute mask effect" : "Enable mask effect")
+                .accessibilityLabel(mask.enabled ? "Mute Mask" : "Enable Mask")
 
                 if !mask.isFullFrame {
                     Button {
@@ -5814,6 +6291,7 @@ struct EditWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .help(showsMaskOutlines ? "Hide all mask outlines" : "Show mask outlines")
+                    .accessibilityLabel(showsMaskOutlines ? "Hide Mask Outlines" : "Show Mask Outlines")
                 }
 
                 Spacer()
@@ -5827,6 +6305,7 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Delete mask")
+                .accessibilityLabel("Delete Mask")
             }
             .padding(.horizontal, 2)
         }
@@ -5864,7 +6343,7 @@ struct EditWorkspaceView: View {
             return
         }
         guard layerSession.commitRename(in: &settings) == .commit else { return }
-        updateCameraRaw { $0 = settings }
+        updateCameraRaw(actionName: "Rename Layer") { $0 = settings }
         commitEditAdjustments()
     }
 
@@ -5879,12 +6358,12 @@ struct EditWorkspaceView: View {
               layerSession.reorder(dragged, onto: target, in: &settings) == .commit else {
             return
         }
-        updateCameraRaw { $0 = settings }
+        updateCameraRaw(actionName: "Reorder Layers") { $0 = settings }
         commitEditAdjustments()
     }
 
     private func toggleMaskInverted(_ id: UUID) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Invert Mask") { cameraRaw in
             guard let i = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
             cameraRaw.localAdjustments?[i].inverted.toggle()
         }
@@ -5892,7 +6371,7 @@ struct EditWorkspaceView: View {
     }
 
     private func toggleMaskEnabled(_ id: UUID) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Toggle Layer") { cameraRaw in
             guard let i = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
             cameraRaw.localAdjustments?[i].enabled.toggle()
         }
@@ -5948,7 +6427,7 @@ struct EditWorkspaceView: View {
                 HStack {
                     Spacer()
                     Button {
-                        updateCameraRaw { cameraRaw in
+                        updateCameraRaw(actionName: "Color Transform") { cameraRaw in
                             guard let transform = cameraRaw.localAdjustments?[idx].colorTransform
                             else { return }
                             cameraRaw.localAdjustments?[idx].colorTransform?.inputSpace =
@@ -5988,7 +6467,7 @@ struct EditWorkspaceView: View {
                     .colorTransform?.mode ?? .lut
             },
             set: { mode in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Color Transform Mode") { cameraRaw in
                     cameraRaw.localAdjustments?[index].colorTransform?.mode = mode
                 }
                 commitEditAdjustments()
@@ -6007,7 +6486,7 @@ struct EditWorkspaceView: View {
                 return transform[keyPath: keyPath]
             },
             set: { space in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Color Space") { cameraRaw in
                     guard var transform = cameraRaw.localAdjustments?[index].colorTransform
                     else { return }
                     transform[keyPath: keyPath] = space
@@ -6040,7 +6519,9 @@ struct EditWorkspaceView: View {
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].amount = min(max(value / 100, 0), 1)
                 },
-                onReset: { maskAmountBinding(idx).wrappedValue = 100 }
+                onReset: { maskAmountBinding(idx).wrappedValue = 100 },
+                // The default is 100%, not 0: show the reset arrow only when lowered.
+                showReset: maskAmountBinding(idx).wrappedValue < 99.5
             )
 
             sliderRow(
@@ -6254,7 +6735,16 @@ struct EditWorkspaceView: View {
                 .foregroundStyle(.secondary)
             Divider()
 
-            let library = WatermarkStore.shared.allAssets()
+            let library = watermarkStore.allAssets()
+            let assetID = layers[idx].libraryAssetID
+            let assetIsMissing = watermarkStore.isAssetMissing(assetID)
+            if assetIsMissing {
+                Label("Missing watermark — this image was deleted from the library or hasn't synced yet. It won't appear in the preview or exports until you pick another image.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if library.isEmpty {
                 Label("No watermarks in your library yet — import a PNG from Settings \u{2192} Watermarks.",
                       systemImage: "exclamationmark.triangle")
@@ -6263,8 +6753,14 @@ struct EditWorkspaceView: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Picker("Image", selection: watermarkAssetIDBinding(idx)) {
+                    // Placeholder row so the picker has a selection to show for a layer whose
+                    // asset is gone, instead of rendering blank.
+                    if !library.contains(where: { $0.id == assetID }) {
+                        Text("Missing Watermark").tag(Optional(assetID))
+                    }
                     ForEach(library) { asset in
-                        Text(asset.name).tag(Optional(asset.id))
+                        Text(watermarkStore.isAssetMissing(asset.id) ? "\(asset.name) (missing image)" : asset.name)
+                            .tag(Optional(asset.id))
                     }
                 }
                 .labelsHidden()
@@ -6298,7 +6794,7 @@ struct EditWorkspaceView: View {
             sliderRow(
                 "Size",
                 value: watermarkSizeValueBinding(idx),
-                range: sizeIsPercent ? 1...100 : 8...4000,
+                range: WatermarkGeometry.sizeRange(for: sizeIsPercent ? .percent : .pixel),
                 step: 1,
                 formatter: { sizeIsPercent ? "\(Int($0.rounded()))%" : "\(Int($0.rounded()))px" },
                 settingsMutator: { settings, value in
@@ -6342,7 +6838,7 @@ struct EditWorkspaceView: View {
             sliderRow(
                 "Margin",
                 value: watermarkMarginValueBinding(idx),
-                range: marginIsPercent ? 0...45 : 0...2000,
+                range: WatermarkGeometry.marginRange(for: marginIsPercent ? .percent : .pixel),
                 step: 1,
                 formatter: { marginIsPercent ? "\(Int($0.rounded()))%" : "\(Int($0.rounded()))px" },
                 settingsMutator: { settings, value in
@@ -6476,6 +6972,21 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// The frame a watermark's px/% values are measured against — the crop frame when a crop
+    /// is in effect, else the display image — so a unit switch keeps the rendered size.
+    /// Falls back to the nominal library frame before the image size is known.
+    private var watermarkUnitReferenceSize: CGSize {
+        let projection = layerGeometryProjection
+        guard projection.displayImageSize.width > 0, projection.displayImageSize.height > 0 else {
+            let nominal = WatermarkGeometry.nominalReferenceImageSize
+            return CGSize(width: nominal.width, height: nominal.height)
+        }
+        let usesCropFrame = metadataViewModel.editingMetadata.cameraRaw?.crop?.isEffectiveCrop == true
+        return usesCropFrame
+            ? layerGeometryInteraction.watermarkCropImageSize(projection: projection)
+            : projection.displayImageSize
+    }
+
     private func watermarkSizeValueBinding(_ index: Int) -> Binding<Double> {
         Binding(
             get: {
@@ -6529,7 +7040,12 @@ struct EditWorkspaceView: View {
                 return layers[index].geometry.sizeUnit
             },
             set: { newValue in
-                updateWatermarkGeometry(index) { $0.sizeUnit = newValue }
+                let reference = watermarkUnitReferenceSize
+                updateWatermarkGeometry(index) {
+                    $0 = $0.convertingSizeUnit(
+                        to: newValue, imageWidth: reference.width, imageHeight: reference.height
+                    )
+                }
                 commitEditAdjustments()
             }
         )
@@ -6543,7 +7059,12 @@ struct EditWorkspaceView: View {
                 return layers[index].geometry.marginUnit
             },
             set: { newValue in
-                updateWatermarkGeometry(index) { $0.marginUnit = newValue }
+                let reference = watermarkUnitReferenceSize
+                updateWatermarkGeometry(index) {
+                    $0 = $0.convertingMarginUnit(
+                        to: newValue, imageWidth: reference.width, imageHeight: reference.height
+                    )
+                }
                 commitEditAdjustments()
             }
         )
@@ -6575,7 +7096,7 @@ struct EditWorkspaceView: View {
             },
             set: { newValue in
                 guard let newValue else { return }
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Watermark Image") { cameraRaw in
                     guard let layers = cameraRaw.watermarkLayers, index < layers.count else { return }
                     cameraRaw.watermarkLayers?[index].libraryAssetID = newValue
                 }
@@ -6678,7 +7199,7 @@ struct EditWorkspaceView: View {
                 return AnonymizerToggleBehavior.isEnabled(masks[maskIndex].anonymizer)
             },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Anonymizer") { cameraRaw in
                     guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
                     var anonymizer = masks[maskIndex].anonymizer
                     AnonymizerToggleBehavior.setEnabled(newValue, settings: &anonymizer)
@@ -6702,7 +7223,7 @@ struct EditWorkspaceView: View {
                 return masks[maskIndex].anonymizer?.blackOut ?? false
             },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Black Out") { cameraRaw in
                     guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
                     if newValue {
                         if cameraRaw.localAdjustments?[maskIndex].anonymizer == nil {
@@ -6722,7 +7243,23 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// The pipeline renders at most `DevelopLayerLimits.maxEnabledMasks` enabled local layers.
+    private var canAddMaskLayer: Bool {
+        DevelopLayerLimits.canAddMask(to: metadataViewModel.editingMetadata.cameraRaw)
+    }
+
+    /// Gate for every new local layer; explains the limit instead of adding a layer that would
+    /// silently not render in preview or export.
+    private func ensureCanAddMaskLayer() -> Bool {
+        guard canAddMaskLayer else {
+            workspaceSession.showNotice(DevelopLayerLimits.limitReachedMessage)
+            return false
+        }
+        return true
+    }
+
     private func addNewMask(center: CGPoint? = nil, cornerRadius: Double? = nil) {
+        guard ensureCanAddMaskLayer() else { return }
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
         var geo = EllipseMaskGeometry()
         geo.cornerRadius = cornerRadius
@@ -6738,7 +7275,7 @@ struct EditWorkspaceView: View {
         geo = maskGeometryForSensor(geo)
         let baseName = geo.isStandardEllipse ? "Mask" : "Rectangle"
         let newMask = MaskAdjustment(name: "\(baseName) \(existingCount + 1)", geometry: geo)
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Mask") { cameraRaw in
             if cameraRaw.localAdjustments == nil {
                 cameraRaw.localAdjustments = []
             }
@@ -6757,6 +7294,7 @@ struct EditWorkspaceView: View {
     /// node untouched. The oversized zero-feather ellipse is an Adobe Camera Raw fallback;
     /// Photo Agent uses `fullFrame` for exact edge-to-edge coverage independent of aspect ratio.
     private func addNewGlobalLayer() {
+        guard ensureCanAddMaskLayer() else { return }
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
             .filter(\.isFullFrame).count ?? 0
         var fallbackGeometry = EllipseMaskGeometry()
@@ -6770,7 +7308,7 @@ struct EditWorkspaceView: View {
             geometry: fallbackGeometry,
             fullFrame: true
         )
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Global Layer") { cameraRaw in
             if cameraRaw.localAdjustments == nil {
                 cameraRaw.localAdjustments = []
             }
@@ -6784,6 +7322,7 @@ struct EditWorkspaceView: View {
     }
 
     private func addNewColorTransformLayer() {
+        guard ensureCanAddMaskLayer() else { return }
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
             .filter { $0.colorTransform != nil }.count ?? 0
         var fallbackGeometry = EllipseMaskGeometry()
@@ -6798,7 +7337,7 @@ struct EditWorkspaceView: View {
             fullFrame: true,
             colorTransform: ColorTransformSettings()
         )
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Color Transform") { cameraRaw in
             if cameraRaw.localAdjustments == nil {
                 cameraRaw.localAdjustments = []
             }
@@ -6824,9 +7363,9 @@ struct EditWorkspaceView: View {
                     requestID: requestID
                 )
             },
-            parse: CubeLUTParser.parse
+            parse: { try await CubeLUTParser.parseOffMain($0) }
         ) { intent in
-            updateCameraRaw { cameraRaw in
+            updateCameraRaw(actionName: "Import LUT") { cameraRaw in
                 guard let index = cameraRaw.localAdjustments?
                     .firstIndex(where: { $0.id == intent.layerID }),
                       var transform = cameraRaw.localAdjustments?[index].colorTransform
@@ -6844,6 +7383,7 @@ struct EditWorkspaceView: View {
 
     private func startAIMaskSelection(replacing maskID: UUID? = nil) {
         guard canEditSingleImage, sourceCIImage != nil, !isGeneratingAIMask else { return }
+        if maskID == nil { guard ensureCanAddMaskLayer() else { return } }
         clearMaskMattePreview()
         maskInteraction.beginExclusiveSelection()
         whiteBalanceSession.deactivatePicker()
@@ -6897,7 +7437,7 @@ struct EditWorkspaceView: View {
         if let replacementID,
            metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
             .contains(where: { $0.id == replacementID }) == true {
-            updateCameraRaw { cameraRaw in
+            updateCameraRaw(actionName: "Add AI Mask") { cameraRaw in
                 guard let index = cameraRaw.localAdjustments?
                     .firstIndex(where: { $0.id == replacementID }) else { return }
                 let previousRefinements = cameraRaw.localAdjustments?[index].aiMask
@@ -6912,7 +7452,7 @@ struct EditWorkspaceView: View {
         } else {
             let count = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
             let newMask = MaskAdjustment(name: "AI Mask \(count + 1)", aiMask: generated.raster)
-            updateCameraRaw { cameraRaw in
+            updateCameraRaw(actionName: "Add AI Mask") { cameraRaw in
                 if cameraRaw.localAdjustments == nil { cameraRaw.localAdjustments = [] }
                 cameraRaw.localAdjustments?.append(newMask)
                 if cameraRaw.layerOrder != nil {
@@ -6956,7 +7496,7 @@ struct EditWorkspaceView: View {
         }
         geo = watermarkGeometryForSensor(geo)
         let newLayer = WatermarkLayer(name: "Watermark \(existingCount + 1)", libraryAssetID: defaultAsset.id, geometry: geo)
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Watermark") { cameraRaw in
             if cameraRaw.watermarkLayers == nil { cameraRaw.watermarkLayers = [] }
             cameraRaw.watermarkLayers?.append(newLayer)
             if cameraRaw.layerOrder != nil {
@@ -6967,16 +7507,26 @@ struct EditWorkspaceView: View {
         commitEditAdjustments()
     }
 
+    /// A library change (delete, sync arrival, storage-route switch) can change what an
+    /// existing watermark layer renders even though the layer itself is untouched; re-upload
+    /// the params so the pipeline re-resolves its (revision-keyed) watermark textures.
+    private func refreshPreviewAfterWatermarkLibraryChange() {
+        guard metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.isEmpty == false,
+              let pipeline = metalPipeline, pipeline.hasSourceTexture else { return }
+        pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+        metalSession.requestRedraw()
+    }
+
     private func deleteSelectedWatermark() {
         guard case .watermark = selectedLayer,
               var settings = metadataViewModel.editingMetadata.cameraRaw,
               layerSession.deleteSelectedLayer(in: &settings) == .commit else { return }
-        updateCameraRaw { $0 = settings }
+        updateCameraRaw(actionName: "Delete Watermark") { $0 = settings }
         commitEditAdjustments()
     }
 
     private func toggleWatermarkEnabled(_ id: UUID) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Toggle Watermark") { cameraRaw in
             guard let i = cameraRaw.watermarkLayers?.firstIndex(where: { $0.id == id }) else { return }
             cameraRaw.watermarkLayers?[i].enabled.toggle()
         }
@@ -6998,6 +7548,7 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help(layer.enabled ? "Mute watermark effect" : "Enable watermark effect")
+                .accessibilityLabel(layer.enabled ? "Mute Watermark" : "Enable Watermark")
 
                 Spacer()
 
@@ -7010,6 +7561,7 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Delete watermark layer")
+                .accessibilityLabel("Delete Watermark")
             }
             .padding(.horizontal, 2)
         }
@@ -7019,10 +7571,11 @@ struct EditWorkspaceView: View {
 
     /// Creates an empty freeform brush mask, selects it, and returns its id. Called lazily on the
     /// first paint gesture when no brush mask is selected (like `addNewMask` for ellipses).
-    private func addNewBrushMask() -> UUID {
+    private func addNewBrushMask() -> UUID? {
+        guard ensureCanAddMaskLayer() else { return nil }
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
         let newMask = MaskAdjustment(name: "Brush \(existingCount + 1)", brush: BrushMaskGeometry(strokes: []))
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Mask") { cameraRaw in
             if cameraRaw.localAdjustments == nil { cameraRaw.localAdjustments = [] }
             cameraRaw.localAdjustments?.append(newMask)
             if cameraRaw.layerOrder != nil {
@@ -7039,7 +7592,7 @@ struct EditWorkspaceView: View {
     private func brushSliceIndex(forMaskID id: UUID) -> Int? {
         guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments else { return nil }
         var slice = 0
-        for mask in masks.filter({ $0.enabled }).prefix(8) {
+        for mask in masks.filter({ $0.enabled }).prefix(DevelopLayerLimits.maxEnabledMasks) {
             if mask.id == id { return mask.brush != nil ? slice : nil }
             if mask.brush != nil || mask.aiMask != nil { slice += 1 }
         }
@@ -7065,7 +7618,8 @@ struct EditWorkspaceView: View {
            masks.first(where: { $0.id == id })?.brush != nil {
             targetID = id
         } else {
-            targetID = addNewBrushMask()
+            guard let newID = addNewBrushMask() else { return nil }
+            targetID = newID
         }
         // Rebuild params so a freshly-created mask's alpha slice is allocated before live
         // stamping, and turn on the red coverage overlay for this mask so the stroke is visible
@@ -7129,7 +7683,7 @@ struct EditWorkspaceView: View {
     private func commitBrushStroke(_ stroke: BrushStroke) {
         guard let id = selectedMaskID else { return }
         let sensorStroke = brushStrokeForSensor(stroke)
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Brush Stroke") { cameraRaw in
             guard let idx = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
             if cameraRaw.localAdjustments?[idx].brush == nil {
                 cameraRaw.localAdjustments?[idx].brush = BrushMaskGeometry(strokes: [])
@@ -7202,11 +7756,12 @@ struct EditWorkspaceView: View {
         guard case .mask = selectedLayer,
               var settings = metadataViewModel.editingMetadata.cameraRaw,
               layerSession.deleteSelectedLayer(in: &settings) == .commit else { return }
-        updateCameraRaw { $0 = settings }
+        updateCameraRaw(actionName: "Delete Mask") { $0 = settings }
         commitEditAdjustments()
     }
 
-    /// Command-W treats every selected node as something that can be "closed": local nodes are
+    /// Remove or Reset Selected Edit Layer (default Control-Option-Delete; Forward Delete when
+    /// unbound) treats every selected node as something that can be "closed": local nodes are
     /// removed, while the permanent Global node has only its own adjustments reset.
     private func removeOrResetSelectedEditLayer() {
         switch selectedLayer {
@@ -7230,7 +7785,7 @@ struct EditWorkspaceView: View {
             showCopyPasteFeedback("Global layer is already reset")
             return
         }
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Global") { cameraRaw in
             GlobalLayerResetBehavior.reset(&cameraRaw, isRaw: isSelectedImageRaw)
         }
         commitEditAdjustments()
@@ -7283,7 +7838,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetColorAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Color") { cameraRaw in
             cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
             cameraRaw.temperature = nil
             cameraRaw.tint = nil
@@ -7297,7 +7852,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetExposureAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Light") { cameraRaw in
             cameraRaw.exposure2012 = nil
             cameraRaw.contrast2012 = nil
             cameraRaw.highlights2012 = nil
@@ -7309,7 +7864,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetDetailAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Detail") { cameraRaw in
             cameraRaw.sharpness = nil
             cameraRaw.clarity2012 = nil
             cameraRaw.dehaze = nil
@@ -7318,97 +7873,42 @@ struct EditWorkspaceView: View {
     }
 
     private func resetHSLAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset HSL") { cameraRaw in
             cameraRaw.hslAdjustments = nil
         }
         commitEditAdjustments()
     }
 
     private func resetAnonymizerAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Anonymizer") { cameraRaw in
             cameraRaw.anonymizer = nil
         }
         commitEditAdjustments()
     }
 
     private func resetFilmAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Film") { cameraRaw in
             cameraRaw.filmEmulation = nil
         }
         commitEditAdjustments()
     }
 
-    private func resetDevelopAdjustments() {
-        resetCropZoom()
-        selectedLayer = .global
-        updateCameraRaw { cameraRaw in
-            cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
-            cameraRaw.temperature = nil
-            cameraRaw.tint = nil
-            cameraRaw.incrementalTemperature = nil
-            cameraRaw.incrementalTint = nil
-            cameraRaw.exposure2012 = nil
-            cameraRaw.contrast2012 = nil
-            cameraRaw.highlights2012 = nil
-            cameraRaw.shadows2012 = nil
-            cameraRaw.whites2012 = nil
-            cameraRaw.blacks2012 = nil
-            cameraRaw.saturation = nil
-            cameraRaw.vibrance = nil
-            cameraRaw.globalDensity = nil
-            cameraRaw.sharpness = nil
-            cameraRaw.clarity2012 = nil
-            cameraRaw.dehaze = nil
-            cameraRaw.localAdjustments = nil
-            cameraRaw.anonymizer = nil
-            cameraRaw.filmEmulation = nil
-            cameraRaw.crop = CameraRawCrop(
-                top: 0,
-                left: 0,
-                bottom: 1,
-                right: 1,
-                angle: 0,
-                hasCrop: false
-            )
-        }
-        commitDevelopReset()
-    }
-
     private func resetDevelopAdjustmentsKeepingCrop() {
-        updateCameraRaw { cameraRaw in
-            cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
-            cameraRaw.temperature = nil
-            cameraRaw.tint = nil
-            cameraRaw.incrementalTemperature = nil
-            cameraRaw.incrementalTint = nil
-            cameraRaw.exposure2012 = nil
-            cameraRaw.contrast2012 = nil
-            cameraRaw.highlights2012 = nil
-            cameraRaw.shadows2012 = nil
-            cameraRaw.whites2012 = nil
-            cameraRaw.blacks2012 = nil
-            cameraRaw.saturation = nil
-            cameraRaw.vibrance = nil
-            cameraRaw.globalDensity = nil
-            cameraRaw.sharpness = nil
-            cameraRaw.clarity2012 = nil
-            cameraRaw.dehaze = nil
-            cameraRaw.toneCurve = nil
-            cameraRaw.localAdjustments = nil
-            cameraRaw.anonymizer = nil
-            cameraRaw.filmEmulation = nil
+        updateCameraRaw(actionName: "Reset") { cameraRaw in
+            DevelopAdjustmentsResetBehavior.reset(&cameraRaw, isRaw: isSelectedImageRaw)
         }
         selectedLayer = .global
+        maskInteraction.stopBrushPainting()
         commitDevelopReset()
     }
 
     private var saveButtonLabel: String {
         let formatName: String
         if isHDREnabled {
-            let format = ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
+            let format = ExportFormatHDR(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
             formatName = "HDR \(format.displayName)"
         } else {
-            let format = ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
+            let format = ExportFormatSDR(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
             formatName = format.displayName
         }
         return exportSession.isExporting ? "Saving \(formatName)..." : "Save \(formatName)"
@@ -7425,8 +7925,24 @@ struct EditWorkspaceView: View {
             }
         }
         let folderURL = metadataViewModel.currentFolderURL ?? selectedImageURL.deletingLastPathComponent()
+        // Honor the Export Location setting like the browser's Export/Save As/Sign paths.
+        var askedFolder: URL?
+        if EditedImageRenderer.currentLocationMode == .askOnSave {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.canCreateDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.prompt = "Choose"
+            panel.message = "Choose a destination folder for the exported file"
+            panel.directoryURL = folderURL
+            guard panel.runModal() == .OK, let chosen = panel.url else { return }
+            askedFolder = chosen
+        }
+        let outputFolder = EditedImageRenderer.resolveOutputFolder(
+            sourceURL: selectedImageURL, rootFolder: folderURL,
+            isHDR: settings?.hdrEditMode == 1, formatPrefix: "Edited", askedFolder: askedFolder)
         exportSession.requestExport {
-            let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
             let directoryCommit = try await ExportDirectoryService.shared.ensureDirectory(
                 at: outputFolder
             )
@@ -7439,17 +7955,49 @@ struct EditWorkspaceView: View {
             try Task.checkCancellation()
             let engine = browserViewModel.writeEngine
             let failureTracker = MetadataFailureTracker()
-            let outputURL = try await EditExportPipeline.renderItem(
-                sourceURL: selectedImageURL, cameraRaw: settings, kind: .format,
-                outputFolder: outputFolder, folderURL: folderURL,
-                writeEngine: engine, failureTracker: failureTracker
+            // Wait for the pending Develop write, then render the live copy resolved against
+            // what is now on disk (live authoritative). The render-time redaction check then
+            // compares against the same saved state instead of racing the write.
+            let renderSettings = try await EditExportPipeline.resolveDevelopSaveSettings(
+                for: selectedImageURL,
+                live: {
+                    // The buffer only if it still belongs to this photo.
+                    metadataViewModel.selectedURLs.count == 1
+                        && metadataViewModel.selectedURLs.first == selectedImageURL
+                        ? metadataViewModel.editingMetadata.cameraRaw : settings
+                }
             )
+            // Never overwrite: a RAW+JPEG pair (IMG_1.ARW / IMG_1.JPG) or a repeated save
+            // would otherwise silently replace an existing file with the same name.
+            let outputURL: URL
+            do {
+                outputURL = try await EditExportPipeline.renderItem(
+                    sourceURL: selectedImageURL, cameraRaw: renderSettings, kind: .format,
+                    outputFolder: outputFolder, folderURL: folderURL,
+                    writeEngine: engine, failureTracker: failureTracker,
+                    collisionPolicy: .appendNumber
+                )
+            } catch is RedactionMissingFromRenderError {
+                throw DevelopSaveError.redactionMissing(selectedImageURL.lastPathComponent)
+            }
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let watermarkWarnings = await failureTracker.missingWatermarkWarnings
             browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
             return DevelopExportPersistenceResult(
                 outputURL: outputURL,
-                metadataWasCopied: copyFailures.isEmpty && overlayFailures.isEmpty
+                metadataWasCopied: copyFailures.isEmpty && overlayFailures.isEmpty,
+                watermarkWasMissing: !watermarkWarnings.isEmpty
+            )
+        } onPersisted: { result in
+            let url = result.outputURL
+            // Same warning the batch export paths surface (BatchOperationResult).
+            let watermarkWarning = result.watermarkWasMissing
+                ? " — watermark image missing (saved without it)"
+                : ""
+            workspaceSession.showNotice(
+                "Saved \(url.lastPathComponent) to \(url.deletingLastPathComponent().lastPathComponent)\(watermarkWarning)",
+                revealURL: url
             )
         }
     }
@@ -7461,8 +8009,8 @@ struct EditWorkspaceView: View {
     }
 
     private func signedDoubleString(_ value: Double, precision: Int = 2) -> String {
-        let format = "%.\(precision)f"
-        let absValue = String(format: format, abs(value))
+        // Locale-aware decimal separator (Norwegian shows "1,25").
+        let absValue = abs(value).formatted(.number.precision(.fractionLength(precision)).grouping(.never))
         if value > 0 { return "+\(absValue)" }
         if value < 0 { return "-\(absValue)" }
         return absValue
@@ -7494,11 +8042,38 @@ struct EditWorkspaceView: View {
     private func pasteCopiedSettings(to urls: Set<URL>) {
         guard let settings = browserViewModel.copiedCameraRawSettings, !urls.isEmpty else { return }
         if urls.count == 1, urls.first == selectedImageURL {
-            pasteCameraRawSettings(settings, includeCrop: false)
+            performWhenSelectedImageReady("Paste") {
+                pasteCameraRawSettings(settings, includeCrop: false, feedback: "Pasted to 1 image")
+            }
         } else {
+            // Feedback with the real counts comes from the write's completion.
             pasteToMultipleImages(settings, urls: urls, includeCrop: false)
         }
-        showCopyPasteFeedback("Pasted to \(urls.count) image\(urls.count == 1 ? "" : "s")")
+    }
+
+    /// Single-photo paste and template apply merge into the selected photo's saved settings, so
+    /// they need its metadata loaded. Until then the action is queued for that photo (loading it
+    /// now instead of after the browser's selection debounce) and runs once the load finishes;
+    /// it is dropped, with feedback, if the selection moves on first. Slider and tool edits keep
+    /// the plain load gate.
+    private func performWhenSelectedImageReady(_ actionName: String, _ action: @escaping @MainActor () -> Void) {
+        if canMutateSingleImageDevelop {
+            action()
+            return
+        }
+        guard let image = selectedImage else { return }
+        let metadataViewModel = metadataViewModel
+        if metadataViewModel.selectedURLs != [image.url] {
+            metadataViewModel.loadSelectionMetadataNow(for: [image], folderURL: browserViewModel.currentFolderURL)
+        }
+        Task { @MainActor in
+            await metadataViewModel.waitForMetadataLoad()
+            guard selectedImageURL == image.url, canMutateSingleImageDevelop else {
+                showCopyPasteFeedback("\(actionName) not applied: the selection changed")
+                return
+            }
+            action()
+        }
     }
 
     /// Resolve-style direct copy: the clicked thumbnail is the source and the selection remains
@@ -7514,54 +8089,29 @@ struct EditWorkspaceView: View {
         pasteCopiedSettings(to: targets)
     }
 
-    private func pasteCameraRawSettings(_ source: CameraRawSettings, includeCrop: Bool) {
-        updateCameraRaw { cameraRaw in
-            cameraRaw.whiteBalance = source.whiteBalance
-            cameraRaw.temperature = source.temperature
-            cameraRaw.tint = source.tint
-            cameraRaw.incrementalTemperature = source.incrementalTemperature
-            cameraRaw.incrementalTint = source.incrementalTint
-            cameraRaw.exposure2012 = source.exposure2012
-            cameraRaw.contrast2012 = source.contrast2012
-            cameraRaw.highlights2012 = source.highlights2012
-            cameraRaw.shadows2012 = source.shadows2012
-            cameraRaw.whites2012 = source.whites2012
-            cameraRaw.blacks2012 = source.blacks2012
-            cameraRaw.saturation = source.saturation
-            cameraRaw.vibrance = source.vibrance
-            cameraRaw.globalDensity = source.globalDensity
-            cameraRaw.sharpness = source.sharpness
-            cameraRaw.clarity2012 = source.clarity2012
-            cameraRaw.dehaze = source.dehaze
-            cameraRaw.toneCurve = source.toneCurve
-            cameraRaw.hslAdjustments = source.hslAdjustments
-            cameraRaw.filmEmulation = source.filmEmulation
-            // Paste masks only when the source carries some — pasting from a
-            // mask-less image shouldn't strip the target's masks. Fresh IDs so
-            // the pasted masks are independent of the source's.
-            if let masks = source.localAdjustments, !masks.isEmpty {
-                cameraRaw.localAdjustments = masks.map { mask in
-                    var copy = mask
-                    copy.id = UUID()
-                    return copy
-                }
-            }
-            if includeCrop {
-                cameraRaw.crop = source.crop
-            }
+    private func pasteCameraRawSettings(_ source: CameraRawSettings, includeCrop: Bool, feedback: String) {
+        // Same merge as the multi-image paste (the photo's own masks and watermarks stay, the
+        // copied ones are appended), with fresh mask IDs so pasted masks are independent of the
+        // source's.
+        let result = CameraRawSettings.pastedIntoEditorResult(
+            source, onto: metadataViewModel.editingMetadata.cameraRaw, includeCrop: includeCrop
+        )
+        updateCameraRaw(actionName: "Paste Settings") { cameraRaw in
+            cameraRaw = result.settings
         }
         commitEditAdjustments()
+        showCopyPasteFeedback([feedback, result.skippedLayersMessage].compactMap { $0 }.joined(separator: ". "))
     }
 
     private func applyDevelopTemplate(_ template: DevelopTemplate) {
         let current = metadataViewModel.editingMetadata.cameraRaw
-        let applied = template.settingsForApplication(preserving: current)
+        let result = template.applicationResult(preserving: current)
 
         resetCropZoom()
         selectedLayer = .global
         maskInteraction.stopBrushPainting()
-        updateCameraRaw { cameraRaw in
-            cameraRaw = applied
+        updateCameraRaw(actionName: "Apply Template") { cameraRaw in
+            cameraRaw = result.settings
         }
 
         if metadataViewModel.editingMetadata.cameraRaw == nil {
@@ -7569,7 +8119,8 @@ struct EditWorkspaceView: View {
         } else {
             commitEditAdjustments()
         }
-        showCopyPasteFeedback("Applied \(template.name)")
+        showCopyPasteFeedback(["Applied \(template.name)", result.skippedLayersMessage]
+            .compactMap { $0 }.joined(separator: ". "))
     }
 
     private func pasteToMultipleImages(_ source: CameraRawSettings, urls: Set<URL>, includeCrop: Bool) {
@@ -7581,12 +8132,20 @@ struct EditWorkspaceView: View {
         }
         cameraRaw.hasSettings = true
 
-        // Update in-memory ImageFile state for immediate visual feedback
+        // Update in-memory ImageFile state for immediate visual feedback, keeping each photo's
+        // previous state so files whose write fails or is refused can be restored.
+        var previousState: [URL: (settings: CameraRawSettings?, hasDevelopEdits: Bool, hasCropEdits: Bool)] = [:]
+        var skippedLayers = 0
         for url in urls {
             if let index = browserViewModel.urlToImageIndex[url] {
-                browserViewModel.images[index].cameraRawSettings = CameraRawSettings.pasted(
-                    cameraRaw, onto: browserViewModel.images[index].cameraRawSettings, includeCrop: includeCrop
+                let image = browserViewModel.images[index]
+                previousState[url] = (image.cameraRawSettings, image.hasDevelopEdits, image.hasCropEdits)
+                let result = CameraRawSettings.pastedResult(
+                    cameraRaw, onto: image.cameraRawSettings, includeCrop: includeCrop,
+                    maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
                 )
+                skippedLayers += result.skippedLayerCount
+                browserViewModel.images[index].cameraRawSettings = result.settings
                 browserViewModel.images[index].hasDevelopEdits = true
                 if includeCrop, cameraRaw.crop?.isEffectiveCrop == true {
                     browserViewModel.images[index].hasCropEdits = true
@@ -7594,6 +8153,17 @@ struct EditWorkspaceView: View {
                 browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
                 browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
                 persistenceSession.recordPublishedSettingsChanges(for: [url])
+            }
+        }
+        @MainActor func restorePreviousState(of failedURLs: some Sequence<URL>) {
+            for url in failedURLs {
+                guard let previous = previousState[url],
+                      let index = browserViewModel.urlToImageIndex[url] else { continue }
+                browserViewModel.images[index].cameraRawSettings = previous.settings
+                browserViewModel.images[index].hasDevelopEdits = previous.hasDevelopEdits
+                browserViewModel.images[index].hasCropEdits = previous.hasCropEdits
+                browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
+                browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
             }
         }
 
@@ -7604,17 +8174,42 @@ struct EditWorkspaceView: View {
         // in the XMP sidecar. Any other file with a sidecar gets it updated too, because the
         // sidecar's crs wins on load and would otherwise resurrect the pre-paste settings.
         let sidecarService = XMPSidecarService()
-        let sidecarURLs = urls.filter {
-            SupportedImageFormats.isRaw(url: $0) || sidecarService.sidecarExists(for: $0)
-        }
         let targetURLs = Array(urls.filter { !SupportedImageFormats.isRaw(url: $0) })
         let writeEngine = browserViewModel.writeEngine
-        persistenceSession.scheduleBatchPersistence {
+        // Reload the currently displayed image once its paste has landed, so the editor doesn't
+        // read the pre-paste sidecar back over the in-memory result.
+        let reloadedURL = selectedImageURL.flatMap { urls.contains($0) ? $0 : nil }
+        // Per-file outcome: a failing or refused file never stops the rest of the batch.
+        // `failures` = nothing was written (rolled back in memory); `sidecarOnly` = the sidecar
+        // (which wins on load) took the paste but the embedded copy wasn't updated, so the
+        // pasted state stays in memory and the file is reported.
+        var failures: [URL: String] = [:]
+        var sidecarOnly: [URL: String] = [:]
+        var writtenURLs = Set<URL>()
+        @MainActor func recordEmbeddedFailure(_ url: URL, _ message: String) {
+            if writtenURLs.contains(url) {
+                sidecarOnly[url] = message
+            } else {
+                failures[url] = message
+            }
+        }
+        @MainActor func pasteWrites() async throws {
+            // Sidecar probes and per-file header reads stay off the main thread.
+            let sidecarURLs = await Self.pasteSidecarTargets(Array(urls), sidecarService: sidecarService)
             for url in sidecarURLs {
                 try Task.checkCancellation()
-                try await sidecarService.pasteCameraRawSerialized(cameraRaw, includeCrop: includeCrop, for: url)
+                do {
+                    try await sidecarService.pasteCameraRawSerialized(cameraRaw, includeCrop: includeCrop, for: url)
+                    writtenURLs.insert(url)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    failures[url] = error.localizedDescription
+                }
             }
-            guard !targetURLs.isEmpty else { return }
+            // A file whose sidecar failed isn't half-written into its embedded XMP as well.
+            let embedURLs = targetURLs.filter { failures[$0] == nil }
+            guard !embedURLs.isEmpty else { return }
 
             // Simple crs scalar fields via the canonical serializer (ACR-style signed
             // ints, +exposure) — shared with the export engine and MetadataViewModel so
@@ -7648,48 +8243,113 @@ struct EditWorkspaceView: View {
 
             // Carry tone curve and masks too — a paste without them leaves the
             // targets rendering differently from the source. Masks only when the
-            // source has some (merge-style, no replaceCameraRawBlock): pasting
-            // from a mask-less image must not strip the targets' masks or other
-            // settings the paste doesn't carry.
-            let structuredData = StructuredWriteData(
-                toneCurve: cameraRaw.toneCurve,
-                masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
-                watermarkLayers: (cameraRaw.watermarkLayers?.isEmpty == false) ? cameraRaw.watermarkLayers : nil,
-                hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil,
-                layerOrder: cameraRaw.layerOrder,
-                anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil
-            )
+            // source has some (merge-style, no replaceCameraRawBlock), merged per file
+            // with paste semantics: ordinary masks / watermarks replaced, the file's
+            // Anonymizer masks and active global Anonymizer always kept.
+            let structuredData = StructuredWriteData.developPaste(cameraRaw)
 
-            if let crop, cropIsAngled {
-                // crs crop fields use Adobe's un-rotated-frame corner encoding,
-                // which depends on each target's pixel aspect — encode per
-                // aspect group instead of one shared field set.
-                var aspectGroups: [Double?: [URL]] = [:]
-                for url in targetURLs {
-                    aspectGroups[ImagePixelAspect.aspect(at: url), default: []].append(url)
+            // Camera Raw-only embed: no descriptive rewrite, never into a file whose metadata
+            // wouldn't fit, and (outside Simple) never into a file with Content Credentials.
+            // One file per write so a failure is attributed to that file and the rest continue.
+            let allowsCredentialedEmbed = MetadataWritePreset.current == .simple
+            var aspectByURL: [URL: Double?] = [:]
+            if crop != nil, cropIsAngled {
+                // crs crop fields use Adobe's un-rotated-frame corner encoding, which depends
+                // on each target's pixel aspect.
+                for (aspect, groupURLs) in await Self.pixelAspectGroups(embedURLs) {
+                    for url in groupURLs { aspectByURL[url] = aspect }
                 }
-                for (aspect, urls) in aspectGroups {
-                    var groupFields = fields
-                    groupFields.merge(cropFields(for: crop.encodedForACR(aspect: aspect))) { _, new in new }
-                    try await writeEngine.writeFields(
-                        groupFields, to: urls, structuredData: structuredData
+            }
+            for url in embedURLs {
+                try Task.checkCancellation()
+                var urlFields = fields
+                if let crop, cropIsAngled {
+                    let aspect = aspectByURL[url] ?? nil
+                    urlFields.merge(cropFields(for: crop.encodedForACR(aspect: aspect))) { _, new in new }
+                }
+                do {
+                    let report = try await writeEngine.writeDevelopFields(
+                        urlFields, to: [url], structuredData: structuredData,
+                        allowsCredentialedEmbed: allowsCredentialedEmbed
                     )
+                    if let message = report.message {
+                        recordEmbeddedFailure(url, message)
+                    } else {
+                        writtenURLs.insert(url)
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    recordEmbeddedFailure(url, error.localizedDescription)
                 }
-            } else {
-                try await writeEngine.writeFields(
-                    fields, to: targetURLs, structuredData: structuredData
-                )
             }
         }
 
-        // Reload the currently displayed image's metadata if it was in the paste set
-        if let currentURL = selectedImageURL, urls.contains(currentURL) {
-            metadataViewModel.loadMetadata(for: browserViewModel.selectedImages, folderURL: folderURL)
-            editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: pasteCameraRaw")
-            loadSelectedImagePreview()
+        let total = urls.count
+        let cropSuffix = includeCrop ? " (with crop)" : ""
+        persistenceSession.scheduleBatchPersistence {
+            do {
+                try await pasteWrites()
+            } catch {
+                // Cancelled (or unexpected) mid-batch: only files where nothing was written go
+                // back to their old state; a landed sidecar wins on load, so its paste stays.
+                restorePreviousState(of: urls.filter { !writtenURLs.contains($0) })
+                throw error
+            }
+            restorePreviousState(of: failures.keys)
+            let pastedCount = total - failures.count
+            var feedback = failures.isEmpty
+                ? "Pasted to \(total) image\(total == 1 ? "" : "s")\(cropSuffix)"
+                : "Pasted to \(pastedCount) of \(total) images\(cropSuffix); \(failures.count) failed: "
+                    + failures.keys.map(\.lastPathComponent).sorted().joined(separator: ", ")
+            if !sidecarOnly.isEmpty {
+                feedback += ". Pasted to the XMP sidecar only (embedded copy not updated): "
+                    + sidecarOnly.keys.map(\.lastPathComponent).sorted().joined(separator: ", ")
+            }
+            if skippedLayers > 0 {
+                feedback += ". \(skippedLayers) layer\(skippedLayers == 1 ? "" : "s") skipped (layer limit)"
+            }
+            showCopyPasteFeedback(feedback)
+            if let reloadedURL, workspaceSession.isWorkspaceActive, selectedImageURL == reloadedURL {
+                // The active photo's settings are replaced from disk; its history no longer
+                // describes them, so it can't be undone back over the paste.
+                persistenceSession.removeAllUndoActions()
+                metadataViewModel.loadMetadata(for: browserViewModel.selectedImages, folderURL: folderURL)
+                editLog.info("[\(reloadedURL.lastPathComponent)] loadSelectedImagePreview triggered by: pasteCameraRaw")
+                loadSelectedImagePreview()
+            }
+            if !failures.isEmpty || !sidecarOnly.isEmpty {
+                throw DevelopPasteFailedError(failures: failures, sidecarOnly: sidecarOnly, total: total)
+            }
         }
 
         onPendingStatusChanged?()
+    }
+
+    /// Paste targets whose sidecar must be updated: every RAW (its Develop lives only there) and
+    /// any other file that already has one, since the sidecar's crs wins on load.
+    @concurrent
+    nonisolated private static func pasteSidecarTargets(
+        _ urls: [URL],
+        sidecarService: XMPSidecarService
+    ) async -> [URL] {
+        // The JPEG of a RAW+JPEG pair keeps its develop embedded; the shared stem sidecar's crs
+        // belongs to the RAW and must not receive the JPEG's paste.
+        urls.filter {
+            SupportedImageFormats.isRaw(url: $0)
+                || (sidecarService.sidecarExists(for: $0)
+                    && !PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: $0, requiringFreshListing: true))
+        }
+    }
+
+    /// Groups files by stored pixel aspect (a header read per file) for ACR crop encoding.
+    @concurrent
+    nonisolated private static func pixelAspectGroups(_ urls: [URL]) async -> [Double?: [URL]] {
+        var groups: [Double?: [URL]] = [:]
+        for url in urls {
+            groups[ImagePixelAspect.aspect(at: url), default: []].append(url)
+        }
+        return groups
     }
 
     private func showCopyPasteFeedback(_ message: String) {
@@ -7983,14 +8643,34 @@ struct EditWorkspaceView: View {
 
     private func calculateEditZoomTo100(in containerSize: CGSize) -> CGFloat {
         let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
-        // Use source texture dimensions for accurate 1:1 pixel mapping
-        let sourceWidth = CGFloat(metalPipeline?.sourceTextureSize?.width ?? currentImageSize?.width ?? 1)
-        let sourceHeight = CGFloat(metalPipeline?.sourceTextureSize?.height ?? currentImageSize?.height ?? 1)
-        let fittedScale = min(containerSize.width / sourceWidth, containerSize.height / sourceHeight)
-        let fittedWidth = sourceWidth * fittedScale
-        guard fittedWidth > 0 else { return 1.0 }
-        // At zoom100, 1 source pixel = 1 physical screen pixel
-        return sourceWidth / (fittedWidth * backingScale)
+        // 100% means one *native* image pixel per screen pixel. The source texture is
+        // screen-resolution (RAW and non-RAW) until a zoom upgrade, so it can't be the basis;
+        // it remains the fallback when the file's dimensions can't be read.
+        let displayPixelSize = nativeDisplayPixelSize()
+            ?? metalPipeline?.sourceTextureSize
+            ?? currentImageSize
+            ?? CGSize(width: 1, height: 1)
+        return EditZoomBehavior.actualPixelsScale(
+            containerSize: containerSize,
+            displayPixelSize: displayPixelSize,
+            backingScale: backingScale
+        )
+    }
+
+    /// Native pixel dimensions of the selected file in its displayed (in-memory, sidecar-first)
+    /// orientation. The header read is cached per URL.
+    private func nativeDisplayPixelSize() -> CGSize? {
+        guard let url = selectedImageURL else { return nil }
+        let native: CGSize?
+        if let cached = nativePixelSizeCache, cached.url == url {
+            native = cached.size
+        } else {
+            native = FullScreenImageCache.nativePixelSize(of: url)
+            nativePixelSizeCache = (url, native)
+        }
+        return native.map {
+            EditZoomBehavior.displayPixelSize(nativePixelSize: $0, orientation: selectedImageOrientation)
+        }
     }
 
     // MARK: - Key Event Handling
@@ -8008,7 +8688,8 @@ struct EditWorkspaceView: View {
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
         // Recovery and save panels own their key events. The workspace's application-wide
         // monitor must not turn typing or Escape in a sheet into another Develop mutation.
-        guard keyboardWindow.ownsKeyEvent(in: event.window),
+        guard !workspaceInput.isOverlayPresented,
+              keyboardWindow.ownsKeyEvent(in: event.window),
               NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
               event.window?.sheetParent == nil else {
             releaseHeldDevelopInput()
@@ -8050,7 +8731,7 @@ struct EditWorkspaceView: View {
         // always takes precedence over this compatibility fallback.
         if isKeyDown, profile.hasDevelopForwardDeleteFallback(for: chord) {
             guard !inputState.textEditorOwnsInput, !inputState.imeHasMarkedText else { return event }
-            if !event.isARepeat, canEditSingleImage { removeOrResetSelectedEditLayer() }
+            if !event.isARepeat, canMutateSingleImageDevelop { removeOrResetSelectedEditLayer() }
             return nil
         }
 
@@ -8061,8 +8742,18 @@ struct EditWorkspaceView: View {
                 cancelAIMaskSelection()
                 return nil
             }
+            // Esc cancels the active tool first (Camera Raw/Lightroom); only an idle workspace exits.
             if showCropControls {
-                toggleCropControls()
+                cancelCropControls()
+                return nil
+            }
+            if whiteBalanceSession.isPickerActive {
+                whiteBalanceSession.deactivatePicker()
+                return nil
+            }
+            if isBrushPainting {
+                maskInteraction.stopBrushPainting()
+                syncMaskOverlayTarget()
                 return nil
             }
             requestEditWorkspaceExit()
@@ -8154,6 +8845,8 @@ struct EditWorkspaceView: View {
         // Cmd+C — copy develop settings
         if chord == KeyboardShortcutChord(key: "c", modifiers: .command) {
             guard canEditSingleImage else { return event }
+            // Like paste: a still-loading buffer is a placeholder, not this photo's settings.
+            guard isSelectedImageMetadataReady else { return nil }
             browserViewModel.copiedCameraRawSettings = metadataViewModel.editingMetadata.cameraRaw
             showCopyPasteFeedback("Copied")
             return nil
@@ -8162,6 +8855,7 @@ struct EditWorkspaceView: View {
         // C — toggle crop controls
         if chars == "c" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
+            guard isSelectedImageMetadataReady else { return nil }
             toggleCropControls()
             return nil
         }
@@ -8171,6 +8865,8 @@ struct EditWorkspaceView: View {
         // Cmd+J still works too (menu item).
         if chars == "j" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
+            // Crop mode owns the image; finish or cancel it before using another tool.
+            guard isSelectedImageMetadataReady, !showCropControls else { return nil }
             addNewMask(center: maskCenterUnderCursor())
             return nil
         }
@@ -8179,6 +8875,7 @@ struct EditWorkspaceView: View {
         // deselects the WB eyedropper so the two drag-driven tools don't fight over the mouse.
         if chars == "b" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
+            guard !showCropControls else { return nil }
             maskInteraction.toggleBrushPainting()
             if isBrushPainting { whiteBalanceSession.deactivatePicker() }
             syncMaskOverlayTarget()
@@ -8202,11 +8899,14 @@ struct EditWorkspaceView: View {
             guard !selectedURLs.isEmpty else { return event }
 
             if selectedURLs.count == 1 {
-                pasteCameraRawSettings(copied, includeCrop: withCrop)
-                showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
+                // The selected photo's saved settings must be loaded before they are merged.
+                performWhenSelectedImageReady("Paste") {
+                    pasteCameraRawSettings(copied, includeCrop: withCrop,
+                                           feedback: withCrop ? "Pasted (with crop)" : "Pasted")
+                }
             } else {
+                // Feedback with the real counts comes from the write's completion.
                 pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: withCrop)
-                showCopyPasteFeedback("Pasted to \(selectedURLs.count) images")
             }
             return nil
         }
@@ -8220,11 +8920,11 @@ struct EditWorkspaceView: View {
             guard !selectedURLs.isEmpty else { return event }
 
             if selectedURLs.count == 1 {
-                pasteCameraRawSettings(copied, includeCrop: true)
-                showCopyPasteFeedback("Pasted (with crop)")
+                performWhenSelectedImageReady("Paste") {
+                    pasteCameraRawSettings(copied, includeCrop: true, feedback: "Pasted (with crop)")
+                }
             } else {
                 pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: true)
-                showCopyPasteFeedback("Pasted to \(selectedURLs.count) images (with crop)")
             }
             return nil
         }
@@ -8232,6 +8932,9 @@ struct EditWorkspaceView: View {
         // Cmd+Z / Cmd+Shift+Z — undo/redo
         if chord == KeyboardShortcutChord(key: "z", modifiers: .command)
             || chord == KeyboardShortcutChord(key: "z", modifiers: [.command, .shift]) {
+            // History belongs to the loaded photo; a restoration into a still-loading buffer
+            // would be overwritten by the load.
+            guard isSelectedImageMetadataReady else { return nil }
             if modifiers.contains(.shift) {
                 persistenceSession.redo()
             } else {

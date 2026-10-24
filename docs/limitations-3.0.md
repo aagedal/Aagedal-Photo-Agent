@@ -12,10 +12,14 @@ These are material product and evidence boundaries, not a list of unfinished int
   AI-generated.
 - Compression/residual views also react to ordinary recompression, sharpening, denoising, scaling, HDR
   processing, camera pipelines, and format conversion.
+- Pixel views (noise residual, level sweep, clone detection) render from a bounded preview, not the
+  full-resolution source. The Clone Detection view only highlights repeated 8 × 8 block patterns for
+  manual review; it misses rotated, scaled, or retouched copies and flags naturally repeating texture.
 - C2PA validity and signer trust are separate. C2PA signing remains an experimental preview, and carriage
   of a credential into a new rendition does not prove the credential remains valid for that rendition.
-- 3.0 does not ship an AI-origin model, automatic AI-artifact highlighter, clone/copy-move detector, or
-  automatic sun/shadow consistency analyzer. The Meta and Google commands are external links, not local
+- 3.0 does not ship an AI-origin model, automatic AI-artifact highlighter, automated clone/copy-move
+  detector (the Clone Detection pixel view is a visual aid that produces no finding), or automatic
+  sun/shadow consistency analyzer. The Meta and Google commands are external links, not local
   analyzers or integrations.
 
 ## Source, case, and report boundaries
@@ -52,6 +56,11 @@ These are material product and evidence boundaries, not a list of unfinished int
   validation remain release gates and are not claimed by this draft.
 - Color, alignment, keyboard-only, VoiceOver, upgrade/downgrade, and crash-interruption automation does not
   replace the open release-candidate manual validation passes.
+- Develop renders at most 8 enabled local layers per image (ellipse, brush, and AI masks plus extra Global and
+  LUT/CST layers) and at most 4 watermark layers; the limits come from fixed-size GPU buffers and apply to
+  preview and export alike. The add-layer controls are disabled at the mask limit, and a file that already
+  carries more enabled layers (for example from Camera Raw or a paste) shows a warning on the layer strip;
+  only the first 8 enabled layers render until others are disabled or deleted.
 
 ## Reviewed automation publication
 
@@ -102,9 +111,10 @@ These are material product and evidence boundaries, not a list of unfinished int
   [metadata support table](metadata-field-support.md) before relying on a particular carrier/write mode.
 - Deadline Workspace and its profile management are deferred to 3.1 and hidden in 3.0.
   Saved profiles and delivery evidence are retained; Deadline workflow resume is unavailable.
-- FTP/FTPS/SFTP protocol success and remote existence/size are non-cryptographic acknowledgements. SFTP
-  supports password/netrc authentication, not SSH private keys, and a narrow local path
-  time-of-check/time-of-use interval remains before `curl` opens a verified staged file.
+- SFTP is not supported: the app uploads with macOS's `/usr/bin/curl`, which is built without SFTP.
+  New servers default to FTPS; existing SFTP profiles are flagged and refused until switched to FTPS.
+- FTP/FTPS protocol success and remote existence/size are non-cryptographic acknowledgements, and a
+  narrow local path time-of-check/time-of-use interval remains before `curl` opens a verified staged file.
 - Persisted voice memos support explicit Caption playback and companion-preserving Duplicate,
   alongside ingest, transactional rename, companion-aware Move/Reject and recoverable memo Trash.
   Restore the entire Trash folder to retain its hidden relationship and metadata. New relationships

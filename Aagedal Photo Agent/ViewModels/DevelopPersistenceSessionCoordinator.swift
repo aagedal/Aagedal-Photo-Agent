@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import Observation
+import SwiftMediaMetadata
 
 /// Describes whether a Develop settings transition remains transient or must cross one of the
 /// workspace's existing durable persistence boundaries.
@@ -31,6 +33,90 @@ nonisolated enum DevelopPrimaryPersistenceCompletion: Equatable, Sendable {
     case failed(message: String)
 }
 
+/// Decides when a completed metadata load ends the Develop undo history.
+///
+/// History belongs to one photo *and* to the settings Develop itself produced. It ends when
+/// another photo loads, or when the app explicitly replaced the settings from outside (Reset
+/// All Edits; a multi-photo paste reload clears it directly) — Undo would otherwise bring
+/// discarded edits back and write them. Ordinary same-photo reloads (Paste IPTC, face scans,
+/// automation drafts, self-initiated saves) keep it. As a fallback for replacements the app
+/// isn't told about (an external sidecar edit), a same-photo reload whose develop settings
+/// differ from what Develop published *after the real XMP write/read round trip* also ends it.
+/// Comparing against the actual round trip (not a rounded guess) makes the check immune to
+/// encoder precision (brush dabs, crop, curve grid) and to mask reordering.
+nonisolated enum DevelopUndoHistoryPolicy {
+    static func shouldClearHistory(
+        historyImageURL: URL?,
+        loadedImageURL: URL?,
+        settingsDevelopPublished: CameraRawSettings?,
+        loadedSettings: CameraRawSettings?,
+        settingsReplacedExternally: Bool = false
+    ) -> Bool {
+        guard historyImageURL == loadedImageURL, !settingsReplacedExternally else { return true }
+        return reloadComparable(roundTripped(settingsDevelopPublished)) != reloadComparable(loadedSettings)
+    }
+
+    /// `settings` as this app reads them back after writing them to XMP: the same encoder
+    /// (`XMPDataBuilder.applyCameraRaw`) and parser (`XMPMetadataReader.parseMetadata`) a save
+    /// and the following reload use.
+    static func roundTripped(_ settings: CameraRawSettings?) -> CameraRawSettings? {
+        guard let settings, !settings.isEmpty else { return nil }
+        var xmp = XMPData()
+        XMPDataBuilder.applyCameraRaw(settings, imageAspect: nil, into: &xmp)
+        return XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil }).cameraRaw
+    }
+
+    /// A round-tripped (or reloaded) record with the incidental differences removed: decode
+    /// facts and version markers, layer identities (as render-order positions — the writer
+    /// stores masks in render order), and angled-crop aspect conversions below 1e-4.
+    static func reloadComparable(_ settings: CameraRawSettings?) -> CameraRawSettings? {
+        guard var settings else { return nil }
+        settings.asShotNeutralTemperature = nil
+        settings.asShotNeutralTint = nil
+        settings.sourceHasHDRHeadroom = nil
+        settings.hasSettings = nil
+        settings.version = nil
+        settings.processVersion = nil
+        if var crop = settings.crop {
+            func rounded(_ value: Double?) -> Double? { value.map { ($0 * 10_000).rounded() / 10_000 } }
+            crop.top = rounded(crop.top)
+            crop.left = rounded(crop.left)
+            crop.bottom = rounded(crop.bottom)
+            crop.right = rounded(crop.right)
+            crop.angle = rounded(crop.angle)
+            settings.crop = crop.isEmpty ? nil : crop
+        }
+        let masks = settings.masksInRenderOrder() ?? []
+        let watermarks = settings.watermarkLayers ?? []
+        var positions: [UUID: UUID] = [:]
+        for (index, mask) in masks.enumerated() {
+            positions[mask.id] = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012x", index + 1))
+        }
+        for (index, layer) in watermarks.enumerated() {
+            positions[layer.id] = UUID(uuidString: String(format: "00000000-0000-0000-0001-%012x", index + 1))
+        }
+        let order = settings.resolvedLayerOrder().map { ref -> LayerRef in
+            switch ref {
+            case .global: return .global
+            case .mask(let id): return .mask(positions[id] ?? id)
+            case .watermark(let id): return .watermark(positions[id] ?? id)
+            }
+        }
+        settings.localAdjustments = masks.isEmpty ? nil : masks.map { mask in
+            var copy = mask
+            copy.id = positions[mask.id] ?? mask.id
+            return copy
+        }
+        settings.watermarkLayers = watermarks.isEmpty ? nil : watermarks.map { layer in
+            var copy = layer
+            copy.id = positions[layer.id] ?? layer.id
+            return copy
+        }
+        settings.layerOrder = order
+        return settings.isEmpty ? nil : settings
+    }
+}
+
 /// The observable result of the latest Primary metadata/history request in an image session.
 nonisolated enum DevelopPrimaryPersistenceOutcome: Equatable, Sendable {
     case succeeded(requestID: UUID)
@@ -60,6 +146,9 @@ final class DevelopPersistenceSessionCoordinator {
     private(set) var latestPrimaryPersistenceOutcome: DevelopPrimaryPersistenceOutcome?
     private(set) var pendingBatchPersistenceCount = 0
     private(set) var latestBatchPersistenceOutcome: DevelopBatchPersistenceOutcome?
+    /// Bumped whenever the undo stack may have changed, so observers (the Edit menu's
+    /// Undo/Redo titles) re-read the otherwise unobservable `UndoManager`.
+    private(set) var historyRevision = 0
 
     @ObservationIgnored private(set) var undoManager = UndoManager()
     @ObservationIgnored private var imageSessionID = UUID()
@@ -68,9 +157,33 @@ final class DevelopPersistenceSessionCoordinator {
     @ObservationIgnored private var primaryPersistenceTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var latestBatchPersistenceRequestID: UUID?
     @ObservationIgnored private var batchPersistenceTasks: [UUID: Task<Void, Never>] = [:]
+    /// The most recent mutation registered on top of the undo stack, eligible for coalescing.
+    @ObservationIgnored private var lastMutation: (
+        sessionID: UUID, before: CameraRawSettings?, after: CameraRawSettings?
+    )?
+    /// Set while a coalesced entry is popped: its restoration must neither publish nor
+    /// register a redo.
+    @ObservationIgnored private var isDiscardingRestoration = false
 
     var canUndo: Bool { undoManager.canUndo }
     var canRedo: Bool { undoManager.canRedo }
+    /// "Undo Exposure" etc. for the Edit menu; observable through `historyRevision`.
+    var undoMenuTitle: String {
+        _ = historyRevision
+        return undoManager.undoMenuItemTitle
+    }
+    var redoMenuTitle: String {
+        _ = historyRevision
+        return undoManager.redoMenuItemTitle
+    }
+    var canUndoFromMenu: Bool {
+        _ = historyRevision
+        return isWorkspaceActive && undoManager.canUndo
+    }
+    var canRedoFromMenu: Bool {
+        _ = historyRevision
+        return isWorkspaceActive && undoManager.canRedo
+    }
     var isPrimaryPersistenceInProgress: Bool { pendingPrimaryPersistenceCount > 0 }
     var primaryPersistenceErrorMessage: String? {
         guard case .failed(_, let message) = latestPrimaryPersistenceOutcome else { return nil }
@@ -320,16 +433,33 @@ final class DevelopPersistenceSessionCoordinator {
 
     /// Registers one value transition with an image identity. Undo and redo both restore the
     /// original dirty-state policy: Primary edits are marked changed; named versions are not.
+    ///
+    /// `coalescesWithPrevious` folds this transition into the immediately preceding one when it
+    /// continues from that one's result (a slider double-click reset whose first click already
+    /// committed a value), so a single Undo returns to the state before both.
     @discardableResult
     func recordMutation(
         before: CameraRawSettings?,
         after: CameraRawSettings?,
         editsNamedVersion: Bool,
         actionName: String? = nil,
+        coalescesWithPrevious: Bool = false,
         publisher: @escaping SettingsPublisher
     ) -> DevelopPersistenceIntent {
         guard isWorkspaceActive, activeImageURL != nil, before != after else { return .unchanged }
         let sessionID = imageSessionID
+        var before = before
+        if coalescesWithPrevious, let previous = lastMutation,
+           previous.sessionID == sessionID, previous.after == before,
+           undoManager.canUndo, undoManager.groupingLevel <= 1 {
+            isDiscardingRestoration = true
+            undoManager.undo()
+            isDiscardingRestoration = false
+            before = previous.before
+        }
+        lastMutation = nil
+        // A fold can land back on the original state; there is then nothing left to undo.
+        guard before != after else { return .previewOnly }
         registerRestoration(
             target: before,
             inverse: after,
@@ -338,21 +468,29 @@ final class DevelopPersistenceSessionCoordinator {
             actionName: actionName,
             publisher: publisher
         )
+        lastMutation = (sessionID, before, after)
+        historyRevision &+= 1
         return .previewOnly
     }
 
     func undo() {
         guard isWorkspaceActive else { return }
+        lastMutation = nil
         undoManager.undo()
+        historyRevision &+= 1
     }
 
     func redo() {
         guard isWorkspaceActive else { return }
+        lastMutation = nil
         undoManager.redo()
+        historyRevision &+= 1
     }
 
     func removeAllUndoActions() {
+        lastMutation = nil
         undoManager.removeAllActions()
+        historyRevision &+= 1
     }
 
     private func registerRestoration(
@@ -364,7 +502,8 @@ final class DevelopPersistenceSessionCoordinator {
         publisher: @escaping SettingsPublisher
     ) {
         undoManager.registerUndo(withTarget: self) { coordinator in
-            guard coordinator.isWorkspaceActive,
+            guard !coordinator.isDiscardingRestoration,
+                  coordinator.isWorkspaceActive,
                   coordinator.imageSessionID == sessionID else { return }
             publisher(target, editsNamedVersion)
             coordinator.registerRestoration(
@@ -383,7 +522,9 @@ final class DevelopPersistenceSessionCoordinator {
 
     private func invalidateImageSession() {
         imageSessionID = UUID()
+        lastMutation = nil
         undoManager.removeAllActions()
+        historyRevision &+= 1
     }
 
     private func finishBatchPersistence(
@@ -419,5 +560,85 @@ final class DevelopPersistenceSessionCoordinator {
         case .failed(let message):
             latestPrimaryPersistenceOutcome = .failed(requestID: requestID, message: message)
         }
+    }
+}
+
+/// Routes the Edit menu's Undo/Redo to the Develop history while the Develop workspace owns the
+/// key window and no text field is editing; everywhere else the menu falls back to the standard
+/// responder-chain `undo:`/`redo:` (text fields, the Metadata panel, sheets, Settings).
+///
+/// The keyboard shortcut path is unchanged: the Develop and Analysis key monitors consume ⌘Z
+/// before the menu sees it, and pass it on untouched while a text field edits.
+@MainActor
+@Observable
+final class DevelopUndoMenuRouter {
+    static let shared = DevelopUndoMenuRouter()
+
+    struct Registration {
+        let ownerID: UUID
+        let session: DevelopPersistenceSessionCoordinator
+        /// The window hosting this Develop workspace (nil until it is attached).
+        let window: @MainActor () -> NSWindow?
+        /// True when the Develop workspace may take the menu action now (its window is key, no
+        /// text field or overlay owns input).
+        let canRoute: @MainActor () -> Bool
+        let perform: @MainActor (_ redo: Bool) -> Void
+    }
+
+    /// One registration per Develop workspace (window); the key window's one is used.
+    private var registrations: [UUID: Registration] = [:]
+    /// Bumped when the key window changes or a menu starts tracking, so the Edit menu titles
+    /// re-read state SwiftUI can't observe (key window, first responder).
+    private(set) var focusRevision = 0
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+
+    init() {
+        let center = NotificationCenter.default
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSMenu.didBeginTrackingNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.focusRevision &+= 1 }
+            })
+        }
+    }
+
+    func register(_ registration: Registration) {
+        registrations[registration.ownerID] = registration
+    }
+
+    /// Call when that workspace leaves Develop or its window closes.
+    func unregister(ownerID: UUID) {
+        registrations[ownerID] = nil
+    }
+
+    /// The registration of the Develop workspace in the key window, if any.
+    private var keyRegistration: Registration? {
+        _ = focusRevision
+        guard let keyWindow = NSApp.keyWindow else { return nil }
+        return registrations.values.first { $0.session.isWorkspaceActive && $0.window() === keyWindow }
+    }
+
+    /// The Develop session the menu routes to right now (key window's Develop, with no text
+    /// field editing), if any.
+    var activeSession: DevelopPersistenceSessionCoordinator? {
+        guard let registration = keyRegistration, registration.canRoute() else { return nil }
+        return registration.session
+    }
+
+    /// "Undo Exposure" while the menu drives Develop; plain "Undo" otherwise (e.g. a focused
+    /// text field, whose own undo the menu performs).
+    var undoTitle: String { activeSession?.undoMenuTitle ?? "Undo" }
+    var redoTitle: String { activeSession?.redoMenuTitle ?? "Redo" }
+
+    func undo() { route(redo: false) }
+    func redo() { route(redo: true) }
+
+    private func route(redo: Bool) {
+        if let registration = keyRegistration, registration.canRoute() {
+            registration.perform(redo)
+            return
+        }
+        let selector = redo ? Selector(("redo:")) : Selector(("undo:"))
+        NSApp.sendAction(selector, to: nil, from: nil)
     }
 }

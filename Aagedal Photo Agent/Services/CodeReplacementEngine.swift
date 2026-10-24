@@ -1,14 +1,26 @@
 import Foundation
 
-/// Strict parser for the interoperable subset of Photo Mechanic code-replacement text files.
-/// Each nonblank UTF-8 line must contain exactly `code<TAB>replacement`. CRLF, LF, and CR line
-/// endings are accepted. Columns are not trimmed because codes and replacement text are exact.
+/// Parser for the interoperable subset of Photo Mechanic code-replacement text files.
+/// Each nonblank line holds `code<TAB>replacement`. CRLF, LF, and CR line endings are accepted.
+/// Columns are not trimmed because codes and replacement text are exact. Trailing empty columns
+/// (as Excel writes them) are ignored. A malformed row is a warning and is skipped; it never
+/// disables the rest of the list. Text is UTF-8, UTF-16 with a BOM, or Windows-1252 (like
+/// `StructuredKeywordParser`), so lists saved by Windows tools keep their æøå.
 nonisolated struct CodeReplacementParser: Sendable {
+    static func decode(_ data: Data) -> String? {
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
+            return String(data: data, encoding: .utf16)
+        }
+        if let text = String(data: data, encoding: .utf8) { return text }
+        if let text = String(data: data, encoding: .windowsCP1252) { return text }
+        return String(data: data, encoding: .isoLatin1)
+    }
+
     func parse(
         _ data: Data,
         source: CodeReplacementSourceReference? = nil
     ) -> CodeReplacementList {
-        guard var text = String(data: data, encoding: .utf8) else {
+        guard var text = Self.decode(data) else {
             return CodeReplacementList(
                 source: source,
                 diagnostics: [CodeReplacementDiagnostic(
@@ -37,12 +49,15 @@ nonisolated struct CodeReplacementParser: Sendable {
         for (offset, rawLine) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             let lineNumber = offset + 1
             let line = String(rawLine)
-            guard !line.isEmpty else { continue }
+            guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
 
-            let columns = line.split(separator: "\t", omittingEmptySubsequences: false)
+            var columns = line.split(separator: "\t", omittingEmptySubsequences: false)
+            while columns.count > 2, columns.last?.isEmpty == true {
+                columns.removeLast()
+            }
             guard columns.count == 2 else {
                 diagnostics.append(CodeReplacementDiagnostic(
-                    severity: .error,
+                    severity: .warning,
                     kind: .malformedRow(columnCount: columns.count),
                     line: lineNumber
                 ))
@@ -53,7 +68,7 @@ nonisolated struct CodeReplacementParser: Sendable {
             let replacement = String(columns[1])
             guard !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 diagnostics.append(CodeReplacementDiagnostic(
-                    severity: .error,
+                    severity: .warning,
                     kind: .emptyCode,
                     line: lineNumber
                 ))
@@ -61,7 +76,7 @@ nonisolated struct CodeReplacementParser: Sendable {
             }
             guard !replacement.isEmpty else {
                 diagnostics.append(CodeReplacementDiagnostic(
-                    severity: .error,
+                    severity: .warning,
                     kind: .emptyValue(code: code),
                     line: lineNumber
                 ))

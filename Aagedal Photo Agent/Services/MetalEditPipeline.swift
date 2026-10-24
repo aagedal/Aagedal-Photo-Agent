@@ -5,6 +5,7 @@ import MetalKit
 import os
 import QuartzCore
 import simd
+import Synchronization
 
 nonisolated private let metalPipelineLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "MetalEditPipeline"
@@ -208,7 +209,11 @@ actor ColorLUTImportService {
 }
 
 nonisolated enum CubeLUTParser {
+    /// Largest `.cube` file accepted (a 65³ text cube is ~7 MB).
+    static let maxFileSize = 8_000_000
+
     enum ParseError: LocalizedError {
+        case tooLarge(Int)
         case notUTF8
         case missingSize
         case unsupportedSize(Int)
@@ -217,6 +222,7 @@ nonisolated enum CubeLUTParser {
 
         var errorDescription: String? {
             switch self {
+            case .tooLarge: return "The LUT file is too large (max 8 MB)."
             case .notUTF8: return "The LUT is not a UTF-8 .cube file."
             case .missingSize: return "The LUT has no LUT_3D_SIZE directive."
             case .unsupportedSize(let size): return "The LUT size \(size) is unsupported (2…65 expected)."
@@ -227,8 +233,15 @@ nonisolated enum CubeLUTParser {
         }
     }
 
+    /// Parses on the global concurrent executor so a multi-MB import never blocks the main actor.
+    @concurrent
+    static func parseOffMain(_ data: Data) async throws -> ParsedCubeLUT {
+        try parse(data)
+    }
+
     static func parse(_ data: Data) throws -> ParsedCubeLUT {
-        guard data.count <= 8_000_000, let text = String(data: data, encoding: .utf8) else {
+        guard data.count <= maxFileSize else { throw ParseError.tooLarge(data.count) }
+        guard let text = String(data: data, encoding: .utf8) else {
             throw ParseError.notUTF8
         }
         var title: String?
@@ -538,10 +551,22 @@ nonisolated final class MTLTextureWrapper: @unchecked Sendable {
     let texture: MTLTexture
     let neutralTemperature: Float
     let neutralTint: Float
-    nonisolated init(_ texture: MTLTexture, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
+    /// Orientation baked into the pixels and the decode size requested for them. A precached
+    /// texture is promoted in place of the foreground decode only when both match the request.
+    let exifOrientation: Int
+    let decodeMaxPixelSize: CGFloat?
+    nonisolated init(
+        _ texture: MTLTexture,
+        neutralTemperature: Float = 6500,
+        neutralTint: Float = 0,
+        exifOrientation: Int = 1,
+        decodeMaxPixelSize: CGFloat? = nil
+    ) {
         self.texture = texture
         self.neutralTemperature = neutralTemperature
         self.neutralTint = neutralTint
+        self.exifOrientation = exifOrientation
+        self.decodeMaxPixelSize = decodeMaxPixelSize
     }
 }
 
@@ -630,6 +655,12 @@ final class MetalEditPipeline: @unchecked Sendable {
             }
         }
 
+        /// Rejects every in-flight permit without changing whether new work is allowed, e.g.
+        /// when the RAW decode settings change under a precache that already started decoding.
+        func invalidateInFlight() {
+            lock.withLock { generation &+= 1 }
+        }
+
         func resume() {
             lock.withLock {
                 generation &+= 1
@@ -704,9 +735,16 @@ final class MetalEditPipeline: @unchecked Sendable {
         private let lock = NSLock()
         private var texture: MTLTexture?
         private var orientation = 1
+        private var revision: UInt64 = 0
 
         func snapshot() -> (texture: MTLTexture?, orientation: Int) {
             lock.withLock { (texture, orientation) }
+        }
+
+        /// Advances on every publication (upload, precache promotion, clear), so observers that
+        /// cannot observe the texture itself can tell that the source changed.
+        var currentRevision: UInt64 {
+            lock.withLock { revision }
         }
 
         func publish(texture: MTLTexture?, orientation: Int? = nil) {
@@ -715,6 +753,7 @@ final class MetalEditPipeline: @unchecked Sendable {
                 if let orientation {
                     self.orientation = orientation
                 }
+                revision &+= 1
             }
         }
     }
@@ -804,6 +843,10 @@ final class MetalEditPipeline: @unchecked Sendable {
             var lutInterleaveBuffer: [Float]
             var lastBuiltColorLUTData: [Data?]
             var parsedColorLUTs: [ParsedCubeLUT?]
+            /// Parsed + resampled LUTs keyed by their file bytes, so a LUT whose slot shifts
+            /// (an earlier layer deleted, muted, or reordered) is re-uploaded, not re-parsed.
+            /// Pruned to the LUTs in use after every refresh.
+            var colorLUTsByData: [Data: (parsed: ParsedCubeLUT, halfSlices: [[UInt16]])] = [:]
             var cachedWBKey: (Double, Double, Double, Double)?
             var cachedWBMatrix: simd_float3x3?
         }
@@ -836,6 +879,15 @@ final class MetalEditPipeline: @unchecked Sendable {
         var maskMattePreviewMaskID: UUID?
         var onParamsChanged: (() -> Void)?
         var lastLoggedDrawableWidth = 0
+        /// While set, the Clean Feed mirror keeps these settings instead of following every
+        /// `updateParams` (see `holdMirrorParams(_:)`).
+        var heldMirrorSettings: HeldMirrorSettings?
+    }
+
+    /// Settings the Clean Feed mirror is pinned to. A box so "held at no settings" differs from
+    /// "not held".
+    nonisolated struct HeldMirrorSettings {
+        let settings: CameraRawSettings?
     }
 
     /// Mutable live-preview storage with no internal synchronization. All access is routed
@@ -861,6 +913,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         struct Storage {
             var texture: MTLTexture?
             var lastBuiltAssetIDs: [UUID] = []
+            var lastBuiltLibraryRevision = -1
             var lastBuiltAspects: [UUID: (slice: Int, aspect: Double)] = [:]
             var activeDisplayLayers: [WatermarkLayer] = []
             var frame: UInt32 = 0
@@ -897,6 +950,50 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         func update(_ body: (inout Storage) -> Void) {
+            body(&storage)
+        }
+    }
+
+    /// Identity of a decoded AI-matte source texture: the persisted PNG plus the refinement
+    /// values `refinedAIMaskTexture` bakes into it. Orientation is applied by the blit, not the
+    /// texture, so it is deliberately not part of the key.
+    nonisolated private struct AIMaskTextureKey: Equatable {
+        let pngData: Data
+        let hasRefinements: Bool
+        let blackPoint: Double
+        let whitePoint: Double
+        let blurRadius: Double
+
+        init(_ mask: AIMaskGeometry) {
+            pngData = mask.pngData
+            hasRefinements = mask.hasRefinements
+            blackPoint = mask.resolvedBlackPoint
+            whitePoint = mask.resolvedWhitePoint
+            blurRadius = mask.resolvedBlurRadius
+        }
+    }
+
+    /// Per-frame render-graph intermediates and decoded AI-matte textures. Unsynchronized like
+    /// the other executor-owned holders: every access goes through the executor-checked
+    /// wrappers below. Ping/pong are reused only by the live `render(to:)` path, whose command
+    /// buffers all go to this engine's single queue, so Metal's hazard tracking orders a
+    /// frame's writes after the previous frame's reads of the same texture.
+    nonisolated private final class ExecutorOwnedRenderScratchState: @unchecked Sendable {
+        struct Storage {
+            var ping: MTLTexture?
+            var pong: MTLTexture?
+            var intermediateAllocationCount = 0
+            var aiMaskTextures: [(key: AIMaskTextureKey, texture: MTLTexture)] = []
+            var aiMaskTextureDecodeCount = 0
+        }
+
+        private var storage = Storage()
+
+        func snapshot() -> Storage {
+            storage
+        }
+
+        func update<Result>(_ body: (inout Storage) -> Result) -> Result {
             body(&storage)
         }
     }
@@ -1044,6 +1141,125 @@ final class MetalEditPipeline: @unchecked Sendable {
         executorOwnedBrushRasterState.update(body)
     }
 
+    private let executorOwnedRenderScratchState = ExecutorOwnedRenderScratchState()
+
+    @discardableResult
+    nonisolated private func updateRenderScratchState<Result>(
+        _ body: (inout ExecutorOwnedRenderScratchState.Storage) -> Result
+    ) -> Result {
+        preconditionOnStateExecutor()
+        return executorOwnedRenderScratchState.update(body)
+    }
+
+    /// Test seam: how many render-graph intermediates this engine has allocated.
+    nonisolated var renderGraphIntermediateAllocationCount: Int {
+        preconditionOnStateExecutor()
+        return executorOwnedRenderScratchState.snapshot().intermediateAllocationCount
+    }
+
+    /// Test seam: how many AI-matte PNGs this engine has decoded into textures.
+    nonisolated var aiMaskTextureDecodeCount: Int {
+        preconditionOnStateExecutor()
+        return executorOwnedRenderScratchState.snapshot().aiMaskTextureDecodeCount
+    }
+
+    /// Releases the cached ping/pong intermediates (single-pass plan).
+    nonisolated private func releaseRenderGraphIntermediates() {
+        updateRenderScratchState {
+            $0.ping = nil
+            $0.pong = nil
+        }
+    }
+
+    /// Releases every image-scoped scratch resource: ping/pong and decoded AI mattes. Called when
+    /// the source image session begins or the source texture is cleared.
+    nonisolated private func releaseImageScopedScratch() {
+        updateRenderScratchState {
+            $0.ping = nil
+            $0.pong = nil
+            $0.aiMaskTextures = []
+        }
+    }
+
+    /// Releases the full-resolution per-render GPU resources of the process-lifetime offscreen
+    /// engine: raster-mask alpha array + envelope scratch, decoded AI mattes and render-graph
+    /// intermediates. Without this the singleton kept the last render's textures alive for the
+    /// rest of the session (up to ~0.8 GB after a 45 MP render with 8 masks). Every offscreen
+    /// render rebuilds these from settings anyway, so the per-render cost is a texture allocation.
+    /// The cache key is reset with the textures so no later render mistakes "nil" for "current".
+    ///
+    /// The watermark texture array is deliberately kept: it is small (a few MB, keyed by asset
+    /// IDs + library revision) and this engine also renders edited thumbnails and full-screen
+    /// previews, so dropping it re-read (a coordinated iCloud read) and re-decoded the PNG on
+    /// every one of them. It is released on memory pressure (`releaseCachedWatermarkTexture`).
+    nonisolated private func releaseTransientRenderResources() {
+        updateBrushRasterState { $0 = ExecutorOwnedBrushRasterState.Storage() }
+        releaseImageScopedScratch()
+    }
+
+    /// Drops the cached watermark texture array (memory pressure); the next render reloads it.
+    nonisolated func releaseCachedWatermarkTexture() {
+        preconditionOnStateExecutor()
+        updateWatermarkState {
+            $0.texture = nil
+            $0.lastBuiltAssetIDs = []
+            $0.lastBuiltLibraryRevision = -1
+            $0.lastBuiltAspects = [:]
+        }
+    }
+
+    nonisolated var hasCachedWatermarkTexture: Bool {
+        preconditionOnStateExecutor()
+        return watermarkStateSnapshot().texture != nil
+    }
+
+    /// Frees Core Image's cached programs/intermediates for this engine's contexts.
+    nonisolated func clearCoreImageCaches() {
+        ciContext.clearCaches()
+        wbCIContext.clearCaches()
+    }
+
+    /// Test seam: number of per-render GPU textures (mask alpha, envelope scratch, AI mattes,
+    /// ping/pong) this engine currently retains. The watermark cache is reported separately.
+    nonisolated var retainedTransientRenderTextureCount: Int {
+        preconditionOnStateExecutor()
+        let raster = brushRasterStateSnapshot()
+        let scratch = executorOwnedRenderScratchState.snapshot()
+        let singles: [MTLTexture?] = [
+            raster.alphaTexture, raster.envelopeScratch, scratch.ping, scratch.pong,
+        ]
+        return singles.compactMap { $0 }.count + scratch.aiMaskTextures.count
+    }
+
+    /// Test seam: transient textures retained by the shared offscreen (export) engine.
+    nonisolated static func offscreenRetainedTransientTextureCountForTesting() -> Int {
+        offscreenRenderer.retainedTransientTextureCount()
+    }
+
+    /// Test seam: whether the shared offscreen engine currently caches a watermark texture.
+    nonisolated static func offscreenHasCachedWatermarkTextureForTesting() -> Bool {
+        offscreenRenderer.hasCachedWatermarkTexture()
+    }
+
+    /// Runs the offscreen engine's memory-pressure eviction synchronously (tests).
+    nonisolated static func evictOffscreenCachesForTesting() {
+        offscreenRenderer.evictForMemoryPressure()
+    }
+
+    /// Test seam: number of decoded AI mattes currently retained by this engine.
+    nonisolated var cachedAIMaskTextureCount: Int {
+        preconditionOnStateExecutor()
+        return executorOwnedRenderScratchState.snapshot().aiMaskTextures.count
+    }
+
+    /// Only the long-lived live-preview engines cache AI mattes across rebuilds. The shared
+    /// offscreen/export engine decodes per render, as before, so a finished export does not keep
+    /// its mattes alive.
+    nonisolated private var cachesAIMaskTextures: Bool {
+        if case .mainThread = stateExecutor { return true }
+        return false
+    }
+
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
     nonisolated var gamutClipMode: UInt32 {
         get { liveStateSnapshot().gamutClipMode }
@@ -1111,6 +1327,26 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    /// Pins the Clean Feed mirror to `settings`: later `updateParams` calls (a press-and-hold
+    /// Before / mute projection of a photo with Anonymizer masks) still drive this editor, but
+    /// the mirror keeps the redacted render so the audience display never shows the unblurred
+    /// faces the editor is comparing against. Pushes `settings` to the mirror immediately.
+    nonisolated func holdMirrorParams(_ settings: CameraRawSettings?) {
+        updateLiveState { $0.heldMirrorSettings = HeldMirrorSettings(settings: settings) }
+        mirror?.updateParams(settings)
+        liveStateSnapshot().onParamsChanged?()
+    }
+
+    /// Resumes mirroring every `updateParams`. The caller's next `updateParams` re-syncs the
+    /// mirror with the editor.
+    nonisolated func releaseMirrorParams() {
+        updateLiveState { $0.heldMirrorSettings = nil }
+    }
+
+    nonisolated var isHoldingMirrorParams: Bool {
+        liveStateSnapshot().heldMirrorSettings != nil
+    }
+
     /// Invoked at the end of every `updateParams` so the mirror's view can request a
     /// redraw. Called on whichever thread `updateParams` runs on — the live edit call
     /// sites are all on the main thread, matching the existing coordinator-redraw model.
@@ -1119,14 +1355,14 @@ final class MetalEditPipeline: @unchecked Sendable {
         set { updateLiveState { $0.onParamsChanged = newValue } }
     }
 
-    nonisolated private static let maxMasks = 8
+    nonisolated private static let maxMasks = DevelopLayerLimits.maxEnabledMasks
     /// Every imported cube is CPU-resampled to this dimension, then packed into 33 consecutive
     /// slices of one 2D-array texture. This supports several independently ordered LUT nodes
     /// without declaring a variable number of Metal texture arguments.
     nonisolated static let colorLUTSize = 33
     /// Max simultaneous watermark layers (and, since each references one library asset,
     /// also the texture array's slice cap — fewer if several layers share one asset).
-    nonisolated private static let maxWatermarks = 4
+    nonisolated private static let maxWatermarks = DevelopLayerLimits.maxEnabledWatermarks
     /// Max layer-order entries: every mask, every watermark layer, plus the single global node.
     nonisolated private static let maxOrderEntries = maxMasks + maxWatermarks + 1
     /// Order-buffer entry meaning "run the global adjustment block here".
@@ -1254,6 +1490,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         private let queue: DispatchSerialQueue
         private let worker: MetalOffscreenRenderWorker
         private let pipeline: MetalEditPipeline?
+        private var pressureRegistration: ImageMemoryCoordinator.Registration?
 
         init() {
             let ownerQueue = DispatchSerialQueue(
@@ -1271,6 +1508,19 @@ final class MetalEditPipeline: @unchecked Sendable {
                 )
             } else {
                 pipeline = nil
+            }
+            // Critical pressure: drop whatever Core Image still caches (programs, any
+            // intermediates). Hop onto the owner queue so this never races a render.
+            if let pipeline {
+                pressureRegistration = ImageMemoryCoordinator.shared.registerPressureEviction(
+                    level: .critical
+                ) {
+                    // The executor (and its engine) live for the whole process.
+                    ownerQueue.async {
+                        pipeline.clearCoreImageCaches()
+                        pipeline.releaseCachedWatermarkTexture()
+                    }
+                }
             }
         }
 
@@ -1294,6 +1544,24 @@ final class MetalEditPipeline: @unchecked Sendable {
                     cropToOutput: cropToOutput,
                     outputSize: outputSize
                 )
+            }
+        }
+
+        func retainedTransientTextureCount() -> Int {
+            dispatchPrecondition(condition: .notOnQueue(queue))
+            return queue.sync { pipeline?.retainedTransientRenderTextureCount ?? 0 }
+        }
+
+        func hasCachedWatermarkTexture() -> Bool {
+            dispatchPrecondition(condition: .notOnQueue(queue))
+            return queue.sync { pipeline?.hasCachedWatermarkTexture ?? false }
+        }
+
+        func evictForMemoryPressure() {
+            dispatchPrecondition(condition: .notOnQueue(queue))
+            queue.sync {
+                pipeline?.clearCoreImageCaches()
+                pipeline?.releaseCachedWatermarkTexture()
             }
         }
 
@@ -1329,6 +1597,9 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let wbCIContext: CIContext
 
     nonisolated var hasSourceTexture: Bool { sourceTexture != nil }
+
+    /// Bumped whenever the source texture is published or cleared (see `SourceState`).
+    nonisolated var sourceTextureRevision: UInt64 { sourceState.currentRevision }
 
     /// Source texture dimensions for viewport calculations (resolution-stable).
     nonisolated var sourceTextureSize: CGSize? {
@@ -1431,10 +1702,16 @@ final class MetalEditPipeline: @unchecked Sendable {
             self.blitRasterMaskPipelineState = nil
         }
 
-        self.ciContext = CIContext(mtlDevice: device, options: [
+        var ciOptions: [CIContextOption: Any] = [
             .workingFormat: CIFormat.RGBAh,
             .workingColorSpace: Self.colorSpace,
-        ])
+        ]
+        if case .offscreenRenderQueue = stateExecutor {
+            // Export renders are one-off per image: cached intermediates are never reused by the
+            // next image and would otherwise accumulate in this process-lifetime context.
+            ciOptions[.cacheIntermediates] = false
+        }
+        self.ciContext = CIContext(mtlDevice: device, options: ciOptions)
         // Separate CIContext for WB extraction — never blocked by large texture renders
         self.wbCIContext = CIContext(mtlDevice: device, options: [
             .workingFormat: CIFormat.RGBAf,
@@ -1542,6 +1819,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         for slot in 0..<Self.maxMasks {
             uploadIdentityColorLUT(slot: slot)
         }
+        // Only live engines precache adjacent images (`precacheTexture` is exposed solely through
+        // `MetalLivePreviewPipeline`). Registering the export engine would halve the editor's
+        // speculative share for a cache it never fills.
+        if case .offscreenRenderQueue = stateExecutor { return }
         let cacheState = speculativeTextureCacheState
         let registration = imageMemoryCoordinator.register(
             kind: .developSpeculative,
@@ -1593,6 +1874,16 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Renders source pixels into a fully populated texture without publishing it. Publication is
     /// a separate step so the live-preview facade can generation-gate the final state mutation.
     nonisolated private func makeSourceTexture(_ ciImage: CIImage) -> MTLTexture? {
+        var ciImage = ciImage
+        // Metal can't allocate a 2D texture past the device limit (stitched panoramas and other
+        // oversized non-RAW sources). Downscale to fit, as `renderOffscreen` does; Develop
+        // geometry is normalized, so only 1:1 zoom detail is affected.
+        let maxDim = CGFloat(Self.maxTextureDimension)
+        if ciImage.extent.width > maxDim || ciImage.extent.height > maxDim {
+            let scale = min(maxDim / ciImage.extent.width, maxDim / ciImage.extent.height)
+            metalPipelineLog.info("makeSourceTexture: downscaling \(Int(ciImage.extent.width))x\(Int(ciImage.extent.height)) by \(scale, format: .fixed(precision: 4)) to fit max texture dim \(Int(maxDim))")
+            ciImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
         let extent = ciImage.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
 
@@ -1707,11 +1998,13 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// before committing imports, but this defensive fallback also protects hand-edited XMP.
     nonisolated private func refreshColorLUTs(_ masks: [MaskAdjustment]) {
         withExecutorOwnedCacheState { cacheState in
+            var lutsInUse = Set<Data>()
             for slot in 0..<Self.maxMasks {
                 let data: Data? = masks.indices.contains(slot)
                     && masks[slot].colorTransform?.mode == .lut
                     ? masks[slot].colorTransform?.lutData
                     : nil
+                if let data { lutsInUse.insert(data) }
                 guard data != cacheState.lastBuiltColorLUTData[slot] else { continue }
                 cacheState.lastBuiltColorLUTData[slot] = data
                 cacheState.parsedColorLUTs[slot] = nil
@@ -1719,26 +2012,35 @@ final class MetalEditPipeline: @unchecked Sendable {
                     uploadIdentityColorLUT(slot: slot)
                     continue
                 }
-                do {
-                    let parsed = try CubeLUTParser.parse(data)
-                    cacheState.parsedColorLUTs[slot] = parsed
-                    for (blue, floats) in parsed.resampledSlices(size: Self.colorLUTSize).enumerated() {
-                        var halfs = Self.floatsToHalfs(floats)
-                        colorLUTTextureHandle.resource.replace(
-                            region: MTLRegionMake2D(0, 0, Self.colorLUTSize, Self.colorLUTSize),
-                            mipmapLevel: 0,
-                            slice: slot * Self.colorLUTSize + blue,
-                            withBytes: &halfs,
-                            bytesPerRow: Self.colorLUTSize * 4 * MemoryLayout<UInt16>.size,
-                            bytesPerImage: Self.colorLUTSize * Self.colorLUTSize * 4
-                                * MemoryLayout<UInt16>.size
-                        )
+                let entry: (parsed: ParsedCubeLUT, halfSlices: [[UInt16]])
+                if let cached = cacheState.colorLUTsByData[data] {
+                    entry = cached
+                } else {
+                    do {
+                        let parsed = try CubeLUTParser.parse(data)
+                        entry = (parsed, parsed.resampledSlices(size: Self.colorLUTSize).map(Self.floatsToHalfs))
+                        cacheState.colorLUTsByData[data] = entry
+                    } catch {
+                        metalPipelineLog.error("Invalid color LUT in slot \(slot): \(error.localizedDescription)")
+                        uploadIdentityColorLUT(slot: slot)
+                        continue
                     }
-                } catch {
-                    metalPipelineLog.error("Invalid color LUT in slot \(slot): \(error.localizedDescription)")
-                    uploadIdentityColorLUT(slot: slot)
+                }
+                cacheState.parsedColorLUTs[slot] = entry.parsed
+                for (blue, halfSlice) in entry.halfSlices.enumerated() {
+                    var halfs = halfSlice
+                    colorLUTTextureHandle.resource.replace(
+                        region: MTLRegionMake2D(0, 0, Self.colorLUTSize, Self.colorLUTSize),
+                        mipmapLevel: 0,
+                        slice: slot * Self.colorLUTSize + blue,
+                        withBytes: &halfs,
+                        bytesPerRow: Self.colorLUTSize * 4 * MemoryLayout<UInt16>.size,
+                        bytesPerImage: Self.colorLUTSize * Self.colorLUTSize * 4
+                            * MemoryLayout<UInt16>.size
+                    )
                 }
             }
+            cacheState.colorLUTsByData = cacheState.colorLUTsByData.filter { lutsInUse.contains($0.key) }
         }
     }
 
@@ -1818,8 +2120,11 @@ final class MetalEditPipeline: @unchecked Sendable {
             ptr.pointee.viewportCenter = viewport.center
             ptr.pointee.viewportRotation = viewport.rotation
             ptr.pointee.cropHalfExtent = viewport.cropHalfExtent
-            // Mirror to the clean-feed pipeline (its own viewport is preserved).
-            mirror?.updateParams(nil)
+            // Mirror to the clean-feed pipeline (its own viewport is preserved), unless the
+            // mirror is pinned to a redacted render (`holdMirrorParams`).
+            if liveState.heldMirrorSettings == nil {
+                mirror?.updateParams(nil)
+            }
             liveState.onParamsChanged?()
             return
         }
@@ -2177,8 +2482,11 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         // Mirror params to the clean-feed pipeline so the second display tracks the
         // edit live. The mirror computes against its OWN cached viewport, so its
-        // letterboxing for the secondary display is preserved.
-        mirror?.updateParams(settings)
+        // letterboxing for the secondary display is preserved. A pinned mirror
+        // (`holdMirrorParams`) keeps its redacted settings instead.
+        if liveState.heldMirrorSettings == nil {
+            mirror?.updateParams(settings)
+        }
         liveState.onParamsChanged?()
 
         let elapsed = ContinuousClock.now - start
@@ -2365,7 +2673,13 @@ final class MetalEditPipeline: @unchecked Sendable {
               let compositeState = compositeBrushPipelineState,
               let blitState = blitRasterMaskPipelineState,
               !sources.isEmpty, size.width > 0, size.height > 0 else {
-            brushAlphaTexture = nil
+            // Drop the full-resolution envelope scratch with the alpha array; it is lazily
+            // re-created on the next raster-mask rebuild.
+            updateBrushRasterState {
+                $0.alphaTexture = nil
+                $0.envelopeScratch = nil
+            }
+            updateRenderScratchState { $0.aiMaskTextures = [] }
             return nil
         }
         let layers = min(sources.count, Self.maxMasks)
@@ -2434,22 +2748,14 @@ final class MetalEditPipeline: @unchecked Sendable {
         // The command encoder retains every source texture through completion. Keeping this
         // array alive until the synchronous wait also makes that lifetime explicit.
         var rasterSourceTextures: [MTLTexture] = []
-        let textureLoader = MTKTextureLoader(device: device)
+        var usedAIMaskKeys: [AIMaskTextureKey] = []
         for (layer, source) in sources.prefix(layers).enumerated() {
             switch source {
             case .ai(let mask):
                 guard mask.isValid else { continue }
-                let sourceTexture = mask.hasRefinements
-                    ? refinedAIMaskTexture(mask)
-                    : nil
-                guard let sourceTexture = sourceTexture ?? (try? textureLoader.newTexture(
-                    data: mask.pngData,
-                    options: [
-                        .SRGB: false,
-                        .origin: MTKTextureLoader.Origin.topLeft,
-                        .textureUsage: MTLTextureUsage.shaderRead.rawValue,
-                    ]
-                )) else { continue }
+                let key = AIMaskTextureKey(mask)
+                usedAIMaskKeys.append(key)
+                guard let sourceTexture = aiMaskSourceTexture(mask, key: key) else { continue }
                 rasterSourceTextures.append(sourceTexture)
                 encoder.setComputePipelineState(blitState)
                 encoder.setTexture(sourceTexture, index: 0)
@@ -2504,7 +2810,44 @@ final class MetalEditPipeline: @unchecked Sendable {
             $0.alphaTexture = tex
             $0.envelopeScratch = scratch
         }
+        // Keep only the mattes this rebuild used, so deleted/replaced AI masks don't linger.
+        updateRenderScratchState { state in
+            state.aiMaskTextures.removeAll { entry in !usedAIMaskKeys.contains(entry.key) }
+        }
         return tex
+    }
+
+    /// Returns the decoded (and refined) source texture for an AI matte, decoding its PNG only
+    /// when this exact matte + refinement has not been decoded before. Brush strokes rebuild the
+    /// shared raster alpha on every commit; without this each stroke re-decoded every AI PNG.
+    /// Cached textures are read-only after creation, so reuse across command buffers is safe.
+    nonisolated private func aiMaskSourceTexture(_ mask: AIMaskGeometry, key: AIMaskTextureKey) -> MTLTexture? {
+        if let cached = executorOwnedRenderScratchStateSnapshot().aiMaskTextures
+            .first(where: { $0.key == key })?.texture {
+            return cached
+        }
+        let refined = mask.hasRefinements ? refinedAIMaskTexture(mask) : nil
+        guard let texture = refined ?? (try? MTKTextureLoader(device: device).newTexture(
+            data: mask.pngData,
+            options: [
+                .SRGB: false,
+                .origin: MTKTextureLoader.Origin.topLeft,
+                .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+            ]
+        )) else { return nil }
+        let cachesTexture = cachesAIMaskTextures
+        updateRenderScratchState { state in
+            state.aiMaskTextureDecodeCount += 1
+            if cachesTexture {
+                state.aiMaskTextures.append((key: key, texture: texture))
+            }
+        }
+        return texture
+    }
+
+    nonisolated private func executorOwnedRenderScratchStateSnapshot() -> ExecutorOwnedRenderScratchState.Storage {
+        preconditionOnStateExecutor()
+        return executorOwnedRenderScratchState.snapshot()
     }
 
     /// Test/backward-compatible brush-only entry point. Production rendering uses
@@ -2650,19 +2993,31 @@ final class MetalEditPipeline: @unchecked Sendable {
             lastBuiltWatermarkAspects = [:]
             return [:]
         }
-        if watermarkTexture != nil, distinctIDs == lastBuiltWatermarkAssetIDs {
-            return lastBuiltWatermarkAspects
+        // The library revision invalidates the cache when an asset is deleted, replaced, or
+        // finishes syncing — otherwise the live preview keeps compositing the stale texture.
+        let libraryRevision = WatermarkStore.libraryRevision.load(ordering: .relaxed)
+        let cached = watermarkStateSnapshot()
+        if cached.texture != nil, distinctIDs == cached.lastBuiltAssetIDs,
+           cached.lastBuiltLibraryRevision == libraryRevision {
+            return cached.lastBuiltAspects
         }
 
         var decoded: [(id: UUID, image: CGImage)] = []
+        var failedIDs: [UUID] = []
         for id in distinctIDs {
             guard let data = try? CloudCoordinatedIO.readData(at: WatermarkStore.resolvedImageURL(forAssetID: id)),
                   let source = CGImageSourceCreateWithData(data as CFData, nil),
                   let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil),
                   cgImage.width > 0, cgImage.height > 0
-            else { continue }
+            else {
+                failedIDs.append(id)
+                continue
+            }
             decoded.append((id, cgImage))
         }
+        // Exports consult this so a file rendered without a layer is reported, even when the
+        // PNG exists but its (coordinated) read failed, e.g. mid-sync.
+        WatermarkTextureLoadFailures.record(failed: failedIDs, loaded: decoded.map(\.id))
         guard !decoded.isEmpty else {
             watermarkTexture = nil
             lastBuiltWatermarkAssetIDs = []
@@ -2712,9 +3067,15 @@ final class MetalEditPipeline: @unchecked Sendable {
             mapping[entry.id] = (slice, Double(w) / Double(h))
         }
 
-        watermarkTexture = tex
-        lastBuiltWatermarkAssetIDs = distinctIDs
-        lastBuiltWatermarkAspects = mapping
+        updateWatermarkState {
+            $0.texture = tex
+            // A partial build (an asset failed to load) is used for this render but not cached
+            // as current, so the next render retries the missing asset instead of skipping it
+            // until the library revision changes.
+            $0.lastBuiltAssetIDs = failedIDs.isEmpty ? distinctIDs : []
+            $0.lastBuiltLibraryRevision = libraryRevision
+            $0.lastBuiltAspects = mapping
+        }
         return mapping
     }
 
@@ -2778,6 +3139,31 @@ final class MetalEditPipeline: @unchecked Sendable {
         return device.makeTexture(descriptor: desc)
     }
 
+    /// Returns a working texture for the multi-pass graph. With `reuse`, the live preview keeps
+    /// one ping and one pong per engine (keyed by size; the format is fixed at rgba16Float)
+    /// instead of allocating two full-size mipmapped textures per drawn frame. Every pass fully
+    /// overwrites its output and mips are regenerated before any spatial read, so a reused
+    /// texture yields the same pixels as a fresh one.
+    nonisolated private func renderGraphIntermediate(
+        _ slot: WritableKeyPath<ExecutorOwnedRenderScratchState.Storage, MTLTexture?>,
+        width: Int,
+        height: Int,
+        reuse: Bool
+    ) -> MTLTexture? {
+        if reuse,
+           let cached = executorOwnedRenderScratchStateSnapshot()[keyPath: slot],
+           cached.width == width, cached.height == height,
+           cached.pixelFormat == .rgba16Float {
+            return cached
+        }
+        guard let texture = makeRenderGraphTexture(width: width, height: height) else { return nil }
+        updateRenderScratchState { state in
+            state.intermediateAllocationCount += 1
+            if reuse { state[keyPath: slot] = texture }
+        }
+        return texture
+    }
+
     /// Encodes one edit-kernel dispatch using an immutable parameter snapshot. `setBytes` is
     /// important here: every pass has a different order range/execution mode, while the shared
     /// `paramsBuffer` remains the canonical state consumed by scopes and future redraws.
@@ -2829,10 +3215,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         destination: MTLTexture,
         baseParams: EditParams,
         workingInOutputFrame: Bool,
-        commandBuffer: MTLCommandBuffer
+        commandBuffer: MTLCommandBuffer,
+        reuseIntermediates: Bool = false
     ) -> Bool {
         let renderPassPlan = renderPassPlanSnapshot()
         guard renderPassPlan.count > 1 else {
+            if reuseIntermediates { releaseRenderGraphIntermediates() }
             var params = baseParams
             params.orderOffset = UInt32(renderPassPlan.first?.orderOffset ?? 0)
             params.orderCount = UInt32(
@@ -2854,14 +3242,19 @@ final class MetalEditPipeline: @unchecked Sendable {
             ? Int(baseParams.drawableSize.y)
             : source.height
         guard workingWidth > 0, workingHeight > 0,
-              let ping = makeRenderGraphTexture(width: workingWidth, height: workingHeight)
+              let ping = renderGraphIntermediate(
+                  \.ping, width: workingWidth, height: workingHeight, reuse: reuseIntermediates
+              )
         else { return false }
         let pong: MTLTexture?
         if renderPassPlan.count > 2 {
-            pong = makeRenderGraphTexture(width: workingWidth, height: workingHeight)
+            pong = renderGraphIntermediate(
+                \.pong, width: workingWidth, height: workingHeight, reuse: reuseIntermediates
+            )
             guard pong != nil else { return false }
         } else {
             pong = nil
+            if reuseIntermediates { updateRenderScratchState { $0.pong = nil } }
         }
 
         var current = source
@@ -2945,9 +3338,42 @@ final class MetalEditPipeline: @unchecked Sendable {
         useNearestNeighbor: Bool = false
     ) -> Bool {
         preconditionOnStateExecutor()
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+              encodeLiveFrame(
+                  destination: drawable.texture,
+                  drawableSize: drawableSize,
+                  useNearestNeighbor: useNearestNeighbor,
+                  commandBuffer: commandBuffer
+              ) else { return false }
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+        return true
+    }
+
+    /// Test seam for the live frame encoder: renders exactly what `render(to:)` would put on
+    /// the drawable into `texture` (rgba16Float, shaderWrite) and waits for completion.
+    nonisolated func renderLiveFrameForTesting(into texture: MTLTexture) -> Bool {
+        preconditionOnStateExecutor()
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+              encodeLiveFrame(
+                  destination: texture,
+                  drawableSize: CGSize(width: texture.width, height: texture.height),
+                  useNearestNeighbor: false,
+                  commandBuffer: commandBuffer
+              ) else { return false }
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return commandBuffer.status == .completed
+    }
+
+    nonisolated private func encodeLiveFrame(
+        destination: MTLTexture,
+        drawableSize: CGSize,
+        useNearestNeighbor: Bool,
+        commandBuffer: MTLCommandBuffer
+    ) -> Bool {
         guard let source = sourceTexture,
-              let buffer = paramsBufferHandle.resource,
-              let commandBuffer = commandQueue.makeCommandBuffer() else { return false }
+              let buffer = paramsBufferHandle.resource else { return false }
 
         let w = Int(drawableSize.width)
         let shouldLogDrawableSize = updateLiveState { state in
@@ -2982,10 +3408,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         )
         guard encodeRenderGraph(
             source: source,
-            destination: drawable.texture,
+            destination: destination,
             baseParams: ptr.pointee,
             workingInOutputFrame: ptr.pointee.watermarkFrame == 1,
-            commandBuffer: commandBuffer
+            commandBuffer: commandBuffer,
+            reuseIntermediates: true
         ) else { return false }
 
         // Overlay pass — composites mask overlay shapes onto the drawable
@@ -2999,16 +3426,13 @@ final class MetalEditPipeline: @unchecked Sendable {
 
                 if let overlayEncoder = commandBuffer.makeComputeCommandEncoder() {
                     overlayEncoder.setComputePipelineState(overlayState)
-                    overlayEncoder.setTexture(drawable.texture, index: 0)
+                    overlayEncoder.setTexture(destination, index: 0)
                     overlayEncoder.setBuffer(overlayBuf, offset: 0, index: 0)
                     overlayEncoder.dispatchThreads(gridSize, threadsPerThreadgroup: threadgroupSize)
                     overlayEncoder.endEncoding()
                 }
             }
         }
-
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
         return true
     }
 
@@ -3194,8 +3618,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         preconditionOnStateExecutor()
         // A foreground source transition permits adjacent-image work again after memory pressure.
         // Resuming here, rather than inside texture construction, prevents a rejected stale upload
-        // from re-enabling speculative work for an obsolete image.
+        // from re-enabling speculative work for an obsolete image. `resume()` also advances the
+        // permit generation, so a precache still running for the previous image's neighbours
+        // can no longer commit its GPU work or publish into the cache.
         speculativePrecacheGate.resume()
+        releaseImageScopedScratch()
         sourcePublicationGate.beginSession(sessionGeneration) { [self] in
             setSourceTexture(nil)
             mirror?.setSourceTexture(nil)
@@ -3209,6 +3636,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated func clearSourceTexture() {
         preconditionOnStateExecutor()
+        releaseImageScopedScratch()
         sourcePublicationGate.invalidate { [self] in
             setSourceTexture(nil)
             mirror?.setSourceTexture(nil)
@@ -3401,13 +3829,42 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // MARK: - Texture Pre-Caching
 
+    /// Drops adjacent-image textures decoded ahead of navigation (keyed by URL only), e.g. after
+    /// the RAW decode profile changes so neighbours aren't shown with the old decode.
+    /// Takes a speculative-precache permit before the (slow) decode starts. Passing it to
+    /// `precacheTexture` makes a decode-settings change or navigation that happens *during*
+    /// the decode reject the result, not only one that happens during the GPU upload.
+    nonisolated func beginSpeculativePrecache() -> UInt64? {
+        speculativePrecacheGate.begin()
+    }
+
+    nonisolated func discardSpeculativeTextures() {
+        // Reject in-flight precaches first: they decoded with the previous settings and would
+        // otherwise repopulate the cache right after this purge.
+        speculativePrecacheGate.invalidateInFlight()
+        speculativeTextureCacheState.removeAll()
+    }
+
     /// Pre-render a CIImage to a Metal texture and cache it by URL.
     /// Call from a background task for adjacent images (prev/next).
-    nonisolated func precacheTexture(for url: URL, ciImage: CIImage, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
+    /// `exifOrientation` / `decodeMaxPixelSize` describe the decode that produced `ciImage`;
+    /// `applyCachedTexture` promotes the texture only for a request with the same values.
+    /// Navigating away cancels the precache task; cancellation is checked before any GPU work.
+    nonisolated func precacheTexture(
+        for url: URL,
+        ciImage: CIImage,
+        neutralTemperature: Float = 6500,
+        neutralTint: Float = 0,
+        exifOrientation: Int = 1,
+        decodeMaxPixelSize: CGFloat? = nil,
+        permit: UInt64? = nil
+    ) {
+        guard !Task.isCancelled else { return }
         let extent = ciImage.extent
         guard extent.width > 0,
               extent.height > 0,
-              let precachePermit = speculativePrecacheGate.begin() else { return }
+              let precachePermit = permit ?? speculativePrecacheGate.begin(),
+              speculativePrecacheGate.isValid(precachePermit) else { return }
 
         let width = Int(extent.width)
         let height = Int(extent.height)
@@ -3458,10 +3915,10 @@ final class MetalEditPipeline: @unchecked Sendable {
             )
         } catch { return }
 
-        guard speculativePrecacheGate.isValid(precachePermit) else { return }
+        guard !Task.isCancelled, speculativePrecacheGate.isValid(precachePermit) else { return }
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        guard speculativePrecacheGate.isValid(precachePermit) else { return }
+        guard !Task.isCancelled, speculativePrecacheGate.isValid(precachePermit) else { return }
         // Pre-cached textures get promoted to sourceTexture on navigation (applyCachedTexture),
         // so they need mips too — the Anonymizer effect can't tell a promoted texture apart
         // from a freshly-uploaded one.
@@ -3474,7 +3931,9 @@ final class MetalEditPipeline: @unchecked Sendable {
                 MTLTextureWrapper(
                     texture,
                     neutralTemperature: neutralTemperature,
-                    neutralTint: neutralTint
+                    neutralTint: neutralTint,
+                    exifOrientation: exifOrientation,
+                    decodeMaxPixelSize: decodeMaxPixelSize
                 ),
                 for: url,
                 cost: textureCost
@@ -3483,13 +3942,57 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     /// Promote a pre-cached texture to sourceTexture. Returns as-shot WB on hit, nil on miss.
-    /// `exifOrientation` is the orientation baked into the cached texture's pixels.
-    nonisolated func applyCachedTexture(for url: URL, exifOrientation: Int = 1) -> (neutralTemperature: Float, neutralTint: Float)? {
+    /// `exifOrientation` is the orientation the caller needs baked into the pixels and
+    /// `decodeMaxPixelSize` the decode size it would request; an entry precached for a different
+    /// orientation (rotated since) or size (window moved to another display) is dropped as a
+    /// miss, so a hit is interchangeable with the foreground decode it replaces.
+    nonisolated func applyCachedTexture(
+        for url: URL,
+        exifOrientation: Int = 1,
+        decodeMaxPixelSize: CGFloat? = nil
+    ) -> (neutralTemperature: Float, neutralTint: Float)? {
         preconditionOnStateExecutor()
-        guard let wrapper = speculativeTextureCacheState.take(for: url) else { return nil }
+        guard let wrapper = speculativeTextureCacheState.take(for: url),
+              wrapper.exifOrientation == exifOrientation,
+              wrapper.decodeMaxPixelSize == decodeMaxPixelSize else { return nil }
         setSourceTexture(wrapper.texture, orientation: exifOrientation)
         mirror?.setSourceTexture(wrapper.texture, orientation: exifOrientation)
         return (neutralTemperature: wrapper.neutralTemperature, neutralTint: wrapper.neutralTint)
+    }
+
+    /// The current source texture as a Sendable handle, for `readBackSourceTexture`. Taken on
+    /// the state executor so a later zoom upgrade cannot change which pixels are read back.
+    nonisolated func sourceTextureHandle() -> MTLTextureWrapper? {
+        preconditionOnStateExecutor()
+        return sourceTexture.map { MTLTextureWrapper($0) }
+    }
+
+    /// CPU-backed copy of an uploaded source texture for the Core Image consumers of the
+    /// Develop source (CPU scope fallback, WB eyedropper sampling, AI-mask input, comparison,
+    /// before/mute fallback). Reading back the already-decoded GPU pixels replaces a second
+    /// render of the lazy decode graph, so a navigation demosaics once. The texture holds
+    /// rgba16Float extended-linear-sRGB pixels, the same format and space the previous
+    /// `DevelopSourceDecodeService.materialize` produced. Applies the same >1.5x size cap.
+    /// Worker-safe: the texture is immutable once published and `ciContext` is thread-safe.
+    nonisolated func readBackSourceTexture(_ handle: MTLTextureWrapper, maxPixelSize: CGFloat) -> CGImage? {
+        guard !Task.isCancelled,
+              let textureImage = CIImage(mtlTexture: handle.texture, options: [.colorSpace: Self.colorSpace])
+        else { return nil }
+        // Source uploads render with `isFlipped`, i.e. row 0 is the image top.
+        var image = textureImage.oriented(.downMirrored)
+        let extent = image.extent
+        let maxDimension = max(extent.width, extent.height)
+        if maxDimension > maxPixelSize * 1.5 {
+            let scale = maxPixelSize / maxDimension
+            image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
+        guard !Task.isCancelled else { return nil }
+        return ciContext.createCGImage(
+            image,
+            from: image.extent,
+            format: .RGBAh,
+            colorSpace: Self.colorSpace
+        )
     }
 
     // MARK: - Offscreen Rendering
@@ -3578,6 +4081,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         outputSize: CGSize? = nil
     ) -> CIImage? {
         preconditionOnStateExecutor()
+        // This engine lives for the whole process. The returned CIImage only references the
+        // output texture (the compute pass has completed by then), so every mask/watermark/
+        // scratch texture can be released as soon as this render returns.
+        defer { releaseTransientRenderResources() }
         guard let source else { return nil }
         guard var settings, !Self.isIdentitySettings(settings) else { return nil }
         // `source` is display-oriented but mask geometry is sensor-frame —
@@ -3888,6 +4395,10 @@ final class MetalLivePreviewPipeline {
     }
 
     func updateParams(_ settings: CameraRawSettings?) { engine.updateParams(settings) }
+    /// See `MetalEditPipeline.holdMirrorParams(_:)`.
+    func holdMirrorParams(_ settings: CameraRawSettings?) { engine.holdMirrorParams(settings) }
+    func releaseMirrorParams() { engine.releaseMirrorParams() }
+    var isHoldingMirrorParams: Bool { engine.isHoldingMirrorParams }
     func updateOverlayParams(geometry: EllipseMaskGeometry?, visible: Bool) {
         engine.updateOverlayParams(geometry: geometry, visible: visible)
     }
@@ -3972,9 +4483,25 @@ final class MetalLivePreviewPipeline {
     }
     func applyCachedTexture(
         for url: URL,
-        exifOrientation: Int = 1
+        exifOrientation: Int = 1,
+        decodeMaxPixelSize: CGFloat? = nil
     ) -> (neutralTemperature: Float, neutralTint: Float)? {
-        engine.applyCachedTexture(for: url, exifOrientation: exifOrientation)
+        engine.applyCachedTexture(
+            for: url,
+            exifOrientation: exifOrientation,
+            decodeMaxPixelSize: decodeMaxPixelSize
+        )
+    }
+    func sourceTextureHandle() -> MTLTextureWrapper? { engine.sourceTextureHandle() }
+    nonisolated func readBackSourceTexture(_ handle: MTLTextureWrapper, maxPixelSize: CGFloat) -> CGImage? {
+        engine.readBackSourceTexture(handle, maxPixelSize: maxPixelSize)
+    }
+    var renderGraphIntermediateAllocationCount: Int { engine.renderGraphIntermediateAllocationCount }
+    var aiMaskTextureDecodeCount: Int { engine.aiMaskTextureDecodeCount }
+    var cachedAIMaskTextureCount: Int { engine.cachedAIMaskTextureCount }
+    nonisolated var sourceTextureRevision: UInt64 { engine.sourceTextureRevision }
+    func renderLiveFrameForTesting(into texture: MTLTexture) -> Bool {
+        engine.renderLiveFrameForTesting(into: texture)
     }
 
     nonisolated func uploadSourceImage(_ image: CIImage, exifOrientation: Int = 1) {
@@ -3996,19 +4523,48 @@ final class MetalLivePreviewPipeline {
         for url: URL,
         ciImage: CIImage,
         neutralTemperature: Float = 6500,
-        neutralTint: Float = 0
+        neutralTint: Float = 0,
+        exifOrientation: Int = 1,
+        decodeMaxPixelSize: CGFloat? = nil,
+        permit: UInt64? = nil
     ) {
         engine.precacheTexture(
             for: url,
             ciImage: ciImage,
             neutralTemperature: neutralTemperature,
-            neutralTint: neutralTint
+            neutralTint: neutralTint,
+            exifOrientation: exifOrientation,
+            decodeMaxPixelSize: decodeMaxPixelSize,
+            permit: permit
         )
     }
+    nonisolated func beginSpeculativePrecache() -> UInt64? { engine.beginSpeculativePrecache() }
+    nonisolated func discardSpeculativeTextures() { engine.discardSpeculativeTextures() }
     nonisolated func warmupCIContext() { engine.warmupCIContext() }
     nonisolated func solveWhiteBalance(
         forNeutralLinearRGB rgb: SIMD3<Float>
     ) -> (temperature: Double, tint: Double)? {
         engine.solveWhiteBalance(forNeutralLinearRGB: rgb)
+    }
+}
+
+/// Latest load outcome per watermark library asset, across every render engine. The texture
+/// loader skips an asset whose PNG cannot be read or decoded (the layer renders as a no-op);
+/// export checks this after rendering so such a file is reported instead of silently shipping
+/// without its watermark.
+nonisolated enum WatermarkTextureLoadFailures {
+    private static let failed = Mutex<Set<UUID>>([])
+
+    static func record(failed failedIDs: [UUID], loaded loadedIDs: [UUID]) {
+        guard !failedIDs.isEmpty || !loadedIDs.isEmpty else { return }
+        failed.withLock { failed in
+            failed.subtract(loadedIDs)
+            failed.formUnion(failedIDs)
+        }
+    }
+
+    /// Whether the most recent load attempt for `assetID` failed.
+    static func lastLoadFailed(_ assetID: UUID) -> Bool {
+        failed.withLock { $0.contains(assetID) }
     }
 }

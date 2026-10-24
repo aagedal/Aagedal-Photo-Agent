@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import os
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -160,6 +161,46 @@ struct FFmpegWhisperArtifactAdmissionServiceTests {
         await #expect(throws: FFmpegWhisperArtifactAdmissionService.AdmissionError.revoked) {
             try await authorize(receipt.configuration())
         }
+    }
+
+    @Test("a batch of three memos hashes the executable and model once, not three times per memo")
+    func batchHashesArtifactsOnce() async throws {
+        let folder = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let executable = folder.appendingPathComponent("ffmpeg")
+        try Data("#!/bin/sh\nprintf '%s' '{\"start\":0,\"end\":100,\"text\":\"Hei!\"}' > output.json\n".utf8)
+            .write(to: executable)
+        // The clock runs ahead so the freshly written fixtures count as settled.
+        let service = FFmpegWhisperArtifactAdmissionService(now: { Date().addingTimeInterval(60) })
+        let receipt = try await service.admitCustom(executableURL: executable,
+                                                    modelURL: folder.appendingPathComponent("model"))
+        let snapshots = FFmpegWhisperVerifiedSnapshotCache()
+        defer { snapshots.removeAll() }
+        let provider = FFmpegWhisperTranscriptionProvider(
+            configuration: receipt.configuration(timeoutSeconds: 30),
+            authorizeArtifacts: service.authorizer(for: receipt),
+            run: { try await FFmpegWhisperJobRunner(snapshots: snapshots).run($0) })
+        let hashed = OSAllocatedUnfairLock(initialState: [String: Int]())
+        try await FFmpegWhisperHashObserver.$current.withValue({ url in
+            hashed.withLock { $0[url.lastPathComponent, default: 0] += 1 }
+        }) {
+            for index in 0..<3 {
+                let bytes = Data("wave fixture \(index)".utf8)
+                let audio = folder.appendingPathComponent("memo\(index).wav")
+                try bytes.write(to: audio)
+                let result = try await provider.transcribe(audio: .init(
+                    url: audio, byteCount: Int64(bytes.count),
+                    sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()))
+                #expect(result.text == "Hei!")
+            }
+        }
+        let counts = hashed.withLock { $0 }
+        // Admission revalidation (twice per memo) reads no bytes; the runner verifies its
+        // session snapshots of the executable and model once; each memo's audio once.
+        #expect(counts["ffmpeg"] == 1)
+        #expect(counts["model"] == 1)
+        #expect((0..<3).allSatisfy { counts["memo\($0).wav"] == 1 })
+        #expect(counts.values.reduce(0, +) == 5)
     }
 
     @Test("same-length mutation and identical-byte path replacement invalidate admission")

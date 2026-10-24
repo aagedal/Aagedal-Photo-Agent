@@ -3514,6 +3514,23 @@ struct MetadataWriteModePresetTests {
         }
     }
 
+    @Test("A RAW+JPEG selection embeds the JPEGs and leaves RAW to its sidecar; other mixes stay protective")
+    func selectionResolution() {
+        let raw = ImageFile(url: URL(fileURLWithPath: "/tmp/selection/IMG_1.ARW"))
+        let jpeg = ImageFile(url: URL(fileURLWithPath: "/tmp/selection/IMG_1.JPG"))
+        var signed = ImageFile(url: URL(fileURLWithPath: "/tmp/selection/IMG_2.JPG"))
+        signed.hasC2PA = true
+        withPreset(.professional) {
+            #expect(MetadataWriteMode.current(forSelection: [raw, jpeg]) == .writeToFile)
+            #expect(MetadataWriteMode.current(forSelection: [raw]) == .writeToXMPSidecar)
+            #expect(MetadataWriteMode.current(forSelection: [jpeg, signed]) == .writeToXMPSidecar)
+            #expect(MetadataWriteMode.current(forSelection: [raw, jpeg, signed]) == .writeToXMPSidecar)
+        }
+        withPreset(.simple) {
+            #expect(MetadataWriteMode.current(forSelection: [raw, jpeg]) == .writeToFile)
+        }
+    }
+
     @Test("Custom RAW resolution coerces an unsafe embedded preference to XMP")
     func customRaw() {
         withPreset(.custom) {
@@ -5145,7 +5162,7 @@ struct BrushRasterizationTests {
             ("Aagedal Photo Agent/ViewModels/ScopeViewModel.swift",
              "var metalEditPipeline: MetalLivePreviewPipeline?"),
             ("Aagedal Photo Agent/Views/CleanFeed/CleanFeedController.swift",
-             "let feedPipeline: MetalLivePreviewPipeline?"),
+             "@ObservationIgnored private(set) var feedPipeline: MetalLivePreviewPipeline?"),
             ("Aagedal Photo Agent/Views/CleanFeed/CleanFeedView.swift",
              "let feedPipeline: MetalLivePreviewPipeline?"),
         ] {
@@ -5475,6 +5492,70 @@ struct BrushRasterizationTests {
         func at(_ x: Int, _ y: Int) -> Float { pixels[y * 64 + x] }
         #expect(at(8, 32) > 0.9)
         #expect(at(56, 32) < 0.1)
+    }
+
+    /// Every committed brush stroke rebuilds the shared raster alpha. The AI mattes in it must
+    /// come from a texture cache keyed by PNG bytes + refinement, not be re-decoded each time.
+    @Test("AI matte textures are decoded once per matte and refinement across rebuilds")
+    func aiMaskTextureCacheHit() throws {
+        guard let pipeline = makePipeline() else { return }
+        let png = try #require(grayscalePNG([255, 0, 255, 0], width: 2, height: 2))
+        let ai = AIMaskGeometry(width: 2, height: 2, pngData: png)
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        let stroke = BrushStroke(
+            dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.5)],
+            radius: 0.1, density: 1.0, erase: false
+        )
+        let oneStroke = BrushMaskGeometry(strokes: [stroke])
+        let twoStrokes = BrushMaskGeometry(strokes: [
+            stroke,
+            BrushStroke(dabs: [BrushDab(x: 0.2, y: 0.8, flow: 1.0, hardness: 0.5)],
+                        radius: 0.1, density: 1.0, erase: false),
+        ])
+
+        let first = readSlice(
+            try #require(pipeline.rebuildMaskAlpha([.ai(ai), .brush(oneStroke)], size: size)),
+            slice: 0
+        )
+        #expect(pipeline.aiMaskTextureDecodeCount == 1)
+
+        // A second stroke commit: brush slice changes, the AI matte is served from the cache.
+        let second = readSlice(
+            try #require(pipeline.rebuildMaskAlpha([.ai(ai), .brush(twoStrokes)], size: size)),
+            slice: 0
+        )
+        #expect(pipeline.aiMaskTextureDecodeCount == 1)
+        #expect(second == first)
+
+        // A refinement change is a different texture and decodes once.
+        var refined = ai
+        refined.blackPoint = 0.25
+        _ = pipeline.rebuildMaskAlpha([.ai(refined), .brush(twoStrokes)], size: size)
+        #expect(pipeline.aiMaskTextureDecodeCount == 2)
+        _ = pipeline.rebuildMaskAlpha([.ai(refined), .brush(oneStroke)], size: size)
+        #expect(pipeline.aiMaskTextureDecodeCount == 2)
+
+        // Mattes no longer referenced are pruned, so the original decodes again when it returns.
+        let restored = readSlice(
+            try #require(pipeline.rebuildMaskAlpha([.ai(ai), .brush(oneStroke)], size: size)),
+            slice: 0
+        )
+        #expect(pipeline.aiMaskTextureDecodeCount == 3)
+        #expect(restored == first)
+        #expect(pipeline.cachedAIMaskTextureCount == 1)
+
+        // No raster masks left: nothing is retained.
+        _ = pipeline.rebuildMaskAlpha([], size: size)
+        #expect(pipeline.cachedAIMaskTextureCount == 0)
+
+        // A new image session releases the previous image's mattes.
+        _ = pipeline.rebuildMaskAlpha([.ai(ai)], size: size)
+        #expect(pipeline.cachedAIMaskTextureCount == 1)
+        pipeline.beginSourceImageSession(1)
+        #expect(pipeline.cachedAIMaskTextureCount == 0)
+        _ = pipeline.rebuildMaskAlpha([.ai(ai)], size: size)
+        pipeline.clearSourceTexture()
+        #expect(pipeline.cachedAIMaskTextureCount == 0)
     }
 
     @Test("AI matte black and white points remap confidence values")

@@ -44,6 +44,10 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var hasCropEdits: Bool
     var cropRegion: ThumbnailCropRegion?
     var cameraRawSettings: CameraRawSettings?
+    /// True once the metadata batch has read this photo's develop settings (sidecar + embedded,
+    /// full parser). Until then `cameraRawSettings` is nil because it is unknown, not because the
+    /// photo is unedited — privacy paths (Clean Feed, drag-out) must not treat it as unredacted.
+    var developSettingsLoaded = false
     var exifOrientation: Int
     var hasPendingMetadataChanges: Bool
     var pendingFieldNames: [String] = []
@@ -75,7 +79,36 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         return try? sidecar.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
-    nonisolated init(url: URL, isICloudDownloadPending: Bool = false) {
+    /// Sidecar modification dates resolved from one directory listing, so a folder scan does not
+    /// stat a (usually absent) `<name>.xmp` per photo. Names are compared the way the volume
+    /// resolves them: canonically composed, and case-folded unless the volume is case-sensitive.
+    nonisolated struct SidecarListing: Sendable {
+        private let datesByName: [String: Date?]
+        private let caseSensitive: Bool
+
+        /// `entries` must carry prefetched `.contentModificationDateKey` values.
+        init(entries: [URL], caseSensitive: Bool) {
+            self.caseSensitive = caseSensitive
+            var dates: [String: Date?] = [:]
+            for entry in entries where entry.pathExtension.lowercased() == "xmp" {
+                dates[Self.key(entry.lastPathComponent, caseSensitive: caseSensitive)] =
+                    try? entry.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            }
+            datesByName = dates
+        }
+
+        func sidecarModificationDate(for url: URL) -> Date? {
+            let name = url.deletingPathExtension().appendingPathExtension("xmp").lastPathComponent
+            return datesByName[Self.key(name, caseSensitive: caseSensitive)] ?? nil
+        }
+
+        private static func key(_ name: String, caseSensitive: Bool) -> String {
+            let composed = name.precomposedStringWithCanonicalMapping
+            return caseSensitive ? composed : composed.lowercased(with: Locale(identifier: "en_US_POSIX"))
+        }
+    }
+
+    nonisolated init(url: URL, isICloudDownloadPending: Bool = false, sidecarListing: SidecarListing? = nil) {
         self.url = url
         self.filename = url.lastPathComponent
         self.filenameLowercased = url.lastPathComponent.lowercased()
@@ -89,7 +122,13 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.dateModified = values?.contentModificationDate ?? Date.distantPast
         self.dateAdded = values?.addedToDirectoryDate ?? Date.distantPast
         self.isICloudDownloadPending = isICloudDownloadPending
-        self.sidecarModified = isICloudDownloadPending ? nil : Self.sidecarModificationDate(for: url)
+        if isICloudDownloadPending {
+            self.sidecarModified = nil
+        } else if let sidecarListing {
+            self.sidecarModified = sidecarListing.sidecarModificationDate(for: url)
+        } else {
+            self.sidecarModified = Self.sidecarModificationDate(for: url)
+        }
 
         self.starRating = .none
         self.colorLabel = .none
@@ -131,6 +170,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.hasCropEdits = source.hasCropEdits
         self.cropRegion = source.cropRegion
         self.cameraRawSettings = source.cameraRawSettings
+        self.developSettingsLoaded = source.developSettingsLoaded
         self.exifOrientation = source.exifOrientation
         self.hasPendingMetadataChanges = source.hasPendingMetadataChanges
         self.pendingFieldNames = source.pendingFieldNames
@@ -168,6 +208,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.hasCropEdits = source.hasCropEdits
         self.cropRegion = source.cropRegion
         self.cameraRawSettings = source.cameraRawSettings
+        self.developSettingsLoaded = source.developSettingsLoaded
         self.exifOrientation = source.exifOrientation
         self.hasPendingMetadataChanges = source.hasPendingMetadataChanges
         self.pendingFieldNames = source.pendingFieldNames
@@ -273,6 +314,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
             && lhs.hasCropEdits == rhs.hasCropEdits
             && lhs.isICloudDownloadPending == rhs.isICloudDownloadPending
             && lhs.cameraRawSettings == rhs.cameraRawSettings
+            && lhs.developSettingsLoaded == rhs.developSettingsLoaded
             && lhs.exifOrientation == rhs.exifOrientation
             && lhs.isNativeHDR == rhs.isNativeHDR
             && lhs.hasPendingMetadataChanges == rhs.hasPendingMetadataChanges

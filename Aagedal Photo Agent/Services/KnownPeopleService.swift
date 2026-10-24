@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Vision
 import AppKit
 import Darwin
@@ -967,6 +968,8 @@ final class KnownPeopleService {
                   peer.cachedDirectory?.standardizedFileURL == root.standardizedFileURL else { continue }
             peer.database = nil
             peer.clearFeaturePrintCache()
+            // A peer's in-flight background read may predate this write: read again.
+            if peer.backgroundReloadID != nil { peer.scheduleBackgroundDatabaseReload() }
         }
     }
 
@@ -1145,12 +1148,19 @@ final class KnownPeopleService {
         })
     }
 
+    /// Off-main snapshot assembly used by `reloadAfterStorageChange`. Injectable so tests can
+    /// hold a read open while a remote change lands.
+    typealias SnapshotReader = @Sendable (URL) async -> KnownPeopleDatabaseSnapshotReader.Outcome
+    private let snapshotReader: SnapshotReader
+
     init(
         thumbnailLoader: KnownPeopleThumbnailLoadService = .shared,
-        archiveService: KnownPeopleArchiveService = .shared
+        archiveService: KnownPeopleArchiveService = .shared,
+        snapshotReader: @escaping SnapshotReader = { await KnownPeopleDatabaseSnapshotReader.read(root: $0) }
     ) {
         self.thumbnailLoader = thumbnailLoader
         self.archiveService = archiveService
+        self.snapshotReader = snapshotReader
         Self.instances.removeAll { $0.value == nil }
         Self.instances.append(WeakService(self))
     }
@@ -1162,9 +1172,9 @@ final class KnownPeopleService {
             url = override
         } else if let testFallback = Self.testProcessFallbackDirectory {
             url = testFallback
-        } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
+        } else if AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
                   let cloud = AppPaths.iCloudKnownPeopleURL {
-            if let text = UserDefaults.standard.string(
+            if let text = AppDefaults.store.string(
                 forKey: UserDefaultsKeys.knownPeopleICloudGenerationID
             ), text == text.lowercased(), let generationID = UUID(uuidString: text),
                generationID.uuidString.lowercased() == text {
@@ -1191,8 +1201,22 @@ final class KnownPeopleService {
         return url
     }
 
-    /// Drops all in-memory state so the next access re-reads from disk. Called
-    /// after the backing directory changes (iCloud sync toggled on/off).
+    /// Drops in-memory state after the backing directory changes (iCloud sync toggled on/off,
+    /// the cloud watcher resolving the container, a model install) and re-reads the store.
+    ///
+    /// The re-read no longer runs synchronously here: coordinated reads + decode of every person
+    /// file blocked the main thread (at launch, via the cloud watcher). The snapshot is assembled
+    /// off-main and published with `.knownPeopleDatabaseDidChange` when it lands. The previous
+    /// snapshot is still dropped immediately: serving it during the read window would let a
+    /// synchronous mutation write a stale record over newer synced data. A caller that needs the
+    /// data before the background read finishes therefore falls back to the synchronous load
+    /// (exactly the old behaviour), and the background result is discarded in that case.
+    /// Stores that need repair writes (legacy migration, conflict merges, embedding migration,
+    /// tombstone GC) are left cold and repaired by that first synchronous load.
+    ///
+    /// `.knownPeopleDatabaseDidChange` is posted when the background read lands (or fails), not
+    /// here: posting while the database is cold made every open People view run the synchronous
+    /// load on the main thread, which then also discarded the background result.
     func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) {
         storageRevision &+= 1
         cachedDirectory = resolvedStorageURL
@@ -1201,8 +1225,83 @@ final class KnownPeopleService {
         featurePrintCache.removeAllObjects()
         personThumbnailCache.removeAllObjects()
         embeddingThumbnailCache.removeAllObjects()
-        _ = loadDatabase()
-        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        scheduleBackgroundDatabaseReload()
+    }
+
+    /// In-flight off-main reload started by `reloadAfterStorageChange`.
+    private var backgroundReloadTask: Task<Void, Never>?
+    /// Identity of the current background read; a replaced or finished read clears nothing
+    /// that belongs to its successor.
+    private var backgroundReloadID: UUID?
+    /// Bumped on every `database` assignment, and by remote record events that arrive while the
+    /// database is cold, so a background snapshot never publishes records that were loaded,
+    /// mutated, invalidated or remotely changed after its read began.
+    private var databaseGeneration: UInt64 = 0
+
+    /// Whether an off-main reload is still pending (tests/diagnostics).
+    var isBackgroundDatabaseReloadPending: Bool { backgroundReloadID != nil }
+
+    /// Awaits the in-flight background reload, including any re-read it was replaced by.
+    func waitForBackgroundDatabaseReload() async {
+        while let task = backgroundReloadTask, backgroundReloadID != nil {
+            await task.value
+            if backgroundReloadTask == task { return }
+        }
+    }
+
+    private func scheduleBackgroundDatabaseReload() {
+        backgroundReloadTask?.cancel()
+        let id = UUID()
+        backgroundReloadID = id
+        let revision = storageRevision
+        // Captured while `database` is known to be nil (dropped by the caller).
+        let generation = databaseGeneration
+        backgroundReloadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var outcome: KnownPeopleDatabaseSnapshotReader.Outcome?
+            var root: URL?
+            if let resolved = try? await self.resolveDirectoryInBackground(),
+               !Task.isCancelled, revision == self.storageRevision,
+               generation == self.databaseGeneration {
+                root = resolved
+                // Repairs (embedding-space migration included) stay on the existing lazy path.
+                outcome = self.embeddingVersionNeedsMigration
+                    ? .needsRepair
+                    : await self.snapshotReader(resolved)
+            }
+            // Superseded by a newer reload or a re-read: that one publishes.
+            guard self.backgroundReloadID == id else { return }
+            self.backgroundReloadID = nil
+            self.backgroundReloadTask = nil
+            // A whole-store replacement moved the revision; its owner publishes.
+            guard !Task.isCancelled, revision == self.storageRevision else { return }
+            // A synchronous load or mutation already installed fresher state (and posted).
+            guard generation == self.databaseGeneration else { return }
+            if let root, case .clean(let loaded) = outcome,
+               // Mirror loadDatabase(): never cache a listing while an import, reset or
+               // migration owns this root.
+               !Self.isReservedDestination(root),
+               Self.importCommitRoot != root.standardizedFileURL {
+                self.database = loaded
+            }
+            // Clean result, repair needed (left cold, repaired by the next synchronous load,
+            // exactly as before) or failure: observers re-read now.
+            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        }
+    }
+
+    /// A remote record event reached this service while its database was cold. A background read
+    /// in flight may already have read the old file, so invalidate it and read again.
+    private func invalidateColdSnapshotForRemoteChange() {
+        databaseGeneration &+= 1
+        if backgroundReloadID != nil {
+            scheduleBackgroundDatabaseReload()
+        }
+    }
+
+    private var embeddingVersionNeedsMigration: Bool {
+        AppDefaults.store.object(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion) as? Int
+            != FaceRecognitionDefaults.embeddingVersion
     }
 
     // MARK: - Per-person file layout
@@ -1282,7 +1381,10 @@ final class KnownPeopleService {
     // MARK: - In-Memory Cache
 
     private var database: KnownPeopleDatabase? {
-        didSet { rebuildPeopleIndex() }
+        didSet {
+            databaseGeneration &+= 1
+            rebuildPeopleIndex()
+        }
     }
     private var peopleIndex: [UUID: Int] = [:]
     /// Boxed decoded embedding for `NSCache` (which requires class values).
@@ -1720,6 +1822,8 @@ final class KnownPeopleService {
                 // since the event was queued. Invalidate images conservatively without loading
                 // records merely to recover the embedding ownership map; this also rejects
                 // reads admitted before deferred remote events replay after archive commits.
+                // A background snapshot read before this event must not publish its record.
+                invalidateColdSnapshotForRemoteChange()
                 invalidatePeerThumbnails(at: knownPeopleDirectory)
                 thumbnailContentRevision &+= 1
                 personThumbnailCache.removeObject(forKey: personID as NSUUID)
@@ -1908,7 +2012,7 @@ final class KnownPeopleService {
         } else if let testFallback = Self.testProcessFallbackDirectory {
             root = testFallback
         } else {
-            let syncEnabled = UserDefaults.standard.bool(
+            let syncEnabled = AppDefaults.store.bool(
                 forKey: UserDefaultsKeys.knownPeopleICloudEnabled
             )
             root = await KnownPeopleICloudRoutingService.shared.storageURL(syncEnabled: syncEnabled)
@@ -2051,8 +2155,12 @@ final class KnownPeopleService {
             throw NSError(domain: "KnownPeopleService", code: 10,
                 userInfo: [NSLocalizedDescriptionKey: "Person no longer exists."])
         }
+        let originalName = current.name
         try edit(&current)
         current.updatedAt = Date()
+        // Linked folder face groups follow a rename (FaceRecognitionViewModel listens).
+        let identityChange: [String: Any]? = current.name != originalName
+            ? KnownPeopleIdentityChange.renamed(personID: id, newName: current.name).userInfo : nil
         let root = knownPeopleDirectory
         let recordURL = personFileURL(for: id)
         reserveImportDestinations([current], root: root)
@@ -2065,7 +2173,8 @@ final class KnownPeopleService {
                 database = nil
                 clearFeaturePrintCache()
                 stampLocalWrite(recordURL)
-                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+                    userInfo: identityChange)
             }
         }
         await releaseImportDestinations()
@@ -2116,7 +2225,8 @@ final class KnownPeopleService {
                 stampLocalWrite(markerURL)
                 stampLocalWrite(recordURL)
                 for url in result.removedThumbnailURLs { stampLocalWrite(url) }
-                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+                    userInfo: KnownPeopleIdentityChange.deleted(personID: id).userInfo)
             }
         }
         var upgradeCleanupError: (any Error)?
@@ -2160,7 +2270,8 @@ final class KnownPeopleService {
             )
         }
         deleteThumbnail(for: id)
-        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+            userInfo: KnownPeopleIdentityChange.deleted(personID: id).userInfo)
     }
 
     func addEmbedding(_ embedding: PersonEmbedding, toPersonID personID: UUID, thumbnailData: Data? = nil) throws {
@@ -2449,7 +2560,9 @@ final class KnownPeopleService {
                     stampLocalWrite(sourceURL)
                     stampLocalWrite(markerURL)
                 }
-                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+                    userInfo: result.sourceRemoved ? KnownPeopleIdentityChange.merged(sourceID: sourceID,
+                        targetID: intoTargetID, targetName: target.name).userInfo : nil)
             }
         }
         if result.sourceRemoved {
@@ -2631,7 +2744,7 @@ final class KnownPeopleService {
     private func migrateEmbeddingVersionIfNeeded() {
         guard Self.importCommitRoot != knownPeopleDirectory.standardizedFileURL else { return }
         let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
-        let stored = UserDefaults.standard.object(forKey: key) as? Int
+        let stored = AppDefaults.store.object(forKey: key) as? Int
         let current = FaceRecognitionDefaults.embeddingVersion
         guard stored != current else {
             Self.migrationRecoveryNotices.clear(.knownPeople)
@@ -2640,14 +2753,14 @@ final class KnownPeopleService {
         if FaceRecognitionDefaults.preservesKnownPeopleOnUpgrade(
             storedVersion: stored, currentVersion: current
         ) {
-            UserDefaults.standard.set(current, forKey: key)
+            AppDefaults.store.set(current, forKey: key)
             Self.migrationRecoveryNotices.clear(.knownPeople)
             return
         }
         // An admitted managed replacement carries its model contract in the root itself.
         // Honor it only while the managed projection still matches the recorded digest.
         if KnownPeopleManagedStoreState.protectsCurrentEmbeddingStore(at: knownPeopleDirectory) {
-            UserDefaults.standard.set(current, forKey: key)
+            AppDefaults.store.set(current, forKey: key)
             Self.migrationRecoveryNotices.clear(.knownPeople)
             return
         }
@@ -2678,7 +2791,7 @@ final class KnownPeopleService {
             }
         }
 
-        UserDefaults.standard.set(current, forKey: key)
+        AppDefaults.store.set(current, forKey: key)
         Self.migrationRecoveryNotices.clear(.knownPeople)
     }
 
@@ -2833,7 +2946,7 @@ final class KnownPeopleService {
     }
 
     func currentAutoMatchPolicy() -> MatchPolicy {
-        let minConfidence = Float(UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
+        let minConfidence = Float(AppDefaults.store.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
             ?? Double(FaceRecognitionDefaults.knownPeopleMinConfidence))
         return MatchPolicy(
             threshold: FaceRecognitionDefaults.knownPeopleMatchThreshold,
@@ -3134,7 +3247,7 @@ final class KnownPeopleService {
     func managedStoreRoute(routingActive: Bool) -> KnownPeopleManagedStoreRoute {
         KnownPeopleManagedStoreRoute(rootURL: knownPeopleDirectory,
             generation: storageRevision,
-            iCloudSyncActive: UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
+            iCloudSyncActive: AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
             routingActive: routingActive)
     }
 
@@ -3610,4 +3723,128 @@ final class KnownPeopleService {
     func getAllPeople() -> [KnownPerson] {
         return loadDatabase().people
     }
+
+    /// Person names for autocomplete without loading the full database on the caller.
+    /// Uses the in-memory database when it is loaded; otherwise reads only names from the
+    /// person files off the main actor (no repair, migration or GC writes — `loadDatabase`
+    /// still owns those, and decoding every embedding is what made the cold read slow).
+    func personNamesForSuggestions() async -> [String] {
+        if let database { return database.people.map(\.name) }
+        let root = knownPeopleDirectory
+        guard !Self.isReservedDestination(root) else { return [] }
+        return await Self.readPersonSummaries(in: peopleDirectory, tombstoneRetention: Self.tombstoneRetention)
+            .map(\.name)
+    }
+
+    /// People and sample counts for display (Settings) without `loadDatabase()` on the caller.
+    /// Uses the in-memory database when loaded; otherwise counts from the person files off the
+    /// main actor with the same read-only rules as `personNamesForSuggestions()`.
+    func statisticsForDisplay() async -> (peopleCount: Int, embeddingCount: Int) {
+        if let database {
+            return (database.people.count, database.people.reduce(0) { $0 + $1.embeddings.count })
+        }
+        let root = knownPeopleDirectory
+        guard !Self.isReservedDestination(root) else { return (0, 0) }
+        // An unmigrated legacy store, or a pending embedding-version reset, only shows its real
+        // counts after the full load runs its one-time preparation; take that path once.
+        let storedVersion = AppDefaults.store.object(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion) as? Int
+        if FileManager.default.fileExists(atPath: legacyDatabaseFileURL.path)
+            || storedVersion != FaceRecognitionDefaults.embeddingVersion {
+            return getStatistics()
+        }
+        let people = await Self.readPersonSummaries(in: peopleDirectory, tombstoneRetention: Self.tombstoneRetention)
+        return (people.count, people.reduce(0) { $0 + $1.embeddingCount })
+    }
+
+    @concurrent
+    nonisolated private static func readPersonSummaries(
+        in directory: URL,
+        tombstoneRetention: TimeInterval
+    ) async -> [KnownPersonSummaryRecord] {
+        let entries = (try? CloudCoordinatedIO.contentsOfDirectory(at: directory)) ?? []
+        let decoder = JSONDecoder()
+        let now = Date()
+        var tombstoned = Set<UUID>()
+        for url in entries where url.pathExtension == "deleted" {
+            guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { continue }
+            if let data = try? CloudCoordinatedIO.readData(at: url),
+               let tombstone = try? decoder.decode(KnownPersonTombstone.self, from: data),
+               tombstone.id == id, now.timeIntervalSince(tombstone.deletedAt) >= tombstoneRetention {
+                continue
+            }
+            tombstoned.insert(id)
+        }
+        return entries.compactMap { url in
+            guard url.pathExtension == "json",
+                  let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+                  !tombstoned.contains(id),
+                  let data = try? CloudCoordinatedIO.readData(at: url),
+                  let record = try? decoder.decode(KnownPersonSummaryRecord.self, from: data),
+                  record.id == id else { return nil }
+            return record
+        }
+    }
+}
+
+/// Identity, name and sample count of a person file. Embedding entries are counted without
+/// decoding their feature payloads.
+private nonisolated struct KnownPersonSummaryRecord: Decodable, Sendable {
+    let id: UUID
+    let name: String
+    let embeddingCount: Int
+
+    private enum CodingKeys: String, CodingKey { case id, name, embeddings }
+    private struct Skipped: Decodable { init(from decoder: any Decoder) throws {} }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        embeddingCount = try container.decodeIfPresent([Skipped].self, forKey: .embeddings)?.count ?? 0
+    }
+}
+
+/// Cached Known People names for the metadata panel's Person Shown suggestions. SwiftUI
+/// bodies read `currentNames` on every render, so it never touches disk: the first access
+/// warms the list off the main actor, and database-change notifications refresh it.
+@Observable
+final class KnownPeopleNameSuggestions {
+    static let shared = KnownPeopleNameSuggestions()
+
+    private(set) var names: [String] = []
+    @ObservationIgnored private let service: KnownPeopleService
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var observer: (any NSObjectProtocol)?
+
+    init(service: KnownPeopleService = .shared) {
+        self.service = service
+    }
+
+    /// Cached names; the first read starts the warm-up and change subscription.
+    var currentNames: [String] {
+        startIfNeeded()
+        return names
+    }
+
+    func startIfNeeded() {
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(
+            forName: .knownPeopleDatabaseDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        refresh()
+    }
+
+    func refresh() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self, service] in
+            let loaded = await service.personNamesForSuggestions()
+            guard !Task.isCancelled, let self, self.names != loaded else { return }
+            self.names = loaded
+        }
+    }
+
+    /// Waits for the in-flight refresh (tests).
+    func waitForRefresh() async { await refreshTask?.value }
 }

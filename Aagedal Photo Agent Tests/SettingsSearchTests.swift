@@ -28,6 +28,31 @@ struct SettingsSearchTests {
         #expect(!Section.general.matches("certificate"))
     }
 
+    @Test("Visible control and format names are searchable")
+    func visibleTerms() {
+        #expect(Section.format.matches("HEIC"))
+        #expect(Section.format.matches("AVIF"))
+        #expect(Section.format.matches("Gain Map"))
+        #expect(Section.format.matchingTerms(for: "XL") == ["JPEG XL"])
+        #expect(Section.webDownloads.matches("gallery-dl"))
+        #expect(Section.webDownloads.matches("Instagram"))
+        #expect(Section.watermarks.matches("text watermark"))
+        #expect(Section.watermarks.matches("Margin"))
+        #expect(Section.watermarks.matches("Placement"))
+        #expect(Section.templates.matches("templates folder"))
+        #expect(Section.templates.matches("Storage"))
+        #expect(Section.descriptionModels.matches("remove downloaded model"))
+    }
+
+    @Test("Search does not promise controls that don't exist")
+    func noPhantomTerms() {
+        #expect(!Section.watermarks.matches("Opacity"))
+        #expect(!Section.watermarks.matches("Position"))
+        #expect(!Section.webDownloads.matches("FFmpeg"))
+        #expect(!Section.descriptionModels.matches("Model storage"))
+        #expect(!Section.format.matches("HEIF"))
+    }
+
     @Test("Search ignores case, accents, repeated whitespace and word order")
     func normalizedSearch() {
         #expect(Section.rawDecoding.matches("  hdr RAW \n"))

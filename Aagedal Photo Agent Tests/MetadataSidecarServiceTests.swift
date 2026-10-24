@@ -356,6 +356,119 @@ struct FolderChangeMonitorServiceTests {
         #expect(source.contains("monitoredURLs[paneID] == folderURL"))
         #expect(source.contains("monitorSetupTasks.removeValue(forKey: paneID)?.cancel()"))
         #expect(!source.contains("FolderChangeMonitor(url: folderURL)"))
+        // A loaded pending draft sets `hasChanges`; only unpersisted editor edits can be
+        // disturbed by a refresh, so they alone may defer showing new files.
+        #expect(source.contains("|| metadataViewModel.hasUnpersistedEditorChanges"))
+        #expect(!source.contains("metadataViewModel.hasChanges"))
+        // An import folder is throttled (not frozen) and never shows unfinished copies.
+        #expect(source.contains("importRefreshThrottle.remainingDelay(for: paneID)"))
+        #expect(source.contains("excludingNewURLs: isImportDeferred ? unfinishedImportURLs : nil"))
+    }
+
+    @Test("Import folder refreshes are throttled to one per interval per pane, not frozen")
+    func importRefreshThrottle() {
+        final class Pane {}
+        let first = Pane(), second = Pane()
+        let firstID = ObjectIdentifier(first), secondID = ObjectIdentifier(second)
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        var throttle = ImportRefreshThrottle()
+        #expect(throttle.interval == 2.5)
+
+        // The first refresh during an import runs at once.
+        #expect(throttle.remainingDelay(for: firstID, now: start) == 0)
+        throttle.recordRefresh(for: firstID, at: start)
+
+        // Arrivals within the interval wait out the rest of it instead of rescanning.
+        #expect(throttle.remainingDelay(for: firstID, now: start.addingTimeInterval(0.5)) == 2.0)
+        #expect(throttle.remainingDelay(for: firstID, now: start.addingTimeInterval(2.4)) > 0)
+        #expect(throttle.remainingDelay(for: firstID, now: start.addingTimeInterval(2.5)) == 0)
+        // Panes are throttled independently.
+        #expect(throttle.remainingDelay(for: secondID, now: start.addingTimeInterval(0.5)) == 0)
+
+        // Ending the import clears the throttle; the final refresh is never delayed.
+        throttle.reset()
+        #expect(throttle.remainingDelay(for: firstID, now: start.addingTimeInterval(0.1)) == 0)
+        withExtendedLifetime((first, second)) {}
+    }
+
+    @Test("Mid-import refreshes skip unfinished copies but never drop rows already shown")
+    @MainActor
+    func refreshExcludesUnfinishedImportCopies() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("import-refresh-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let shown = folder.appendingPathComponent("A.jpg")
+        let finished = folder.appendingPathComponent("B.jpg")
+        let unfinished = folder.appendingPathComponent("C.jpg")
+        try Data("x".utf8).write(to: shown)
+
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        func refresh(excluding excluded: Set<URL>?) async {
+            // A refresh is refused while the previous one's metadata pass runs; retry (bounded).
+            var exclusion: (@MainActor () -> Set<URL>)?
+            if let excluded { exclusion = { excluded } }
+            for _ in 0..<200 {
+                let started: Bool = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                    let didStart = model.refreshCurrentFolderIfNeeded(
+                        onComplete: { _ in continuation.resume(returning: true) },
+                        excludingNewURLs: exclusion
+                    )
+                    if !didStart { continuation.resume(returning: false) }
+                }
+                if started { return }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            Issue.record("Refresh never started")
+        }
+        // The row already shown comes from an ordinary scan.
+        await refresh(excluding: nil)
+        #expect(model.images.map(\.url.lastPathComponent) == ["A.jpg"])
+
+        for url in [finished, unfinished] { try Data("x".utf8).write(to: url) }
+        await refresh(excluding: [unfinished.standardizedFileURL, shown.standardizedFileURL])
+        #expect(Set(model.images.map(\.url.lastPathComponent)) == ["A.jpg", "B.jpg"])
+
+        // Once finished (exclusion lifted), the copy appears.
+        await refresh(excluding: nil)
+        #expect(Set(model.images.map(\.url.lastPathComponent)) == ["A.jpg", "B.jpg", "C.jpg"])
+    }
+}
+
+@Suite("Photo drag pasteboard sidecars")
+struct PhotoDragPasteboardURLsTests {
+    @Test("Only dragged RAW files carry their XMP sidecar, once per RAW+JPEG pair")
+    func ownedSidecars() {
+        let folder = URL(fileURLWithPath: "/virtual/drag", isDirectory: true)
+        let raw = folder.appendingPathComponent("IMG_1.CR3")
+        let pairedJPEG = folder.appendingPathComponent("IMG_1.JPG")
+        let loneJPEG = folder.appendingPathComponent("IMG_2.jpg")
+        let rawWithoutSidecar = folder.appendingPathComponent("IMG_3.NEF")
+        let withSidecar: Set<URL> = [raw, pairedJPEG, loneJPEG]
+        func sidecars(_ urls: [URL]) -> [String] {
+            PhotoDragPasteboardURLs.ownedSidecars(
+                for: urls,
+                hasSidecar: { withSidecar.contains($0) }
+            ).map(\.lastPathComponent)
+        }
+
+        #expect(sidecars([raw]) == ["IMG_1.xmp"])
+        #expect(sidecars([pairedJPEG, raw]) == ["IMG_1.xmp"])
+        // JPEGs carry embedded metadata; an extra .xmp would break Mail/web-upload drops.
+        #expect(sidecars([pairedJPEG]).isEmpty)
+        #expect(sidecars([loneJPEG]).isEmpty)
+        #expect(sidecars([rawWithoutSidecar]).isEmpty)
+    }
+
+    @Test("In-app folder drops skip a dragged sidecar whose photo is moved with it")
+    func removesCompanionSidecars() {
+        let folder = URL(fileURLWithPath: "/virtual/drag", isDirectory: true)
+        let raw = folder.appendingPathComponent("IMG_1.CR3")
+        let sidecar = folder.appendingPathComponent("IMG_1.xmp")
+        let strayXMP = folder.appendingPathComponent("Other.xmp")
+        #expect(PhotoDragPasteboardURLs.removingCompanionSidecars(from: [raw, sidecar, strayXMP])
+            == [raw, strayXMP])
     }
 }
 
@@ -2732,5 +2845,85 @@ extension MetadataReplayIntentTests {
         #expect(!replay.receipt.hasCommitted)
         #expect(!FileManager.default.fileExists(atPath: jsonURL(folder).path))
         #expect(!FileManager.default.fileExists(atPath: XMPSidecarService().sidecarURL(for: image).path))
+    }
+}
+
+@Suite("Browser metadata-batch sidecar reads")
+struct BrowserBatchSidecarReadTests {
+    private nonisolated final class ReadCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var urls: [URL] = []
+        func record(_ url: URL) { lock.withLock { urls.append(url) } }
+        var readURLs: [URL] { lock.withLock { urls } }
+    }
+
+    private func makeFolder() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("browser-batch-sidecars-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private func pending(_ name: String, title: String) -> MetadataSidecar {
+        MetadataSidecar(sourceFile: name, pendingChanges: true, metadata: IPTCMetadata(title: title),
+            imageMetadataSnapshot: IPTCMetadata(title: "Original"), history: [])
+    }
+
+    @Test("a folder without .photo_metadata yields an authoritative empty result without per-photo reads")
+    func missingDirectoryMeansNoSidecars() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let images = (0..<20).map { folder.appendingPathComponent("IMG_\($0).jpg") }
+        let counter = ReadCounter()
+        let result = await MetadataSidecarService().loadSidecarsForBrowserBatch(
+            images, in: folder, beforeRead: { counter.record($0) })
+        #expect(result.isEmpty)
+        #expect(counter.readURLs.isEmpty)
+    }
+
+    @Test("only listed carriers are read; a missing entry means no sidecar")
+    func onlyListedCarriersAreRead() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let images = ["a.jpg", "b.jpg", "c.CR3", "d.jpg"].map { folder.appendingPathComponent($0) }
+        let service = MetadataSidecarService()
+        try service.saveSidecar(pending("a.jpg", title: "A"), for: images[0], in: folder)
+        try service.saveSidecar(pending("c.CR3", title: "C"), for: images[2], in: folder)
+
+        let counter = ReadCounter()
+        let result = await service.loadSidecarsForBrowserBatch(images, in: folder, beforeRead: { counter.record($0) })
+        #expect(Set(result.keys) == [images[0], images[2]])
+        #expect(result[images[0]]?.metadata.title == "A")
+        #expect(result[images[2]]?.metadata.title == "C")
+        #expect(Set(counter.readURLs) == [images[0], images[2]])
+        // Identical to the per-photo answer for every requested URL.
+        for image in images {
+            #expect(result[image]?.metadata.title == service.loadSidecar(for: image, in: folder)?.metadata.title)
+        }
+    }
+
+    @Test("cached records are reused, sidecars written after the cache are read, deleted ones vanish")
+    func cacheStaysAuthoritativeAcrossWrites() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let images = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        let service = MetadataSidecarService()
+        try service.saveSidecar(pending("a.jpg", title: "A"), for: images[0], in: folder)
+        try service.saveSidecar(pending("b.jpg", title: "B"), for: images[1], in: folder)
+        let cache = await service.loadAllSidecars(in: folder)
+        #expect(Set(cache.keys) == [images[0], images[1]])
+
+        // After the cache was built: c gains a sidecar, b's is deleted.
+        try service.saveSidecar(pending("c.jpg", title: "C new"), for: images[2], in: folder)
+        try service.deleteSidecar(for: images[1], in: folder)
+
+        let counter = ReadCounter()
+        let result = await service.loadSidecarsForBrowserBatch(
+            images, in: folder, reusing: cache, beforeRead: { counter.record($0) })
+        #expect(result[images[0]]?.metadata.title == "A")
+        #expect(result[images[1]] == nil)
+        #expect(result[images[2]]?.metadata.title == "C new")
+        // Only the newly written carrier needed a disk read.
+        #expect(counter.readURLs == [images[2]])
     }
 }

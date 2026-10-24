@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os.log
 
@@ -12,7 +13,7 @@ nonisolated enum FaceDataDeletionSelection: Sendable {
 nonisolated struct FaceDataStorageService: Sendable {
 
     static let faceDataDirectoryName = ".face_data"
-    private static let dataFileName = "face_data.json"
+    static let dataFileName = "face_data.json"
     private static let thumbnailsDirectoryName = "thumbnails"
 
     // MARK: - Directory Helpers
@@ -275,6 +276,122 @@ nonisolated struct FaceScanFileClassification: Sendable, Equatable {
     let imageURLsToScan: [URL]
     let removedOrModifiedPaths: Set<String>
     let unchangedPaths: Set<String>
+    /// Unchanged files whose stored signature must be replaced: a metadata-only write moved the
+    /// date/size while the content fingerprint still matches, or a legacy signature gained one.
+    var refreshedSignatures: [String: FileSignature] = [:]
+}
+
+/// Metadata-independent identity of a photo's image content, so a metadata-only write (ours,
+/// Photo Mechanic's, …) does not discard faces detected in unchanged pixels.
+///
+/// JPEG only: SHA-256 over every non-metadata segment before the first scan (frame, tables),
+/// the byte length of the entropy-coded region, three 64 KB samples of it (start, middle, end)
+/// and the EXIF orientation. APPn/COM segments — where EXIF, XMP, IPTC and ICC live — are
+/// excluded (only the EXIF orientation is read from APP1). A pixel edit re-encodes the scan data
+/// (changing its length and samples) and a rotation changes the orientation, so either still
+/// forces a rescan.
+///
+/// Reads go through a `FileHandle` with bounded, explicit reads (never memory mapping), so a file
+/// truncated or a network volume dropped mid-read yields "no fingerprint" instead of SIGBUS.
+nonisolated enum FaceScanContentFingerprint {
+    static let sampleSize = 64 * 1024
+    /// Headers (all segments before the first scan) larger than this are not fingerprinted.
+    static let maximumHeaderBytes: UInt64 = 16 * 1024 * 1024
+    static let maximumSegments = 4096
+
+    static func compute(for url: URL) -> String? {
+        guard ["jpg", "jpeg", "jpe"].contains(url.pathExtension.lowercased()),
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        do {
+            let fileSize = try handle.seekToEnd()
+            /// Exactly `count` bytes at `offset`, or nil (short read: truncated or changed file).
+            func read(_ offset: UInt64, _ count: Int) throws -> Data? {
+                guard count >= 0, offset + UInt64(count) <= fileSize else { return nil }
+                try handle.seek(toOffset: offset)
+                let data = try handle.read(upToCount: count) ?? Data()
+                return data.count == count ? data : nil
+            }
+            return try compute(fileSize: fileSize, read: read)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func compute(fileSize: UInt64, read: (UInt64, Int) throws -> Data?) throws -> String? {
+        guard fileSize > 4, let soi = try read(0, 2), soi[soi.startIndex] == 0xFF,
+              soi[soi.startIndex + 1] == 0xD8 else { return nil }
+        var hasher = SHA256()
+        var offset: UInt64 = 2
+        var sawFrame = false
+        var orientation: Int?
+        var segments = 0
+        while offset + 4 <= fileSize, offset <= maximumHeaderBytes, segments < maximumSegments {
+            segments += 1
+            guard let head = try read(offset, 2) else { return nil }
+            guard head[head.startIndex] == 0xFF else { return nil }
+            let marker = head[head.startIndex + 1]
+            if marker == 0xFF { offset += 1; continue }
+            if marker == 0x01 || (0xD0...0xD8).contains(marker) { offset += 2; continue }
+            guard marker != 0xD9, let lengthBytes = try read(offset + 2, 2) else { return nil }
+            let length = Int(lengthBytes[lengthBytes.startIndex]) << 8 | Int(lengthBytes[lengthBytes.startIndex + 1])
+            let segmentEnd = offset + 2 + UInt64(length)
+            guard length >= 2, segmentEnd <= fileSize else { return nil }
+            if marker == 0xDA {
+                guard sawFrame else { return nil }
+                let scanLength = fileSize - offset
+                withUnsafeBytes(of: scanLength.bigEndian) { hasher.update(bufferPointer: $0) }
+                let sampleLength = Int(min(UInt64(sampleSize), scanLength))
+                let middle = offset + (scanLength - UInt64(sampleLength)) / 2
+                for start in [offset, middle, fileSize - UInt64(sampleLength)] {
+                    guard let sample = try read(start, sampleLength) else { return nil }
+                    hasher.update(data: sample)
+                }
+                withUnsafeBytes(of: Int64(orientation ?? 1).bigEndian) { hasher.update(bufferPointer: $0) }
+                return "jpeg-v2:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            }
+            if marker == 0xE1, orientation == nil, length > 8 {
+                // APP1: only the EXIF orientation matters (it changes the face geometry).
+                if let payload = try read(offset + 4, length - 2) { orientation = exifOrientation(payload) }
+            }
+            let isMetadata = (0xE0...0xEF).contains(marker) || marker == 0xFE
+            if !isMetadata {
+                if (0xC0...0xCF).contains(marker), ![0xC4, 0xC8, 0xCC].contains(marker) { sawFrame = true }
+                guard let segment = try read(offset, 2 + length) else { return nil }
+                hasher.update(data: segment)
+            }
+            offset = segmentEnd
+        }
+        return nil
+    }
+
+    /// IFD0 tag 0x0112 from an APP1 "Exif\0\0" payload; nil when absent or malformed.
+    static func exifOrientation(_ payload: Data) -> Int? {
+        let bytes = [UInt8](payload)
+        guard bytes.count >= 14, Array(bytes[0..<6]) == [0x45, 0x78, 0x69, 0x66, 0, 0] else { return nil }
+        let tiff = Array(bytes[6...])
+        let littleEndian: Bool
+        switch (tiff[0], tiff[1]) {
+        case (0x49, 0x49): littleEndian = true
+        case (0x4D, 0x4D): littleEndian = false
+        default: return nil
+        }
+        func u16(_ at: Int) -> Int? {
+            guard at >= 0, at + 2 <= tiff.count else { return nil }
+            return littleEndian ? Int(tiff[at]) | Int(tiff[at + 1]) << 8 : Int(tiff[at]) << 8 | Int(tiff[at + 1])
+        }
+        func u32(_ at: Int) -> Int? {
+            guard let high = u16(littleEndian ? at + 2 : at), let low = u16(littleEndian ? at : at + 2) else { return nil }
+            return high << 16 | low
+        }
+        guard let ifd = u32(4), let count = u16(ifd), count < 1000 else { return nil }
+        for index in 0..<count {
+            let entry = ifd + 2 + index * 12
+            guard let tag = u16(entry) else { return nil }
+            if tag == 0x0112 { return u16(entry + 8) }
+        }
+        return nil
+    }
 }
 
 /// Classification stops at a precise URL boundary when cancellation is observed. Callers must
@@ -305,8 +422,10 @@ actor FaceScanFileSignatureService {
     static let shared = FaceScanFileSignatureService()
 
     typealias SignatureReader = @Sendable (URL) -> FileSignature?
+    typealias FingerprintReader = @Sendable (URL) -> String?
 
     private let readSignature: SignatureReader
+    private let readFingerprint: FingerprintReader
 
     init(
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
@@ -325,10 +444,12 @@ actor FaceScanFileSignatureService {
             }
             guard let fileSize else { return nil }
             return FileSignature(modificationDate: modificationDate, fileSize: fileSize)
-        }
+        },
+        readFingerprint: @escaping FingerprintReader = { FaceScanContentFingerprint.compute(for: $0) }
     ) {
         self.filesystemQueue = filesystemQueue
         self.readSignature = readSignature
+        self.readFingerprint = readFingerprint
     }
 
     /// Run under the caller's folder reservation before reading/resetting saved face data.
@@ -390,6 +511,7 @@ actor FaceScanFileSignatureService {
         let existingPaths = Set(existingSignatures.keys)
         var imageURLsToScan: [URL] = []
         var unchangedPaths: Set<String> = []
+        var refreshedSignatures: [String: FileSignature] = [:]
         var processedFileCount = 0
 
         for url in imageURLs {
@@ -408,9 +530,22 @@ actor FaceScanFileSignatureService {
                 )
             }
 
-            if let existingSignature = existingSignatures[url.path],
-               currentSignature == existingSignature {
+            if let existingSignature = existingSignatures[url.path], let currentSignature,
+               existingSignature.hasSameFileFacts(as: currentSignature) {
                 unchangedPaths.insert(url.path)
+                // Backfill a legacy signature so a later metadata-only write keeps its faces.
+                if existingSignature.contentFingerprint == nil, let fingerprint = readFingerprint(url) {
+                    refreshedSignatures[url.path] = FileSignature(modificationDate: existingSignature.modificationDate,
+                        fileSize: existingSignature.fileSize, contentFingerprint: fingerprint)
+                }
+            } else if let existingSignature = existingSignatures[url.path], let currentSignature,
+                      existingSignature.contentFingerprint != nil,
+                      case let current = FileSignature(modificationDate: currentSignature.modificationDate,
+                          fileSize: currentSignature.fileSize, contentFingerprint: readFingerprint(url)),
+                      FileSignature.storedFacesAreCurrent(stored: existingSignature, current: current) {
+                // Metadata-only change: same pixels and orientation, new date/size.
+                unchangedPaths.insert(url.path)
+                refreshedSignatures[url.path] = current
             } else {
                 imageURLsToScan.append(url)
             }
@@ -422,7 +557,8 @@ actor FaceScanFileSignatureService {
         return .complete(FaceScanFileClassification(
             imageURLsToScan: imageURLsToScan,
             removedOrModifiedPaths: removedOrModifiedPaths,
-            unchangedPaths: unchangedPaths
+            unchangedPaths: unchangedPaths,
+            refreshedSignatures: refreshedSignatures
         ))
     }
 
@@ -430,11 +566,17 @@ actor FaceScanFileSignatureService {
         guard !Task.isCancelled else {
             return .cancelled(imageURL: imageURL, readCompleted: false)
         }
-        let signature = readSignature(imageURL)
+        var signature = readSignature(imageURL)
+        if signature != nil { signature?.contentFingerprint = readFingerprint(imageURL) }
         guard !Task.isCancelled else {
             return .cancelled(imageURL: imageURL, readCompleted: true)
         }
         return .captured(imageURL: imageURL, signature: signature)
+    }
+
+    /// Date/size only (no content read) for cheap before/after comparisons around our own writes.
+    func fileFacts(for imageURL: URL) -> FileSignature? {
+        readSignature(imageURL)
     }
 }
 
@@ -482,6 +624,37 @@ actor FaceDataFolderLoadService {
     private let deleteThumbnail: ThumbnailDeleter
     private let currentDate: CurrentDate
 
+    /// Stat identity of a folder's face-data document; see `cachedDocumentFaceData`.
+    private struct DocumentFileIdentity: Equatable {
+        let device: Int32
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int
+        let modifiedNanos: Int
+        let changedSeconds: Int
+        let changedNanos: Int
+
+        init(_ info: stat) {
+            device = info.st_dev; inode = info.st_ino; size = info.st_size
+            modifiedSeconds = info.st_mtimespec.tv_sec; modifiedNanos = info.st_mtimespec.tv_nsec
+            changedSeconds = info.st_ctimespec.tv_sec; changedNanos = info.st_ctimespec.tv_nsec
+        }
+
+        func isSettled(at now: Date) -> Bool {
+            let latest = TimeInterval(max(modifiedSeconds, changedSeconds)) + 1
+            return now.timeIntervalSince1970 - latest >= 2.5
+        }
+    }
+
+    private struct DocumentCacheEntry {
+        let identity: DocumentFileIdentity
+        let faceData: FolderFaceData
+    }
+
+    private let cachesDocuments: Bool
+    private var documentCache: [String: DocumentCacheEntry] = [:]
+    private static let documentCacheCapacity = 8
+
     init(
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.face-data-storage", qos: .utility
@@ -504,7 +677,8 @@ actor FaceDataFolderLoadService {
         deleteThumbnail: @escaping ThumbnailDeleter = { faceID, folderURL in
             try FaceDataStorageService().deleteThumbnail(for: faceID, folderURL: folderURL)
         },
-        currentDate: @escaping CurrentDate = Date.init
+        currentDate: @escaping CurrentDate = Date.init,
+        cachesDocuments: Bool? = nil
     ) {
         self.filesystemQueue = filesystemQueue
         self.writeCapabilityFactory = writeCapabilityFactory
@@ -523,6 +697,8 @@ actor FaceDataFolderLoadService {
         self.saveThumbnail = saveThumbnail ?? { try FaceDataStorageService().saveThumbnail($0, for: $1, folderURL: $2) }
         self.deleteThumbnail = deleteThumbnail
         self.currentDate = currentDate
+        // Injected loaders are uncached unless a test explicitly opts in.
+        self.cachesDocuments = cachesDocuments ?? (loadFaceData == nil)
     }
 
     /// Bind the retained scan's write destination on the filesystem worker before any
@@ -547,7 +723,7 @@ actor FaceDataFolderLoadService {
         guard !Task.isCancelled else {
             return .cancelled(folderURL: standardizedFolderURL)
         }
-        let faceData = loadDocumentFaceData(folderURL)
+        let faceData = cachedDocumentFaceData(folderURL).map { Self.rebased($0, to: folderURL).data }
         guard !Task.isCancelled else {
             return .cancelled(folderURL: standardizedFolderURL)
         }
@@ -556,6 +732,54 @@ actor FaceDataFolderLoadService {
             documentExisted: existed,
             faceData: faceData
         ))
+    }
+
+    /// `loadDocument` runs on every Caption navigation, and a busy folder's document is over a
+    /// megabyte of JSON. Reuse the decoded document while the data file's stat identity
+    /// (device, inode, size, mtime, ctime) is unchanged; atomic saves replace the inode and
+    /// in-place writes advance mtime/ctime, so any change on disk (including another process)
+    /// misses. This actor's own mutations also drop the folder's entry. Only the production
+    /// loader is cached; injected test loaders keep their per-call behavior.
+    private func cachedDocumentFaceData(_ folderURL: URL) -> FolderFaceData? {
+        guard cachesDocuments else { return loadDocumentFaceData(folderURL) }
+        let key = folderURL.standardizedFileURL.path
+        guard let before = Self.documentIdentity(folderURL) else {
+            documentCache[key] = nil
+            return loadDocumentFaceData(folderURL)
+        }
+        if let cached = documentCache[key], cached.identity == before {
+            return cached.faceData
+        }
+        documentCache[key] = nil
+        let faceData = loadDocumentFaceData(folderURL)
+        // Remember only a document that did not change while it was read and whose timestamps
+        // have settled (coarse-timestamp volumes could otherwise hide a same-tick rewrite).
+        if let faceData, Self.documentIdentity(folderURL) == before, before.isSettled(at: currentDate()) {
+            if documentCache.count >= Self.documentCacheCapacity { documentCache.removeAll(keepingCapacity: true) }
+            documentCache[key] = DocumentCacheEntry(identity: before, faceData: faceData)
+        }
+        return faceData
+    }
+
+    /// A moved or copied folder's document still names the old location. Every read is rebased
+    /// onto the folder actually requested so no edit, Apply or save can target the old folder.
+    private static func rebased(_ data: FolderFaceData, to folderURL: URL) -> (data: FolderFaceData, changed: Bool) {
+        var copy = data
+        let changed = copy.rebase(toFolder: folderURL)
+        return (copy, changed)
+    }
+
+    private func invalidateDocumentCache(_ folderURL: URL) {
+        documentCache[folderURL.standardizedFileURL.path] = nil
+    }
+
+    private static func documentIdentity(_ folderURL: URL) -> DocumentFileIdentity? {
+        let path = folderURL
+            .appendingPathComponent(FaceDataStorageService.faceDataDirectoryName)
+            .appendingPathComponent(FaceDataStorageService.dataFileName).path
+        var info = stat()
+        guard stat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        return DocumentFileIdentity(info)
     }
 
     func loadThumbnailData(faceID: UUID, folderURL: URL) -> FaceThumbnailLoadResult {
@@ -582,7 +806,7 @@ actor FaceDataFolderLoadService {
                 // Decode without recovery: corrupt, removed, or foreign-owned documents must
                 // never be replaced by an older interactive whole-document snapshot.
                 guard expectedSnapshot.folderURL.standardizedFileURL.path == folderURL.path,
-                      let current = loadDocumentFaceData(folderURL),
+                      let current = loadDocumentFaceData(folderURL).map({ Self.rebased($0, to: folderURL).data }),
                       current.folderURL.standardizedFileURL.path == folderURL.path else {
                     return .failedBeforeCommit(folderURL: folderURL,
                         message: "Face data changed on disk. Reload the folder and reapply the edit.")
@@ -609,6 +833,7 @@ actor FaceDataFolderLoadService {
         writeCapability: FaceDataWriteCapability? = nil
     ) -> FaceDataPersistenceResult {
         let folderURL = faceData.folderURL.standardizedFileURL
+        invalidateDocumentCache(folderURL)
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(folderURL: folderURL)
         }
@@ -725,6 +950,7 @@ actor FaceDataFolderLoadService {
 
     func deleteAll(for folderURL: URL, effectAuthority: EffectAuthority? = nil,
                    writeCapability: FaceDataWriteCapability? = nil) -> FaceDataDeletionResult {
+        invalidateDocumentCache(folderURL)
         if let writeCapability {
             guard writeCapability.folderURL == folderURL.standardizedFileURL else {
                 return .failed(folderURL: folderURL, message: "Reset capability does not match the approved folder.")
@@ -854,6 +1080,8 @@ actor FaceDataFolderLoadService {
         readOnlyRecovery: Bool = false
     ) -> FaceDataFolderLoadResult {
         let standardizedFolderURL = folderURL.standardizedFileURL
+        // This path may relocate a corrupt document or expire old results.
+        invalidateDocumentCache(standardizedFolderURL)
         guard !Task.isCancelled else {
             return .cancelled(CancelledFaceDataFolderLoadEvidence(
                 folderURL: standardizedFolderURL,
@@ -862,7 +1090,7 @@ actor FaceDataFolderLoadService {
             ))
         }
 
-        guard let faceData = (readOnlyRecovery ? loadDocumentFaceData(folderURL) : loadFaceData(folderURL)) else {
+        guard let storedFaceData = (readOnlyRecovery ? loadDocumentFaceData(folderURL) : loadFaceData(folderURL)) else {
             let evidence = FaceDataFolderLoadEvidence(
                 folderURL: standardizedFolderURL,
                 faceData: nil,
@@ -886,6 +1114,15 @@ actor FaceDataFolderLoadService {
                 requestedThumbnailCount: 0,
                 processedThumbnailCount: 0
             ))
+        }
+
+        let (faceData, wasRebased) = Self.rebased(storedFaceData, to: folderURL)
+        if wasRebased, !readOnlyRecovery {
+            // The caller owns the folder reservation; durably adopt the new location so the
+            // document no longer points at the folder it was moved or copied from.
+            if let failure = persist(faceData).failureMessage {
+                faceDataLog.warning("Failed to save rebased face data: \(failure, privacy: .private)")
+            }
         }
 
         let cleanupDisposition: FaceDataFolderLoadEvidence.CleanupDisposition

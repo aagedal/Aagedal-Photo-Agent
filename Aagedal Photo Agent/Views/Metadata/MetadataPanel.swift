@@ -37,6 +37,25 @@ final class MetadataEditorBufferRegistry {
         let read: () -> String
     }
     private var buffers: [String: Buffer] = [:]
+    private var pendingInputs: [String: (owner: UUID, commit: () -> Bool)] = [:]
+
+    /// A chip editor's typed-but-unconfirmed token (no Return or comma yet). Flushing commits it
+    /// into the editing model so navigation, Write and workspace changes include it.
+    func registerPendingInput(key: String, owner: UUID, commit: @escaping () -> Bool) {
+        pendingInputs[key] = (owner, commit)
+    }
+
+    func unregisterPendingInput(key: String, owner: UUID) {
+        if pendingInputs[key]?.owner == owner { pendingInputs[key] = nil }
+    }
+
+    /// Commits every registered pending token. Returns whether any changed the model.
+    @discardableResult
+    func commitPendingInputs() -> Bool {
+        var changed = false
+        for entry in pendingInputs.values where entry.commit() { changed = true }
+        return changed
+    }
 
     func register(key: String, owner: UUID, loadID: UUID?, read: @escaping () -> String,
                   readModel: (() -> String)? = nil, readSynchronizedModel: (() -> String)? = nil) {
@@ -66,6 +85,14 @@ final class MetadataEditorBufferRegistry {
         guard metadata[keyPath: path] != normalized else { return .unchanged }
         metadata[keyPath: path] = normalized
         return .changed
+    }
+
+    /// Whether the focused buffer holds text not yet in `metadata` — or cannot be read safely
+    /// (marked text, or a buffer registered for another load). Never mutates `metadata`.
+    func hasUncommittedText(key: String?, loadID: UUID?, hasMarkedText: Bool,
+                            metadata: IPTCMetadata) -> Bool {
+        var scratch = metadata
+        return capture(key: key, loadID: loadID, hasMarkedText: hasMarkedText, metadata: &scratch) != .unchanged
     }
 
     // Match the actual EditableTextField/BufferedTextEditor bindings exactly: preserve whitespace,
@@ -108,12 +135,15 @@ private struct MetadataEditorCurrentLoadIDReader: Equatable {
 
 private extension EnvironmentValues {
     @Entry var metadataEditorBuffers: MetadataEditorBufferRegistry? = nil
+    /// The photos the editor holds; a chip editor's typed token never carries to another photo.
+    @Entry var metadataEditorSelection: [URL] = []
     @Entry var metadataEditorBufferLoadID: UUID? = nil
     @Entry var metadataEditorCurrentLoadID: MetadataEditorCurrentLoadIDReader? = nil
 }
 
 struct MetadataPanel: View {
     @Environment(AppCommandRouter.self) private var commandRouter
+    @Environment(\.openSettings) private var openSettings
     @Bindable var viewModel: MetadataViewModel
     let browserViewModel: BrowserViewModel
     let settingsViewModel: SettingsViewModel
@@ -121,14 +151,22 @@ struct MetadataPanel: View {
     var onApplyTemplate: (() -> Void)?
     var onSaveTemplate: (() -> Void)?
     var onPendingStatusChanged: (() -> Void)?
+    /// Targeted variant used by commits whose photos are known, so a save re-reads only
+    /// those photos' sidecars instead of the whole folder. Falls back to the full refresh.
+    var onPendingStatusChangedForURLs: (([URL]) -> Void)?
     /// Captioning always commits drafts to the app sidecar. Embedding remains an explicit action.
     var commitsToHistorySidecarOnly = false
     var captionFlushCoordinator: CaptionWorkspaceFlushCoordinator?
+    /// The flush-registration owner Caption addresses (`enqueueFlush(owner:)`); nil keeps a
+    /// private owner. Lets Caption flush its own editor, never another window's Review drafts.
+    var captionFlushOwnerID: UUID? = nil
     var onFocusedFieldChanged: ((MetadataFieldID?) -> Void)?
     var onAutocompletePresentationChanged: ((Bool) -> Void)?
     var onTabTraversalRequested: ((MetadataFieldID, Bool) -> Void)?
 
     @State private var isShowingDescriptionVariables = false
+    @State private var personSuggestionMemo = SuggestionCandidateMemo()
+    @State private var keywordSuggestionMemo = SuggestionCandidateMemo()
     @State private var isShowingVariableReference = false
     @State private var variableInsertTarget: VariableInsertTarget = .description
     @State private var fieldSelections: [String: NSRange] = [:]
@@ -146,7 +184,8 @@ struct MetadataPanel: View {
     @State private var showingStructuredKeywords = false
     @State private var showingStructuredPersonShown = false
     @State private var editingQuickList: QuickListType?
-    @State private var captionFlushOwner = UUID()
+    @State private var privateCaptionFlushOwner = UUID()
+    private var captionFlushOwner: UUID { captionFlushOwnerID ?? privateCaptionFlushOwner }
     @State private var editorBuffers = MetadataEditorBufferRegistry()
     @State private var showingCaptionAutocomplete = false
     @State private var captionAutocompleteField: MetadataFieldID?
@@ -164,6 +203,19 @@ struct MetadataPanel: View {
         case city
         case country
         case event
+
+        var quickListType: QuickListType {
+            switch self {
+            case .keywords: .keywords
+            case .personShown: .personShown
+            case .copyright: .copyright
+            case .creator: .creator
+            case .credit: .credit
+            case .city: .city
+            case .country: .country
+            case .event: .event
+            }
+        }
     }
 
     enum VariableInsertTarget {
@@ -229,10 +281,10 @@ struct MetadataPanel: View {
             }
             // No approved list: suggest from the quick list and the structured
             // keyword tree.
-            let candidates = Self.mergeSuggestionCandidates(
+            let candidates = keywordSuggestionMemo.merged([
                 quickList,
-                StructuredKeywordService.shared.allSearchableNames()
-            )
+                StructuredKeywordService.shared.allDisambiguatedSearchableNames()
+            ], using: Self.mergeSuggestionCandidates)
             guard !candidates.isEmpty else { return nil }
             return { prefix in ApprovedListService.suggestions(prefix: prefix, in: candidates) }
         }()
@@ -256,10 +308,10 @@ struct MetadataPanel: View {
 
         KeywordsEditorWithDiff(
             label: "Keywords",
-            keywords: $viewModel.editingMetadata.keywords,
+            keywords: loadSafeListBinding(\.keywords),
             differs: viewModel.keywordsDiffer(),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("keywords"),
-            partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialKeywords : [],
+            partialKeywords: viewModel.isBatchEdit ? viewModel.visibleBatchPartialKeywords : [],
             selectedCount: viewModel.selectedCount,
             onPromotePartial: { keyword in
                 viewModel.promotePartialKeyword(keyword)
@@ -323,21 +375,21 @@ struct MetadataPanel: View {
         // Names come from every source the app already maintains: the quick
         // list, the structured Person Shown tree, and Known People from face
         // recognition.
-        let candidates = Self.mergeSuggestionCandidates(
+        let candidates = personSuggestionMemo.merged([
             quickList,
             StructuredKeywordService.personShown.allSearchableNames(),
-            KnownPeopleService.shared.getAllPeople().map(\.name)
-        )
+            KnownPeopleNameSuggestions.shared.currentNames
+        ], using: Self.mergeSuggestionCandidates)
         let suggestionProvider: ((String) -> [ApprovedListSuggestion])? = candidates.isEmpty
             ? nil
             : { prefix in ApprovedListService.suggestions(prefix: prefix, in: candidates) }
 
         KeywordsEditorWithDiff(
             label: "Person Shown",
-            keywords: $viewModel.editingMetadata.personShown,
+            keywords: loadSafeListBinding(\.personShown),
             differs: viewModel.personShownDiffer(),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("personShown"),
-            partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialPersonShown : [],
+            partialKeywords: viewModel.isBatchEdit ? viewModel.visibleBatchPartialPersonShown : [],
             selectedCount: viewModel.selectedCount,
             onPromotePartial: { person in
                 viewModel.promotePartialPerson(person)
@@ -365,7 +417,11 @@ struct MetadataPanel: View {
                 StructuredKeywordService.personShown.activation(forName: name)
             },
             onSuggestionExpansionCommit: { activation in
-                addStructuredPersonSideKeywords(for: activation)
+                guard viewModel.isEditorLoading else {
+                    return addStructuredPersonSideKeywords(for: activation)
+                }
+                applyPickAfterLoad { addStructuredPersonSideKeywords(for: activation) }
+                return false
             },
             onShowStructuredKeywords: {
                 showingStructuredPersonShown = true
@@ -597,6 +653,10 @@ struct MetadataPanel: View {
     /// case-insensitively. First occurrence wins, so earlier sources control
     /// the casing shown in the suggestions popover.
     private static func mergeSuggestionCandidates(_ sources: [String]...) -> [String] {
+        mergeSuggestionCandidates(sources)
+    }
+
+    private static func mergeSuggestionCandidates(_ sources: [[String]]) -> [String] {
         var seen = Set<String>()
         var merged: [String] = []
         for source in sources {
@@ -740,7 +800,7 @@ struct MetadataPanel: View {
         }
 
         if field == .keywords {
-            seeds += StructuredKeywordService.shared.allSearchableNames().map { name in
+            seeds += StructuredKeywordService.shared.allDisambiguatedSearchableNames().map { name in
                 let insertion = StructuredKeywordService.shared.activation(forName: name)?.values ?? [name]
                 return CaptionAutocompleteSeed(
                     field: field,
@@ -759,8 +819,7 @@ struct MetadataPanel: View {
                     provenance: .structuredPersonShown
                 )
             }
-            seeds += KnownPeopleService.shared.getAllPeople()
-                .map(\.name)
+            seeds += KnownPeopleNameSuggestions.shared.currentNames
                 .sorted { CaptionAutocompleteService.normalized($0) < CaptionAutocompleteService.normalized($1) }
                 .map { CaptionAutocompleteSeed(field: field, displayValue: $0, provenance: .knownPeople) }
         }
@@ -802,7 +861,6 @@ struct MetadataPanel: View {
         // circuit when on (the default). When the toggle is off, structured
         // keywords get validated against the approved list like any other source.
         let validated = ApprovedListService.shared.validateBulk(expanded, in: .keywords, source: .structuredTree)
-        let added = viewModel.appendKeywords(validated.accepted)
         if !validated.rejected.isEmpty {
             let count = validated.rejected.count
             let word = count == 1 ? "keyword" : "keywords"
@@ -812,24 +870,53 @@ struct MetadataPanel: View {
                 severity: .warning
             )
         }
-        guard added > 0 else { return }
-        commitEdits()
+        let accepted = validated.accepted
+        applyPickAfterLoad { viewModel.appendKeywords(accepted) > 0 }
+    }
+
+    /// Applies a keyword/person pick and commits it — after the current load when the editor
+    /// is still loading, since the placeholder editor can't be saved and the load replaces it.
+    private func applyPickAfterLoad(_ pick: @escaping @MainActor () -> Bool) {
+        viewModel.performAfterEditorLoad(commit: { commitEdits() }, pick)
+    }
+
+    /// Keyword/Person Shown editor binding that holds additions made while the editor is
+    /// loading until that load completes (see `applyPickAfterLoad`).
+    private func loadSafeListBinding(_ keyPath: WritableKeyPath<IPTCMetadata, [String]>) -> Binding<[String]> {
+        Binding(
+            get: { viewModel.editingMetadata[keyPath: keyPath] },
+            set: { newValue in
+                let current = viewModel.editingMetadata[keyPath: keyPath]
+                let added = newValue.filter { !current.contains($0) }
+                guard viewModel.isShowingLoadPlaceholder, !added.isEmpty else {
+                    viewModel.editingMetadata[keyPath: keyPath] = newValue
+                    return
+                }
+                applyPickAfterLoad {
+                    let count = keyPath == \IPTCMetadata.keywords
+                        ? viewModel.appendKeywords(added)
+                        : viewModel.appendPersonShown(added)
+                    return count > 0
+                }
+            }
+        )
     }
 
     /// Adds names picked from the structured Person Shown tree. Person Shown has
     /// no approved list, so names are appended directly; related `#keyword`
     /// entries are routed through the approved-keyword validation path.
     private func addStructuredPeople(_ expanded: [String], activation: StructuredKeywordActivation? = nil) {
-        let addedPeople = viewModel.appendPersonShown(expanded)
-        let addedSideKeywords = activation.map(addStructuredPersonSideKeywords(for:)) ?? false
-        guard addedPeople > 0 || addedSideKeywords else { return }
-        commitEdits()
+        applyPickAfterLoad {
+            let addedPeople = viewModel.appendPersonShown(expanded)
+            let addedSideKeywords = activation.map(addStructuredPersonSideKeywords(for:)) ?? false
+            return addedPeople > 0 || addedSideKeywords
+        }
     }
 
     @discardableResult
     private func addStructuredPersonSideKeywords(for activation: StructuredKeywordActivation) -> Bool {
         var incoming = activation.relatedKeywords
-        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) {
+        if AppDefaults.store.bool(forKey: UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) {
             incoming = activation.categoryKeywords + incoming
         }
         guard !incoming.isEmpty else { return false }
@@ -870,62 +957,6 @@ struct MetadataPanel: View {
         return result
     }
 
-    private func promptForQuickListFile(type: QuickListType) -> URL? {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = type.defaultFilename
-        panel.message = "Create Quick List file for \(type.displayName)"
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        return url
-    }
-
-    private func createQuickListFile(at url: URL, type: QuickListType, values: [String]) {
-        cancelQuickListCreation()
-        let requestID = UUID()
-        quickListCreationRequestID = requestID
-        quickListCreationTask = Task {
-            do {
-                let result = try await QuickListFileCreationService.shared.createIfNeeded(
-                    at: url,
-                    requestID: requestID
-                )
-                switch result {
-                case .existing, .created:
-                    try await completeQuickListAddition(
-                        from: url,
-                        type: type,
-                        values: values,
-                        requestID: requestID
-                    )
-                case .cancelledBeforeAccess, .cancelledBeforeCreation:
-                    guard quickListCreationRequestID == requestID else { return }
-                    quickListCreationTask = nil
-                    quickListCreationRequestID = nil
-                    break
-                }
-            } catch {
-                guard quickListCreationRequestID == requestID else { return }
-                metadataPanelLog.error("Failed to create or import quick list file at \(url.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-                do {
-                    let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
-                    guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
-                    let fallback = try await KeywordListEditorPersistenceService.shared.appendEntries(
-                        values,
-                        to: destinationURL,
-                        createDestinationIfMissing: true,
-                        requestID: requestID
-                    )
-                    completeQuickListMutation(fallback, type: type, requestID: requestID)
-                } catch {
-                    guard quickListCreationRequestID == requestID else { return }
-                    quickListCreationTask = nil
-                    quickListCreationRequestID = nil
-                    metadataPanelLog.error("Failed to save managed Quick List fallback: \(error.localizedDescription, privacy: .private)")
-                }
-            }
-        }
-    }
-
     private func appendToQuickList(type: QuickListType, values: [String]) {
         cancelQuickListCreation()
         let requestID = UUID()
@@ -934,51 +965,29 @@ struct MetadataPanel: View {
             do {
                 let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
                 guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
+                // Quick lists always live in the managed store, so the first addition simply
+                // creates the managed file — once the storage route (iCloud or local) is settled.
                 let result = try await KeywordListEditorPersistenceService.shared.appendEntries(
                     values,
                     to: destinationURL,
+                    createDestinationIfMissing: KeywordListsStore.shared.isSettledRoute(destinationURL),
                     requestID: requestID
                 )
-                switch result {
-                case .missingDestination:
-                    guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
-                    guard KeywordListsStore.shared.currentURL(for: .quick(type)) == destinationURL else {
-                        appendToQuickList(type: type, values: values)
-                        return
-                    }
-                    guard let url = promptForQuickListFile(type: type) else {
-                        quickListCreationTask = nil
-                        quickListCreationRequestID = nil
-                        return
-                    }
-                    createQuickListFile(at: url, type: type, values: values)
-                default:
-                    completeQuickListMutation(result, type: type, requestID: requestID)
-                }
+                completeQuickListMutation(result, type: type, requestID: requestID)
             } catch {
                 guard quickListCreationRequestID == requestID else { return }
                 quickListCreationTask = nil
                 quickListCreationRequestID = nil
                 metadataPanelLog.error("Failed to append Quick List: \(error.localizedDescription, privacy: .private)")
+                guard !(error is CancellationError) else { return }
+                let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                viewModel.notice = MetadataPanelNotice(
+                    title: "Couldn't add to \(type.displayName) Quick List",
+                    detail: [description],
+                    severity: .error
+                )
             }
         }
-    }
-
-    private func completeQuickListAddition(
-        from url: URL,
-        type: QuickListType,
-        values: [String],
-        requestID: UUID
-    ) async throws {
-        let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
-        guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
-        let result = try await KeywordListEditorPersistenceService.shared.appendEntries(
-            values,
-            to: destinationURL,
-            importing: url,
-            requestID: requestID
-        )
-        completeQuickListMutation(result, type: type, requestID: requestID)
     }
 
     private func completeQuickListMutation(
@@ -999,6 +1008,12 @@ struct MetadataPanel: View {
         guard quickListCreationRequestID == requestID else { return }
         quickListCreationTask = nil
         quickListCreationRequestID = nil
+        if case .missingDestination = result {
+            viewModel.notice = MetadataPanelNotice(
+                title: "Quick List not updated yet",
+                detail: ["Keyword list storage (iCloud Drive) isn't ready. Try again in a moment."],
+                severity: .warning)
+        }
     }
 
     private func cancelQuickListCreation() {
@@ -1146,9 +1161,13 @@ struct MetadataPanel: View {
 
     /// Synchronously copies only a registered scalar/multiline buffer belonging to this load.
     @discardableResult
-    private func flushBufferedFields() -> Bool {
+    private func flushBufferedFields(includingPendingTokens: Bool = false) -> Bool {
         guard !viewModel.isLoading else { return false }
         let marked = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true
+        // A keyword or name typed without Return/comma is part of the edit at navigation, Write,
+        // workspace and quit boundaries (field focus loss commits it in the chip editor itself).
+        // Ordinary saves leave it alone, so a rejected token does not re-flash on every save.
+        if includingPendingTokens, !marked { editorBuffers.commitPendingInputs() }
         var updated = viewModel.editingMetadata
         let result = editorBuffers.capture(key: focusedField, loadID: viewModel.editorBufferLoadID,
             hasMarkedText: marked, metadata: &updated)
@@ -1157,6 +1176,16 @@ struct MetadataPanel: View {
             viewModel.markChanged()
         }
         return result != .unavailable
+    }
+
+    /// While loading: whether the editor holds anything the user typed or changed for this load
+    /// (model edits, picks queued for the load, an uncommitted field buffer, or marked text).
+    /// Only then must a flush refuse.
+    private func hasEditsDuringLoad() -> Bool {
+        if viewModel.hasUnpersistedEditorChanges || viewModel.hasDeferredEditorActions { return true }
+        let marked = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true
+        return editorBuffers.hasUncommittedText(key: focusedField, loadID: viewModel.editorBufferLoadID,
+            hasMarkedText: marked, metadata: viewModel.editingMetadata)
     }
 
     /// The shared field editor is reused by AppKit, so spell/grammar state must be reset on every
@@ -1176,6 +1205,9 @@ struct MetadataPanel: View {
     private func commitEdits() {
         commitDebounceTask?.cancel()
         flushBufferedFields()
+        // The placeholder editor shown during a load has no verified XMP baseline and is
+        // replaced by the load; picks made meanwhile commit via `applyPickAfterLoad`.
+        guard !viewModel.isShowingLoadPlaceholder else { return }
         // A pending draft loaded from disk is not a new edit. Moving focus (including to
         // voice-memo playback) must not automatically rewrite that draft or its XMP mirror.
         guard viewModel.hasUnpersistedEditorChanges else { return }
@@ -1187,26 +1219,63 @@ struct MetadataPanel: View {
             do {
                 // Field blur and debounce must capture the same immutable FIFO request as
                 // navigation. A failed mirror then retries that event instead of inventing it again.
-                try captionFlushCoordinator.enqueueFlush()
+                try captionFlushCoordinator.enqueueFlush(owner: captionFlushOwner)
             } catch {
                 viewModel.saveError = "Failed to save caption sidecar: \(error.localizedDescription)"
             }
             return
         }
         if commitsToHistorySidecarOnly {
+            let savedURLs = viewModel.selectedURLs
             viewModel.saveToSidecar()
-            onPendingStatusChanged?()
+            notifyPendingStatusChanged(for: savedURLs)
             return
         }
-        let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-        let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
-        // Simple resolves C2PA to .writeToFile and deliberately ignores content
-        // credentials — no warning, the file is written like any other.
-        let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
+        // A delayed focus-loss save can fire after the browser moved on. The selection-change
+        // boundary already saved the editor's photos then; saving again here would use the
+        // new selection's write mode for them.
+        let editorURLs = viewModel.selectedURLs
+        guard Set(browserViewModel.selectedImages.map(\.url)) == Set(editorURLs) else { return }
+        // The mode follows the photos the editor holds. Simple resolves C2PA to .writeToFile
+        // and deliberately ignores content credentials — no warning, the file is written like
+        // any other.
+        let mode = viewModel.editorWriteMode(knownC2PAURLs: browserViewModel.c2paURLs(among: editorURLs))
         viewModel.commitEdits(
             mode: mode,
-            onComplete: onPendingStatusChanged
+            onComplete: { notifyPendingStatusChanged(for: editorURLs) }
         )
+    }
+
+    /// Tab in a multi-line editor moves focus like it does in single-line fields. Caption
+    /// supplies its own keyboard order; elsewhere follow the window's key view loop, and fall
+    /// back to stepping through the panel's visible text fields if that loop is not wired.
+    private func tabTraversal(from field: MetadataFieldID) -> (Bool) -> Void {
+        if let onTabTraversalRequested {
+            return { reverse in onTabTraversalRequested(field, reverse) }
+        }
+        return { reverse in moveFocusAlongKeyViewLoop(from: field, reverse: reverse) }
+    }
+
+    private func moveFocusAlongKeyViewLoop(from field: MetadataFieldID, reverse: Bool) {
+        guard let window = NSApp.keyWindow, let editor = window.firstResponder as? NSView else { return }
+        if reverse { window.selectKeyView(preceding: editor) } else { window.selectKeyView(following: editor) }
+        guard window.firstResponder === editor else { return }
+        let order = settingsViewModel.visibleIPTCMetadataFieldsInOrder.map(\.rawValue).filter { key in
+            MetadataEditorFieldPaths.scalarText(for: key) != nil
+                && key != "dateCreated" && key != "countryCode"
+                && (key != MetadataFieldID.extendedDescription.rawValue || showExtendedDescription)
+        }
+        guard let index = order.firstIndex(of: field.rawValue), order.count > 1 else { return }
+        let next = reverse ? (index - 1 + order.count) % order.count : (index + 1) % order.count
+        focusedField = order[next]
+    }
+
+    private func notifyPendingStatusChanged(for urls: [URL]) {
+        if let onPendingStatusChangedForURLs {
+            onPendingStatusChangedForURLs(urls)
+        } else {
+            onPendingStatusChanged?()
+        }
     }
 
     var body: some View {
@@ -1261,6 +1330,7 @@ struct MetadataPanel: View {
         .accessibilityIdentifier("metadata.panel")
         .accessibilityValue(viewModel.variableProcessingStatus ?? "")
         .environment(\.metadataEditorBuffers, editorBuffers)
+        .environment(\.metadataEditorSelection, viewModel.selectedURLs)
         .environment(\.metadataEditorBufferLoadID, viewModel.editorBufferLoadID)
         .environment(\.metadataEditorCurrentLoadID, MetadataEditorCurrentLoadIDReader(viewModel: viewModel))
         .sheet(isPresented: $isShowingVariableReference) {
@@ -1282,6 +1352,8 @@ struct MetadataPanel: View {
         }
         .onKeyPress(.escape) {
             guard focusedField != nil else { return .ignored }
+            // Escape cancels an input-method composition; let the text view handle it.
+            if (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true { return .ignored }
             focusedField = nil
             browserViewModel.shouldRestoreGridFocus = true
             return .handled
@@ -1310,7 +1382,7 @@ struct MetadataPanel: View {
             viewModel.registerVariableRecoveryEditorBarrier(owner: captionFlushOwner) {
                 try flushCaptionEditorBuffer()
             }
-            StructuredKeywordsCoordinator.shared.register(owner: viewModel) { expanded in
+            StructuredKeywordsCoordinator.shared.register(owner: captionFlushOwner) { expanded in
                 addStructuredKeywords(expanded)
             }
             captionFlushCoordinator?.register(
@@ -1347,7 +1419,7 @@ struct MetadataPanel: View {
             historyRestoreTask?.cancel()
             cancelQuickListCreation()
             viewModel.unregisterVariableRecoveryEditorBarrier(owner: captionFlushOwner)
-            StructuredKeywordsCoordinator.shared.unregister(owner: viewModel)
+            StructuredKeywordsCoordinator.shared.unregister(owner: captionFlushOwner)
             captionFlushCoordinator?.unregister(owner: captionFlushOwner)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
@@ -1382,6 +1454,21 @@ struct MetadataPanel: View {
         } message: {
             Text("This image has C2PA content credentials. Writing metadata will invalidate the authenticity chain.")
         }
+        .alert("Discard Pending Changes?", isPresented: $viewModel.showDiscardConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Discard", role: .destructive) {
+                let task = viewModel.discardPendingChanges()
+                Task { @MainActor in
+                    await task?.value
+                    onPendingStatusChanged?()
+                    // Show the photos' written metadata again (batch discard clears the editor).
+                    viewModel.loadMetadata(for: browserViewModel.selectedImages,
+                                           folderURL: browserViewModel.currentFolderURL)
+                }
+            }
+        } message: {
+            Text("The unwritten metadata drafts for the selected photo(s) will be deleted. Metadata already written to the files is not changed.")
+        }
         .fileImporter(
             isPresented: $showingListFilePicker,
             allowedContentTypes: [.plainText],
@@ -1391,24 +1478,34 @@ struct MetadataPanel: View {
                 let target = listFilePickerTarget
                 Task {
                     do {
+                        // Imports merge into the managed list (never replace it).
+                        let added: Int
                         switch target {
                         case .keywords:
-                            try await settingsViewModel.setKeywordsListURL(url)
+                            added = try await settingsViewModel.setKeywordsListURL(url)
                         case .personShown:
-                            try await settingsViewModel.setPersonShownListURL(url)
+                            added = try await settingsViewModel.setPersonShownListURL(url)
                         case .copyright:
-                            try await settingsViewModel.setCopyrightListURL(url)
+                            added = try await settingsViewModel.setCopyrightListURL(url)
                         case .creator:
-                            try await settingsViewModel.setCreatorListURL(url)
+                            added = try await settingsViewModel.setCreatorListURL(url)
                         case .credit:
-                            try await settingsViewModel.setCreditListURL(url)
+                            added = try await settingsViewModel.setCreditListURL(url)
                         case .city:
-                            try await settingsViewModel.setCityListURL(url)
+                            added = try await settingsViewModel.setCityListURL(url)
                         case .country:
-                            try await settingsViewModel.setCountryListURL(url)
+                            added = try await settingsViewModel.setCountryListURL(url)
                         case .event:
-                            try await settingsViewModel.setEventListURL(url)
+                            added = try await settingsViewModel.setEventListURL(url)
                         }
+                        let listName = "\(target.quickListType.displayName) Quick List"
+                        viewModel.notice = MetadataPanelNotice(
+                            title: added == 0
+                                ? "No new entries for \(listName)"
+                                : "Added \(added) \(added == 1 ? "entry" : "entries") to \(listName)",
+                            detail: [url.lastPathComponent],
+                            severity: .info
+                        )
                     } catch {
                         let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                         viewModel.notice = MetadataPanelNotice(
@@ -1445,7 +1542,16 @@ struct MetadataPanel: View {
     /// JSON/XMP I/O. The ordinary metadata panel keeps its configured write mode.
     private func flushCaptionEditorBuffer() throws {
         commitDebounceTask?.cancel()
-        guard flushBufferedFields() else {
+        if viewModel.isLoading, !hasEditsDuringLoad() {
+            // A load owns the editor, so buffered text could not be published — but nothing was
+            // typed for it either. Treat it as nothing to flush rather than blocking navigation,
+            // Close, or app deactivation behind a slow (or hung) load.
+            guard viewModel.currentFolderURL != nil else {
+                throw CaptionWorkspaceFlushError.sidecarUnavailable
+            }
+            return
+        }
+        guard flushBufferedFields(includingPendingTokens: true) else {
             throw CaptionWorkspaceFlushError.persistenceFailed(
                 "Finish the active text composition or wait for the photo to load before saving Caption edits."
             )
@@ -1479,57 +1585,10 @@ struct MetadataPanel: View {
 
     // MARK: - Rating & Label
 
-    @ViewBuilder
+    /// Observes `firstSelectedImage` (and so the whole `images` array) in its own small body,
+    /// so a rating/label change on any photo re-evaluates only this row, not the full panel.
     private var ratingAndLabelSection: some View {
-        if let image = browserViewModel.firstSelectedImage {
-            HStack(spacing: 8) {
-                HStack(spacing: 1) {
-                    ForEach(1...5, id: \.self) { star in
-                        Button {
-                            let rating = StarRating(rawValue: star) ?? .none
-                            browserViewModel.setRating(image.starRating == rating ? .none : rating)
-                        } label: {
-                            Image(systemName: star <= image.starRating.rawValue ? "star.fill" : "star")
-                                .font(.system(size: 14))
-                                .frame(width: 18)
-                                .foregroundStyle(star <= image.starRating.rawValue ? .yellow : .secondary.opacity(0.5))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(star) star rating")
-                        .accessibilityValue(image.starRating.rawValue == star ? "Selected" : "Not selected")
-                        .accessibilityHint("Select again to clear this rating")
-                    }
-                }
-
-                Divider()
-                    .frame(height: 14)
-
-                HStack(spacing: 4) {
-                    ForEach(ColorLabel.allCases.filter { $0 != .none }, id: \.self) { label in
-                        Button {
-                            browserViewModel.setLabel(image.colorLabel == label ? .none : label)
-                        } label: {
-                            Circle()
-                                .fill(label.color!.opacity(image.colorLabel == label ? 1.0 : 0.35))
-                                .frame(width: 12, height: 12)
-                        }
-                        .buttonStyle(.plain)
-                        .help(label.displayName)
-                        .accessibilityLabel("\(label.displayName) color label")
-                        .accessibilityValue(image.colorLabel == label ? "Selected" : "Not selected")
-                        .accessibilityHint("Select again to clear this label")
-                    }
-                }
-
-                Spacer()
-
-                if image.hasC2PA {
-                    Label("C2PA", systemImage: "checkmark.seal.fill")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-                }
-            }
-        }
+        MetadataRatingAndLabelRow(browserViewModel: browserViewModel)
     }
 
     // MARK: - Priority Fields
@@ -1630,7 +1689,8 @@ struct MetadataPanel: View {
                 creatorContactInfo: $viewModel.editingMetadata.creatorContactInfo,
                 locationsCreated: $viewModel.editingMetadata.locationsCreated,
                 locationsShown: $viewModel.editingMetadata.locationsShown,
-                onChange: { viewModel.markChanged() }
+                onChange: { viewModel.markChanged() },
+                onCommit: { commitEdits() }
             )
         }
     }
@@ -1674,7 +1734,8 @@ struct MetadataPanel: View {
                             imageURL: imageURL, editorLoadID: viewModel.editorBufferLoadID,
                             originalDescription: viewModel.editingMetadata.description ?? "",
                             action: .grammar, language: .bokmal,
-                            metadata: DescriptionAssistantMetadata(viewModel.editingMetadata))
+                            metadata: DescriptionAssistantMetadata(viewModel.editingMetadata),
+                            developSettings: viewModel.editingMetadata.cameraRaw)
                     } label: {
                         Image(systemName: "wand.and.stars")
                             .font(.caption)
@@ -1684,7 +1745,11 @@ struct MetadataPanel: View {
                     .help("Write or improve description with AI")
                     .accessibilityLabel("Description assistant")
                     .popover(item: $descriptionAssistantSource, arrowEdge: .trailing) { source in
-                        DescriptionAssistantView(source: source, compact: true) { proposal, text in
+                        DescriptionAssistantView(source: source, compact: true, openSettings: {
+                            descriptionAssistantSource = nil
+                            settingsViewModel.requestedDestination = .descriptionAssistant
+                            openSettings()
+                        }) { proposal, text in
                             guard flushBufferedFields(), !viewModel.isLoading, !viewModel.isBatchEdit,
                                   proposal.request.canApply(imageURL: viewModel.selectedURLs.first,
                                     editorLoadID: viewModel.editorBufferLoadID,
@@ -1742,6 +1807,8 @@ struct MetadataPanel: View {
                 if let conflict = viewModel.descriptionConflict {
                     DescriptionConflictBanner(conflict: conflict) { keepXMP in
                         viewModel.resolveDescriptionConflict(keepXMP: keepXMP)
+                        // Save the choice so the file's description containers agree.
+                        commitEdits()
                     }
                 }
                 BufferedTextEditor(
@@ -1757,9 +1824,7 @@ struct MetadataPanel: View {
                         }
                     },
                     onCommit: { commitEdits() },
-                    onTabTraversalRequested: onTabTraversalRequested.map { callback in
-                        { reverse in callback(.description, reverse) }
-                    }
+                    onTabTraversalRequested: tabTraversal(from: .description)
                 )
             }
             .metadataField(.description)
@@ -1796,9 +1861,7 @@ struct MetadataPanel: View {
                             }
                         },
                         onCommit: { commitEdits() },
-                        onTabTraversalRequested: onTabTraversalRequested.map { callback in
-                            { reverse in callback(.extendedDescription, reverse) }
-                        }
+                        onTabTraversalRequested: tabTraversal(from: .extendedDescription)
                     )
                 }
                 .padding(.top, 2)
@@ -1973,7 +2036,8 @@ struct MetadataPanel: View {
             } else {
                 ImageSupplierMetadataEditor(
                     suppliers: $viewModel.editingMetadata.imageSuppliers,
-                    onChange: { viewModel.markChanged() }
+                    onChange: { viewModel.markChanged() },
+                    onCommit: { commitEdits() }
                 )
             }
         }
@@ -2059,7 +2123,11 @@ struct MetadataPanel: View {
 
     private var usesIncrementalWhiteBalance: Bool {
         // Non-RAW files always use incremental (relative) white balance
-        if let url = browserViewModel.firstSelectedImage?.url, !SupportedImageFormats.isRaw(url: url) {
+        // Same row as `firstSelectedImage`, resolved without reading `images` so this body
+        // doesn't re-evaluate when any photo's rating or label changes.
+        if let url = browserViewModel.selectedImageIDs.first,
+           browserViewModel.urlToImageIndex[url] != nil,
+           !SupportedImageFormats.isRaw(url: url) {
             return true
         }
         let cameraRaw = viewModel.editingMetadata.cameraRaw
@@ -2733,9 +2801,7 @@ struct MetadataPanel: View {
             }
 
             HStack(spacing: 12) {
-                let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-                let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
-                let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
+                let mode = MetadataWriteMode.current(forSelection: browserViewModel.selectedImages)
 
                 if let onApplyTemplate {
                     Button {
@@ -2798,10 +2864,26 @@ struct MetadataPanel: View {
                         .controlSize(.small)
                 }
 
-                if mode != .writeToFile {
+                if viewModel.selectedHavePendingSidecars {
                     Button {
-                        flushBufferedFields()
-                        if browserViewModel.firstSelectedImage?.hasC2PA == true {
+                        viewModel.confirmDiscardPendingChanges()
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                    }
+                    .disabled(viewModel.isSaving)
+                    .help("Discard Pending Changes")
+                    .accessibilityLabel("Discard pending metadata changes")
+                }
+
+                // In Write-to-file mode edits are written automatically, but a pending draft
+                // (from History Only, Caption or a template) still needs an explicit Write.
+                if mode != .writeToFile || viewModel.selectedHavePendingSidecars {
+                    Button {
+                        flushBufferedFields(includingPendingTokens: true)
+                        // RAW photos are written to their XMP sidecar, which keeps credentials intact.
+                        if browserViewModel.selectedImages.contains(where: {
+                            $0.hasC2PA && !SupportedImageFormats.isRaw(url: $0.url)
+                        }) {
                             showingC2PAWarning = true
                         } else {
                             viewModel.writeMetadataAndClearSidecar()
@@ -2811,7 +2893,8 @@ struct MetadataPanel: View {
                         Image(systemName: "square.and.arrow.down")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!viewModel.canWriteMetadataToImage)
+                    .disabled(!viewModel.canWriteMetadataToImage(
+                        knownC2PAURLs: browserViewModel.c2paURLs(among: viewModel.selectedURLs)))
                     .help("Write metadata to image")
                 }
             }
@@ -2820,6 +2903,65 @@ struct MetadataPanel: View {
 }
 
 // MARK: - Keywords Editor With Diff
+
+/// Rating stars, color label dots and the C2PA badge for the first selected photo.
+/// A separate view so its observation of `BrowserViewModel.images` (via
+/// `firstSelectedImage`) doesn't invalidate the large `MetadataPanel` body.
+private struct MetadataRatingAndLabelRow: View {
+    let browserViewModel: BrowserViewModel
+
+    var body: some View {
+        if let image = browserViewModel.firstSelectedImage {
+            HStack(spacing: 8) {
+                HStack(spacing: 1) {
+                    ForEach(1...5, id: \.self) { star in
+                        Button {
+                            let rating = StarRating(rawValue: star) ?? .none
+                            browserViewModel.setRating(image.starRating == rating ? .none : rating)
+                        } label: {
+                            Image(systemName: star <= image.starRating.rawValue ? "star.fill" : "star")
+                                .font(.system(size: 14))
+                                .frame(width: 18)
+                                .foregroundStyle(star <= image.starRating.rawValue ? .yellow : .secondary.opacity(0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(star) star rating")
+                        .accessibilityValue(image.starRating.rawValue == star ? "Selected" : "Not selected")
+                        .accessibilityHint("Select again to clear this rating")
+                    }
+                }
+
+                Divider()
+                    .frame(height: 14)
+
+                HStack(spacing: 4) {
+                    ForEach(ColorLabel.allCases.filter { $0 != .none }, id: \.self) { label in
+                        Button {
+                            browserViewModel.setLabel(image.colorLabel == label ? .none : label)
+                        } label: {
+                            Circle()
+                                .fill(label.color!.opacity(image.colorLabel == label ? 1.0 : 0.35))
+                                .frame(width: 12, height: 12)
+                        }
+                        .buttonStyle(.plain)
+                        .help(label.displayName)
+                        .accessibilityLabel("\(label.displayName) color label")
+                        .accessibilityValue(image.colorLabel == label ? "Selected" : "Not selected")
+                        .accessibilityHint("Select again to clear this label")
+                    }
+                }
+
+                Spacer()
+
+                if image.hasC2PA {
+                    Label("C2PA", systemImage: "checkmark.seal.fill")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
+            }
+        }
+    }
+}
 
 struct KeywordsEditorWithDiff: View {
     let label: String
@@ -2870,7 +3012,12 @@ struct KeywordsEditorWithDiff: View {
     /// "Edit Quick List…" item. Caller is expected to present `KeywordListEditor`.
     var onEditQuickList: (() -> Void)? = nil
 
+    @Environment(\.metadataEditorBuffers) private var editorBuffers
+    @Environment(\.metadataEditorSelection) private var editorSelection
+    @State private var pendingInputOwner = UUID()
     @State private var inputText = ""
+    /// A token the validator just rejected stays typed for editing; flushes must not retry it.
+    @State private var rejectedInput: String?
     @State private var promotingKeyword: String?
     @State private var visibleSuggestions: [ApprovedListSuggestion] = []
     @State private var highlightedIndex: Int? = nil
@@ -2898,6 +3045,7 @@ struct KeywordsEditorWithDiff: View {
                 Spacer()
                 if quickListMenuVisible {
                     Button {
+                        abandonTypedToken()
                         quickListPopoverShown.toggle()
                     } label: {
                         Image(systemName: "list.bullet")
@@ -2930,6 +3078,7 @@ struct KeywordsEditorWithDiff: View {
                 }
                 if let onShowStructuredKeywords {
                     Button {
+                        abandonTypedToken()
                         onShowStructuredKeywords()
                     } label: {
                         Image(systemName: "list.bullet.indent")
@@ -2956,6 +3105,7 @@ struct KeywordsEditorWithDiff: View {
                                 .font(.caption2)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(removeChipAccessibilityLabel(for: keyword))
                     }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -2973,6 +3123,7 @@ struct KeywordsEditorWithDiff: View {
 
                 ForEach(partialKeywords, id: \.self) { keyword in
                     Button {
+                        abandonTypedToken()
                         promotingKeyword = keyword
                     } label: {
                         Text(keyword)
@@ -3032,11 +3183,19 @@ struct KeywordsEditorWithDiff: View {
                     .transition(.opacity)
             }
         }
-        .onChange(of: keywords) { _, _ in
+        .onChange(of: editorSelection) { _, _ in
+            // A token typed for one photo must never be added to the next one.
             inputText = ""
             updateSuggestions(for: "")
         }
+        .onAppear { registerPendingInput() }
+        .onDisappear {
+            editorBuffers?.unregisterPendingInput(key: focusKey ?? label, owner: pendingInputOwner)
+        }
         .onChange(of: inputText) { _, newValue in
+            if newValue != rejectedInput { rejectedInput = nil }
+            // Re-register so the flush uses this render's validator, not the one from onAppear.
+            registerPendingInput()
             // Comma/semicolon trigger immediate commit (existing behavior). The popover
             // is deliberately bypassed so paste of "berlin, paris" doesn't expand.
             if newValue.contains(",") || newValue.contains(";") {
@@ -3046,6 +3205,8 @@ struct KeywordsEditorWithDiff: View {
             updateSuggestions(for: newValue)
         }
         .onChange(of: inputIsFocused) { _, isFocused in
+            // Leaving the field confirms a typed token, like Return would.
+            if !isFocused { commitTypedTokenOnFocusLoss() }
             guard typeaheadEnabled, let focusedField, let focusKey else { return }
             if isFocused {
                 focusedField.wrappedValue = focusKey
@@ -3065,7 +3226,10 @@ struct KeywordsEditorWithDiff: View {
                 onSubmit: { addKeywords(useHighlightedSuggestion: true) },
                 onArrowDown: { moveHighlight(by: 1) },
                 onArrowUp: { moveHighlight(by: -1) },
-                onEscape: { dismissPopover() }
+                onEscape: {
+                    // Escape cancels: first the suggestions, then the typed token itself.
+                    if visibleSuggestions.isEmpty { inputText = "" } else { dismissPopover() }
+                }
             )
             .frame(height: 22)
         } else if let focusedField, let focusKey {
@@ -3074,6 +3238,14 @@ struct KeywordsEditorWithDiff: View {
                 .font(.body)
                 .focused(focusedField, equals: focusKey)
                 .onSubmit { addKeywords(useHighlightedSuggestion: false) }
+                .onKeyPress(.escape) {
+                    // The panel's Escape then drops focus; that must not confirm the token.
+                    inputText = ""
+                    return .ignored
+                }
+                .onChange(of: focusedField.wrappedValue == focusKey) { wasFocused, isFocused in
+                    if wasFocused, !isFocused { commitTypedTokenOnFocusLoss() }
+                }
         } else {
             TextField(placeholder, text: $inputText)
                 .textFieldStyle(.roundedBorder)
@@ -3162,12 +3334,48 @@ struct KeywordsEditorWithDiff: View {
 
     // MARK: addKeywords with validation
 
-    private func addKeywords(useHighlightedSuggestion: Bool) {
+    private func commitTypedTokenOnFocusLoss() {
+        guard !inputText.trimmingCharacters(in: .whitespaces).isEmpty, inputText != rejectedInput else { return }
+        addKeywords(useHighlightedSuggestion: false)
+    }
+
+    /// Opening a picker or Quick List moves focus away; a half-typed search ("ber") must not be
+    /// confirmed as a value by that focus loss.
+    private func abandonTypedToken() {
+        inputText = ""
+        updateSuggestions(for: "")
+    }
+
+    private func registerPendingInput() {
+        guard let editorBuffers else { return }
+        let input = $inputText
+        let rejected = $rejectedInput
+        let commitToken = { addKeywords(useHighlightedSuggestion: false, commits: false) }
+        editorBuffers.registerPendingInput(key: focusKey ?? label, owner: pendingInputOwner) {
+            let token = input.wrappedValue
+            guard !token.trimmingCharacters(in: .whitespaces).isEmpty,
+                  token != rejected.wrappedValue else { return false }
+            return commitToken()
+        }
+    }
+
+    private func removeChipAccessibilityLabel(for value: String) -> String {
+        switch focusKey {
+        case "keywords": "Remove keyword \(value)"
+        case "personShown": "Remove person \(value)"
+        default: "Remove \(value) from \(label)"
+        }
+    }
+
+    /// `commits: false` only publishes the token to the editing model; a flush caller (navigation,
+    /// Write, workspace change) owns the save that follows.
+    @discardableResult
+    private func addKeywords(useHighlightedSuggestion: Bool, commits: Bool = true) -> Bool {
         if useHighlightedSuggestion,
            let idx = highlightedIndex,
            idx < visibleSuggestions.count {
             commitSuggestion(visibleSuggestions[idx])
-            return
+            return true
         }
 
         let rawParts = inputText
@@ -3193,13 +3401,14 @@ struct KeywordsEditorWithDiff: View {
         if !accepted.isEmpty {
             keywords.append(contentsOf: accepted)
             onChange?()
-            onCommit?()
+            if commits { onCommit?() }
         }
 
         if rejected.isEmpty {
             inputText = ""
         } else if accepted.isEmpty {
             // Keep typed text so user can edit and retry.
+            rejectedInput = inputText
             flashRejectState(rejected: rejected)
         } else {
             inputText = ""
@@ -3207,6 +3416,7 @@ struct KeywordsEditorWithDiff: View {
         }
 
         updateSuggestions(for: inputText)
+        return !accepted.isEmpty
     }
 
     /// Quick List menu pick. Runs the validator (canonical-cases approved entries,
@@ -3585,6 +3795,10 @@ private struct BufferedTextEditor: View {
                 }
             }
             .onKeyPress(.return) {
+                // Return confirms an input-method composition; never treat it as a commit.
+                if (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true {
+                    return .ignored
+                }
                 if NSEvent.modifierFlags.contains(.shift) {
                     insertNewlineAtCursor()
                     return .handled
@@ -4021,5 +4235,20 @@ private struct EditorialDateCreatedEditor: View {
             let magnitude = abs(minutes)
             return String(format: "%@%02d:%02d", sign, magnitude / 60, magnitude % 60)
         }
+    }
+}
+
+/// Keeps the last merged suggestion list across renders. The panel body re-evaluates on every
+/// keystroke while its candidate sources rarely change, so re-merging is skipped when they match.
+private final class SuggestionCandidateMemo {
+    private var sources: [[String]]?
+    private var result: [String] = []
+
+    func merged(_ sources: [[String]], using merge: ([[String]]) -> [String]) -> [String] {
+        if sources != self.sources {
+            result = merge(sources)
+            self.sources = sources
+        }
+        return result
     }
 }

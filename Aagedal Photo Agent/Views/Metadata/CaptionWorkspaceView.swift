@@ -8,6 +8,11 @@ private enum CaptionPreviewMode: Hashable {
     case actualSize
 }
 
+private struct CaptionPreviewLoadID: Equatable {
+    let url: URL?
+    let maxPixelSize: CGFloat?
+}
+
 /// A focused, sidecar-first metadata workspace. `MetadataPanel` remains the editor and
 /// `MetadataViewModel` remains the only persistence owner; this view only coordinates safe
 /// transitions, validation status, and preview state.
@@ -21,8 +26,21 @@ struct CaptionWorkspaceView: View {
     let onClose: () -> Void
 
     @State private var session: CaptionSession
-    @State private var voiceMemoBadgeRefreshToken: UInt64 = 0
+    /// Photo-only browser list, refreshed when the browser's visible items change.
+    @State private var photoList: CaptionPhotoList
+    /// Transient, non-blocking feedback (for example "nothing to copy").
+    @State private var inlineNotice: String?
+    /// Per-photo badge refresh tokens: a voice-memo change re-queries only that photo's
+    /// filmstrip badge instead of every visible item.
+    @State private var voiceMemoBadgeRefreshTokens: [URL: UInt64] = [:]
     @State private var preview: NSImage?
+    @State private var previewFailed = false
+    /// The request the displayed `preview` was decoded for (nil for a thumbnail fallback).
+    @State private var displayedPreview: CaptionPreviewPipeline.Request?
+    @State private var previewPipeline = CaptionPreviewPipeline()
+    @State private var previewPaneLongestPoints: CGFloat = 0
+    @State private var lastPreviewIndex: Int?
+    @Environment(\.displayScale) private var displayScale
     @State private var validationReport = MetadataValidationReport(issues: [])
     @State private var errorMessage: String?
     @State private var isWorkspaceActive = false
@@ -30,6 +48,8 @@ struct CaptionWorkspaceView: View {
     @State private var conflictOperationID: UUID?
     @State private var conflictReviewRequestID: UUID?
     @State private var flushCoordinator = CaptionWorkspaceFlushCoordinator.shared
+    /// The Caption editor's flush owner; Caption's own captures address only this editor.
+    @State private var captionEditorOwner = UUID()
     @State private var conflictReview: CaptionConflictSnapshot?
     @State private var reviewedFailure: CaptionQueueFailure?
     @State private var conflictExportReceipt: CaptionConflictExportReceipt?
@@ -47,6 +67,9 @@ struct CaptionWorkspaceView: View {
     @State private var previewMode: CaptionPreviewMode = .fit
     @State private var showsConfirmedFaces = false
     @State private var confirmedPeople: [CaptionConfirmedPerson] = []
+    /// `confirmedPeople` mapped into the rendered preview's (possibly cropped) frame; faces
+    /// outside the crop are absent. The names readout and Faces toggle use the full list.
+    @State private var confirmedFaceOverlays: [CaptionConfirmedPerson] = []
     @State private var requestedFocusedField: MetadataFieldID?
     @State private var pendingWriteAndNextURL: URL?
     @State private var captionAdvanceShortcuts = CaptionAdvanceShortcutRegistry.shared
@@ -56,19 +79,20 @@ struct CaptionWorkspaceView: View {
     @State private var lastEditorField: MetadataFieldID?
     @State private var isEditorTransientPresented = false
     @State private var isAwaitingTemplatePalette = false
+    @State private var isAwaitingEditorLoad = false
+    @State private var restoresEditorFocusAfterTransition = false
+    @State private var resynchronizesListAfterTransition = false
     @FocusState private var focusedAction: CaptionActionFocus?
     @Environment(\.openSettings) private var openSettings
     @Environment(AppCommandRouter.self) private var commandRouter
 
-    private var visibleImages: [ImageFile] {
-        browserViewModel.visibleImages.filter(\.isImageFile)
-    }
+    private var visibleImages: [ImageFile] { photoList.images }
 
-    private var visibleURLs: [URL] { visibleImages.map(\.url) }
+    private var visibleURLs: [URL] { photoList.urls }
 
     private var currentImage: ImageFile? {
         guard let currentURL = session.currentURL else { return nil }
-        return visibleImages.first { $0.url.standardizedFileURL == currentURL }
+        return photoList.image(forStandardizedURL: currentURL)
     }
 
     private var validationProfile: MetadataValidationProfile {
@@ -111,8 +135,9 @@ struct CaptionWorkspaceView: View {
         self.onApplyTemplate = onApplyTemplate
         self.onClose = onClose
 
-        let images = browserViewModel.visibleImages.filter(\.isImageFile)
-        let urls = images.map(\.url)
+        let photoList = CaptionPhotoList(browserImages: browserViewModel.visibleImages)
+        let urls = photoList.urls
+        _photoList = State(initialValue: photoList)
         let selected = browserViewModel.selectedImageIDs
         let focused = browserViewModel.lastClickedImageURL
             .flatMap { selected.contains($0) ? $0 : nil }
@@ -131,6 +156,19 @@ struct CaptionWorkspaceView: View {
         VStack(spacing: 0) {
             statusBar
             if let failure = flushCoordinator.failure { queuedFailureBanner(failure) }
+            if let inlineNotice {
+                Text(inlineNotice)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .accessibilityIdentifier("caption.inlineNotice")
+                    .task(id: inlineNotice) {
+                        try? await Task.sleep(for: .seconds(4))
+                        guard !Task.isCancelled else { return }
+                        self.inlineNotice = nil
+                    }
+            }
             if let conflictRecoveryNotice {
                 Text(conflictRecoveryNotice)
                     .font(.callout)
@@ -172,6 +210,7 @@ struct CaptionWorkspaceView: View {
                             onPendingStatusChanged: browserViewModel.refreshPendingStatus,
                             commitsToHistorySidecarOnly: true,
                             captionFlushCoordinator: .shared,
+                            captionFlushOwnerID: captionEditorOwner,
                             onFocusedFieldChanged: { field in
                                 activeEditorField = field
                                 if let field {
@@ -188,17 +227,24 @@ struct CaptionWorkspaceView: View {
                         )
                         Divider()
                         HStack(spacing: 8) {
-                            Text("Additional IPTC fields can be enabled in Settings → Metadata.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Metadata Settings…") {
-                                settingsViewModel.requestedDestination = .metadata
-                                openSettings()
+                            if let deadlineProfile {
+                                Text("Fields come from the “\(deadlineProfile.name)” Deadline profile.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            } else {
+                                Text("Additional IPTC fields can be enabled in Settings → Metadata.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Metadata Settings…") {
+                                    settingsViewModel.requestedDestination = .metadata
+                                    openSettings()
+                                }
+                                .controlSize(.small)
+                                .accessibilityHint("Open Settings at the Metadata field controls")
+                                .accessibilityIdentifier("caption.metadataSettings")
                             }
-                            .controlSize(.small)
-                            .accessibilityHint("Open Settings at the Metadata field controls")
-                            .accessibilityIdentifier("caption.metadataSettings")
                         }
                         .padding(.horizontal, 10)
                         .frame(minHeight: 34)
@@ -218,12 +264,19 @@ struct CaptionWorkspaceView: View {
         .onAppear {
             isWorkspaceActive = true
             workspaceLifetimeID = UUID()
+            photoList = CaptionPhotoList(browserImages: browserViewModel.visibleImages)
             synchronizeSessionWithBrowser()
             updateReadiness()
             installCaptionShortcutMonitor()
         }
         .onDisappear {
             isWorkspaceActive = false
+            if metadataViewModel.heldSelectionURL != nil {
+                // Leaving Caption flushed the held photo; let the editor follow the browser again.
+                metadataViewModel.releaseSelectionHold()
+                metadataViewModel.loadSelectionMetadata(for: browserViewModel.selectedImages,
+                    folderURL: browserViewModel.currentFolderURL)
+            }
             workspaceLifetimeID = nil
             conflictOperationID = nil
             conflictReviewRequestID = nil
@@ -239,11 +292,33 @@ struct CaptionWorkspaceView: View {
             conflictImage = nil
             isConflictRecoveryBusy = false
         }
-        .onChange(of: visibleURLs) { _, _ in
-            synchronizeSessionWithBrowser()
+        .onChange(of: browserViewModel.visibleImages) { _, images in
+            // Rating/label edits replace items without changing the list; only reorder,
+            // filtering, or deletion needs the session to follow.
+            let previousURLs = photoList.urls
+            photoList = CaptionPhotoList(browserImages: images)
+            if photoList.urls != previousURLs {
+                synchronizeSessionWithBrowser(capturingDraft: true)
+            }
+        }
+        .onChange(of: browserViewModel.isFullScreen) { wasFullScreen, isFullScreen in
+            guard wasFullScreen, !isFullScreen, isWorkspaceActive else { return }
+            adoptBrowserSelectionAfterFullScreen()
         }
         .onChange(of: focusedAction) { _, action in
             if action != nil { activeEditorField = nil }
+        }
+        .onChange(of: isEditorTransitioning) { _, isTransitioning in
+            guard !isTransitioning else { return }
+            if resynchronizesListAfterTransition {
+                resynchronizesListAfterTransition = false
+                synchronizeSessionWithBrowser(capturingDraft: true)
+            }
+            if restoresEditorFocusAfterTransition {
+                restoresEditorFocusAfterTransition = false
+                guard conflictReview == nil, pendingReviewPhoto == nil else { return }
+                restoreLastEditorFocus()
+            }
         }
         .onChange(of: metadataViewModel.editingMetadata) { _, _ in
             // Async selection loads assign the draft while `isLoading` is still true. Ignore that
@@ -277,6 +352,14 @@ struct CaptionWorkspaceView: View {
             }
         }
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
+            if case .restoreCaptionEditorFocus? = delivery?.command, isEditorTransitioning {
+                // The template palette closes before its template crosses the flush barrier, so
+                // this arrives mid-transition. Stop routing Tab to the palette now and restore
+                // the field focus once the transition finishes.
+                isAwaitingTemplatePalette = false
+                restoresEditorFocusAfterTransition = true
+                return
+            }
             guard let delivery, !isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return }
             switch delivery.command {
             case .selectPreviousImage:
@@ -394,10 +477,10 @@ struct CaptionWorkspaceView: View {
             // FIFO, and do not touch another selected photo's editor merely to review its head.
             if metadataViewModel.selectedURLs.count == 1,
                metadataViewModel.selectedURLs[0].resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path {
-                guard try flushCoordinator.editorCompositionState() == .committed else {
+                guard try flushCoordinator.editorCompositionState(owner: captionEditorOwner) == .committed else {
                     throw CaptionWorkspaceFlushError.persistenceFailed("Finish the active text composition before reviewing queued edits.")
                 }
-                try flushCoordinator.enqueueFlush()
+                try flushCoordinator.enqueueFlush(owner: captionEditorOwner)
             }
             conflictCheckpoint = metadataViewModel.captionConflictEditorCheckpoint(for: photo)
             conflictImage = visibleImages.first { $0.url.resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path }
@@ -616,7 +699,7 @@ struct CaptionWorkspaceView: View {
         }
         let summary = validationReport.issues.isEmpty
             ? "No validation issues"
-            : "\(validationReport.blockerCount) blockers, \(validationReport.warningCount) warnings"
+            : "\(validationReport.blockerCount) \(validationReport.blockerCount == 1 ? "blocker" : "blockers"), \(validationReport.warningCount) \(validationReport.warningCount == 1 ? "warning" : "warnings")"
         return Label(title, systemImage: icon)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(color)
@@ -639,11 +722,9 @@ struct CaptionWorkspaceView: View {
                     .frame(width: 120)
 
                     Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
-                        preservingEditorFocus {
-                            browserViewModel.isFullScreen = true
-                        }
+                        openFullScreen()
                     }
-                    .disabled(currentImage == nil)
+                    .disabled(currentImage == nil || isEditorTransitioning)
 
                     Toggle("Faces", systemImage: "face.smiling", isOn: Binding(
                         get: { showsConfirmedFaces },
@@ -670,13 +751,28 @@ struct CaptionWorkspaceView: View {
 
                 CaptionEditedPreview(
                     image: preview,
+                    isUnavailable: previewFailed,
                     mode: previewMode,
-                    confirmedPeople: showsConfirmedFaces ? confirmedPeople : []
+                    confirmedPeople: showsConfirmedFaces ? confirmedFaceOverlays : []
                 )
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    max(proxy.size.width, proxy.size.height)
+                } action: { longest in
+                    previewPaneLongestPoints = longest
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .task(id: session.currentURL) {
-                await loadCurrentPreview()
+            .task(id: CaptionPreviewLoadID(url: session.currentURL, maxPixelSize: previewTargetPixels)) {
+                await loadCurrentPreview(maxPixelSize: previewTargetPixels)
+            }
+            .onDisappear { previewPipeline.removeAll() }
+            // Cached renders used the previous global RAW decode profile/decoder version or
+            // watermark artwork; the next load of each photo decodes fresh, as before caching.
+            .onReceive(NotificationCenter.default.publisher(for: .rawDecodeSettingsDidChange)) { _ in
+                previewPipeline.removeAll()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .watermarkLibraryDidChange)) { _ in
+                previewPipeline.removeAll()
             }
 
             Divider()
@@ -686,29 +782,42 @@ struct CaptionWorkspaceView: View {
                     || isEditorTransitioning || isCurrentPhotoUnderReview
                     || conflictReview != nil || pendingReviewPhoto != nil
                     || isConflictRecoveryBusy,
-                onVoiceMemoChange: { voiceMemoBadgeRefreshToken &+= 1 }
+                onVoiceMemoChange: { url in voiceMemoBadgeRefreshTokens[url, default: 0] &+= 1 }
             ) {
                 settingsViewModel.requestedDestination = .transcription
                 openSettings()
             }
             Divider()
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 8) {
-                    ForEach(visibleImages) { image in
-                        CaptionFilmstripItem(
-                            image: image,
-                            thumbnailService: browserViewModel.thumbnailService,
-                            isSelected: session.currentURL == image.url.standardizedFileURL,
-                            voiceMemoRefreshToken: voiceMemoBadgeRefreshToken
-                        ) {
-                            select(image.url)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 8) {
+                        ForEach(visibleImages) { image in
+                            CaptionFilmstripItem(
+                                image: image,
+                                thumbnailService: browserViewModel.thumbnailService,
+                                isSelected: session.currentURL == image.url.standardizedFileURL,
+                                voiceMemoRefreshToken: voiceMemoBadgeRefreshTokens[
+                                    image.url.standardizedFileURL, default: 0]
+                            ) {
+                                select(image.url)
+                            }
+                            .id(image.url.standardizedFileURL)
                         }
                     }
+                    .padding(8)
                 }
-                .padding(8)
+                .scrollIndicators(.visible)
+                .frame(height: 92)
+                .onAppear {
+                    if let currentURL = session.currentURL { proxy.scrollTo(currentURL, anchor: .center) }
+                }
+                .onChange(of: session.currentURL) { _, currentURL in
+                    guard let currentURL else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        proxy.scrollTo(currentURL, anchor: .center)
+                    }
+                }
             }
-            .scrollIndicators(.visible)
-            .frame(height: 92)
         }
     }
 
@@ -725,19 +834,24 @@ struct CaptionWorkspaceView: View {
                     navigate(previous: false, announcesAdvance: true)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!session.canGoNext || isEditorTransitioning)
+                .disabled(session.currentURL == nil || isEditorTransitioning)
                 .help(shortcutHelp(for: .saveAndNext))
                 .focused($focusedAction, equals: .saveAndNext)
 
-                Button("Write & Next", systemImage: "square.and.arrow.down") {
-                    writeAndNext()
+                Button(
+                    session.canGoNext ? "Write & Next" : "Write",
+                    systemImage: "square.and.arrow.down"
+                ) {
+                    if session.canGoNext { writeAndNext() } else { writeCurrent() }
                 }
                 .disabled(
-                    !session.canGoNext
+                    session.currentURL == nil
                         || metadataViewModel.isSaving
                         || isEditorTransitioning
                 )
-                .help("Durably flush, write the current photo, then advance only after the write succeeds. \(shortcutHelp(for: .writeAndNext))")
+                .help(session.canGoNext
+                    ? "Durably flush, write the current photo, then advance only after the write succeeds. \(shortcutHelp(for: .writeAndNext))"
+                    : "Write the last photo. \(shortcutHelp(for: .writeAndNext))")
                 .focused($focusedAction, equals: .writeAndNext)
 
                 Divider().frame(height: 20)
@@ -766,7 +880,12 @@ struct CaptionWorkspaceView: View {
                 Button("Fix Next", systemImage: "wrench.and.screwdriver") {
                     focusNextValidationIssue()
                 }
-                .disabled(validationReport.issues.isEmpty || isEditorTransitioning)
+                .disabled(nextVisibleValidationIssue == nil || isEditorTransitioning)
+                .help(nextVisibleValidationIssue == nil && !validationReport.issues.isEmpty
+                    ? (deadlineProfile == nil
+                        ? "The remaining issues are in fields hidden in Settings → Metadata."
+                        : "The remaining issues are in fields the Deadline profile does not show.")
+                    : "Move to the next field that needs attention")
                 .focused($focusedAction, equals: .fixNext)
 
                 Menu("More", systemImage: "ellipsis.circle") {
@@ -790,7 +909,9 @@ struct CaptionWorkspaceView: View {
                 Button("Close") {
                     closeAfterFlush()
                 }
-                .keyboardShortcut(.escape, modifiers: [])
+                // Escape is routed by the caption key monitor: it leaves a focused field first and
+                // only closes the workspace when no editor or input method owns the key.
+                .help("Close the Caption workspace (Esc when no field is being edited)")
                 .disabled(isEditorTransitioning)
                 .focused($focusedAction, equals: .close)
             }
@@ -803,9 +924,106 @@ struct CaptionWorkspaceView: View {
 
     private var isEditorTransitioning: Bool { session.isTransitioning || flushCoordinator.isTransitioning }
 
-    private func synchronizeSessionWithBrowser() {
+    /// The editor's selection load trails navigation, so right after moving its draft can still
+    /// belong to the previous photo (or be a load placeholder). Actions that read or write the
+    /// editor must only act once it describes the photo the header shows.
+    /// Any in-flight load disqualifies, including a same-photo reload: it has already reset the
+    /// write baselines and its completion would overwrite edits applied meanwhile. Actions settle
+    /// such a reload first (`settleEditorLoad`).
+    private var editorDescribesCurrentPhoto: Bool {
+        guard let currentURL = session.currentURL else { return false }
+        return !metadataViewModel.isLoading
+            && metadataViewModel.selectedURLs.count == 1
+            && metadataViewModel.selectedURLs.first?.standardizedFileURL == currentURL
+    }
+
+    /// Waits (once, without stacking repeated presses) for the current photo's editor load, then
+    /// confirms focus is still on `target`. Returns false with a brief notice otherwise, so an
+    /// action never lands on the previous photo's editor.
+    private func waitForEditor(describing target: URL) async -> Bool {
+        if editorDescribesCurrentPhoto, session.currentURL == target { return true }
+        guard !isAwaitingEditorLoad else {
+            inlineNotice = "The photo's metadata is still loading. Try again in a moment."
+            return false
+        }
+        isAwaitingEditorLoad = true
+        defer { isAwaitingEditorLoad = false }
+        if metadataViewModel.selectedURLs.map(\.standardizedFileURL) != [target],
+           let image = photoList.image(forStandardizedURL: target) {
+            metadataViewModel.loadSelectionMetadataNow(for: [image], folderURL: browserViewModel.currentFolderURL)
+        }
+        await metadataViewModel.waitForMetadataLoad()
+        guard session.currentURL == target, editorDescribesCurrentPhoto else {
+            inlineNotice = "The photo's metadata is still loading. Try again in a moment."
+            return false
+        }
+        return true
+    }
+
+    /// Full screen is a separate window whose arrow keys change the browser selection directly,
+    /// bypassing the session's flush barrier. Capture the buffered caption before it opens.
+    private func openFullScreen() {
+        guard !isEditorTransitioning else { return }
+        do {
+            try enqueueCurrentDraftPersistence()
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        preservingEditorFocus {
+            browserViewModel.isFullScreen = true
+        }
+    }
+
+    /// Follows the photo the user navigated to in full screen so the header, preview and editor
+    /// describe the same photo again.
+    private func adoptBrowserSelectionAfterFullScreen() {
+        guard browserViewModel.selectedImageIDs.count == 1,
+              let browserURL = browserViewModel.selectedImageIDs.first,
+              photoList.contains(browserURL) else {
+            // Full screen ended on a video or a multi-selection that Caption cannot edit. Put the
+            // browser (and so the metadata editor) back on the photo the header shows.
+            publishSessionSelection()
+            return
+        }
+        if browserURL.standardizedFileURL != session.currentURL {
+            select(browserURL)
+        }
+    }
+
+    private func synchronizeSessionWithBrowser(capturingDraft: Bool = false) {
+        if capturingDraft, isWorkspaceActive,
+           let currentURL = session.currentURL,
+           !visibleURLs.contains(where: { $0.standardizedFileURL == currentURL }) {
+            // The focused photo can leave the filtered list (for example after a rating change).
+            // Capture its buffered text before the session moves focus to a neighbour. Never move
+            // on without it: mid-transition, retry once the transition ends; if the capture fails,
+            // keep the editor on this photo and say so.
+            // The browser has already dropped it from its selection; hold the editor on it so the
+            // debounced selection load does not replace the uncaptured draft.
+            guard !isEditorTransitioning else {
+                resynchronizesListAfterTransition = true
+                metadataViewModel.holdSelection(on: currentURL)
+                return
+            }
+            do {
+                try enqueueCurrentDraftPersistence()
+            } catch {
+                resynchronizesListAfterTransition = true
+                metadataViewModel.holdSelection(on: currentURL)
+                errorMessage = "\(currentURL.lastPathComponent) left the current filter, but its caption edits could not be saved: \(error.localizedDescription) The photo stays open in Caption until they are saved."
+                return
+            }
+        }
+        resynchronizesListAfterTransition = false
         session.replaceImages(visibleURLs)
-        guard let currentURL = session.currentURL else { return }
+        if let held = metadataViewModel.heldSelectionURL, held.standardizedFileURL != session.currentURL {
+            metadataViewModel.releaseSelectionHold()
+        }
+        // Full screen owns the browser selection while it is open (rating, label, or delete there
+        // can change the list); pushing Caption's photo back would snap it to another image.
+        // `adoptBrowserSelectionAfterFullScreen` reconciles on exit.
+        guard !browserViewModel.isFullScreen, let currentURL = session.currentURL else { return }
         let browserURL = originalBrowserURL(for: currentURL)
         if browserViewModel.selectedImageIDs != [browserURL] {
             browserViewModel.selectedImageIDs = [browserURL]
@@ -813,29 +1031,66 @@ struct CaptionWorkspaceView: View {
         }
     }
 
+    /// `admits` is checked after the flush and before the session forgets the dirty marker, so a
+    /// refused action leaves the photo's state as it was.
     private func prepareAndPerform(
         _ action: CaptionSessionAction,
+        settlesEditorLoad: Bool = false,
+        admits: @MainActor () -> Bool = { true },
         operation: @MainActor () -> Void
     ) async throws {
         let token = try flushCoordinator.reserveTransition()
         try await flushCoordinator.performReservedTransition(token, flush: {
-            try await session.prepare(for: action) { try await flushCoordinator.flushAsync() }
+            try await session.prepare(for: action) { try await flushCoordinator.flushAsync(owner: captionEditorOwner) }
+            if settlesEditorLoad { await settleEditorLoad() }
         }, operation: {
+            guard admits() else { return }
             session.markCommitted()
             operation()
         })
     }
 
-    private func enqueueCurrentDraftPersistence() throws {
+    /// The flush's sidecar write can trigger a same-photo auto-refresh reload. Give an in-flight
+    /// load a bounded moment to finish so the action runs on a settled editor; a load that does
+    /// not finish in time is refused by the caller's admission check rather than hanging the
+    /// transition (which freezes the whole workspace).
+    private func settleEditorLoad(timeout: Duration = .seconds(5)) async {
+        let deadline = ContinuousClock.now + timeout
+        while metadataViewModel.isLoading, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// Write/Write & Next admission once the flush finished: focus must still be on `target` and
+    /// the editor must describe it. Refusals say so instead of silently doing nothing.
+    private func editorAdmitsWrite(to target: URL) -> Bool {
+        guard session.currentURL == target, editorDescribesCurrentPhoto else {
+            inlineNotice = "Not written: the photo's metadata is still loading. Try again in a moment."
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    private func enqueueCurrentDraftPersistence() throws -> Bool {
         guard !flushCoordinator.isTransitioning else { throw CaptionSessionError.transitionInProgress }
-        try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush()
+        let captured = try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush(owner: captionEditorOwner)
         session.markCommitted()
+        // The draft is captured, so a photo held open after leaving the filter may now be replaced.
+        metadataViewModel.releaseSelectionHold()
+        return captured
     }
 
     private func navigate(previous: Bool, announcesAdvance: Bool = false) {
         Task { @MainActor in
             guard !flushCoordinator.isTransitioning else { return }
             do {
+                if announcesAdvance, !previous, !session.canGoNext {
+                    // Save & Next on the last photo still saves; say why focus stays put.
+                    guard session.currentURL != nil, !session.isTransitioning else { return }
+                    inlineNotice = try enqueueCurrentDraftPersistence() ? "Saved — last photo" : "Last photo"
+                    return
+                }
                 let moved = if previous {
                     try await session.goPrevious { try enqueueCurrentDraftPersistence() }
                 } else {
@@ -872,10 +1127,15 @@ struct CaptionWorkspaceView: View {
         let browserURL = originalBrowserURL(for: url)
         browserViewModel.selectedImageIDs = [browserURL]
         browserViewModel.lastClickedImageURL = browserURL
+        // Load the editor now rather than after the browser's selection debounce, so Write,
+        // Copy Previous and code replacement are not left waiting on (or racing) the old draft.
+        if metadataViewModel.selectedURLs != [browserURL], let image = photoList.image(forStandardizedURL: url) {
+            metadataViewModel.loadSelectionMetadataNow(for: [image], folderURL: browserViewModel.currentFolderURL)
+        }
     }
 
     private func originalBrowserURL(for sessionURL: URL) -> URL {
-        visibleImages.first { $0.url.standardizedFileURL == sessionURL }?.url ?? sessionURL
+        photoList.image(forStandardizedURL: sessionURL)?.url ?? sessionURL
     }
 
     private func applyTemplateAfterFlush(append: Bool?) {
@@ -898,13 +1158,15 @@ struct CaptionWorkspaceView: View {
             guard !isCopyingPrevious else { return }
             isCopyingPrevious = true
             defer { isCopyingPrevious = false }
+            guard let target = session.currentURL, await waitForEditor(describing: target),
+                  !flushCoordinator.isTransitioning else { return }
 
             do {
                 let token = try flushCoordinator.reserveTransition()
                 var previousMetadata: IPTCMetadata?
                 var loadToken: CaptionLoadToken?
                 try await flushCoordinator.performReservedTransition(token, flush: {
-                    try await session.prepare(for: .copyPrevious) { try await flushCoordinator.flushAsync() }
+                    try await session.prepare(for: .copyPrevious) { try await flushCoordinator.flushAsync(owner: captionEditorOwner) }
                     session.markCommitted()
                     guard let previousURL = session.previousURL else {
                         errorMessage = "There is no previous photo in the current order."
@@ -914,8 +1176,13 @@ struct CaptionWorkspaceView: View {
                     loadToken = currentLoad
                     previousMetadata = try await metadataViewModel.loadCaptionCopyPreviousMetadata(
                         for: originalBrowserURL(for: previousURL))
+                    await settleEditorLoad()
                 }, operation: {
                     guard let previous = previousMetadata, let loadToken, session.accepts(load: loadToken) else { return }
+                    guard editorDescribesCurrentPhoto else {
+                        inlineNotice = "Not copied: the photo's metadata is still loading. Try again in a moment."
+                        return
+                    }
                     let configuration = CaptionCopyPreviousConfiguration(defaultMode: mode)
                     let result = CaptionCopyPreviousService().copy(
                         previous: previous,
@@ -926,7 +1193,10 @@ struct CaptionWorkspaceView: View {
                         errorMessage = "The previous photo's metadata could not be copied."
                         return
                     }
-                    guard result.changed else { return }
+                    guard result.changed else {
+                        inlineNotice = "The previous photo has no different caption fields to copy."
+                        return
+                    }
                     metadataViewModel.editingMetadata = updated
                     metadataViewModel.hasChanges = true
                     session.markCurrentDirty()
@@ -940,8 +1210,12 @@ struct CaptionWorkspaceView: View {
 
     private func prepareCodeReplacementPreview() {
         Task { @MainActor in
-            guard !flushCoordinator.isTransitioning else { return }
+            guard !flushCoordinator.isTransitioning, let target = session.currentURL,
+                  await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
+                // Pick up edits to the list file since it was loaded.
+                await codeReplacementStore.reloadSourceIfChanged()
+                guard !flushCoordinator.isTransitioning, session.currentURL == target else { return }
                 guard codeReplacementStore.sourceLoadError == nil else {
                     errorMessage = codeReplacementStore.sourceLoadError
                     return
@@ -950,15 +1224,19 @@ struct CaptionWorkspaceView: View {
                 // A marked range must not be read into the model or persisted. Query the actual
                 // AppKit field editor before crossing the normal flush barrier; once committed,
                 // the explicit command is safely post-flush and no longer depends on UI buffers.
-                let composition = try CaptionWorkspaceFlushCoordinator.shared.editorCompositionState()
+                let composition = try CaptionWorkspaceFlushCoordinator.shared.editorCompositionState(owner: captionEditorOwner)
                 guard composition == .committed else {
                     errorMessage = "Finish the active text composition before applying code replacement."
                     return
                 }
 
-                try await prepareAndPerform(.codeReplacement) {
-                    guard let previewURL = session.currentURL else {
+                try await prepareAndPerform(.codeReplacement, settlesEditorLoad: true) {
+                    guard let previewURL = session.currentURL, previewURL == target else {
                         errorMessage = "The current photo is no longer available."
+                        return
+                    }
+                    guard editorDescribesCurrentPhoto else {
+                        inlineNotice = "The photo's metadata is still loading. Try again in a moment."
                         return
                     }
                     let inputMetadata = metadataViewModel.editingMetadata
@@ -1020,9 +1298,11 @@ struct CaptionWorkspaceView: View {
 
     private func writeCurrent() {
         Task { @MainActor in
-            guard !flushCoordinator.isTransitioning else { return }
+            guard !flushCoordinator.isTransitioning, let target = session.currentURL,
+                  await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
-                try await prepareAndPerform(.write) {
+                try await prepareAndPerform(.write, settlesEditorLoad: true,
+                                            admits: { editorAdmitsWrite(to: target) }) {
                     metadataViewModel.writeMetadataAndClearSidecar()
                 }
             } catch {
@@ -1033,12 +1313,17 @@ struct CaptionWorkspaceView: View {
 
     private func writeAndNext() {
         Task { @MainActor in
-            guard !flushCoordinator.isTransitioning else { return }
+            guard !flushCoordinator.isTransitioning, let target = session.currentURL,
+                  await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
-                try await prepareAndPerform(.write) {
-                    guard let currentURL = session.currentURL else { return }
-                    pendingWriteAndNextURL = currentURL
+                try await prepareAndPerform(.write, settlesEditorLoad: true,
+                                            admits: { editorAdmitsWrite(to: target) }) {
+                    pendingWriteAndNextURL = target
                     metadataViewModel.writeMetadataAndClearSidecar()
+                    // A write refused before it starts (for example an unpersisted Develop edit)
+                    // sets `saveError` without toggling `isSaving`, so the completion handler
+                    // never consumes this; a later unrelated save must not advance.
+                    if !metadataViewModel.isSaving { pendingWriteAndNextURL = nil }
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -1054,10 +1339,10 @@ struct CaptionWorkspaceView: View {
             guard metadataViewModel.saveError == nil,
                   pendingURL.standardizedFileURL == session.currentURL?.standardizedFileURL else { return }
             do {
-                guard try CaptionWorkspaceFlushCoordinator.shared.editorCompositionState() == .committed else { return }
+                guard try CaptionWorkspaceFlushCoordinator.shared.editorCompositionState(owner: captionEditorOwner) == .committed else { return }
                 // Text entered during the write may still live in AppKit's field editor. Capture
                 // it in this navigation turn; a newer pending draft must keep this photo selected.
-                try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush()
+                try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush(owner: captionEditorOwner)
                 guard CaptionWriteAndNextGate.shouldAdvance(
                     pendingURL: pendingURL,
                     currentURL: session.currentURL,
@@ -1076,8 +1361,16 @@ struct CaptionWorkspaceView: View {
         }
     }
 
+    /// The next issue in a field the editor actually shows; issues in hidden fields cannot take focus.
+    private var nextVisibleValidationIssue: MetadataValidationIssue? {
+        CaptionWorkspaceChecklistSummary.make(
+            report: validationReport,
+            actionableFields: Set(fieldLayout.priority + fieldLayout.secondary)
+        ).nextIssue
+    }
+
     private func focusNextValidationIssue() {
-        guard let issue = validationReport.nextBlockingIssue ?? validationReport.issues.first else { return }
+        guard let issue = nextVisibleValidationIssue else { return }
         requestFocus(issue.field)
     }
 
@@ -1130,6 +1423,16 @@ struct CaptionWorkspaceView: View {
                 moveCaptionFocus(reverse: modifiers.contains(.shift))
                 return nil
             }
+            if event.keyCode == 53, modifiers.isEmpty {
+                guard !inputState.textEditorOwnsInput,
+                      !inputState.imeHasMarkedText,
+                      !isEditorTransientPresented,
+                      !showingCodeReplacementSettings,
+                      !showingCodeReplacementPreview,
+                      errorMessage == nil else { return event }
+                closeAfterFlush()
+                return nil
+            }
             guard let key = event.charactersIgnoringModifiers,
                   let command = CaptionAdvanceShortcutRouter.resolve(
                     KeyboardShortcutRouteInput(
@@ -1143,13 +1446,13 @@ struct CaptionWorkspaceView: View {
                   ) else { return event }
             switch command {
             case .saveAndNext:
-                guard session.canGoNext, !isEditorTransitioning else { return nil }
+                guard session.currentURL != nil, !isEditorTransitioning else { return nil }
                 navigate(previous: false, announcesAdvance: true)
             case .writeAndNext:
-                guard session.canGoNext,
+                guard session.currentURL != nil,
                       !isEditorTransitioning,
                       !metadataViewModel.isSaving else { return nil }
-                writeAndNext()
+                if session.canGoNext { writeAndNext() } else { writeCurrent() }
             }
             return nil
         }
@@ -1181,13 +1484,13 @@ struct CaptionWorkspaceView: View {
     private func isActionAvailable(_ action: CaptionActionFocus) -> Bool {
         switch action {
         case .previous: session.canGoPrevious && !isEditorTransitioning
-        case .saveAndNext: session.canGoNext && !isEditorTransitioning
+        case .saveAndNext: session.currentURL != nil && !isEditorTransitioning
         case .writeAndNext:
-            session.canGoNext && !isEditorTransitioning && !metadataViewModel.isSaving
+            session.currentURL != nil && !isEditorTransitioning && !metadataViewModel.isSaving
         case .applyTemplate: session.currentURL != nil && !isEditorTransitioning
         case .copyPrevious:
             session.previousURL != nil && !isEditorTransitioning && !isCopyingPrevious
-        case .fixNext: !validationReport.issues.isEmpty && !isEditorTransitioning
+        case .fixNext: nextVisibleValidationIssue != nil && !isEditorTransitioning
         case .more, .close: !isEditorTransitioning
         }
     }
@@ -1223,19 +1526,84 @@ struct CaptionWorkspaceView: View {
         session.setReadiness(CaptionReadinessResolver.readiness(for: report), for: url)
     }
 
-    private func loadCurrentPreview() async {
-        preview = nil
-        confirmedPeople = []
-        guard let token = session.beginLoad() else { return }
-        let image = currentImage
-        let settings = metadataViewModel.editingMetadata.cameraRaw
-        let orientation = image?.exifOrientation ?? 1
-        let cgImage = await FullScreenImageCache.decodedEditedPreview(
-            for: token.imageURL,
-            settings: settings,
-            orientation: orientation,
-            screenMaxPx: 3_840
+    /// Longest edge the preview is decoded at: the pane's backing pixels rounded up to a bucket,
+    /// or 3,840 px for the 100% view (one image pixel per point, as before). Nil until the
+    /// pane has been measured.
+    private var previewTargetPixels: CGFloat? {
+        if previewMode == .actualSize { return CaptionPreviewPipeline.actualSizePixels }
+        guard previewPaneLongestPoints > 0 else { return nil }
+        return CaptionPreviewPipeline.pixelBucket(
+            forLongestBackingPixels: previewPaneLongestPoints * max(displayScale, 1))
+    }
+
+    private func previewRequest(for image: ImageFile?, url: URL, settings: CameraRawSettings?,
+                                maxPixelSize: CGFloat) -> CaptionPreviewPipeline.Request {
+        CaptionPreviewPipeline.Request(
+            url: url,
+            orientation: image?.exifOrientation ?? 1,
+            renderToken: FullScreenImageCache.renderToken(settings: settings, isEdited: true),
+            fileSize: image?.fileSize,
+            fileModified: image?.dateModified,
+            maxPixelSize: maxPixelSize
         )
+    }
+
+    /// The next photos in the direction of travel (one each way when there is none yet).
+    private func previewPrefetchTargets(around url: URL) -> [ImageFile] {
+        let images = visibleImages
+        guard let index = images.firstIndex(where: { $0.url.standardizedFileURL == url }) else {
+            lastPreviewIndex = nil
+            return []
+        }
+        let offsets: [Int] = switch lastPreviewIndex.map({ index - $0 }) {
+        case .some(let delta) where delta > 0: [1, 2]
+        case .some(let delta) where delta < 0: [-1, -2]
+        default: [1, -1]
+        }
+        lastPreviewIndex = index
+        return offsets.compactMap { offset in
+            let neighbour = index + offset
+            guard images.indices.contains(neighbour), images[neighbour].isImageFile else { return nil }
+            return images[neighbour]
+        }
+    }
+
+    private func loadCurrentPreview(maxPixelSize: CGFloat?) async {
+        let showsCurrentPhoto = session.currentURL != nil && displayedPreview?.url == session.currentURL
+        if !showsCurrentPhoto {
+            preview = nil
+            previewFailed = false
+            confirmedPeople = []
+            confirmedFaceOverlays = []
+            displayedPreview = nil
+        }
+        guard let maxPixelSize, let token = session.beginPreviewLoad() else { return }
+        let image = currentImage
+        // The editor's selection load is debounced, so right after navigating its draft still
+        // belongs to the previous photo. Only trust it once it describes this photo.
+        let settings = editorDescribesCurrentPhoto
+            ? metadataViewModel.editingMetadata.cameraRaw
+            : image?.cameraRawSettings
+        let orientation = image?.exifOrientation ?? 1
+        let request = previewRequest(for: image, url: token.imageURL, settings: settings,
+                                     maxPixelSize: maxPixelSize)
+        // A pane resize or mode switch on the same photo only re-decodes to grow; the shown
+        // rendering stays up meanwhile.
+        if showsCurrentPhoto, let shown = displayedPreview, shown.rendersSameVariant(as: request),
+           shown.maxPixelSize >= maxPixelSize {
+            return
+        }
+        let neighbours = showsCurrentPhoto ? [] : previewPrefetchTargets(around: token.imageURL)
+        if !showsCurrentPhoto {
+            // Superseded decodes outside the new navigation window, or at another pane size,
+            // never start.
+            previewPipeline.retain(only: Set([token.imageURL] + neighbours.map { $0.url.standardizedFileURL }),
+                                   maxPixelSize: maxPixelSize)
+        }
+        let cgImage = await previewPipeline.image(for: request, settings: settings)
+        guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }
+        // A failed upgrade keeps the rendering already on screen.
+        if cgImage == nil, showsCurrentPhoto, preview != nil { return }
         let loaded: NSImage?
         if let cgImage {
             loaded = NSImage(
@@ -1244,6 +1612,18 @@ struct CaptionWorkspaceView: View {
             )
         } else {
             loaded = await browserViewModel.thumbnailService.loadThumbnail(for: token.imageURL)
+        }
+        guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }
+        // Show the photo before the folder's face data, which can be slow on large folders.
+        preview = loaded
+        previewFailed = loaded == nil
+        displayedPreview = cgImage == nil ? nil : request
+        for neighbour in neighbours {
+            let neighbourURL = neighbour.url.standardizedFileURL
+            previewPipeline.prefetch(
+                previewRequest(for: neighbour, url: neighbourURL, settings: neighbour.cameraRawSettings,
+                               maxPixelSize: maxPixelSize),
+                settings: neighbour.cameraRawSettings)
         }
         let folderURL = token.imageURL.deletingLastPathComponent()
         let faceDataResult = await FaceDataFolderLoadService.shared.loadDocument(
@@ -1254,15 +1634,35 @@ struct CaptionWorkspaceView: View {
         } else {
             nil
         }
-        let people = CaptionConfirmedPersonOrdering.people(for: token.imageURL, in: faceData)
-        guard !Task.isCancelled, session.accepts(load: token) else { return }
-        preview = loaded
+        // Face rects describe the uncropped photo; the edited preview shows the Develop crop.
+        // The fallback thumbnail's framing is unknown, so a cropped photo shows no boxes there.
+        let crop = settings?.crop
+        // Stored rects are in the file-tag frame; map them into the displayed (sidecar-first)
+        // frame once, before ordering. `croppedVisionRect` then only applies the crop.
+        let faceOrientation = await FaceDisplayOrientation.resolved(
+            for: token.imageURL, modelDisplayOrientation: orientation)
+        guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }
+        let people = CaptionConfirmedPersonOrdering.people(
+            for: token.imageURL, in: faceData, orientation: faceOrientation)
+        let overlays: [CaptionConfirmedPerson] = if crop?.isEffectiveCrop == true, cgImage == nil {
+            []
+        } else {
+            people.compactMap { person in
+                guard let rect = CaptionPreviewGeometry.croppedVisionRect(
+                    person.normalizedFaceRect, crop: crop, displayOrientation: orientation,
+                    renderedSize: loaded?.size ?? .zero) else { return nil }
+                return CaptionConfirmedPerson(id: person.id, name: person.name, normalizedFaceRect: rect)
+            }
+        }
+        guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }
         confirmedPeople = people
+        confirmedFaceOverlays = overlays
     }
 }
 
 private struct CaptionEditedPreview: View {
     let image: NSImage?
+    let isUnavailable: Bool
     let mode: CaptionPreviewMode
     let confirmedPeople: [CaptionConfirmedPerson]
 
@@ -1301,6 +1701,13 @@ private struct CaptionEditedPreview: View {
                         .frame(width: image.size.width, height: image.size.height)
                     }
                 }
+            } else if isUnavailable {
+                ContentUnavailableView(
+                    "Preview Unavailable",
+                    systemImage: "photo.badge.exclamationmark",
+                    description: Text("The photo could not be decoded. You can still edit its caption.")
+                )
+                .foregroundStyle(.white)
             } else {
                 ProgressView()
                     .controlSize(.large)

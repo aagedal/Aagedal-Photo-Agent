@@ -578,10 +578,10 @@ struct ICloudSyncCoordinatorTests {
     @Test("Opt-in Known People crops follow routing without entering the managed root")
     func knownPeopleCropRouting() async throws {
         let key = UserDefaultsKeys.knownPeopleRetainUpgradeSources
-        let previous = UserDefaults.standard.object(forKey: key)
+        let previous = AppDefaults.store.object(forKey: key)
         defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let previous { AppDefaults.store.set(previous, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
             "KnownPeopleCropRouting-\(UUID().uuidString)", isDirectory: true)
@@ -594,7 +594,7 @@ struct ICloudSyncCoordinatorTests {
         try FileManager.default.createDirectory(at: crops, withIntermediateDirectories: true)
         let probe = KnownPeopleICloudRoutingProbe(local: local, cloud: cloud)
         let service = KnownPeopleICloudRoutingService(access: probe.fileAccess)
-        UserDefaults.standard.set(true, forKey: key)
+        AppDefaults.store.set(true, forKey: key)
         let result = try await KnownPeopleCropSyncConsentContext.$confirmedForThisReconcile
             .withValue(true) { try await service.reconcile(enabled: true, requestID: UUID()) }
         guard case .committed = result else {
@@ -723,11 +723,11 @@ struct ICloudSyncCoordinatorTests {
         let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
         defer { preferenceLease.release() }
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let previous = UserDefaults.standard.object(forKey: defaultsKey)
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        let previous = AppDefaults.store.object(forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let previous { AppDefaults.store.set(previous, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let gate = KnownPeopleRouteMutationGate()
         let replacement = try await gate.acquire()
@@ -750,11 +750,11 @@ struct ICloudSyncCoordinatorTests {
         let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
         defer { preferenceLease.release() }
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let previous = UserDefaults.standard.object(forKey: defaultsKey)
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        let previous = AppDefaults.store.object(forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let previous { AppDefaults.store.set(previous, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let gate = KnownPeopleRouteMutationGate()
         let held = try await gate.acquire()
@@ -785,11 +785,11 @@ struct ICloudSyncCoordinatorTests {
         let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
         defer { preferenceLease.release() }
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let previous = UserDefaults.standard.object(forKey: defaultsKey)
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        let previous = AppDefaults.store.object(forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let previous { AppDefaults.store.set(previous, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let gate = KnownPeopleRouteMutationGate()
         let replacement = try await gate.acquire()
@@ -818,10 +818,10 @@ struct ICloudSyncCoordinatorTests {
         let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
         defer { preferenceLease.release() }
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let previous = UserDefaults.standard.object(forKey: defaultsKey)
+        let previous = AppDefaults.store.object(forKey: defaultsKey)
         defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let previous { AppDefaults.store.set(previous, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let routing = KnownPeopleRoutingCallProbe()
         let coordinator = ICloudSyncCoordinator(knownPeopleRouting: routing,
@@ -1635,7 +1635,7 @@ nonisolated private final class BlockingKnownPeopleDataSummaryProbe: @unchecked 
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return .complete(31)

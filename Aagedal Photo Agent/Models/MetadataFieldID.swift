@@ -474,6 +474,41 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    // MARK: Review cells
+
+    /// Review edits list fields as one line of text. Person and organisation names contain
+    /// commas ("Støre, Jonas Gahr" is one person), so those lists are joined with "; " there and
+    /// split only on ";". Elsewhere (templates, editor) the existing comma syntax is unchanged.
+    static let reviewNameListSeparator = "; "
+
+    var usesReviewNameListSeparator: Bool {
+        self == .personShown || self == .organisationShownName
+    }
+
+    func reviewTextValue(in metadata: IPTCMetadata) -> String? {
+        guard usesReviewNameListSeparator else { return textValue(in: metadata) }
+        return repeatableValues(in: metadata).joined(separator: Self.reviewNameListSeparator)
+    }
+
+    /// A visible reminder under a Review name cell that holds a comma but no semicolon: it may be
+    /// one "Last, First" person or a pasted comma list. Never auto-split ("Støre, Jonas Gahr").
+    func reviewNameListHint(for text: String) -> String? {
+        guard usesReviewNameListSeparator, text.contains(","), !text.contains(";") else { return nil }
+        return self == .personShown
+            ? "Commas stay inside one name. Separate people with ;"
+            : "Commas stay inside one name. Separate organisations with ;"
+    }
+
+    func setReviewTextValue(_ value: String, in metadata: inout IPTCMetadata) {
+        guard usesReviewNameListSeparator else {
+            setTextValue(value, in: &metadata)
+            return
+        }
+        // Unchanged text keeps every stored entry exactly as it is.
+        guard value != repeatableValues(in: metadata).joined(separator: Self.reviewNameListSeparator) else { return }
+        setRepeatableValues(value.split(separator: ";").map(String.init), in: &metadata)
+    }
+
     fileprivate func setRepeatableValues(_ values: [String], in metadata: inout IPTCMetadata) {
         let trimmed = values
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -816,7 +851,20 @@ nonisolated enum MetadataFieldMutation: Sendable, Equatable {
     case untouched
     case overwrite(MetadataFieldMutationValue)
     case append([String])
+    /// Appends text to a scalar field's own value, per record, exactly like single-photo template
+    /// append (`MetadataTemplateText.appending`). Batch template application records this so a
+    /// mixed selection keeps each photo's text instead of receiving the common-value preview.
+    case appendText(String)
     case clear
+}
+
+/// Shared text-append rule for templates: one space between the existing and appended text.
+nonisolated enum MetadataTemplateText {
+    static func appending(_ existing: String?, _ new: String) -> String {
+        guard let existing, !existing.isEmpty else { return new }
+        guard !new.isEmpty else { return existing }
+        return existing + " " + new
+    }
 }
 
 nonisolated enum MetadataFieldMutationError: Error, Sendable, Equatable {
@@ -916,6 +964,20 @@ extension IPTCMetadata {
             var candidate = self
             field.setRepeatableValues(
                 field.repeatableValues(in: self) + appended,
+                in: &candidate
+            )
+            self = candidate
+
+        case .appendText(let text):
+            guard !field.isRepeatable else {
+                throw MetadataFieldMutationError.repeatableValueRequired(field)
+            }
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw MetadataFieldMutationError.emptyAppendRequiresUntouched(field)
+            }
+            var candidate = self
+            field.setTextValue(
+                MetadataTemplateText.appending(field.textValue(in: self), text),
                 in: &candidate
             )
             self = candidate

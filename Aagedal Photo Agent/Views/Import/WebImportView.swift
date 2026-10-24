@@ -6,6 +6,8 @@ struct WebImportView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var url = ""
     @State private var cookies: URL?
+    /// Remembered across sessions like the other import destinations; resolved once when the
+    /// sheet appears (a `@State` initial value would re-run bookmark I/O on every view init).
     @State private var destination: URL?
     @State private var inspection: WebPostInspection?
     @State private var selected = Set<String>()
@@ -75,11 +77,15 @@ struct WebImportView: View {
                     panel.canChooseDirectories = true
                     panel.canChooseFiles = false
                     panel.canCreateDirectories = true
-                    if panel.runModal() == .OK { destination = panel.url }
+                    panel.directoryURL = destination
+                    if panel.runModal() == .OK, let url = panel.url {
+                        destination = url
+                        RAWArchiveService.saveBookmark(for: url, key: UserDefaultsKeys.webImportDestinationBookmark)
+                    }
                 }.disabled(task != nil)
                 Text(destination?.path ?? "No destination selected").font(.caption).lineLimit(1).truncationMode(.middle)
             }
-            Text("Each import creates Originals, Working and Provenance folders. JPEG working copies receive embedded metadata; videos, other formats and credentialed JPEGs receive XMP sidecars.")
+            Text("Each import creates Originals, Working and Provenance folders. Working copies follow your metadata write preset (Settings \u{2192} Metadata); videos and other formats that can't be embedded receive XMP sidecars.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             if let retainedFolder {
@@ -104,6 +110,14 @@ struct WebImportView: View {
         }
         .padding(24).frame(width: 720, height: 680)
         .interactiveDismissDisabled(task != nil)
+        .onAppear {
+            if destination == nil {
+                destination = RAWArchiveService.resolveBookmark(
+                    key: UserDefaultsKeys.webImportDestinationBookmark,
+                    removeOnFailure: false
+                )
+            }
+        }
         .onDisappear { task?.cancel() }
     }
 
@@ -143,7 +157,11 @@ struct WebImportView: View {
         error = nil
         retainedFolder = nil
         task = Task { @MainActor in
-            defer { task = nil }
+            let didAccess = destination.startAccessingSecurityScopedResource()
+            defer {
+                if didAccess { destination.stopAccessingSecurityScopedResource() }
+                task = nil
+            }
             do {
                 completedFolder = try await WebMediaImportService().importMedia(
                     inspection: inspection, selected: selected, cookies: cookies,

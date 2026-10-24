@@ -16,18 +16,87 @@ actor MetadataFailureTracker: Sendable {
     /// looked stale — the image file was modified more recently and the two disagreed.
     /// A warning, not a failure: the file was still published, just from the file's metadata.
     private(set) var staleSidecarWarnings: [String] = []
+    /// Files exported without one or more enabled watermark layers because the referenced
+    /// library image was deleted or hasn't synced to this Mac. A warning, not a failure: the
+    /// file was still exported, just without that watermark.
+    private(set) var missingWatermarkWarnings: [String] = []
     func recordCopyFailure(_ filename: String) { metadataCopyFailures.append(filename) }
     func recordOverlayFailure(_ filename: String) { sidecarOverlayFailures.append(filename) }
     func recordStaleSidecar(_ filename: String) { staleSidecarWarnings.append(filename) }
+    func recordMissingWatermark(_ filename: String) { missingWatermarkWarnings.append(filename) }
 }
 
 /// Immutable input for one export Camera Raw resolution pass. Live workspace settings are
-/// captured on MainActor before this value crosses to the filesystem actor; only RAW files that
-/// lack a live value need an XMP sidecar read.
+/// captured on MainActor before this value crosses to the filesystem actor. Every requested
+/// photo's persisted develop settings are read fresh (RAW: its XMP sidecar; other files: the
+/// sidecar block when it owns one, else the embedded block from `embeddedSettingsByImageURL`),
+/// and `ExportCameraRawSourcePolicy` picks between the persisted and the live copy.
 nonisolated struct ExportCameraRawResolutionRequest: Equatable, Sendable {
     let requestID: UUID
     let imageURLs: [URL]
     let liveSettingsByImageURL: [URL: CameraRawSettings]
+    /// Develop settings parsed from each file's embedded XMP by the caller's full metadata read.
+    let embeddedSettingsByImageURL: [URL: CameraRawSettings]
+    /// Photos whose live copy is authoritative: the photo open in Develop, whose newest edits
+    /// may not have reached disk yet. Every other live copy is only a redaction safety net.
+    let liveAuthoritativeImageURLs: Set<URL>
+
+    init(
+        requestID: UUID,
+        imageURLs: [URL],
+        liveSettingsByImageURL: [URL: CameraRawSettings],
+        embeddedSettingsByImageURL: [URL: CameraRawSettings] = [:],
+        liveAuthoritativeImageURLs: Set<URL> = []
+    ) {
+        self.requestID = requestID
+        self.imageURLs = imageURLs
+        self.liveSettingsByImageURL = liveSettingsByImageURL
+        self.embeddedSettingsByImageURL = embeddedSettingsByImageURL
+        self.liveAuthoritativeImageURLs = liveAuthoritativeImageURLs
+    }
+}
+
+/// Chooses which develop settings an export, upload or signing render uses (privacy-critical:
+/// the chosen copy decides whether Anonymizer redactions reach the published pixels).
+///
+/// The persisted settings — read fresh from the file/sidecar with the complete parser — are the
+/// default. The Browser's in-memory copy can be stale or incomplete (an older parser, a reload
+/// that raced a write), so it only wins for the photo open in Develop, whose newest edits may not
+/// be on disk yet. Whichever copy is chosen, the redactions of the other copy are added to it
+/// (`RedactionUnion`: every enabled Anonymizer mask, the strongest global Anonymizer), so a
+/// partial set in either copy is combined, never dropped: over-redacting is recoverable,
+/// publishing an unredacted face is not.
+nonisolated enum ExportCameraRawSourcePolicy {
+    static func resolve(
+        live: CameraRawSettings?,
+        persisted: CameraRawSettings?,
+        liveIsAuthoritative: Bool
+    ) -> CameraRawSettings? {
+        let live = (live?.isEmpty == false) ? live : nil
+        let persisted = (persisted?.isEmpty == false) ? persisted : nil
+        guard let live else { return persisted }
+        guard let persisted else { return live }
+        let preferred = liveIsAuthoritative ? live : persisted
+        let other = liveIsAuthoritative ? persisted : live
+        return RedactionUnion.merged(preferred, adding: [other])
+    }
+
+    /// The develop settings a photo persists: a RAW's sidecar is authoritative; any other file
+    /// shows its sidecar block when it owns one (`sidecar` is already ownership-filtered, so a
+    /// RAW+JPEG pair's JPEG passes nil) and otherwise its embedded block.
+    static func persisted(
+        imageURL: URL,
+        sidecar: CameraRawSettings?,
+        embedded: CameraRawSettings?
+    ) -> CameraRawSettings? {
+        if SupportedImageFormats.isRaw(url: imageURL) {
+            return (sidecar?.isEmpty == false) ? sidecar : nil
+        }
+        let reconciled = EffectiveMetadataResolver.reconciledDevelopSettings(
+            sidecar: sidecar, embedded: embedded
+        )
+        return (reconciled?.isEmpty == false) ? reconciled : nil
+    }
 }
 
 /// A complete result contains both the captured live values and every usable sidecar fallback.
@@ -182,11 +251,90 @@ actor ExportArtifactFinalizationService {
     }
 }
 
+/// The develop settings a photo has saved on disk, as the fail-closed redaction check sees
+/// them: `persisted` is the same reconciled copy export resolution uses
+/// (`ExportCameraRawSourcePolicy.persisted`), so the check and the render can't disagree.
+nonisolated struct SavedDevelopState: Sendable, Equatable {
+    var persisted: CameraRawSettings?
+    /// The ownership-filtered sidecar block on its own.
+    var sidecar: CameraRawSettings?
+    /// The embedded block couldn't be read (an unreadable container, not "no develop block").
+    var embeddedReadFailed = false
+
+    static let none = SavedDevelopState()
+}
+
+/// Reads `SavedDevelopState` for the fail-closed redaction check every output render runs: a
+/// RAW's (ownership-filtered) sidecar; any other file's sidecar and embedded blocks.
+nonisolated struct ExportSavedRedactionAccess: Sendable {
+    let load: @Sendable (URL) -> SavedDevelopState
+
+    /// No saved state (tests rendering a deliberate baseline).
+    static let none = ExportSavedRedactionAccess { _ in .none }
+
+    static let system = ExportSavedRedactionAccess { imageURL in
+        let sidecar = XMPSidecarService().loadDevelopSettings(for: imageURL)
+        if SupportedImageFormats.isRaw(url: imageURL) {
+            return SavedDevelopState(
+                persisted: ExportCameraRawSourcePolicy.persisted(imageURL: imageURL, sidecar: sidecar, embedded: nil),
+                sidecar: sidecar)
+        }
+        do {
+            let metadata = try ImageMetadata.read(from: imageURL)
+            let embedded = iptcMetadataFromDict(metadata.asMetadataDict(fileURL: imageURL)).cameraRaw
+            return SavedDevelopState(
+                persisted: ExportCameraRawSourcePolicy.persisted(imageURL: imageURL, sidecar: sidecar, embedded: embedded),
+                sidecar: sidecar)
+        } catch {
+            return SavedDevelopState(
+                persisted: ExportCameraRawSourcePolicy.persisted(imageURL: imageURL, sidecar: sidecar, embedded: nil),
+                sidecar: sidecar, embeddedReadFailed: true)
+        }
+    }
+}
+
+/// An output render refused because a redaction saved with the photo (sidecar or embedded)
+/// is missing from the settings it would render with. Nothing is written.
+nonisolated struct RedactionMissingFromRenderError: LocalizedError, Sendable, Equatable {
+    let filename: String
+
+    var errorDescription: String? {
+        "\(filename) has a saved Anonymizer redaction that its current Develop settings don't include. It wasn't exported. Open it in Develop, check the redaction, and try again."
+    }
+}
+
+/// An output render of a redacted photo refused because its saved develop settings couldn't be
+/// read to confirm every redaction is in the render. Nothing is written.
+nonisolated struct SavedRedactionUnreadableError: LocalizedError, Sendable, Equatable {
+    let filename: String
+
+    var errorDescription: String? {
+        "\(filename): its saved develop settings couldn't be read to confirm the redactions, so it wasn't exported. Try again."
+    }
+}
+
+/// Develop's Save refused before rendering. Develop-specific wording for the shared checks.
+nonisolated enum DevelopSaveError: LocalizedError, Sendable, Equatable {
+    /// The pending Develop write failed; rendering would publish settings that aren't saved.
+    case developChangesNotSaved(String)
+    /// A redaction saved with the photo is missing from what Develop would render.
+    case redactionMissing(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .developChangesNotSaved(let reason):
+            return "Your Develop changes haven't been saved: \(reason) The photo wasn't exported."
+        case .redactionMissing(let filename):
+            return "\(filename) wasn't saved: a face blur saved with this photo isn't in the current Develop settings. Check the Anonymizer layers and save again."
+        }
+    }
+}
+
 nonisolated struct ExportCameraRawSidecarAccess: Sendable {
     let load: @Sendable (URL) -> CameraRawSettings?
 
     static let system = ExportCameraRawSidecarAccess { imageURL in
-        guard let settings = XMPSidecarService().loadSidecar(for: imageURL)?.cameraRaw,
+        guard let settings = XMPSidecarService().loadDevelopSettings(for: imageURL),
               !settings.isEmpty else {
             return nil
         }
@@ -224,9 +372,10 @@ actor ExportCameraRawResolutionService {
     }
 
     func resolve(_ request: ExportCameraRawResolutionRequest) -> ExportCameraRawResolutionResult {
-        let sidecarURLs = request.imageURLs.filter {
-            request.liveSettingsByImageURL[$0] == nil && SupportedImageFormats.isRaw(url: $0)
-        }
+        // Every photo's persisted settings are re-read: a live copy is never trusted blindly,
+        // and a non-RAW file may keep its develop in its own sidecar.
+        var seenURLs = Set<URL>()
+        let sidecarURLs = request.imageURLs.filter { seenURLs.insert($0).inserted }
         let signpostID = signposter.makeSignpostID()
         let interval = signposter.beginInterval("Resolve", id: signpostID)
 
@@ -253,11 +402,17 @@ actor ExportCameraRawResolutionService {
                 )
             }
 
-            let settings = access.load(imageURL)
+            let persisted = ExportCameraRawSourcePolicy.persisted(
+                imageURL: imageURL,
+                sidecar: access.load(imageURL),
+                embedded: request.embeddedSettingsByImageURL[imageURL]
+            )
             inspectedURLs.append(imageURL)
-            if let settings {
-                settingsByURL[imageURL] = settings
-            }
+            settingsByURL[imageURL] = ExportCameraRawSourcePolicy.resolve(
+                live: request.liveSettingsByImageURL[imageURL],
+                persisted: persisted,
+                liveIsAuthoritative: request.liveAuthoritativeImageURLs.contains(imageURL)
+            )
 
             guard !Task.isCancelled else {
                 return cancelledResult(
@@ -367,22 +522,29 @@ enum EditExportPipeline {
             collisionPolicy: collisionPolicy, metadataFailurePolicy: .rejectForDelivery)
     }
 
-    /// Populates `cameraRaw` on each entry in `map`, preferring the live in-memory edit
-    /// settings (kept in sync by the edit workspace) and falling back to the XMP sidecar
-    /// for RAW files edited in a previous session. The in-memory lookup is injected so this
-    /// stays decoupled from `BrowserViewModel`.
+    /// Populates `cameraRaw` on each entry in `map` with the settings the render must use.
+    /// `map` arrives holding each file's embedded settings (from a full metadata read). The
+    /// persisted settings are re-read fresh (sidecar, else embedded) and preferred over the live
+    /// in-memory copy, which wins only for `liveDevelopImageURL` — the photo open in Develop —
+    /// and never drops a redaction present in the other copy (`ExportCameraRawSourcePolicy`).
+    /// The in-memory lookup is injected so this stays decoupled from `BrowserViewModel`.
     @MainActor
     static func resolveCameraRaw(
         into map: inout [URL: IPTCMetadata],
         urls: [URL],
         inMemory: @MainActor (URL) -> CameraRawSettings?,
+        liveDevelopImageURL: URL? = nil,
         service: ExportCameraRawResolutionService = .shared
     ) async throws {
         var liveSettingsByURL: [URL: CameraRawSettings] = [:]
+        var embeddedSettingsByURL: [URL: CameraRawSettings] = [:]
         liveSettingsByURL.reserveCapacity(urls.count)
         for url in urls {
             if let crs = inMemory(url) {
                 liveSettingsByURL[url] = crs
+            }
+            if let embedded = map[url]?.cameraRaw {
+                embeddedSettingsByURL[url] = embedded
             }
         }
 
@@ -390,15 +552,20 @@ enum EditExportPipeline {
         let result = await service.resolve(ExportCameraRawResolutionRequest(
             requestID: requestID,
             imageURLs: urls,
-            liveSettingsByImageURL: liveSettingsByURL
+            liveSettingsByImageURL: liveSettingsByURL,
+            embeddedSettingsByImageURL: embeddedSettingsByURL,
+            liveAuthoritativeImageURLs: liveDevelopImageURL.map { [$0] } ?? []
         ))
         guard case .complete(let snapshot) = result,
               snapshot.requestID == requestID else {
             throw CancellationError()
         }
 
-        for (url, settings) in snapshot.settingsByImageURL where map[url] != nil {
-            map[url]?.cameraRaw = settings
+        // A file whose metadata read failed is missing from `map`; its live or sidecar
+        // Develop settings must still apply, or the photo would render/upload unedited.
+        let requested = Set(urls)
+        for (url, settings) in snapshot.settingsByImageURL where requested.contains(url) {
+            map[url, default: IPTCMetadata()].cameraRaw = settings
         }
     }
 
@@ -417,9 +584,20 @@ enum EditExportPipeline {
                            outputFilenameSuffix: String = "",
                            collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .replaceExisting,
                            finalizationService: ExportArtifactFinalizationService = .shared,
-                           metadataFailurePolicy: ExportMetadataFailurePolicy = .keepLocalCopy) async throws -> URL {
+                           metadataFailurePolicy: ExportMetadataFailurePolicy = .keepLocalCopy,
+                           savedRedactionAccess: ExportSavedRedactionAccess = .system) async throws -> URL {
         try await MetadataSidecarService().requireNoPendingOrientation(
             for: sourceURL, in: folderURL ?? sourceURL.deletingLastPathComponent())
+        switch kind {
+        case .format, .saveAs, .jpeg:
+            // Fail closed (Export, Save As, Sign, FTP, Develop Save): a redaction saved with the
+            // photo that the render settings don't carry refuses the render.
+            try await requireSavedRedactionsCovered(
+                sourceURL: sourceURL, cameraRaw: cameraRaw, access: savedRedactionAccess)
+        case .rawJXL16, .rawTIFF16, .rawDNG:
+            // RAW archives are intentionally unredacted decodes; the caller confirms that.
+            break
+        }
         if case .rawDNG(let compression, let executableURL) = kind {
             // A DNG is still a camera RAW, not a rendered output. Do not run the
             // rendered-metadata copier or sidecar overlay; the converter preserves
@@ -445,6 +623,9 @@ enum EditExportPipeline {
         // destination afterward. Keep its name claimed until the complete artifact finishes.
         let reservationOwner = ExportOutputReservationOwner()
         defer { withExtendedLifetime(reservationOwner) {} }
+        // Until the renderer returns, a thrown error means the encode itself failed or was
+        // cancelled: whatever sits under the reserved name is partial and must not survive.
+        var renderReturned = false
 
         do {
             let bakedCameraRaw: CameraRawSettings?
@@ -472,41 +653,46 @@ enum EditExportPipeline {
                 }
             }
 
+            // The detached hop drops task-locals; carry the GPU fault-injection test seam over.
+            let forceGPUFailure = GPURenderFaultInjection.forceFailure
             let renderedURL = try await Task.detached(priority: .userInitiated) {
-                switch kind {
-                case .format:
-                    return try await EditedImageRenderer.render(
-                        from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
-                        outputFolder: outputFolder,
-                        configuration: configuration,
-                        outputFilenameSuffix: outputFilenameSuffix,
-                        collisionPolicy: collisionPolicy,
-                        metadataCopier: copier, reservationOwner: reservationOwner)
-                case .saveAs(let format):
-                    return try await EditedImageRenderer.saveAs(
-                        from: sourceURL, cameraRaw: cameraRaw, format: format,
-                        destinationFolder: outputFolder, metadataCopier: copier,
-                        reservationOwner: reservationOwner)
-                case .rawJXL16(let decodeProfile):
-                    return try await EditedImageRenderer.convertRAWTo16BitJXL(
-                        from: sourceURL, decodeProfile: decodeProfile,
-                        destinationFolder: outputFolder, metadataCopier: copier,
-                        reservationOwner: reservationOwner)
-                case .rawTIFF16(let decodeProfile):
-                    return try await EditedImageRenderer.convertRAWTo16BitTIFF(
-                        from: sourceURL, decodeProfile: decodeProfile,
-                        destinationFolder: outputFolder, metadataCopier: copier,
-                        reservationOwner: reservationOwner)
-                case .rawDNG:
-                    // Handled before constructing the rendered metadata copier above.
-                    preconditionFailure("RAW DNG archives must use the converter path")
-                case .jpeg:
-                    return try await EditedImageRenderer.renderJPEG(
-                        from: sourceURL, cameraRaw: cameraRaw,
-                        outputFolder: outputFolder, metadataCopier: copier,
-                        collisionPolicy: collisionPolicy, reservationOwner: reservationOwner)
+                try await GPURenderFaultInjection.$forceFailure.withValue(forceGPUFailure) {
+                    switch kind {
+                    case .format:
+                        return try await EditedImageRenderer.render(
+                            from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
+                            outputFolder: outputFolder,
+                            configuration: configuration,
+                            outputFilenameSuffix: outputFilenameSuffix,
+                            collisionPolicy: collisionPolicy,
+                            metadataCopier: copier, reservationOwner: reservationOwner)
+                    case .saveAs(let format):
+                        return try await EditedImageRenderer.saveAs(
+                            from: sourceURL, cameraRaw: cameraRaw, format: format,
+                            destinationFolder: outputFolder, metadataCopier: copier,
+                            reservationOwner: reservationOwner)
+                    case .rawJXL16(let decodeProfile):
+                        return try await EditedImageRenderer.convertRAWTo16BitJXL(
+                            from: sourceURL, decodeProfile: decodeProfile,
+                            destinationFolder: outputFolder, metadataCopier: copier,
+                            reservationOwner: reservationOwner)
+                    case .rawTIFF16(let decodeProfile):
+                        return try await EditedImageRenderer.convertRAWTo16BitTIFF(
+                            from: sourceURL, decodeProfile: decodeProfile,
+                            destinationFolder: outputFolder, metadataCopier: copier,
+                            reservationOwner: reservationOwner)
+                    case .rawDNG:
+                        // Handled before constructing the rendered metadata copier above.
+                        preconditionFailure("RAW DNG archives must use the converter path")
+                    case .jpeg:
+                        return try await EditedImageRenderer.renderJPEG(
+                            from: sourceURL, cameraRaw: cameraRaw,
+                            outputFolder: outputFolder, metadataCopier: copier,
+                            collisionPolicy: collisionPolicy, reservationOwner: reservationOwner)
+                    }
                 }
             }.value
+            renderReturned = true
 
             var overlayFailed = false
             switch await SidecarIPTCOverlay.apply(
@@ -519,6 +705,11 @@ enum EditExportPipeline {
                 await failureTracker.recordStaleSidecar(sourceURL.lastPathComponent)
             case .applied, .noPendingEdits:
                 break
+            }
+            // The renderer silently skips a watermark whose library PNG can't be read; tell
+            // the user rather than delivering an unbranded file without notice.
+            if !missingWatermarkAssetIDs(in: bakedCameraRaw).isEmpty {
+                await failureTracker.recordMissingWatermark(sourceURL.lastPathComponent)
             }
 
             let copiesRAWArchiveSidecar: Bool
@@ -545,8 +736,89 @@ enum EditExportPipeline {
             await reservationOwner.release()
             return renderedURL
         } catch {
-            await reservationOwner.release()
+            if renderReturned {
+                await reservationOwner.release()
+            } else {
+                await reservationOwner.discardOnFailure()
+            }
             throw error
+        }
+    }
+
+    /// Throws `RedactionMissingFromRenderError` when a redaction saved with `sourceURL` (its
+    /// reconciled persisted develop settings) is missing from `cameraRaw` (`RedactionUnion.covers`).
+    /// When the embedded block can't be read, a photo whose render settings or sidecar redact is
+    /// refused (`SavedRedactionUnreadableError`); one never redacted proceeds (logged), so a
+    /// transient read error doesn't block every export. Reads off the caller's actor.
+    @concurrent
+    nonisolated static func requireSavedRedactionsCovered(
+        sourceURL: URL,
+        cameraRaw: CameraRawSettings?,
+        access: ExportSavedRedactionAccess = .system
+    ) async throws {
+        try Task.checkCancellation()
+        let saved = await loadSavedDevelopState(sourceURL, access: access)
+        let log = Logger(subsystem: "com.aagedal.photo-agent", category: "ExportPipeline")
+        if saved.embeddedReadFailed {
+            if cameraRaw?.hasActiveRedaction == true || saved.sidecar?.hasActiveRedaction == true {
+                log.error("Refused render of \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)): embedded develop settings unreadable for a redacted photo")
+                throw SavedRedactionUnreadableError(filename: sourceURL.lastPathComponent)
+            }
+            log.warning("Embedded develop settings of \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) couldn't be read; no redaction known, rendering")
+        }
+        guard RedactionUnion.covers(render: cameraRaw, saved: [saved.persisted]) else {
+            log.error("Refused render of \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)): a saved redaction is missing from the render settings")
+            throw RedactionMissingFromRenderError(filename: sourceURL.lastPathComponent)
+        }
+    }
+
+    /// The photo's saved develop state, read off the caller's actor.
+    @concurrent
+    nonisolated static func loadSavedDevelopState(
+        _ sourceURL: URL,
+        access: ExportSavedRedactionAccess = .system
+    ) async -> SavedDevelopState {
+        access.load(sourceURL)
+    }
+
+    /// Develop's Save: the settings to render for the photo open in Develop. Awaits every
+    /// accepted Primary Develop write first (a failed write surfaces as
+    /// `DevelopSaveError.developChangesNotSaved`, never as a redaction refusal), then resolves
+    /// the live copy against what is now on disk with the live copy authoritative
+    /// (`ExportCameraRawSourcePolicy`, which still adds any saved redaction the live copy lacks).
+    @MainActor
+    static func resolveDevelopSaveSettings(
+        for imageURL: URL,
+        flush: @MainActor () async throws -> Void = { try await DevelopPrimaryLifecycleCoordinator.shared.flush() },
+        live: @MainActor () -> CameraRawSettings?,
+        access: ExportSavedRedactionAccess = .system
+    ) async throws -> CameraRawSettings? {
+        do {
+            try await flush()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw DevelopSaveError.developChangesNotSaved(error.localizedDescription)
+        }
+        // Read after the flush: capture may have finished an in-progress adjustment.
+        let current = live()
+        let saved = await loadSavedDevelopState(imageURL, access: access)
+        return ExportCameraRawSourcePolicy.resolve(
+            live: current, persisted: saved.persisted, liveIsAuthoritative: true)
+    }
+
+    /// Library asset IDs referenced by enabled watermark layers whose PNG isn't readable at the
+    /// path the Metal texture loader uses (deleted from the library, or not yet downloaded
+    /// from iCloud), or whose latest texture load failed even though the file exists (a
+    /// coordinated read or decode failure, e.g. mid-sync). Those layers render as no-ops.
+    nonisolated static func missingWatermarkAssetIDs(in cameraRaw: CameraRawSettings?) -> [UUID] {
+        var seen = Set<UUID>()
+        return (cameraRaw?.watermarkLayers ?? []).filter(\.enabled).compactMap { layer in
+            let id = layer.libraryAssetID
+            guard seen.insert(id).inserted else { return nil }
+            let path = WatermarkStore.resolvedImageURL(forAssetID: id).path
+            let readable = FileManager.default.isReadableFile(atPath: path)
+            return readable && !WatermarkTextureLoadFailures.lastLoadFailed(id) ? nil : id
         }
     }
 
@@ -637,8 +909,11 @@ actor ExportIPTCSelectionService {
         if let folderURL, let draft = access.loadDraft(sourceURL, folderURL), draft.pendingChanges {
             return .pendingDraft(draft.metadata)
         }
+        // GPS counts as content: a geotagged RAW sidecar with no caption must still carry
+        // its coordinates onto the export (applied additively — see authoritativeFields).
         guard let sidecar = access.loadXMP(sourceURL),
-              sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil else {
+              sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil
+                || SidecarIPTCOverlay.hasGPS(sidecar) else {
             return .noPendingEdits
         }
         // The staleness policy only compares descriptive metadata. Rating/label-only
@@ -678,7 +953,19 @@ enum SidecarIPTCOverlay {
         var fields = metadata.hasDescriptiveContent ? metadata.toOverwriteFields() : [:]
         if let rating = metadata.rating { fields[.rating] = String(rating) }
         if let label = metadata.label { fields[.label] = label }
+        // GPS is additive and independent of descriptive authority: present coordinates are
+        // written; absent ones never clear the destination's embedded GPS.
+        if let lat = metadata.latitude, let lon = metadata.longitude {
+            fields[.gpsLatitude] = String(abs(lat))
+            fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+            fields[.gpsLongitude] = String(abs(lon))
+            fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+        }
         return fields
+    }
+
+    nonisolated static func hasGPS(_ metadata: IPTCMetadata) -> Bool {
+        metadata.latitude != nil && metadata.longitude != nil
     }
 
     /// Carry list item boundaries separately from the legacy comma-delimited field map.

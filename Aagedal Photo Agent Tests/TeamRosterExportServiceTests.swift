@@ -250,7 +250,7 @@ private nonisolated final class BlockingTeamRosterExportWriterProbe: @unchecked 
         condition.broadcast()
         if writeCount == 1 {
             while !firstWriteReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeWrites -= 1
@@ -261,6 +261,8 @@ private nonisolated final class BlockingTeamRosterExportWriterProbe: @unchecked 
         let deadline = ContinuousClock.now + .seconds(5)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstWrite()
                 throw TeamRosterExportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

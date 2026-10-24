@@ -1234,6 +1234,8 @@ nonisolated struct DeadlinePreflightService: Sendable {
         case .deterministicSuffixExhausted: return "No available deterministic rename suffix was found."
         case .originalFilenameXMPSidecarMissing:
             return "Original-filename preservation requires an existing XMP sidecar for this RAW file."
+        case .sharedArtifactSplit:
+            return "Files that share a sidecar would be renamed to different names."
         }
     }
 

@@ -249,13 +249,13 @@ struct KnownPeopleLocalIdentityAssignmentTests {
         let parent = try parent(); defer { try? FileManager.default.removeItem(at: parent) }
         let (root, _) = try await fixture(parent)
         let priorOverride = KnownPeopleService.storageOverrideURL
-        let key = UserDefaultsKeys.knownPeopleICloudEnabled, prior = UserDefaults.standard.object(forKey: key)
+        let key = UserDefaultsKeys.knownPeopleICloudEnabled, prior = AppDefaults.store.object(forKey: key)
         KnownPeopleService.storageOverrideURL = root
-        UserDefaults.standard.set(false, forKey: key)
+        AppDefaults.store.set(false, forKey: key)
         defer {
             KnownPeopleService.storageOverrideURL = priorOverride
-            if let prior { UserDefaults.standard.set(prior, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let prior { AppDefaults.store.set(prior, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         let owner = KnownPeopleService(), assignment = KnownPeopleLocalIdentityAssignment()
         let plan = try await assignment.prepare(route: owner.managedStoreRoute(routingActive: false), exportedAt: date, exporter: exporter)

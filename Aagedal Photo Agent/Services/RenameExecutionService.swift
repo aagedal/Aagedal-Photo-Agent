@@ -5,6 +5,8 @@ nonisolated protocol RenameExecutionFileSystem: Sendable {
     func directoryAllowsChanges(at directoryURL: URL) -> Bool
     func itemsReferToSameFile(_ firstURL: URL, _ secondURL: URL) throws -> Bool
     func moveItem(at sourceURL: URL, to destinationURL: URL) throws
+    func copyItem(at sourceURL: URL, to destinationURL: URL) throws
+    func removeItem(at url: URL) throws
     func data(at url: URL) throws -> Data
     func writeDataAtomically(_ data: Data, to url: URL) throws
 }
@@ -35,6 +37,14 @@ nonisolated struct FoundationRenameExecutionFileSystem: RenameExecutionFileSyste
 
     func moveItem(at sourceURL: URL, to destinationURL: URL) throws {
         try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+    }
+
+    func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    func removeItem(at url: URL) throws {
+        try FileManager.default.removeItem(at: url)
     }
 
     func data(at url: URL) throws -> Data {
@@ -85,6 +95,9 @@ nonisolated struct RenameExecutionIssue: Equatable, Sendable {
         case metadataUpdateFailed
         case rollbackMoveFailed
         case rollbackMetadataRestoreFailed
+        /// Post-commit, non-fatal: a split RAW+JPEG `.xmp` left beside only the JPEG kept the
+        /// RAW's develop block.
+        case pairedDevelopDetachFailed
     }
 
     let code: Code
@@ -247,7 +260,13 @@ nonisolated struct RenameExecutionService: Sendable {
                 guard !fileSystem.itemExists(at: action.temporaryURL) else {
                     throw ExecutionError("Temporary path became occupied")
                 }
-                try fileSystem.moveItem(at: action.artifact.sourceURL, to: action.temporaryURL)
+                // A source shared with an image outside the rename (RAW+JPEG partner left
+                // behind) is copied, so the partner keeps its sidecar.
+                if action.artifact.preservesSource {
+                    try fileSystem.copyItem(at: action.artifact.sourceURL, to: action.temporaryURL)
+                } else {
+                    try fileSystem.moveItem(at: action.artifact.sourceURL, to: action.temporaryURL)
+                }
                 states[index].location = .temporary
                 let event = completedMove(
                     phase: .stage,
@@ -373,12 +392,33 @@ nonisolated struct RenameExecutionService: Sendable {
             await Task.yield()
         }
 
+        // A RAW renamed away from its JPEG left the shared `.xmp` beside only the JPEG: strip the
+        // RAW's develop block there too (the renamed copy already carries it). Best effort after
+        // commit — the rename itself succeeded — but a failure is reported.
+        var postCommitIssues: [RenameExecutionIssue] = []
+        for state in states where state.action.detachesRawDevelopAtSourceAfterCommit {
+            let action = state.action
+            do {
+                let data = try fileSystem.data(at: action.artifact.sourceURL)
+                if let stripped = XMPSidecarService.removingDevelopBlock(from: data) {
+                    try fileSystem.writeDataAtomically(stripped, to: action.artifact.sourceURL)
+                }
+            } catch {
+                postCommitIssues.append(Self.issue(
+                    .pairedDevelopDetachFailed,
+                    action: action,
+                    detail: "The RAW's develop settings could not be removed from the sidecar left with its JPEG: "
+                        + error.localizedDescription
+                ))
+            }
+        }
+
         return RenameExecutionResult(
             status: .succeeded,
             rollbackStatus: .notNeeded,
             bundles: Self.bundleResults(plan: plan, states: states),
             moves: moves,
-            issues: [],
+            issues: postCommitIssues,
             residuals: []
         )
     }
@@ -483,7 +523,7 @@ nonisolated struct RenameExecutionService: Sendable {
 
         for candidate in moving where fileSystem.itemExists(at: candidate.artifact.destinationURL) {
             var destinationIsMovingSource = false
-            for source in moving {
+            for source in moving where !source.artifact.preservesSource {
                 do {
                     if try fileSystem.itemsReferToSameFile(candidate.artifact.destinationURL, source.artifact.sourceURL) {
                         destinationIsMovingSource = true
@@ -543,17 +583,30 @@ nonisolated struct RenameExecutionService: Sendable {
                 continue
             }
             do {
-                let metadata = try preparedMetadataUpdate(
+                let split = splitPairDevelopPlan(plan: plan, artifact: candidate.artifact)
+                var metadata = try preparedMetadataUpdate(
+                    plan: plan,
                     entry: candidate.entry,
                     artifact: candidate.artifact
                 )
-                prepared.append(PreparedAction(
+                if split.detachAtDestination {
+                    // The copy lands beside only non-RAW photos: it carries the descriptive
+                    // record but not the RAW's develop block (the JPEG keeps its embedded one).
+                    let original = try metadata?.original ?? fileSystem.data(at: candidate.artifact.sourceURL)
+                    let base = metadata?.updated ?? original
+                    if let stripped = XMPSidecarService.removingDevelopBlock(from: base) {
+                        metadata = (original, stripped)
+                    }
+                }
+                var action = PreparedAction(
                     itemIndex: candidate.entry.itemIndex,
                     artifact: candidate.artifact,
                     temporaryURL: temporaryURL,
                     originalMetadataData: metadata?.original,
                     updatedMetadataData: metadata?.updated
-                ))
+                )
+                action.detachesRawDevelopAtSourceAfterCommit = split.detachAtSource
+                prepared.append(action)
             } catch {
                 issues.append(Self.issue(
                     candidate.artifact.originalFilenameMetadataMutation == nil
@@ -568,7 +621,56 @@ nonisolated struct RenameExecutionService: Sendable {
         return issues.isEmpty ? .success(prepared) : .failure(PreflightFailure(issues: issues))
     }
 
+    /// For a stem `.xmp` copied because its RAW+JPEG pair is split by this rename: the RAW owns
+    /// its Camera Raw block, so whichever half ends up beside only non-RAW photos must lose it —
+    /// otherwise that JPEG adopts the RAW's develop in place of its own embedded settings (and
+    /// its own redactions). The half that stays with a RAW keeps it.
+    private func splitPairDevelopPlan(
+        plan: RenamePlan,
+        artifact: RenameArtifactAction
+    ) -> (detachAtDestination: Bool, detachAtSource: Bool) {
+        guard artifact.identifier == "xmp", artifact.preservesSource else { return (false, false) }
+        let sourceStem = artifact.sourceURL.deletingPathExtension().lastPathComponent
+        let sourceFolder = artifact.sourceURL.deletingLastPathComponent()
+        // Probed before anything moves: does this pair include a RAW at all?
+        guard !rawImageURLs(stem: sourceStem, in: sourceFolder).isEmpty else { return (false, false) }
+        let destinationStem = artifact.destinationURL.deletingPathExtension().lastPathComponent
+        let destinationFolder = artifact.destinationURL.deletingLastPathComponent()
+        return (
+            !rawWillRemain(stem: destinationStem, in: destinationFolder, plan: plan),
+            !rawWillRemain(stem: sourceStem, in: sourceFolder, plan: plan)
+        )
+    }
+
+    /// Whether a RAW named `stem` sits in `folder` once the plan has run: one renamed onto that
+    /// stem, or one already there that the plan doesn't move away.
+    private func rawWillRemain(stem: String, in folder: URL, plan: RenamePlan) -> Bool {
+        func stemKey(_ url: URL) -> String {
+            Self.path(url.deletingPathExtension()).lowercased()
+        }
+        let key = stemKey(folder.appendingPathComponent(stem))
+        let renamed = plan.entries.filter { $0.disposition == .rename }
+        if renamed.contains(where: { entry in
+            guard let destination = entry.plannedDestinationImageURL else { return false }
+            return SupportedImageFormats.isRaw(url: destination) && stemKey(destination) == key
+        }) {
+            return true
+        }
+        let movingAway = Set(renamed.map { Self.path($0.sourceImageURL).lowercased() })
+        return rawImageURLs(stem: stem, in: folder).contains { !movingAway.contains(Self.path($0).lowercased()) }
+    }
+
+    /// Existing RAW files named `stem` in `folder`, probed through the injected file system.
+    private func rawImageURLs(stem: String, in folder: URL) -> [URL] {
+        SupportedImageFormats.rawExtensions.sorted().flatMap { ext in
+            Set([ext.lowercased(), ext.uppercased()]).map {
+                folder.appendingPathComponent(stem).appendingPathExtension($0)
+            }
+        }.filter { fileSystem.itemExists(at: $0) }
+    }
+
     private func preparedMetadataUpdate(
+        plan: RenamePlan,
         entry: RenamePlanEntry,
         artifact: RenameArtifactAction
     ) throws -> (original: Data, updated: Data)? {
@@ -592,10 +694,17 @@ nonisolated struct RenameExecutionService: Sendable {
         }
         let original = try fileSystem.data(at: artifact.sourceURL)
         guard var object = try JSONSerialization.jsonObject(with: original) as? [String: Any],
-              object["sourceFile"] is String else {
+              let currentOwner = object["sourceFile"] as? String else {
             throw ExecutionError("Metadata sidecar is not a JSON object with a sourceFile string")
         }
-        object["sourceFile"] = destinationImageURL.lastPathComponent
+        // A stem-named legacy record is shared by a RAW+JPEG pair but owned by one of them.
+        // When both are renamed it moves once; keep it pointing at its actual owner.
+        let sourceFolder = Self.path(entry.sourceImageURL.deletingLastPathComponent())
+        let owningDestination = plan.entries.first {
+            $0.sourceImageURL.lastPathComponent == currentOwner
+                && Self.path($0.sourceImageURL.deletingLastPathComponent()) == sourceFolder
+        }?.plannedDestinationImageURL
+        object["sourceFile"] = (owningDestination ?? destinationImageURL).lastPathComponent
         let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
         return (original, updated)
     }
@@ -628,9 +737,29 @@ nonisolated struct RenameExecutionService: Sendable {
         var rollbackIssues: [RenameExecutionIssue] = []
         var moveOrdinal = moves.count
 
+        // Copies never vacated their source: undo them by deleting the copy.
+        for index in states.indices.reversed()
+        where states[index].action.artifact.preservesSource && states[index].location != .source {
+            let action = states[index].action
+            do {
+                try fileSystem.removeItem(
+                    at: states[index].location == .destination ? action.artifact.destinationURL : action.temporaryURL
+                )
+                states[index].location = .source
+                states[index].metadataWasUpdated = false
+            } catch {
+                rollbackIssues.append(Self.issue(
+                    .rollbackMoveFailed,
+                    action: action,
+                    detail: error.localizedDescription
+                ))
+            }
+        }
+
         // Re-stage committed destinations first. This vacates every cycle destination before any
         // action attempts to reclaim its original source path.
-        for index in states.indices.reversed() where states[index].location == .destination {
+        for index in states.indices.reversed()
+        where states[index].location == .destination && !states[index].action.artifact.preservesSource {
             let action = states[index].action
             do {
                 guard !fileSystem.itemExists(at: action.temporaryURL) else {
@@ -657,7 +786,8 @@ nonisolated struct RenameExecutionService: Sendable {
         }
 
         // Put byte-for-byte original JSON back before returning sidecars to their original names.
-        for index in states.indices where states[index].metadataWasUpdated {
+        for index in states.indices
+        where states[index].metadataWasUpdated && !states[index].action.artifact.preservesSource {
             let action = states[index].action
             guard let original = action.originalMetadataData else { continue }
             let currentURL: URL
@@ -678,7 +808,8 @@ nonisolated struct RenameExecutionService: Sendable {
             }
         }
 
-        for index in states.indices where states[index].location == .temporary {
+        for index in states.indices
+        where states[index].location == .temporary && !states[index].action.artifact.preservesSource {
             let action = states[index].action
             do {
                 guard !fileSystem.itemExists(at: action.artifact.sourceURL) else {
@@ -817,6 +948,8 @@ nonisolated struct RenameExecutionService: Sendable {
         let temporaryURL: URL
         let originalMetadataData: Data?
         let updatedMetadataData: Data?
+        /// A split RAW+JPEG `.xmp` whose source stays beside only non-RAW photos.
+        var detachesRawDevelopAtSourceAfterCommit = false
     }
 
     private struct ActionState: Sendable {

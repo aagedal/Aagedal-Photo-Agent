@@ -120,6 +120,7 @@ struct ActivityHistoryView: View {
     @State private var expandedReceipts: Set<UUID> = []
     @State private var pendingReceiptDeletion: DeliveryReceiptActivitySummary?
     @State private var pendingWorkflowDeletion: DeliveryWorkflowActivitySummary?
+    @State private var isConfirmingClearHistory = false
     @State private var resumeRequest = ActivityWorkflowResumeRequest()
 
     private var filteredEntries: [ActivityEntry] {
@@ -134,9 +135,18 @@ struct ActivityHistoryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Activity History")
-                .font(.headline)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text("Activity History")
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Clear History…") {
+                    isConfirmingClearHistory = true
+                }
+                .controlSize(.small)
+                .disabled(history.entries.isEmpty)
+                .help("Remove all import, upload, face scan and transcription records")
+            }
             Picker("", selection: $filter) {
                 ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -175,25 +185,31 @@ struct ActivityHistoryView: View {
                         }
                     }
 
-                    DeliveryReceiptSection(
-                        model: receiptLibrary,
-                        expanded: $expandedReceipts,
-                        pendingDeletion: $pendingReceiptDeletion,
-                        export: exportReceiptSummary
-                    )
+                    // Deadline delivery is deferred to 3.1: only show its sections when
+                    // there is something to act on.
+                    if !receiptLibrary.receipts.isEmpty {
+                        DeliveryReceiptSection(
+                            model: receiptLibrary,
+                            expanded: $expandedReceipts,
+                            pendingDeletion: $pendingReceiptDeletion,
+                            export: exportReceiptSummary
+                        )
+                    }
 
-                    DeliveryWorkflowSection(
-                        model: workflowActivity,
-                        pendingDeletion: $pendingWorkflowDeletion,
-                        resume: { workflowIdentifier in
-                            resumeRequest.begin(
-                                workflowIdentifier,
-                                model: workflowActivity,
-                                resume: onResumeWorkflow
-                            )
-                        }
-                    )
-                    .disabled(resumeRequest.pendingIdentifier != nil)
+                    if !workflowActivity.workflows.isEmpty {
+                        DeliveryWorkflowSection(
+                            model: workflowActivity,
+                            pendingDeletion: $pendingWorkflowDeletion,
+                            resume: { workflowIdentifier in
+                                resumeRequest.begin(
+                                    workflowIdentifier,
+                                    model: workflowActivity,
+                                    resume: onResumeWorkflow
+                                )
+                            }
+                        )
+                        .disabled(resumeRequest.pendingIdentifier != nil)
+                    }
                 }
             }
             .frame(maxHeight: 600)
@@ -205,6 +221,19 @@ struct ActivityHistoryView: View {
         .task {
             await receiptLibrary.reload()
             await workflowActivity.reload()
+        }
+        .confirmationDialog(
+            "Clear activity history?",
+            isPresented: $isConfirmingClearHistory,
+            titleVisibility: .visible
+        ) {
+            Button("Clear History", role: .destructive) {
+                history.clear()
+                expanded = []
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the list of past imports, uploads, face scans and transcriptions. Your photos and uploaded files are not changed.")
         }
         .confirmationDialog(
             "Delete this delivery receipt?",
@@ -686,6 +715,7 @@ private struct DeliveryReceiptEvidenceRow: View {
         case .unavailable: "unavailable"
         case .matchesDeliveredByteSize: "matches delivered size"
         case .doesNotMatchDeliveredByteSize: "does not match delivered size"
+        case .notVisibleAfterUpload: "sent, not visible on the server (drop box or hot folder)"
         }
     }
 
@@ -795,6 +825,12 @@ private struct ActivityEntryRow: View {
                 ActivityFileTable(files: entry.files, kind: entry.kind)
                     .padding(.leading, 28)
                     .padding(.top, 2)
+                if let omitted = entry.omittedSuccessfulFileCount, omitted > 0 {
+                    Text("\(omitted) more successful file\(omitted == 1 ? "" : "s") not listed")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 28)
+                }
             }
         }
         .padding(.vertical, 2)
@@ -913,8 +949,9 @@ private struct ActivityFileTable: View {
                         .truncationMode(.middle)
                         .foregroundStyle(file.succeeded ? .primary : .secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(kind == .transcription ? file.statusDetail ?? (file.succeeded ? "Transcript saved" : "No transcript saved") : displayDestination(file.destination))
-                        .lineLimit(kind == .transcription ? nil : 1)
+                    Text(kind == .transcription ? file.statusDetail ?? (file.succeeded ? "Transcript saved" : "No transcript saved") : file.statusDetail ?? displayDestination(file.destination))
+                        .lineLimit(kind == .transcription || file.statusDetail != nil ? nil : 1)
+                        .help(file.statusDetail ?? "")
                         .truncationMode(.head)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)

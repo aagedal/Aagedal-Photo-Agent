@@ -13,7 +13,11 @@ nonisolated private let cleanFeedViewLog = Logger(
 /// selected image; in edit mode the workspace pushes content into the controller.
 struct CleanFeedContentView: View {
     @Bindable var controller: CleanFeedController
-    let browserViewModel: BrowserViewModel
+    /// The panes model, not one pane: the feed window outlives pane switches, so it must
+    /// follow whichever pane is active now rather than the one active when it opened.
+    let panes: BrowserPanesModel
+
+    private var browserViewModel: BrowserViewModel { panes.active }
 
     @State private var loadTask: Task<Void, Never>?
     @State private var loadRequestID: UUID?
@@ -33,8 +37,10 @@ struct CleanFeedContentView: View {
         .background(Color.black)
         .ignoresSafeArea()
         .onAppear { reloadFromSelection() }
+        .onChange(of: ObjectIdentifier(browserViewModel)) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.url) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.cameraRawSettings) { _, _ in reloadFromSelection() }
+        .onChange(of: browserViewModel.firstSelectedImage?.developSettingsLoaded) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.exifOrientation) { _, _ in reloadFromSelection() }
         .onChange(of: controller.editModeActive) { _, active in
             if active {
@@ -60,6 +66,19 @@ struct CleanFeedContentView: View {
             controller.feedImage = nil
             controller.useEditPipeline = false
             controller.requestFeedRedraw()
+            return
+        }
+
+        // Privacy: until this photo's develop settings are read, nil settings mean "unknown",
+        // not "unedited" — rendering now would flash the unblurred original of a photo with
+        // Anonymizer masks. Show black (never another photo) and read them on demand; the
+        // `developSettingsLoaded` change re-runs this.
+        guard image.developSettingsLoaded || !image.isImageFile else {
+            loadTask = nil
+            controller.feedImage = nil
+            controller.useEditPipeline = false
+            controller.requestFeedRedraw()
+            browserViewModel.ensureDevelopSettingsLoaded(for: [image.url])
             return
         }
 
@@ -126,7 +145,7 @@ struct CleanFeedRenderView: NSViewRepresentable {
     let comparisonLayout: ComparisonLayout
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(feedPipeline: controller.feedPipeline)
+        Coordinator(feedPipeline: controller.ensureFeedPipeline())
     }
 
     func makeNSView(context: Context) -> MTKView {

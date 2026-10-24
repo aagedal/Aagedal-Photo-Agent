@@ -76,6 +76,70 @@ struct FTPCurlArgumentsTests {
         if let tIndex { #expect(args[args.index(after: tIndex)] == "/tmp/photo.jpg") }
     }
 
+    @Test("uploads give up on a dead or stalled server instead of freezing")
+    func uploadHasStallTimeouts() {
+        let args = makeArgs(FTPConnection(useSFTP: false, useTLS: true))
+        func value(after flag: String) -> String? {
+            args.firstIndex(of: flag).map { args[args.index(after: $0)] }
+        }
+        #expect(value(after: "--connect-timeout") == "15")
+        #expect(value(after: "--speed-limit") == "1")
+        #expect(value(after: "--speed-time") == "60")
+    }
+
+    @Test("netrc login and password are quoted so spaces, '#', quotes and backslashes survive")
+    func netrcQuoting() throws {
+        let content = try FTPService.netrcContent(
+            host: "ftp.example.com",
+            username: "photo desk",
+            password: "p a\"s#s\\w\td\nx"
+        )
+        #expect(content == "machine ftp.example.com login \"photo desk\" password \"p a\\\"s#s\\\\w\\td\\nx\"\n")
+        // A quote or backslash followed by a combining mark is a single Character; it must still
+        // be escaped, and a CRLF pair becomes two escapes.
+        #expect(FTPService.netrcQuoted("a\"\u{0301}b\\\u{0301}c\r\n") == "\"a\\\"\u{0301}b\\\\\u{0301}c\\r\\n\"")
+        #expect(throws: FTPService.FTPError.self) {
+            try FTPService.netrcContent(host: "ftp.example.com", username: "u", password: "")
+        }
+        #expect(throws: FTPService.FTPError.self) {
+            try FTPService.netrcContent(host: "bad host", username: "u", password: "p")
+        }
+    }
+
+    @Test("credential, SFTP and unsupported-protocol failures stop the whole batch")
+    func batchStoppingErrors() {
+        #expect(FTPService.FTPError.invalidCredential("password", reason: "is empty").isServerLevel)
+        #expect(FTPService.FTPError.sftpUnavailable.isServerLevel)
+        #expect(FTPService.FTPError.uploadFailed(1, "curl: (1) Protocol \"sftp\" not supported").isServerLevel)
+        #expect(FTPService.FTPError.uploadFailed(67, "").isServerLevel)
+        #expect(!FTPService.FTPError.uploadFailed(26, "").isServerLevel)
+        #expect(FTPService.FTPError.connectionTestFailed(7, "").localizedDescription
+            .hasPrefix("Connection test failed"))
+    }
+
+    @Test("an SFTP profile is refused before curl runs")
+    func sftpRefusedBeforeLaunch() async throws {
+        let sftp = FTPConnection(name: "Legacy", host: "example.invalid", port: 22,
+                                 username: "u", useSFTP: true)
+        do {
+            _ = try await FTPService().testConnection(connection: sftp, password: "p")
+            Issue.record("SFTP test unexpectedly ran")
+        } catch let error as FTPService.FTPError {
+            #expect(error.localizedDescription == FTPConnection.sftpUnavailableMessage)
+        }
+        do {
+            try await FTPService().uploadFile(
+                localURL: URL(fileURLWithPath: "/private/tmp/never-read.jpg"),
+                connection: sftp,
+                password: "p",
+                progressHandler: { _ in }
+            )
+            Issue.record("SFTP upload unexpectedly ran")
+        } catch let error as FTPService.FTPError {
+            #expect(error.isServerLevel)
+        }
+    }
+
     @Test("connection test has both connect and overall deadlines")
     func connectionTestHasOverallDeadline() {
         let args = FTPService.testConnectionArguments(
@@ -108,7 +172,7 @@ struct FTPServiceCancellationTests {
         task.cancel()
 
         do {
-            try await task.value
+            _ = try await task.value
             Issue.record("A pre-cancelled upload unexpectedly completed")
         } catch is CancellationError {
             // Expected.
@@ -291,42 +355,38 @@ struct FTPUploadFileSystemBoundaryTests {
         #expect(try Data(contentsOf: prepared.url) == Data([4, 5, 6]))
     }
 
-    @Test("render sequencing skips disk and in-batch collisions before moving")
-    func sequenceRenderedFile() async throws {
+    @Test("a colliding render moves to its reserved name, replacing the app's previous render")
+    func moveRenderedFileReplacesPreviousRender() async throws {
         let fixture = try FTPFileSystemFixture()
         defer { fixture.remove() }
         let source = try fixture.write("render.jpg", bytes: [7, 8])
-        _ = try fixture.write("render_1.jpg", bytes: [1])
+        let previous = try fixture.write("render-2.jpg", bytes: [1])
         let boundary = FTPUploadFileSystemBoundary(temporaryRoot: fixture.root)
 
-        let prepared = try await boundary.sequenceRenderedFile(
-            source,
-            avoiding: ["render_2.jpg"]
-        )
+        let prepared = try await boundary.moveRenderedFile(source, to: previous)
 
-        #expect(prepared.url.lastPathComponent == "render_3.jpg")
+        #expect(prepared.url.lastPathComponent == "render-2.jpg")
         #expect(!FileManager.default.fileExists(atPath: source.path))
         #expect(try Data(contentsOf: prepared.url) == Data([7, 8]))
     }
 
-    @Test("pre-cancelled sequencing leaves the rendered file untouched")
-    func preCancelledSequence() async throws {
+    @Test("a pre-cancelled move leaves the rendered file untouched")
+    func preCancelledMove() async throws {
         let fixture = try FTPFileSystemFixture()
         defer { fixture.remove() }
         let source = try fixture.write("render.jpg", bytes: [9])
+        let destination = fixture.root.appendingPathComponent("render-2.jpg")
         let boundary = FTPUploadFileSystemBoundary(temporaryRoot: fixture.root)
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
-            _ = try await boundary.sequenceRenderedFile(source, avoiding: [])
+            _ = try await boundary.moveRenderedFile(source, to: destination)
         }
 
         await #expect(throws: CancellationError.self) {
             try await task.value
         }
         #expect(FileManager.default.fileExists(atPath: source.path))
-        #expect(!FileManager.default.fileExists(
-            atPath: fixture.root.appendingPathComponent("render_1.jpg").path
-        ))
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
     }
 
     private func historyRecord(_ url: URL) -> FTPUploadFileRecord {
@@ -377,7 +437,7 @@ private nonisolated final class BlockingHistoryAvailabilityProbe: @unchecked Sen
         condition.broadcast()
         if count == 1 {
             while !firstProbeReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         condition.unlock()
@@ -390,6 +450,8 @@ private nonisolated final class BlockingHistoryAvailabilityProbe: @unchecked Sen
         let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstProbe()
                 throw HistoryAvailabilityProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -626,7 +688,7 @@ private nonisolated final class FTPSidecarLoadProbe: @unchecked Sendable {
         condition.broadcast()
         if blocksFirstLoad, loadCount == 1 {
             while !firstLoadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         condition.unlock()
@@ -641,6 +703,8 @@ private nonisolated final class FTPSidecarLoadProbe: @unchecked Sendable {
         let deadline = ContinuousClock.now + .seconds(30)
         while loadedURLs.isEmpty {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstLoad()
                 throw FTPSidecarLoadProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -740,19 +804,563 @@ struct FTPRemoteURLTests {
     }
 }
 
+@Suite("FTP atomic upload, retry and failure classification")
+struct FTPAtomicUploadTests {
+    private let connection = FTPConnection(
+        id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+        name: "Desk", host: "ftp.example.com", port: 21, username: "user",
+        remotePath: "/in box", useTLS: true
+    )
+
+    private func flagValues(_ arguments: [String], _ flag: String) -> [String] {
+        arguments.indices.filter { arguments[$0] == flag && $0 + 1 < arguments.count }
+            .map { arguments[$0 + 1] }
+    }
+
+    @Test("uploads go to a hidden temporary name; the rename travels in a -K config file")
+    func temporaryNameAndRenameConfig() throws {
+        let temporary = try #require(FTPService.temporaryUploadName(for: "Shot #3.jpg", token: "t1"))
+        #expect(temporary == ".Shot #3.jpg.t1.part")
+        let arguments = FTPService.uploadArguments(
+            localPath: "/tmp/Shot #3.jpg", filename: "Shot #3.jpg",
+            temporaryName: temporary, quoteConfigPath: "/tmp/q.curlrc",
+            netrcPath: "/tmp/x.netrc", connection: connection
+        )
+        #expect(arguments.contains("ftp://ftp.example.com:21/in%20box/.Shot%20%233.jpg.t1.part"))
+        #expect(!arguments.contains("ftp://ftp.example.com:21/in%20box/Shot%20%233.jpg"))
+        #expect(flagValues(arguments, "-K") == ["/tmp/q.curlrc"])
+        // No filename-bearing quote command on argv (Process would decompose it to NFD).
+        #expect(!arguments.contains("-Q"))
+        #expect(arguments.contains("--ssl-reqd"))
+        #expect(arguments.contains("--ftp-create-dirs"))
+        // Post-quote ("-") commands run only after a successful transfer, in the URL's folder,
+        // with the literal (unencoded) names. The DELE of an existing target may fail ("*").
+        #expect(FTPService.quoteCommands(filename: "Shot #3.jpg", temporaryName: temporary) == [
+            "-*DELE Shot #3.jpg",
+            "-RNFR .Shot #3.jpg.t1.part",
+            "-RNTO Shot #3.jpg",
+        ])
+    }
+
+    @Test("curl config quoting escapes quotes and backslashes")
+    func configQuoting() {
+        #expect(FTPService.curlConfigContent(quoteCommands: ["-RNTO a \"b\" \\c.jpg"])
+            == "quote = \"-RNTO a \\\"b\\\" \\\\c.jpg\"\n")
+    }
+
+    @Test("a direct upload carries no rename commands")
+    func directUploadWithoutRename() {
+        let arguments = FTPService.uploadArguments(
+            localPath: "/tmp/a.jpg", filename: "a.jpg", temporaryName: nil, quoteConfigPath: nil,
+            netrcPath: "/tmp/x.netrc", connection: connection
+        )
+        #expect(arguments.contains("ftp://ftp.example.com:21/in%20box/a.jpg"))
+        #expect(!arguments.contains("-Q") && !arguments.contains("-K"))
+    }
+
+    @Test("curl never retries on its own, so a wrong password is tried once")
+    func noCurlRetryFlags() {
+        let arguments = FTPService.curlArguments(
+            localPath: "/tmp/a.jpg", remoteURL: "ftp://h:21/a.jpg",
+            netrcPath: "/tmp/x.netrc", connection: connection
+        )
+        #expect(!arguments.contains("--retry-all-errors"))
+        #expect(!arguments.contains("--retry"))
+    }
+
+    @Test("temporary names are skipped for names that can't be sent in an FTP command")
+    func temporaryNameRules() {
+        #expect(FTPService.temporaryUploadName(for: "IMG_1.jpg", token: "ab12cd") == ".IMG_1.jpg.ab12cd.part")
+        #expect(FTPService.temporaryUploadName(for: "bad\r\nDELE x.jpg", token: "t") == nil)
+        #expect(FTPService.temporaryUploadName(for: String(repeating: "a", count: 245) + ".jpg", token: "t") == nil)
+        #expect(FTPService.randomTemporaryToken() != FTPService.randomTemporaryToken())
+    }
+
+    @Test("an NFC name reaches RNFR/RNTO byte-identical to the name curl STORes")
+    func nfcNameBytesMatchStoredName() async throws {
+        let name = "\u{00C5}lesund_bl\u{00E5}b\u{00E6}r.jpg"   // NFC "Ålesund_blåbær.jpg"
+        let runner = ScriptedCurl([0])
+        _ = try await FTPService.performUpload(
+            localPath: "/tmp/x.jpg", filename: name, connection: connection,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t1" }, run: runner.run
+        )
+        let call = try #require(runner.calls.first)
+        let url = try #require(call.arguments.first { $0.hasPrefix("ftp://") })
+        // The STOR name curl derives from the percent-encoded URL (ASCII on argv, so NFC survives).
+        let decodedFromURL = try #require(url.components(separatedBy: "/").last?.removingPercentEncoding)
+        #expect(Array(decodedFromURL.utf8) == Array(".\(name).t1.part".utf8))
+        let config = try #require(call.config)
+        let nfcName = Data(name.utf8)
+        let nfdName = Data(name.decomposedStringWithCanonicalMapping.utf8)
+        #expect(nfcName != nfdName)
+        #expect(config.range(of: Data("-RNFR ".utf8) + Data(decodedFromURL.utf8)) != nil)
+        #expect(config.range(of: Data("-RNTO ".utf8) + nfcName) != nil)
+        #expect(config.range(of: nfdName) == nil)
+    }
+
+    @Test("success sends one transfer to the temporary name and reports the rename")
+    func successUsesTemporaryName() async throws {
+        let runner = ScriptedCurl([0])
+        let outcome = try await FTPService.performUpload(
+            localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t1" }, run: runner.run
+        )
+        #expect(outcome == FTPUploadOutcome(renamedIntoPlace: true))
+        #expect(runner.calls.count == 1)
+        #expect(runner.calls[0].arguments.contains("ftp://ftp.example.com:21/in%20box/.a.jpg.t1.part"))
+        #expect(runner.calls[0].configText?.contains("quote = \"-RNFR .a.jpg.t1.part\"") == true)
+    }
+
+    @Test("a refused rename deletes the temporary file and re-sends under the final name")
+    func renameRefusedFallsBackToDirectUpload() async throws {
+        let runner = ScriptedCurl([21, 0, 0])
+        let outcome = try await FTPService.performUpload(
+            localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t1" }, run: runner.run
+        )
+        #expect(outcome == FTPUploadOutcome(renameRefused: true))
+        let calls = runner.calls
+        #expect(calls.count == 3)
+        #expect(calls[0].isTransfer && calls[0].configText?.contains("-RNFR .a.jpg.t1.part") == true)
+        // Best-effort cleanup: --head on the folder with a post-quote DELE of the temp file.
+        #expect(!calls[1].isTransfer)
+        #expect(calls[1].arguments.contains("--head"))
+        #expect(calls[1].arguments.contains("ftp://ftp.example.com:21/in%20box/"))
+        #expect(calls[1].configText == "quote = \"-DELE .a.jpg.t1.part\"\n")
+        #expect(calls[1].arguments.contains("--ssl-reqd"))
+        #expect(calls[2].isTransfer)
+        #expect(calls[2].arguments.contains("ftp://ftp.example.com:21/in%20box/a.jpg"))
+        #expect(calls[2].config == nil)
+    }
+
+    @Test("a refused temporary name (dot-file/extension filter) is re-sent directly")
+    func temporaryNameRefusedFallsBackToDirectUpload() async throws {
+        let runner = ScriptedCurl([25, 0, 0], stderr: "curl: (25) Failed FTP upload: 553")
+        let outcome = try await FTPService.performUpload(
+            localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t1" }, run: runner.run
+        )
+        #expect(outcome == FTPUploadOutcome(temporaryNameRefused: true))
+        let calls = runner.calls
+        #expect(calls.count == 3)
+        #expect(calls[1].configText == "quote = \"-DELE .a.jpg.t1.part\"\n")
+        #expect(calls[2].arguments.contains("ftp://ftp.example.com:21/in%20box/a.jpg"))
+
+        var profile = connection
+        let learned1 = profile.learnServerCompatibility(from: outcome, fileName: "a.jpg")
+        #expect(learned1)
+        #expect(profile.serverRefusesTemporaryName && profile.uploadsDirectly)
+        let next = ScriptedCurl([0])
+        _ = try await FTPService.performUpload(
+            localPath: "/tmp/b.jpg", filename: "b.jpg", connection: profile,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: next.run
+        )
+        #expect(next.calls.count == 1)
+        #expect(next.calls[0].arguments.contains("ftp://ftp.example.com:21/in%20box/b.jpg"))
+        #expect(next.calls[0].config == nil)
+    }
+
+    @Test("when the direct re-send is also refused, the file fails and nothing is learned")
+    func directReSendAlsoRefused() async throws {
+        let runner = ScriptedCurl([25, 25], stderr: "curl: (25) Failed FTP upload: 552 quota")
+        await #expect(throws: FTPService.FTPError.self) {
+            _ = try await FTPService.performUpload(
+                localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+                netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
+            )
+        }
+        #expect(runner.calls.filter(\.isTransfer).count == 2)
+    }
+
+    @Test("a profile known to need direct uploads goes straight to the final name")
+    func knownRefusalSkipsTemporaryName() async throws {
+        var dropBox = connection
+        dropBox.serverRefusesRename = true
+        let runner = ScriptedCurl([0])
+        let outcome = try await FTPService.performUpload(
+            localPath: "/tmp/a.jpg", filename: "a.jpg", connection: dropBox,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
+        )
+        #expect(outcome == FTPUploadOutcome())
+        #expect(runner.calls.allSatisfy { $0.config == nil })
+        #expect(runner.calls[0].arguments.contains("ftp://ftp.example.com:21/in%20box/a.jpg"))
+    }
+
+    @Test("each retry uses a fresh temporary name, so a leftover can't block it")
+    func transientFailuresRetryWithFreshNames() async throws {
+        let runner = ScriptedCurl([56, 28, 0])
+        let tokens = TokenSequence()
+        _ = try await FTPService.performUpload(
+            localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: tokens.next, run: runner.run
+        )
+        let transfers = runner.calls.filter(\.isTransfer)
+        #expect(transfers.count == 3)
+        #expect(transfers.map { $0.arguments.first { $0.hasPrefix("ftp://") } } == [
+            "ftp://ftp.example.com:21/in%20box/.a.jpg.t1.part",
+            "ftp://ftp.example.com:21/in%20box/.a.jpg.t2.part",
+            "ftp://ftp.example.com:21/in%20box/.a.jpg.t3.part",
+        ])
+        #expect(transfers.allSatisfy { $0.configText?.contains("-RNTO a.jpg") == true })
+        // Partial temporary files of the broken attempts are deleted.
+        let deleted = runner.calls.filter { !$0.isTransfer }.compactMap(\.configText)
+        #expect(deleted == ["quote = \"-DELE .a.jpg.t1.part\"\n", "quote = \"-DELE .a.jpg.t2.part\"\n"])
+    }
+
+    @Test("a login failure is never retried and leaves no cleanup connection")
+    func loginFailureNotRetried() async throws {
+        let runner = ScriptedCurl([67], stderr: "curl: (67) Access denied: 530")
+        do {
+            _ = try await FTPService.performUpload(
+                localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+                netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
+            )
+            Issue.record("A refused login unexpectedly succeeded")
+        } catch let error as FTPService.FTPError {
+            #expect(error.isServerLevel)
+            #expect(error.category == .loginDenied)
+            #expect(error.localizedDescription.contains("Login denied — check the user name and password"))
+            #expect(error.localizedDescription.contains("curl: (67) Access denied: 530"))
+        }
+        #expect(runner.calls.count == 1)
+    }
+
+    @Test("retries stop after four attempts and the temporary file is cleaned up")
+    func retriesAreBounded() async throws {
+        let runner = ScriptedCurl([55, 55, 55, 55, 0])
+        await #expect(throws: FTPService.FTPError.self) {
+            _ = try await FTPService.performUpload(
+                localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+                netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t" }, run: runner.run
+            )
+        }
+        #expect(runner.calls.filter(\.isTransfer).count == FTPService.maximumTransferAttempts)
+        #expect(runner.calls.last?.configText?.contains("-DELE .a.jpg.t.part") == true)
+    }
+
+    @Test("a cancelled transfer deletes its partial temporary file")
+    func cancellationCleansUp() async throws {
+        let runner = ScriptedCurl([0], cancelTransfers: true)
+        await #expect(throws: CancellationError.self) {
+            _ = try await FTPService.performUpload(
+                localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+                netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t" }, run: runner.run
+            )
+        }
+        #expect(runner.calls.count == 2)
+        #expect(runner.calls[1].configText?.contains("-DELE .a.jpg.t.part") == true)
+    }
+
+    @Test("rename support is persisted only after refusals on two different files")
+    func renameRefusalNeedsTwoFiles() {
+        var profile = connection
+        let refused = FTPUploadOutcome(renameRefused: true)
+        let learned2 = profile.learnServerCompatibility(from: refused, fileName: "a.jpg")
+        #expect(learned2)
+        #expect(!profile.serverRefusesRename && !profile.uploadsDirectly)
+        // The same file again (a retry) doesn't count.
+        let learned3 = profile.learnServerCompatibility(from: refused, fileName: "a.jpg")
+        #expect(!learned3)
+        #expect(!profile.serverRefusesRename)
+        // A working rename clears the count (the refusal was transient or name-specific).
+        let learned4 = profile.learnServerCompatibility(from: FTPUploadOutcome(renamedIntoPlace: true), fileName: "b.jpg")
+        #expect(learned4)
+        #expect(profile.renameRefusalCount == 0)
+        _ = profile.learnServerCompatibility(from: refused, fileName: "c.jpg")
+        let learned5 = profile.learnServerCompatibility(from: refused, fileName: "d.jpg")
+        #expect(learned5)
+        #expect(profile.serverRefusesRename && profile.uploadsDirectly)
+        profile.resetServerCompatibility()
+        #expect(!profile.hasLearnedServerCompatibility && !profile.uploadsDirectly)
+    }
+
+    @Test("legacy uploadFile falls back to a direct upload through the injected runner")
+    func legacyUploadFileFallback() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FTPAtomic-\(UUID().uuidString).jpg")
+        try Data("jpeg".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let runner = ScriptedCurl([21, 0, 0])
+        let progress = ProgressRecorder()
+        let outcome = try await FTPService().uploadFile(
+            localURL: file, connection: connection, password: "secret-canary",
+            runner: FTPCurlRunner { arguments, chunk in
+                chunk?("  50.0%")
+                return try await runner.run(arguments, chunk != nil)
+            },
+            retryDelay: .zero,
+            progressHandler: { progress.record($0) }
+        )
+        #expect(outcome.renameRefused)
+        #expect(runner.calls.allSatisfy { call in !call.arguments.contains { $0.contains("secret-canary") } })
+        #expect(progress.values.last?.isComplete == true)
+        #expect(progress.values.contains { $0.fractionCompleted == 0.5 })
+    }
+
+    @Test("exit codes map to fixed categories: TLS, login and reachability stop the batch")
+    func classification() {
+        #expect(FTPService.failureCategory(exitCode: 64) == .ftpsUnsupported)
+        #expect(FTPService.failureCategory(exitCode: 60) == .certificateUntrusted)
+        #expect(FTPService.failureCategory(exitCode: 51) == .certificateUntrusted)
+        #expect(FTPService.failureCategory(exitCode: 35) == .secureConnectionFailed)
+        #expect(FTPService.failureCategory(exitCode: 58) == .secureConnectionFailed)
+        #expect(FTPService.failureCategory(exitCode: 59) == .secureConnectionFailed)
+        #expect(FTPService.failureCategory(exitCode: 67) == .loginDenied)
+        #expect(FTPService.failureCategory(exitCode: 9) == .accessDenied)
+        #expect(FTPService.failureCategory(exitCode: 7) == .serverUnreachable)
+        #expect(FTPService.failureCategory(exitCode: 6) == .serverUnreachable)
+        #expect(FTPService.failureCategory(
+            exitCode: 28, stderr: "curl: (28) Connection timed out after 15001 milliseconds") == .serverUnreachable)
+        #expect(FTPService.failureCategory(
+            exitCode: 28, stderr: "curl: (28) Operation too slow. Less than 1 bytes/sec") == .timedOut)
+        #expect(FTPService.failureCategory(exitCode: 25) == .fileRejected)
+        #expect(FTPService.failureCategory(exitCode: 55) == .fileRejected)
+        for code: Int32 in [7, 9, 35, 58, 59, 60, 64, 67] {
+            #expect(FTPService.FTPError.isServerLevelExitCode(code), "exit \(code) should stop the batch")
+        }
+        for code: Int32 in [23, 25, 26, 55, 56] {
+            #expect(!FTPService.FTPError.isServerLevelExitCode(code), "exit \(code) is file-level")
+        }
+        #expect(!FTPService.FTPError.uploadFailed(28, "curl: (28) Operation too slow.").isServerLevel)
+    }
+
+    @Test("curl's diagnostic is found after progress-bar carriage returns")
+    func diagnosticAfterProgressBar() {
+        let stderr = "########## 10.0%\r                                        \rcurl: (67) Access denied: 530\n\n"
+        #expect(FTPService.FTPError.extractCurlError(from: stderr) == "curl: (67) Access denied: 530")
+        #expect(FTPService.FTPError.uploadFailed(67, stderr).localizedDescription
+            .hasSuffix("— curl: (67) Access denied: 530"))
+    }
+
+    @Test("TLS and login failures explain what to change")
+    func failureMessages() {
+        #expect(FTPService.FTPError.uploadFailed(64, "").localizedDescription
+            == "Upload failed: The server doesn't support FTPS — edit the server to use plain FTP or a different port")
+        #expect(FTPService.FTPError.uploadFailed(60, "").localizedDescription
+            == "Upload failed: The server's certificate isn't trusted")
+        #expect(FTPService.FTPError.connectionTestFailed(67, "").localizedDescription
+            == "Connection test failed: Login denied — check the user name and password")
+    }
+}
+
+@Suite("curl process execution")
+struct FTPCurlProcessExecutorTests {
+    @Test("the final stderr line is drained before the result is built")
+    func drainsFinalErrorLine() async throws {
+        let result = try await FTPCurlProcessExecutor.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf 'progress\\ncurl: (67) Access denied: 530\\n' >&2; exit 67"]
+        )
+        #expect(result.terminationStatus == 67)
+        #expect(result.standardError.hasSuffix("curl: (67) Access denied: 530\n"))
+    }
+
+    @Test("a cancel after the transfer reached 100% lets curl finish the rename and reports success")
+    func cancelAfterCompleteTransferIsNotLost() async throws {
+        let task = Task {
+            try await FTPCurlProcessExecutor.run(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                // Progress reaches 100%, then the acknowledgement/rename phase takes a moment.
+                arguments: ["-c", "printf '######## 100.0%%' >&2; sleep 1; exit 0"]
+            )
+        }
+        try await Task.sleep(for: .milliseconds(400))
+        task.cancel()
+        let result = try await task.value
+        #expect(result.terminationStatus == 0)
+    }
+
+    @Test("a clean exit 0 is reported even when a cancel raced it")
+    func exitZeroWinsOverLateCancel() async throws {
+        let task = Task {
+            try await FTPCurlProcessExecutor.run(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                // Ignores SIGTERM and still exits 0, like curl finishing its last reply.
+                arguments: ["-c", "trap '' TERM; sleep 0.5; exit 0"]
+            )
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        task.cancel()
+        #expect(try await task.value.terminationStatus == 0)
+    }
+
+    @Test("cancellation terminates a process that ignores SIGTERM")
+    func cancellationEscalatesToSIGKILL() async throws {
+        let started = ContinuousClock.now
+        let task = Task {
+            try await FTPCurlProcessExecutor.run(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "trap '' TERM; exec /bin/sleep 30"]
+            )
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(ContinuousClock.now - started < .seconds(15))
+    }
+}
+
+/// Scripted stand-in for curl: returns the next status for each transfer, and status 0 for
+/// cleanup commands. Never launches a process.
+private nonisolated final class ScriptedCurl: @unchecked Sendable {
+    struct Call {
+        let arguments: [String]
+        let isTransfer: Bool
+        /// Bytes of the `-K` config file as curl would read them during this call.
+        let config: Data?
+        var configText: String? { config.map { String(decoding: $0, as: UTF8.self) } }
+    }
+    private let lock = NSLock()
+    private var statuses: [Int32]
+    private let stderr: String
+    private let cancelTransfers: Bool
+    private var recorded: [Call] = []
+
+    init(_ statuses: [Int32], stderr: String = "", cancelTransfers: Bool = false) {
+        self.statuses = statuses
+        self.stderr = stderr
+        self.cancelTransfers = cancelTransfers
+    }
+
+    var calls: [Call] { lock.withLock { recorded } }
+
+    var run: @Sendable ([String], Bool) async throws -> FTPService.DeliveryProcessResult {
+        { [self] arguments, isTransfer in
+            let config = arguments.firstIndex(of: "-K").flatMap { index -> Data? in
+                guard index + 1 < arguments.count else { return nil }
+                return FileManager.default.contents(atPath: arguments[index + 1])
+            }
+            let status: Int32 = lock.withLock {
+                recorded.append(Call(arguments: arguments, isTransfer: isTransfer, config: config))
+                guard isTransfer, !statuses.isEmpty else { return 0 }
+                return statuses.removeFirst()
+            }
+            if isTransfer, cancelTransfers { throw CancellationError() }
+            return FTPService.DeliveryProcessResult(
+                terminationStatus: status,
+                standardError: status == 0 ? "" : stderr
+            )
+        }
+    }
+}
+
+private nonisolated final class TokenSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var next: @Sendable () -> String {
+        { [self] in lock.withLock { count += 1; return "t\(count)" } }
+    }
+}
+
+private nonisolated final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [FTPUploadProgress] = []
+    func record(_ progress: FTPUploadProgress) { lock.withLock { stored.append(progress) } }
+    var values: [FTPUploadProgress] { lock.withLock { stored } }
+}
+
+@Suite("FTP host field normalization")
+struct FTPHostNormalizationTests {
+    @Test("scheme, port and folder pasted into Host are split into their fields")
+    func normalizesPastedURL() {
+        var connection = FTPConnection(name: "Desk", host: " ftp://ftp.example.com:2121/incoming/desk/ ",
+                                       port: 21, username: "u", remotePath: "/")
+        #expect(connection.normalizeHostInput() == nil)
+        #expect(connection.host == "ftp.example.com")
+        #expect(connection.port == 2121)
+        #expect(connection.remotePath == "/incoming/desk")
+    }
+
+    @Test("plain hosts, IPv6 literals and bracketed ports are handled")
+    func hostsAndIPv6() {
+        var plain = FTPConnection(host: "ftp.example.com", port: 990)
+        #expect(plain.normalizeHostInput() == nil)
+        #expect(plain.host == "ftp.example.com" && plain.port == 990)
+
+        var bareIPv6 = FTPConnection(host: "fe80::1", port: 21)
+        #expect(bareIPv6.normalizeHostInput() == nil)
+        #expect(bareIPv6.host == "fe80::1")
+
+        var bracketed = FTPConnection(host: "[fe80::1]:2121", port: 21)
+        #expect(bracketed.normalizeHostInput() == nil)
+        #expect(bracketed.host == "[fe80::1]" && bracketed.port == 2121)
+    }
+
+    @Test("ambiguous input is rejected with a message and leaves the fields unchanged")
+    func rejectsAmbiguousInput() {
+        var conflictingPath = FTPConnection(host: "host/other", remotePath: "/incoming")
+        #expect(conflictingPath.normalizeHostInput() != nil)
+        #expect(conflictingPath.host == "host/other")
+
+        var userInHost = FTPConnection(host: "me@host")
+        #expect(userInHost.normalizeHostInput() != nil)
+
+        var badPort = FTPConnection(host: "host:99999")
+        #expect(badPort.normalizeHostInput() != nil)
+
+        var http = FTPConnection(host: "https://host")
+        #expect(http.normalizeHostInput() != nil)
+
+        let valid = FTPConnection(name: "Desk", host: "ftp://host:2121/in", username: "u")
+        #expect(valid.saveValidationMessage(password: "p") == nil)
+        let invalid = FTPConnection(name: "Desk", host: "me@host", username: "u")
+        #expect(invalid.saveValidationMessage(password: "p") != nil)
+    }
+
+    @Test("saved profiles with a URL in Host are migrated on load")
+    func migratesOnDecode() throws {
+        let json = """
+        [{"id":"11111111-2222-3333-4444-555555555555","name":"Old","host":"ftp://news.example:2121/drop",
+          "port":21,"username":"u","remotePath":"/","useSFTP":false,"useTLS":true,
+          "allowInsecureHostVerification":false}]
+        """
+        let decoded = try JSONDecoder().decode([FTPConnection].self, from: Data(json.utf8))
+        #expect(decoded[0].host == "news.example")
+        #expect(decoded[0].port == 2121)
+        #expect(decoded[0].remotePath == "/drop")
+        #expect(decoded[0].serverRefusesRename == false)
+    }
+
+    @Test("the learned rename refusal survives an encode/decode roundtrip")
+    func renameFlagRoundTrips() throws {
+        var connection = FTPConnection(name: "Drop", host: "drop.example", username: "u")
+        connection.serverRefusesRename = true
+        let decoded = try JSONDecoder().decode(FTPConnection.self, from: JSONEncoder().encode(connection))
+        #expect(decoded.serverRefusesRename)
+    }
+}
+
 @Suite("FTPConnection Codable")
 struct FTPConnectionCodableTests {
 
-    @Test("new profiles default to verified SFTP")
+    @Test("new profiles default to verified FTPS, never SFTP (macOS curl has no sftp)")
     func newProfileSafeDefault() {
         let connection = FTPConnection.secureDefault
-        #expect(connection.useSFTP)
-        #expect(connection.port == 22)
+        #expect(!connection.useSFTP)
+        #expect(connection.useTLS)
+        #expect(!connection.allowInsecureHostVerification)
+        #expect(connection.port == 21)
         #expect(connection.transportSecurity == DeliveryTransportSecurity(
-            protocolKind: .sftp,
+            protocolKind: .explicitFTPS,
             verificationEnabled: true
         ))
         #expect(!connection.transportSecurity.isInsecure)
+        #expect(!connection.requiresFirstInsecureUploadAcknowledgement)
+    }
+
+    @Test("Save validation requires a user name, a password and a usable host")
+    func saveValidation() {
+        var connection = FTPConnection.secureDefault
+        connection.name = "Desk"
+        connection.host = "ftp.example.com"
+        connection.username = "user"
+        #expect(connection.saveValidationMessage(password: "pa ss#1") == nil)
+        #expect(connection.saveValidationMessage(password: "") != nil)
+        connection.username = ""
+        #expect(connection.saveValidationMessage(password: "secret") != nil)
+        connection.username = "user"
+        connection.host = "ftp example.com"
+        #expect(connection.saveValidationMessage(password: "secret") != nil)
     }
 
     @Test("plain FTP and disabled server verification are classified as insecure")
@@ -825,15 +1433,47 @@ struct FTPViewModelTransportAcknowledgementTests {
         let viewModel = FTPViewModel()
         let connection = FTPConnection(name: "Desk", host: "example.invalid")
 
-        viewModel.uploadFiles(
+        let started = viewModel.uploadFiles(
             [URL(fileURLWithPath: "/private/tmp/should-not-upload.jpg")],
             to: connection
         )
 
-        #expect(viewModel.errorMessages == [
-            "Acknowledge this insecure delivery connection before its first upload."
-        ])
+        #expect(!started)
+        #expect(viewModel.uploadAdmissionError ==
+            "Acknowledge this insecure delivery connection before its first upload.")
+        #expect(viewModel.errorMessages.isEmpty)
         #expect(!viewModel.isUploading)
+        #expect(viewModel.uploadHistory.entries.isEmpty)
+    }
+
+    @Test("SFTP profiles and a missing password are refused without starting a run")
+    func refusedUploadsReportNotStarted() throws {
+        let suite = "FTPAdmissionTests.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let lookups = FTPPasswordLookupCounter()
+        var execution = FTPUploadExecutionAccess()
+        execution.password = { _ in
+            lookups.count += 1
+            return nil
+        }
+        execution.upload = { _, _, _, _ in
+            Issue.record("A refused upload reached the transport")
+            return FTPUploadOutcome()
+        }
+        let viewModel = FTPViewModel(defaults: defaults, execution: execution)
+        let file = URL(fileURLWithPath: "/private/tmp/should-not-upload.jpg")
+
+        let sftp = FTPConnection(name: "Legacy", host: "example.invalid", port: 22, useSFTP: true)
+        #expect(!viewModel.uploadFiles([file], to: sftp))
+        #expect(viewModel.uploadAdmissionError == FTPConnection.sftpUnavailableMessage)
+        #expect(lookups.count == 0)
+
+        let ftps = FTPConnection(name: "Desk", host: "example.invalid", useTLS: true)
+        #expect(!viewModel.uploadFiles([file], to: ftps))
+        #expect(viewModel.uploadAdmissionError?.hasPrefix("No password found for Desk") == true)
+        #expect(!viewModel.isUploading && !viewModel.uploadCompleted)
+        #expect(viewModel.errorMessages.isEmpty)
         #expect(viewModel.uploadHistory.entries.isEmpty)
     }
 
@@ -843,7 +1483,7 @@ struct FTPViewModelTransportAcknowledgementTests {
         let url = URL(fileURLWithPath: "/private/tmp/should-not-render.jpg")
         let connection = FTPConnection(name: "Desk", host: "example.invalid")
 
-        viewModel.uploadFiles(
+        let started = viewModel.uploadFiles(
             [url],
             renderURLs: [url],
             to: connection,
@@ -852,17 +1492,298 @@ struct FTPViewModelTransportAcknowledgementTests {
             inMemoryCameraRaw: { _ in nil }
         )
 
-        #expect(viewModel.errorMessages == [
-            "Acknowledge this insecure delivery connection before its first upload."
-        ])
+        #expect(!started)
+        #expect(viewModel.uploadAdmissionError ==
+            "Acknowledge this insecure delivery connection before its first upload.")
         #expect(!viewModel.isUploading)
         #expect(!viewModel.isRendering)
         #expect(viewModel.uploadHistory.entries.isEmpty)
     }
 }
 
+@MainActor
+private final class FTPPasswordLookupCounter {
+    var count = 0
+}
+
+@MainActor
+@Suite("FTPViewModel shared server list")
+struct FTPViewModelConnectionSyncTests {
+    private func makeDefaults() throws -> (UserDefaults, String) {
+        let suite = "FTPConnectionSyncTests.\(UUID())"
+        return (try #require(UserDefaults(suiteName: suite)), suite)
+    }
+
+    private func store(_ connections: [FTPConnection], in defaults: UserDefaults) throws {
+        defaults.set(try JSONEncoder().encode(connections), forKey: UserDefaultsKeys.ftpConnections)
+    }
+
+    @Test("a mutation re-reads the stored list instead of saving a stale cache")
+    func mutationPreservesOtherWindowsChanges() throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let plain = FTPConnection(name: "Plain", host: "a.invalid", username: "u")
+        try store([plain], in: defaults)
+        let settings = FTPViewModel(defaults: defaults)
+        settings.loadConnections()
+
+        // The other window adds a server; this instance's cache doesn't know about it yet.
+        let added = FTPConnection(name: "Added", host: "b.invalid", username: "u", useTLS: true)
+        try store([plain, added], in: defaults)
+
+        #expect(settings.acknowledgeFirstInsecureUpload(connectionID: plain.id) != nil)
+        let stored = try JSONDecoder().decode(
+            [FTPConnection].self,
+            from: try #require(defaults.data(forKey: UserDefaultsKeys.ftpConnections))
+        )
+        #expect(stored.map(\.id) == [plain.id, added.id])
+        #expect(stored.first?.requiresFirstInsecureUploadAcknowledgement == false)
+        #expect(settings.connections.map(\.id) == [plain.id, added.id])
+    }
+
+    @Test("the other instance sharing the store reloads after a save")
+    func otherInstanceReloads() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let plain = FTPConnection(name: "Plain", host: "a.invalid", username: "u")
+        try store([plain], in: defaults)
+        let settings = FTPViewModel(defaults: defaults)
+        let main = FTPViewModel(defaults: defaults)
+        settings.loadConnections()
+        main.loadConnections()
+
+        _ = settings.acknowledgeFirstInsecureUpload(connectionID: plain.id)
+        for _ in 0..<200 where main.connections.first?.requiresFirstInsecureUploadAcknowledgement == true {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(main.connections.first?.requiresFirstInsecureUploadAcknowledgement == false)
+    }
+}
+
 private nonisolated enum FTPSidecarExecutorContext {
     @TaskLocal static var marker: URL?
+}
+
+@Suite("FTP upload results, retry and naming")
+@MainActor
+struct FTPUploadResultsTests {
+    @Test("a file-level failure is shown with its reason and Retry Failed re-sends only it")
+    func retryFailedSendsOnlyFailures() async throws {
+        let fixture = try FTPRunFixture(names: ["a.jpg", "b.jpg", "c.jpg"])
+        defer { fixture.remove() }
+        let history = ActivityHistoryStore()
+        history.clear()
+        defer { history.clear() }
+        fixture.model.activityHistory = history
+        await fixture.recorder.fail("b.jpg", with: FTPService.FTPError.uploadFailed(25, "curl: (25) 553 Not allowed"))
+
+        #expect(fixture.model.uploadFiles(fixture.sources, to: fixture.connection))
+        await fixture.model.currentUploadCompletion()()
+
+        #expect(await fixture.recorder.uploadedNames() == ["a.jpg", "b.jpg", "c.jpg"])
+        #expect(fixture.model.completedCount == 2)
+        #expect(fixture.model.uploadFailures["b.jpg"] == "The server did not accept the file.")
+        #expect(fixture.model.failedSourceURLs == [fixture.sources[1]])
+        #expect(fixture.model.canRetryFailed)
+        let entry = try #require(history.entries.first)
+        #expect(entry.files.first { $0.fileName == "b.jpg" }?.statusDetail == "The server did not accept the file.")
+
+        await fixture.recorder.reset()
+        #expect(fixture.model.retryFailedUploads())
+        await fixture.model.currentUploadCompletion()()
+        #expect(await fixture.recorder.uploadedNames() == ["b.jpg"])
+        #expect(fixture.model.uploadFailures.isEmpty)
+        #expect(!fixture.model.canRetryFailed)
+    }
+
+    @Test("a server-level failure stops the batch and marks the rest not sent")
+    func serverLevelFailureMarksRemainingNotSent() async throws {
+        let fixture = try FTPRunFixture(names: ["a.jpg", "b.jpg", "c.jpg"])
+        defer { fixture.remove() }
+        await fixture.recorder.fail("a.jpg", with: FTPService.FTPError.uploadFailed(67, ""))
+
+        #expect(fixture.model.uploadFiles(fixture.sources, to: fixture.connection))
+        await fixture.model.currentUploadCompletion()()
+
+        #expect(await fixture.recorder.uploadedNames() == ["a.jpg"])
+        #expect(fixture.model.uploadFailures["a.jpg"] == "Login denied — check the user name and password.")
+        #expect(fixture.model.uploadFailures["b.jpg"]?.hasPrefix("Not sent") == true)
+        #expect(fixture.model.uploadFailures["c.jpg"]?.hasPrefix("Not sent") == true)
+        #expect(fixture.model.failedSourceURLs == fixture.sources)
+    }
+
+    @Test("rename refusals on two different files are remembered on the profile")
+    func renameRefusalIsPersisted() async throws {
+        let fixture = try FTPRunFixture(names: ["a.jpg", "b.jpg", "c.jpg"])
+        defer { fixture.remove() }
+        await fixture.recorder.refuseRename()
+
+        #expect(fixture.model.uploadFiles(fixture.sources, to: fixture.connection))
+        await fixture.model.currentUploadCompletion()()
+
+        // One refusal isn't enough (could be transient); the second file's refusal is.
+        #expect(await fixture.recorder.serverRefusesRenameFlags() == [false, false, true])
+        #expect(fixture.model.connections.first?.serverRefusesRename == true)
+        #expect(fixture.model.connections.first?.renameRefusalCount == 2)
+        let reloaded = FTPViewModel(defaults: fixture.defaults)
+        reloaded.loadConnections()
+        #expect(reloaded.connections.first?.serverRefusesRename == true)
+    }
+
+    @Test("renders keep their source name on re-send; only an in-batch clash gets -2")
+    func deterministicRenderNames() async throws {
+        let fixture = try FTPRunFixture(names: ["photo.jpg", "photo.png", "other.jpg"])
+        defer { fixture.remove() }
+        let renderAll = Set(fixture.sources)
+
+        for _ in 0 ..< 2 {
+            await fixture.recorder.reset()
+            #expect(fixture.startRendered(renderAll))
+            await fixture.model.currentUploadCompletion()()
+            #expect(await fixture.recorder.uploadedNames() == ["photo.jpg", "photo-2.jpg", "other.jpg"])
+            #expect(fixture.model.uploadFailures.isEmpty)
+        }
+        let uploaded = fixture.root.appendingPathComponent("Uploaded")
+        let names = try FileManager.default.contentsOfDirectory(atPath: uploaded.path).sorted()
+        #expect(names == ["other.jpg", "photo-2.jpg", "photo.jpg"])
+    }
+
+    @Test("the next file renders while the previous one uploads")
+    func renderAndUploadArePipelined() async throws {
+        let fixture = try FTPRunFixture(names: ["a.jpg", "b.jpg"])
+        defer { fixture.remove() }
+        await fixture.recorder.block("a.jpg")
+
+        #expect(fixture.startRendered(Set(fixture.sources)))
+        try await fixture.recorder.waitForUploadStart("a.jpg")
+        // b renders (and would sign) while a is still uploading.
+        try await fixture.recorder.waitForRender("b.jpg")
+        #expect(fixture.model.isRendering || fixture.model.isUploading)
+        await fixture.recorder.unblock("a.jpg")
+        await fixture.model.currentUploadCompletion()()
+        #expect(await fixture.recorder.uploadedNames() == ["a.jpg", "b.jpg"])
+        #expect(fixture.model.completedCount == 2)
+        #expect(fixture.model.overallProgress == 1)
+    }
+}
+
+@MainActor
+private final class FTPRunFixture {
+    let root: URL
+    let sources: [URL]
+    let recorder: FTPRunRecorder
+    let model: FTPViewModel
+    let defaults: UserDefaults
+    var connection: FTPConnection { Self.fixtureConnection }
+    static let fixtureConnection = FTPConnection(
+        id: UUID(uuidString: "99999999-8888-7777-6666-555555555555")!,
+        name: "Run fixture", host: "fixture.invalid", port: 21, username: "u", useTLS: true
+    )
+    private let suite: String
+
+    init(names: [String]) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ftp-run-\(UUID())")
+        self.root = root
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let jpeg = try #require(bitmap.representation(using: .jpeg, properties: [:]))
+        sources = try names.map { name in
+            let url = root.appendingPathComponent(name)
+            try jpeg.write(to: url)
+            return url
+        }
+        suite = "FTPRunFixture.\(UUID())"
+        defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(try JSONEncoder().encode([Self.fixtureConnection]), forKey: UserDefaultsKeys.ftpConnections)
+        let recorder = FTPRunRecorder()
+        self.recorder = recorder
+        var execution = FTPUploadExecutionAccess()
+        execution.password = { _ in "fixture-only" }
+        execution.upload = { url, connection, _, _ in
+            try await recorder.upload(url.lastPathComponent, connection: connection)
+        }
+        execution.render = { source, _, folder, _, _, _ in
+            await recorder.recordRender(source.lastPathComponent)
+            let output = folder.appendingPathComponent(source.deletingPathExtension().lastPathComponent)
+                .appendingPathExtension("jpg")
+            if FileManager.default.fileExists(atPath: output.path) {
+                try FileManager.default.removeItem(at: output)
+            }
+            try FileManager.default.copyItem(at: source, to: output)
+            return output
+        }
+        execution.overlay = { _, _, _ in .noPendingEdits }
+        model = FTPViewModel(fileSystem: FTPUploadFileSystemBoundary(temporaryRoot: root),
+                             defaults: defaults, execution: execution)
+        model.loadConnections()
+    }
+
+    func startRendered(_ renderURLs: Set<URL>) -> Bool {
+        model.uploadFiles(sources, renderURLs: renderURLs, to: connection,
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            inMemoryCameraRaw: { _ in nil })
+    }
+
+    func remove() {
+        model.cancelUpload()
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private actor FTPRunRecorder {
+    private var uploads: [String] = []
+    private var renders: [String] = []
+    private var refusalFlags: [Bool] = []
+    private var failures: [String: any Error] = [:]
+    private var refusesRename = false
+    private var blocked: Set<String> = []
+    private var blockWaiters: [String: CheckedContinuation<Void, Never>] = [:]
+
+    func fail(_ name: String, with error: any Error) { failures[name] = error }
+    func refuseRename() { refusesRename = true }
+    func block(_ name: String) { blocked.insert(name) }
+    func unblock(_ name: String) {
+        blocked.remove(name)
+        blockWaiters.removeValue(forKey: name)?.resume()
+    }
+    func reset() {
+        uploads = []
+        renders = []
+        refusalFlags = []
+        failures = [:]
+    }
+    func uploadedNames() -> [String] { uploads }
+    func serverRefusesRenameFlags() -> [Bool] { refusalFlags }
+    func recordRender(_ name: String) { renders.append(name) }
+
+    func upload(_ name: String, connection: FTPConnection) async throws -> FTPUploadOutcome {
+        uploads.append(name)
+        refusalFlags.append(connection.serverRefusesRename)
+        if blocked.contains(name) {
+            await withCheckedContinuation { blockWaiters[name] = $0 }
+        }
+        if let error = failures[name] { throw error }
+        return FTPUploadOutcome(renameRefused: refusesRename && !connection.serverRefusesRename)
+    }
+
+    func waitForUploadStart(_ name: String) async throws {
+        let deadline = ContinuousClock.now + .seconds(6)
+        while !uploads.contains(name) {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.userCancelled) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func waitForRender(_ name: String) async throws {
+        let deadline = ContinuousClock.now + .seconds(6)
+        while !renders.contains(name) {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.userCancelled) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
 }
 
 @Suite("FTP upload generation isolation")
@@ -988,6 +1909,69 @@ struct FTPUploadGenerationIsolationTests {
         }
     }
 
+    @Test("A signing failure ends in a visible stopped state and records the files as failed")
+    func signingFailureEndsStopped() async throws {
+        try await withFixture(blocked: ["sign"]) { fixture in
+            let history = ActivityHistoryStore()
+            fixture.model.activityHistory = history
+            fixture.startRendered(signing: true)
+            try await fixture.gate.waitFor("sign")
+            let completion = fixture.captureCompletion()
+            await fixture.gate.release("sign", fails: true)
+            await completion()
+            #expect(fixture.model.uploadCompleted && fixture.model.uploadStopped)
+            #expect(!fixture.model.isRendering && !fixture.model.isUploading)
+            #expect(fixture.model.errorMessages.contains { $0.hasPrefix("Upload stopped") })
+            #expect(await fixture.gate.totalUploadCalls == 0)
+            let entry = try #require(history.entries.first)
+            #expect(entry.successCount == 0 && entry.totalCount == 1)
+            #expect(entry.files.map(\.succeeded) == [false])
+        }
+    }
+
+    @Test("Cancelling an upload records a cancelled Activity entry with what completed")
+    func cancelRecordsActivity() async throws {
+        try await withFixture(blocked: ["upload:old.jpg", "upload:new.jpg"]) { fixture in
+            let history = ActivityHistoryStore()
+            history.clear()
+            fixture.model.activityHistory = history
+            fixture.model.uploadFiles([fixture.old, fixture.new], to: fixture.connection)
+            try await fixture.gate.waitFor("upload:old.jpg")
+            _ = fixture.captureCompletion()
+            await fixture.gate.release("upload:old.jpg")
+            try await fixture.gate.waitFor("upload:new.jpg")
+            fixture.model.cancelUpload()
+            let entry = try #require(history.entries.first)
+            #expect(entry.wasCancelled)
+            #expect(entry.kind == .upload)
+            #expect(entry.successCount == 1 && entry.totalCount == 2)
+            #expect(entry.files.map(\.fileName) == ["new.jpg", "old.jpg"])
+            #expect(entry.files.map(\.succeeded) == [false, true])
+            #expect(history.entries.count == 1)
+            history.clear()
+        }
+    }
+
+    @Test("Activity history keeps the selected count and lists files that failed to prepare")
+    func activityHistoryIncludesUnpreparedFiles() async throws {
+        try await withFixture(blocked: ["render:new.jpg"]) { fixture in
+            let history = ActivityHistoryStore()
+            fixture.model.activityHistory = history
+            fixture.model.uploadFiles([fixture.old, fixture.new], renderURLs: [fixture.new],
+                to: fixture.connection, readService: SwiftExifReadService(),
+                writeEngine: SwiftExifWriteEngine(), inMemoryCameraRaw: { _ in nil })
+            try await fixture.gate.waitFor("render:new.jpg")
+            let completion = fixture.captureCompletion()
+            await fixture.gate.release("render:new.jpg", fails: true)
+            await completion()
+            #expect(fixture.model.uploadCompleted && !fixture.model.uploadStopped)
+            let entry = try #require(history.entries.first)
+            #expect(entry.totalCount == 2 && entry.successCount == 1)
+            #expect(entry.files.map(\.fileName) == ["new.jpg", "old.jpg"])
+            #expect(entry.files.map(\.succeeded) == [false, true])
+        }
+    }
+
     private func withFixture(blocked: Set<String>,
                              operation: (FTPGenerationFixture) async throws -> Void) async throws {
         let fixture = try FTPGenerationFixture(blocked: blocked)
@@ -1018,7 +2002,7 @@ private final class FTPGenerationFixture {
     let rendered: URL
     let gate: FTPGenerationGate
     let model: FTPViewModel
-    let connection = FTPConnection(name: "Isolated fixture", host: "fixture.invalid", port: 22, useSFTP: true)
+    let connection = FTPConnection(name: "Isolated fixture", host: "fixture.invalid", port: 21, useTLS: true)
     private let defaults: UserDefaults
     private let suite: String
     private let watchdog: Task<Void, Never>
@@ -1046,6 +2030,7 @@ private final class FTPGenerationFixture {
         execution.upload = { url, _, _, progress in
             await probe.registerProgress(progress, for: "upload:\(url.lastPathComponent)")
             try await probe.block("upload:\(url.lastPathComponent)")
+            return FTPUploadOutcome()
         }
         execution.render = { source, _, folder, _, _, _ in
             let output = folder.appendingPathComponent(source.deletingPathExtension().lastPathComponent + "-render.jpg")
@@ -1142,5 +2127,314 @@ private actor FTPGenerationGate {
             guard ContinuousClock.now < deadline else { throw CocoaError(.userCancelled) }
             try await Task.sleep(for: .milliseconds(5))
         }
+    }
+}
+
+// MARK: - Edit → FTP hand-off (redaction, pending drafts, C2PA staging)
+
+@Suite("FTP edit hand-off")
+@MainActor
+struct FTPEditHandoffTests {
+    private static func redacting(mask: Bool = false, blackOut: Bool = false) -> CameraRawSettings {
+        var settings = CameraRawSettings()
+        if mask {
+            var adjustment = MaskAdjustment()
+            adjustment.anonymizer = AnonymizerSettings(amount: 80)
+            settings.localAdjustments = [adjustment]
+        } else {
+            settings.anonymizer = AnonymizerSettings(amount: blackOut ? nil : 60, blackOut: blackOut ? true : nil)
+        }
+        return settings
+    }
+
+    @Test("Any active Anonymizer counts as redaction; empty or disabled ones do not")
+    func redactionDetection() {
+        #expect(FTPUploadRedaction.isActive(Self.redacting()))
+        #expect(FTPUploadRedaction.isActive(Self.redacting(blackOut: true)))
+        #expect(FTPUploadRedaction.isActive(Self.redacting(mask: true)))
+        var disabled = Self.redacting(mask: true)
+        disabled.localAdjustments?[0].enabled = false
+        #expect(!FTPUploadRedaction.isActive(disabled))
+        var off = CameraRawSettings()
+        off.anonymizer = AnonymizerSettings(amount: 0)
+        off.exposure2012 = 1
+        #expect(!FTPUploadRedaction.isActive(off))
+        #expect(!FTPUploadRedaction.isActive(nil))
+        // One stale carrier (e.g. the browser copy) can't hide the redaction another carries.
+        #expect(FTPUploadRedaction.isRedacted([off, nil, Self.redacting()]))
+        #expect(!FTPUploadRedaction.isRedacted([off, nil]))
+    }
+
+    @Test("A redacted photo always renders: skip-rendering, RAW-as-is and unedited JPEGs alike")
+    func redactedAlwaysRenders() {
+        var jpeg = UploadFileInfo(isRaw: false, hasDevelop: true, hasCrop: false)
+        #expect(!FTPUploadView.willRender(info: jpeg, alwaysRenderRAW: true, skipRenderingEdited: true, signsWithC2PA: false))
+        jpeg.isRedacted = true
+        #expect(FTPUploadView.willRender(info: jpeg, alwaysRenderRAW: true, skipRenderingEdited: true, signsWithC2PA: false))
+        var raw = UploadFileInfo(isRaw: true, hasDevelop: false, hasCrop: false)
+        #expect(!FTPUploadView.willRender(info: raw, alwaysRenderRAW: false, skipRenderingEdited: true, signsWithC2PA: false))
+        raw.isRedacted = true
+        #expect(FTPUploadView.willRender(info: raw, alwaysRenderRAW: false, skipRenderingEdited: true, signsWithC2PA: false))
+        // A credentialed file that needs the overlay renders only when the upload is signed.
+        var credentialed = UploadFileInfo(isRaw: false, hasDevelop: false, hasCrop: false)
+        credentialed.credentialedNeedsOverlay = true
+        #expect(!FTPUploadView.willRender(info: credentialed, alwaysRenderRAW: true, skipRenderingEdited: false, signsWithC2PA: false))
+        #expect(FTPUploadView.willRender(info: credentialed, alwaysRenderRAW: true, skipRenderingEdited: false, signsWithC2PA: true))
+    }
+
+    @Test("An anonymized photo sent with skip-rendering is rendered, never uploaded as the original")
+    func anonymizedPhotoIsRenderedEvenWhenSkipped() async throws {
+        let fixture = try HandoffFixture()
+        defer { fixture.remove() }
+        let redacted = Self.redacting(mask: true)
+        // The dialog's skip toggle left renderURLs empty; the run must still render.
+        let started = fixture.model.uploadFiles([fixture.photo], renderURLs: [], to: fixture.connection,
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            inMemoryCameraRaw: { _ in redacted })
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+
+        let uploads = await fixture.probe.uploads
+        #expect(await fixture.probe.renders == [fixture.photo])
+        #expect(await fixture.probe.renderedSettings.first.map { FTPUploadRedaction.isActive($0) } == true)
+        #expect(uploads.count == 1)
+        #expect(!uploads.contains(fixture.photo))
+        #expect(uploads.first?.deletingLastPathComponent().lastPathComponent == "Uploaded")
+        #expect(fixture.model.errorMessages.isEmpty)
+    }
+
+    @Test("A redaction saved on disk but missing from the render inputs is refused, not published")
+    func redactionMissingFromRenderInputsIsRefused() async throws {
+        let fixture = try HandoffFixture(sidecarDevelop: Self.redacting())
+        defer { fixture.remove() }
+        var stale = CameraRawSettings()
+        stale.exposure2012 = 0.5
+        let started = fixture.model.uploadFiles([fixture.photo], renderURLs: [], to: fixture.connection,
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            inMemoryCameraRaw: { _ in stale })
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+
+        #expect(await fixture.probe.uploads.isEmpty)
+        #expect(await fixture.probe.renders.isEmpty)
+        #expect(fixture.model.uploadFailures[fixture.photo.lastPathComponent]?.hasPrefix("Redaction couldn't be confirmed") == true)
+        #expect(fixture.model.failedSourceURLs == [fixture.photo])
+    }
+
+    @Test("Retry Failed re-checks redaction: a photo anonymized after a failed attempt renders on retry")
+    func retryRechecksRedaction() async throws {
+        let fixture = try HandoffFixture()
+        defer { fixture.remove() }
+        let live = HandoffLiveSettings()
+        await fixture.probe.failNextUpload()
+        let started = fixture.model.uploadFiles([fixture.photo], renderURLs: [], to: fixture.connection,
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            inMemoryCameraRaw: { _ in live.settings })
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+        #expect(await fixture.probe.uploads == [fixture.photo])
+        #expect(fixture.model.canRetryFailed)
+
+        // The user anonymizes a face before pressing Retry Failed.
+        live.settings = Self.redacting(blackOut: true)
+        await fixture.probe.reset()
+        #expect(fixture.model.retryFailedUploads())
+        await fixture.model.currentUploadCompletion()()
+        let uploads = await fixture.probe.uploads
+        #expect(await fixture.probe.renders == [fixture.photo])
+        #expect(uploads.count == 1 && !uploads.contains(fixture.photo))
+        #expect(!fixture.model.canRetryFailed)
+    }
+
+    @Test("A History Only caption and Person Shown reach an as-is upload's staged copy")
+    func pendingDraftReachesAsIsUpload() async throws {
+        let fixture = try HandoffFixture(realOverlay: true)
+        defer { fixture.remove() }
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.description: "Embedded caption"], to: [fixture.photo])
+        _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(
+            sourceFile: fixture.photo.lastPathComponent, pendingChanges: true,
+            metadata: IPTCMetadata(description: "Draft caption", personShown: ["Kari Nordmann"])),
+            for: fixture.photo, in: fixture.root)
+        let originalBytes = try Data(contentsOf: fixture.photo)
+
+        // The dialog's loader sees the pending draft, as Export's overlay does.
+        let service = FTPUploadSidecarLoadService(access: .system)
+        let loaded = await service.load(imageURLs: [fixture.photo], requestID: UUID())
+        guard case .complete(let snapshot) = loaded,
+              let sidecar = snapshot.metadataByImageURL[fixture.photo] else {
+            Issue.record("Expected the pending draft to be loaded")
+            return
+        }
+        #expect(sidecar.description == "Draft caption")
+        #expect(sidecar.personShown == ["Kari Nordmann"])
+        let embedded = try await SwiftExifReadService().readFullMetadata(url: fixture.photo)
+        #expect(FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded, sidecar: sidecar))
+
+        let started = fixture.model.uploadFiles([fixture.photo], renderURLs: [], sidecarOverlayURLs: [fixture.photo],
+            to: fixture.connection, readService: SwiftExifReadService(), writeEngine: engine,
+            inMemoryCameraRaw: { _ in nil })
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+
+        let uploaded = try #require(await fixture.probe.uploadedMetadata.first)
+        #expect(uploaded.url != fixture.photo)
+        #expect(uploaded.metadata.description == "Draft caption")
+        #expect(uploaded.metadata.personShown == ["Kari Nordmann"])
+        #expect(try Data(contentsOf: fixture.photo) == originalBytes)
+        #expect(fixture.model.errorMessages.isEmpty)
+    }
+
+    @Test("Signing applies the overlay, then signs a staged copy; originals are never touched")
+    func signingStagesOverlaysAndSignsCopies() async throws {
+        let fixture = try HandoffFixture(realOverlay: true, extraNames: ["plain.jpg"])
+        defer { fixture.remove() }
+        let plain = try #require(fixture.extras.first)
+        let engine = SwiftExifWriteEngine()
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(title: "Sidecar headline", description: "Sidecar caption"), for: fixture.photo)
+        let photoBytes = try Data(contentsOf: fixture.photo)
+        let plainBytes = try Data(contentsOf: plain)
+
+        let started = fixture.model.uploadFiles([fixture.photo, plain], renderURLs: [],
+            sidecarOverlayURLs: [fixture.photo], to: fixture.connection,
+            readService: SwiftExifReadService(), writeEngine: engine, inMemoryCameraRaw: { _ in nil },
+            signingConfiguration: C2PAUploadSigningConfiguration(certificatePath: "unused",
+                privateKeyPEM: "unused", author: nil, usesTestCertificate: false))
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+
+        let signed = await fixture.probe.signed
+        let uploads = await fixture.probe.uploads
+        #expect(signed.count == 2)
+        #expect(!signed.contains(fixture.photo) && !signed.contains(plain))
+        #expect(uploads == signed)
+        // The overlay was on the copy before it was signed, so the credential covers it.
+        #expect(await fixture.probe.titleAtSigning[fixture.photo.lastPathComponent] == "Sidecar headline")
+        #expect(await fixture.probe.renders.isEmpty)
+        #expect(try Data(contentsOf: fixture.photo) == photoBytes)
+        #expect(try Data(contentsOf: plain) == plainBytes)
+        #expect(fixture.model.errorMessages.isEmpty)
+    }
+
+    @Test("Upload Selected and Upload All commit Caption and the metadata panel first")
+    func uploadCommandsFlushMetadata() throws {
+        let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: workspace.appendingPathComponent(
+            "Aagedal Photo Agent/ContentView.swift"), encoding: .utf8)
+        for command in ["case .uploadSelected:", "case .uploadAll:"] {
+            let start = try #require(source.range(of: command))
+            let body = source[start.upperBound...].prefix(400)
+            let flush = try #require(body.range(of: "performAfterMetadataFileOperation {"))
+            let open = try #require(body.range(of: "ftpUploadItem = FTPUploadItem"))
+            #expect(flush.lowerBound < open.lowerBound)
+        }
+    }
+}
+
+@MainActor
+private final class HandoffLiveSettings {
+    var settings: CameraRawSettings?
+}
+
+@MainActor
+private final class HandoffFixture {
+    let root: URL
+    let photo: URL
+    let extras: [URL]
+    let probe: HandoffProbe
+    let model: FTPViewModel
+    let connection = FTPConnection(name: "Isolated fixture", host: "fixture.invalid", port: 21, useTLS: true)
+    private let defaults: UserDefaults
+    private let suite: String
+
+    init(sidecarDevelop: CameraRawSettings? = nil, realOverlay: Bool = false, extraNames: [String] = []) throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("ftp-handoff-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let jpeg = try #require(bitmap.representation(using: .jpeg, properties: [:]))
+        photo = root.appendingPathComponent("photo.jpg")
+        try jpeg.write(to: photo)
+        let folder = root
+        extras = try extraNames.map { name in
+            let url = folder.appendingPathComponent(name)
+            try jpeg.write(to: url)
+            return url
+        }
+        suite = "FTPHandoffTests.\(UUID())"
+        defaults = try #require(UserDefaults(suiteName: suite))
+        let probe = HandoffProbe()
+        self.probe = probe
+        var execution = FTPUploadExecutionAccess()
+        execution.password = { _ in "fixture-only" }
+        execution.upload = { url, _, _, _ in
+            let metadata = try await SwiftExifReadService().readFullMetadata(url: url)
+            try await probe.recordUpload(url, metadata: metadata)
+            return FTPUploadOutcome()
+        }
+        execution.render = { source, settings, folder, _, _, _ in
+            await probe.recordRender(source, settings: settings)
+            let output = folder.appendingPathComponent(source.deletingPathExtension().lastPathComponent)
+                .appendingPathExtension("jpg")
+            if FileManager.default.fileExists(atPath: output.path) {
+                try FileManager.default.removeItem(at: output)
+            }
+            try FileManager.default.copyItem(at: source, to: output)
+            return output
+        }
+        execution.sign = { _, url in
+            let title = try await SwiftExifReadService().readFullMetadata(url: url).title
+            await probe.recordSign(url, title: title)
+        }
+        // Never read the real sidecars of the fixture through the production loader here.
+        execution.loadSidecarDevelop = { urls in
+            guard let sidecarDevelop else { return [:] }
+            return Dictionary(uniqueKeysWithValues: urls.map { ($0, sidecarDevelop) })
+        }
+        if !realOverlay {
+            execution.overlay = { _, _, _ in .noPendingEdits }
+        }
+        model = FTPViewModel(fileSystem: FTPUploadFileSystemBoundary(temporaryRoot: root),
+                             defaults: defaults, execution: execution)
+    }
+
+    func remove() {
+        model.cancelUpload()
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private actor HandoffProbe {
+    private(set) var uploads: [URL] = []
+    private(set) var uploadedMetadata: [(url: URL, metadata: IPTCMetadata)] = []
+    private(set) var renders: [URL] = []
+    private(set) var renderedSettings: [CameraRawSettings?] = []
+    private(set) var signed: [URL] = []
+    private(set) var titleAtSigning: [String: String] = [:]
+    private var failsNextUpload = false
+
+    func failNextUpload() { failsNextUpload = true }
+    func reset() {
+        uploads = []; uploadedMetadata = []; renders = []; renderedSettings = []
+        signed = []; titleAtSigning = [:]
+    }
+    func recordUpload(_ url: URL, metadata: IPTCMetadata) throws {
+        uploads.append(url)
+        uploadedMetadata.append((url, metadata))
+        if failsNextUpload {
+            failsNextUpload = false
+            throw FTPService.FTPError.uploadFailed(25, "curl: (25) 553 Not allowed")
+        }
+    }
+    func recordRender(_ url: URL, settings: CameraRawSettings?) {
+        renders.append(url)
+        renderedSettings.append(settings)
+    }
+    func recordSign(_ url: URL, title: String?) {
+        signed.append(url)
+        if let title { titleAtSigning[url.lastPathComponent] = title }
     }
 }

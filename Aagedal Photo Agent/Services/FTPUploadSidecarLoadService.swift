@@ -26,10 +26,32 @@ nonisolated enum FTPUploadSidecarLoadResult: Equatable, Sendable {
 }
 
 nonisolated struct FTPUploadSidecarAccess: Sendable {
+    /// The physical `.xmp` sidecar: orientation and (ownership-filtered) Develop settings.
     let load: @Sendable (URL) -> IPTCMetadata?
+    /// Export's descriptive-source selection (pending JSON draft first, then the XMP record).
+    /// `nil` keeps the XMP record as the descriptive source.
+    var selectDescriptive: (@Sendable (URL) async -> ExportIPTCSelection)? = nil
 
-    static let system = FTPUploadSidecarAccess { imageURL in
-        XMPSidecarService().loadSidecar(for: imageURL)
+    static let system = FTPUploadSidecarAccess(
+        load: { imageURL in
+            PhotoSidecarOwnership.applyingDevelopOwnership(
+                XMPSidecarService().loadSidecar(for: imageURL), for: imageURL)
+        },
+        selectDescriptive: { imageURL in
+            await ExportIPTCSelectionService.shared.select(
+                sourceURL: imageURL, folderURL: imageURL.deletingLastPathComponent())
+        }
+    )
+
+    /// The record FTP inspects: descriptive fields from the same source Export's overlay uses
+    /// (a History Only / pending draft wins over the XMP record), while orientation and Develop
+    /// settings stay with the physical XMP sidecar that rendering reads.
+    static func combining(xmp: IPTCMetadata?, selection: ExportIPTCSelection) -> IPTCMetadata? {
+        guard case .pendingDraft(let draft) = selection else { return xmp }
+        var result = draft
+        result.exifOrientation = xmp?.exifOrientation
+        result.cameraRaw = xmp?.cameraRaw
+        return result
     }
 }
 
@@ -62,7 +84,7 @@ actor FTPUploadSidecarLoadService {
     func load(
         imageURLs: [URL],
         requestID: UUID
-    ) -> FTPUploadSidecarLoadResult {
+    ) async -> FTPUploadSidecarLoadResult {
         let signpostID = signposter.makeSignpostID()
         let interval = signposter.beginInterval("Load", id: signpostID)
 
@@ -90,7 +112,11 @@ actor FTPUploadSidecarLoadService {
                 )
             }
 
-            let metadata = access.load(imageURL)
+            var metadata = access.load(imageURL)
+            if let selectDescriptive = access.selectDescriptive {
+                metadata = FTPUploadSidecarAccess.combining(
+                    xmp: metadata, selection: await selectDescriptive(imageURL))
+            }
             inspectedImageURLs.append(imageURL)
             if let metadata {
                 metadataByImageURL[imageURL] = metadata

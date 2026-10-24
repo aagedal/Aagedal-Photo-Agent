@@ -12,6 +12,8 @@ struct EditVerticalSlider: NSViewRepresentable {
     var onEditingChanged: ((Bool) -> Void)?
     var onDragValueChanged: ((Double) -> Void)?
     var onReset: (() -> Void)?
+    /// Spoken name (VoiceOver) and Undo/Redo action title for commits from this slider.
+    var label: String?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -26,7 +28,7 @@ struct EditVerticalSlider: NSViewRepresentable {
 
     func updateNSView(_ nsView: EditVerticalSliderNSView, context: Context) {
         context.coordinator.parent = self
-        if !context.coordinator.isDragging {
+        if !context.coordinator.isDragging, !context.coordinator.keyStepper.isStepping {
             updateViewState(nsView)
         }
     }
@@ -84,11 +86,12 @@ struct EditVerticalSlider: NSViewRepresentable {
         }
 
         func handleMouseDown(at locationY: CGFloat, height: CGFloat) {
+            keyStepper.commitNow()
             let now = Date()
             if now.timeIntervalSince(lastMouseDownTime) < doubleClickInterval,
                let onReset = parent.onReset
             {
-                onReset()
+                DevelopUndoActionName.perform(parent.label, onReset)
                 lastMouseDownTime = .distantPast
                 return
             }
@@ -142,8 +145,42 @@ struct EditVerticalSlider: NSViewRepresentable {
 
             isDragging = false
             wasPrecision = false
-            parent.value = currentDragValue
+            DevelopUndoActionName.perform(parent.label) {
+                parent.value = currentDragValue
+            }
             parent.onEditingChanged?(false)
+        }
+
+        /// Keyboard / VoiceOver stepping: previews each step like a drag, commits once.
+        lazy var keyStepper: EditSliderKeyStepper = {
+            let stepper = EditSliderKeyStepper()
+            stepper.onBegin = { [unowned self] in parent.onEditingChanged?(true) }
+            stepper.onPreview = { [unowned self] value in
+                currentDragValue = value
+                sliderView?.fraction = fractionForValue(value)
+                sliderView?.needsDisplay = true
+                if let preview = parent.onDragValueChanged { preview(value) } else { parent.value = value }
+            }
+            stepper.onCommit = { [unowned self] value in
+                DevelopUndoActionName.perform(parent.label) {
+                    parent.value = value
+                }
+                parent.onEditingChanged?(false)
+                sliderView?.fraction = fractionForValue(value)
+                sliderView?.needsDisplay = true
+            }
+            return stepper
+        }()
+
+        func step(direction: Int, large: Bool) {
+            guard !isDragging else { return }
+            keyStepper.step(from: parent.value, range: parent.range, step: parent.step,
+                            direction: direction, large: large)
+        }
+
+        var accessibilityValueText: String {
+            (isDragging ? currentDragValue : (keyStepper.pendingValue ?? parent.value))
+                .formatted(.number.precision(.fractionLength(0...2)))
         }
 
         private func updateVisualAndNotify() {
@@ -181,6 +218,49 @@ final class EditVerticalSliderNSView: NSView {
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: 16, height: NSView.noIntrinsicMetric)
+    }
+
+    // MARK: Accessibility — an adjustable slider element
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .slider }
+    override func accessibilityLabel() -> String? { coordinator?.parent.label }
+    override func accessibilityValue() -> Any? { coordinator?.accessibilityValueText }
+    override func accessibilityMinValue() -> Any? { coordinator?.parent.range.lowerBound }
+    override func accessibilityMaxValue() -> Any? { coordinator?.parent.range.upperBound }
+    override func accessibilityOrientation() -> NSAccessibilityOrientation { .vertical }
+
+    override func accessibilityPerformIncrement() -> Bool {
+        coordinator?.step(direction: 1, large: false)
+        return true
+    }
+
+    override func accessibilityPerformDecrement() -> Bool {
+        coordinator?.step(direction: -1, large: false)
+        return true
+    }
+
+    /// Up/Down arrows step a focused slider (Shift = 10x).
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control])
+        guard modifiers.isEmpty,
+              let direction = EditSliderStepping.direction(forKeyCode: event.keyCode) else {
+            super.keyDown(with: event)
+            return
+        }
+        coordinator?.step(direction: direction, large: event.modifierFlags.contains(.shift))
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if EditSliderStepping.direction(forKeyCode: event.keyCode) != nil {
+            coordinator?.keyStepper.commitNow()
+        }
+        super.keyUp(with: event)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        coordinator?.keyStepper.commitNow()
+        return super.resignFirstResponder()
     }
 
     override func draw(_ dirtyRect: NSRect) {

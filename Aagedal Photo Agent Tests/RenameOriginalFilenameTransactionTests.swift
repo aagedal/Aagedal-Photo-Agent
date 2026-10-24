@@ -191,6 +191,28 @@ private nonisolated final class OriginalFilenameMemoryFileSystem:
         }
     }
 
+    func copyItem(at sourceURL: URL, to destinationURL: URL) throws {
+        try lock.withLock {
+            guard let data = files[sourceURL.standardizedFileURL.path] else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            guard files[destinationURL.standardizedFileURL.path] == nil else {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            files[destinationURL.standardizedFileURL.path] = data
+            operations.append("copy")
+        }
+    }
+
+    func removeItem(at url: URL) throws {
+        try lock.withLock {
+            guard files.removeValue(forKey: url.standardizedFileURL.path) != nil else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            operations.append("remove")
+        }
+    }
+
     func data(at url: URL) throws -> Data {
         try lock.withLock {
             guard let data = files[url.standardizedFileURL.path] else {

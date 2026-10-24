@@ -147,6 +147,9 @@ actor FileSystemService {
     private let classifyDropSource: @Sendable (URL) -> DropSourceKind
     private let sidecarExists: @Sendable (URL) -> Bool
     private let displayOrientation: @Sendable (URL) -> Int?
+    /// Embedded-only orientation, used when the folder scan already proved the photo has
+    /// no `.xmp` sidecar, so the sidecar existence probe would be wasted I/O.
+    private let embeddedDisplayOrientation: @Sendable (URL) -> Int?
     /// Measures volume-facing reads without recording paths or filenames. The interval names and
     /// aggregate counts are intentionally stable so the same Instruments template can compare
     /// local, network, cloud-placeholder, and large-folder runs.
@@ -185,6 +188,9 @@ actor FileSystemService {
         displayOrientation: @escaping @Sendable (URL) -> Int? = { url in
             FileSystemService.systemDisplayOrientation(for: url)
         },
+        embeddedDisplayOrientation: @escaping @Sendable (URL) -> Int? = { url in
+            FileSystemService.systemEmbeddedDisplayOrientation(for: url)
+        },
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.filesystem", qos: .utility
         )
@@ -197,6 +203,7 @@ actor FileSystemService {
         self.classifyDropSource = classifyDropSource
         self.sidecarExists = sidecarExists
         self.displayOrientation = displayOrientation
+        self.embeddedDisplayOrientation = embeddedDisplayOrientation
     }
 
     /// Scans a folder for image files on this service's serialized actor executor. Directory
@@ -228,10 +235,16 @@ actor FileSystemService {
                     .contentModificationDateKey,
                     .addedToDirectoryDateKey,
                     .isRegularFileKey,
+                    .isUbiquitousItemKey,
                     .ubiquitousItemDownloadingStatusKey,
                 ],
                 options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
             )
+            // Resolve `<name>.xmp` presence from this listing instead of one stat per photo. If
+            // the volume's case rule is unknown, ImageFile falls back to its own per-file stat.
+            let sidecarListing = (try? url.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?
+                .volumeSupportsCaseSensitiveNames
+                .map { ImageFile.SidecarListing(entries: contents, caseSensitive: $0) }
 
             var deferredICloudItemCount = 0
             var files: [ImageFile] = []
@@ -247,7 +260,7 @@ actor FileSystemService {
                     || (includeVideos && BrowserFileVisibility.isVideo(item)) else { continue }
                 guard (try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
                 if locallyAvailableForEnumeration(item) {
-                    files.append(ImageFile(url: item))
+                    files.append(ImageFile(url: item, sidecarListing: sidecarListing))
                 } else {
                     deferredICloudItemCount += 1
                     files.append(ImageFile(url: item, isICloudDownloadPending: true))
@@ -411,9 +424,14 @@ actor FileSystemService {
     /// its folder scan. XMP and ImageIO access are synchronous and cannot be preempted,
     /// so cancellation is sampled on both sides of every file and the exact completed
     /// prefix is returned instead of allowing a partial snapshot to look complete.
+    ///
+    /// `urlsWithoutSidecar` lists photos the folder scan's directory listing showed have no
+    /// `.xmp` sidecar; those skip the sidecar probe and read only the embedded header.
+    /// Sidecar orientation still wins for every other photo.
     func displayOrientationSnapshot(
         for urls: [URL],
-        requestID: UUID
+        requestID: UUID,
+        urlsWithoutSidecar: Set<URL> = []
     ) -> DisplayOrientationSnapshot {
         let interval = signposter.beginInterval(
             "DisplayOrientationSnapshot",
@@ -438,7 +456,10 @@ actor FileSystemService {
                 )
             }
 
-            if let orientation = displayOrientation(url), orientation != 1 {
+            let orientation = urlsWithoutSidecar.contains(url)
+                ? embeddedDisplayOrientation(url)
+                : displayOrientation(url)
+            if let orientation, orientation != 1 {
                 orientations[url] = orientation
             }
             processedFileCount += 1
@@ -478,6 +499,10 @@ actor FileSystemService {
         if let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url) {
             return sidecarOrientation
         }
+        return systemEmbeddedDisplayOrientation(for: url)
+    }
+
+    private nonisolated static func systemEmbeddedDisplayOrientation(for url: URL) -> Int? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         else {
@@ -495,6 +520,7 @@ actor FileSystemService {
             includingPropertiesForKeys: [
                 .isDirectoryKey,
                 .isPackageKey,
+                .isUbiquitousItemKey,
                 .ubiquitousItemDownloadingStatusKey,
             ],
             options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
@@ -625,13 +651,28 @@ actor FileSystemService {
         var moved: Set<URL> = []
         var failures: [ItemFailure] = []
         var cancellationStoppedRemainingItems = false
+        // XMP sidecars this batch placed in the destination, keyed by destination and valued by
+        // their source. A RAW+JPEG pair shares one stem `.xmp`: the first image copies it (its
+        // partner still needs it), and the partner must accept that copy instead of failing.
+        var transferredXMPSources: [URL: URL] = [:]
+        // Both halves of every RAW+JPEG `.xmp` this batch split; see
+        // `PhotoSidecarOwnership.detachRawDevelopAfterSplit`.
+        var splitPairSidecars: [(sourceURL: URL, sidecar: URL)] = []
         for sourceURL in sourceURLs {
             if Task.isCancelled {
                 cancellationStoppedRemainingItems = true
                 break
             }
             let destinationURL = destinationFolder.appendingPathComponent(sourceURL.lastPathComponent)
-            let reservedDestinations = [destinationURL, xmpSidecarService.sidecarURL(for: destinationURL)]
+            let xmpSource = xmpSidecarService.sidecarURL(for: sourceURL)
+            let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
+            let xmpAlreadyTransferred = transferredXMPSources[xmpDestination.standardizedFileURL]
+                == xmpSource.standardizedFileURL
+            // Decided before anything moves, while the pair is still together.
+            let xmpBelongsToRAW = !xmpAlreadyTransferred && fileManager.fileExists(atPath: xmpSource.path)
+                && PhotoSidecarOwnership.stemGroupIncludesRAW(sourceURL)
+            let reservedDestinations = [destinationURL]
+                + (xmpAlreadyTransferred ? [] : [xmpDestination])
                 + metadataSidecarService.relocationDestinationURLs(for: destinationURL, in: destinationFolder)
             guard !reservedDestinations.contains(where: { fileManager.fileExists(atPath: $0.path) }) else {
                 failures.append(ItemFailure(
@@ -664,17 +705,27 @@ actor FileSystemService {
                 continue
             }
 
-            let xmpSource = xmpSidecarService.sidecarURL(for: sourceURL)
             if fileManager.fileExists(atPath: xmpSource.path) {
                 do {
-                    let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
-                    if try PhotoSidecarOwnership.hasSurvivingStemSibling(
+                    let survivingSibling = try PhotoSidecarOwnership.hasSurvivingStemSibling(
                         of: sourceURL, in: sourceURL.deletingLastPathComponent()
-                    ) {
+                    )
+                    if xmpAlreadyTransferred {
+                        // The partner already copied this sidecar here. Once no sibling is left
+                        // behind, retire the source: the destination is this batch's copy of it,
+                        // and a delete (unlike a replace) works across volumes.
+                        if !survivingSibling {
+                            try fileManager.removeItem(at: xmpSource)
+                        }
+                    } else if survivingSibling {
                         try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)
+                        if xmpBelongsToRAW {
+                            splitPairSidecars += [(sourceURL, xmpDestination), (sourceURL, xmpSource)]
+                        }
                     } else {
                         try fileManager.moveItem(at: xmpSource, to: xmpDestination)
                     }
+                    transferredXMPSources[xmpDestination.standardizedFileURL] = xmpSource.standardizedFileURL
                 } catch {
                     failures.append(ItemFailure(
                         sourceURL: sourceURL,
@@ -698,6 +749,7 @@ actor FileSystemService {
                 ))
             }
         }
+        appendSplitPairDetachFailures(splitPairSidecars, to: &failures)
         return ImageMoveResult(
             movedSourceURLs: moved,
             failures: failures,
@@ -716,9 +768,17 @@ actor FileSystemService {
     ) -> DuplicateResult {
         let fileManager = FileManager.default
         let voiceMemoRepository = VoiceMemoCompanionRepository()
+        let xmpSidecarService = XMPSidecarService()
         var completed: [DuplicateCompletion] = []
         var failures: [ItemFailure] = []
         var cancellationStoppedRemainingItems = false
+        // XMP sidecars this batch created, keyed by destination and valued by their source.
+        // Duplicating a RAW+JPEG pair copies one shared `.xmp`; the partner may reuse that
+        // copy so the duplicates keep a common stem instead of splitting into "copy 2".
+        var duplicatedXMPSources: [URL: URL] = [:]
+        // `.xmp` copies made for a duplicate whose pair includes a RAW; a copy that ends up
+        // beside only the duplicated JPEG must not hand it the RAW's develop settings.
+        var splitPairSidecars: [(sourceURL: URL, sidecar: URL)] = []
 
         for request in requests {
             if Task.isCancelled {
@@ -728,14 +788,23 @@ actor FileSystemService {
             let source = request.source
             let fileExtension = source.url.pathExtension
             let baseName = source.url.deletingPathExtension().lastPathComponent
+            let xmpSource = xmpSidecarService.sidecarURL(for: source.url)
             var copyName = "\(baseName) copy"
             var destinationURL = folderURL.appendingPathComponent(copyName)
                 .appendingPathExtension(fileExtension)
+            // An existing destination `.xmp` is an unrelated document that would silently
+            // attach to the duplicate, so reserve it like the image name — unless this batch
+            // just copied it from the same source sidecar (the RAW+JPEG partner case).
+            func isReserved(_ url: URL) -> Bool {
+                guard (try? fileManager.attributesOfItem(atPath: url.path)) != nil else { return false }
+                return duplicatedXMPSources[url.standardizedFileURL] != xmpSource.standardizedFileURL
+            }
             do {
                 var counter = 2
                 while try (voiceMemoRepository.copyDestinationURLs(for: source.url, to: destinationURL)
-                    + metadataSidecarService.relocationDestinationURLs(for: destinationURL, in: folderURL))
-                    .contains(where: { (try? fileManager.attributesOfItem(atPath: $0.path)) != nil }) {
+                    + metadataSidecarService.relocationDestinationURLs(for: destinationURL, in: folderURL)
+                    + [xmpSidecarService.sidecarURL(for: destinationURL)])
+                    .contains(where: isReserved) {
                     try Task.checkCancellation()
                     copyName = "\(baseName) copy \(counter)"
                     destinationURL = folderURL.appendingPathComponent(copyName)
@@ -756,6 +825,28 @@ actor FileSystemService {
                 continue
             }
 
+            // RAW develop edits and descriptive metadata live in the `.xmp` sidecar, so a
+            // duplicate without it would silently lose them. Copy bytes verbatim.
+            if fileManager.fileExists(atPath: xmpSource.path) {
+                let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
+                if !fileManager.fileExists(atPath: xmpDestination.path) {
+                    do {
+                        let xmpBelongsToRAW = PhotoSidecarOwnership.stemGroupIncludesRAW(source.url)
+                        try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)
+                        duplicatedXMPSources[xmpDestination.standardizedFileURL] = xmpSource.standardizedFileURL
+                        if xmpBelongsToRAW {
+                            splitPairSidecars.append((source.url, xmpDestination))
+                        }
+                    } catch {
+                        failures.append(ItemFailure(
+                            sourceURL: source.url,
+                            stage: .xmpSidecar,
+                            message: error.localizedDescription
+                        ))
+                    }
+                }
+            }
+
             do {
                 try metadataSidecarService.copySidecarsPreservingOpaqueFields(
                     for: source.url, to: destinationURL, in: folderURL
@@ -772,11 +863,30 @@ actor FileSystemService {
                 duplicate: ImageFile(url: destinationURL, copyingFrom: source)
             ))
         }
+        appendSplitPairDetachFailures(splitPairSidecars, to: &failures)
         return DuplicateResult(
             completed: completed,
             failures: failures,
             cancellationStoppedRemainingItems: cancellationStoppedRemainingItems
         )
+    }
+
+    /// After a batch that split RAW+JPEG pairs: strips the RAW's develop block from each
+    /// recorded `.xmp` left beside only non-RAW photos, reporting failures per source photo.
+    private func appendSplitPairDetachFailures(
+        _ sidecars: [(sourceURL: URL, sidecar: URL)],
+        to failures: inout [ItemFailure]
+    ) {
+        let failed = PhotoSidecarOwnership.detachRawDevelopAfterSplit(sidecars.map(\.sidecar))
+        for (sidecar, error) in failed {
+            let sourceURL = sidecars.first { $0.sidecar == sidecar }?.sourceURL ?? sidecar
+            failures.append(ItemFailure(
+                sourceURL: sourceURL,
+                stage: .xmpSidecar,
+                message: "The RAW's develop settings could not be removed from \(sidecar.lastPathComponent), "
+                    + "so the JPEG beside it may show them: \(error.localizedDescription)"
+            ))
+        }
     }
 
     private func moveFolder(
@@ -809,10 +919,11 @@ actor FileSystemService {
     }
 
     nonisolated private static func systemIsLocallyAvailable(_ url: URL) -> Bool {
-        let fileManager = FileManager.default
-        guard fileManager.isUbiquitousItem(at: url) else { return true }
-
-        let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+        // Same answer as `FileManager.isUbiquitousItem(at:)`, but read through resource values
+        // so entries from a folder listing answer from the keys prefetched with it instead of
+        // one ubiquity query per file.
+        let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey])
+        guard values?.isUbiquitousItem == true else { return true }
         return values?.ubiquitousItemDownloadingStatus != .notDownloaded
     }
 }

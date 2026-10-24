@@ -52,8 +52,45 @@ struct ActivityFileRecord: Codable, Sendable, Identifiable {
 struct ActivityImportResultCounts: Codable, Sendable, Equatable {
     let replaced: Int
     let backupReplaced: Int
+    /// Files intentionally not copied (already at the destination or previously imported).
+    /// These are not failures.
     let skipped: Int
     let renamed: Int
+    /// Files whose backup leg failed, even when the primary copy succeeded.
+    let backupFailed: Int
+    /// Copied photos whose template metadata or voice-memo link could not be saved.
+    let metadataFailed: Int
+
+    init(
+        replaced: Int,
+        backupReplaced: Int,
+        skipped: Int,
+        renamed: Int,
+        backupFailed: Int = 0,
+        metadataFailed: Int = 0
+    ) {
+        self.replaced = replaced
+        self.backupReplaced = backupReplaced
+        self.skipped = skipped
+        self.renamed = renamed
+        self.backupFailed = backupFailed
+        self.metadataFailed = metadataFailed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case replaced, backupReplaced, skipped, renamed, backupFailed, metadataFailed
+    }
+
+    /// History written before backup/metadata failures were tracked decodes them as zero.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        replaced = try container.decode(Int.self, forKey: .replaced)
+        backupReplaced = try container.decode(Int.self, forKey: .backupReplaced)
+        skipped = try container.decode(Int.self, forKey: .skipped)
+        renamed = try container.decode(Int.self, forKey: .renamed)
+        backupFailed = try container.decodeIfPresent(Int.self, forKey: .backupFailed) ?? 0
+        metadataFailed = try container.decodeIfPresent(Int.self, forKey: .metadataFailed) ?? 0
+    }
 }
 
 /// A single completed (or cancelled) background operation — the Layer 1 summary row.
@@ -78,9 +115,13 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
     let importResultCounts: ActivityImportResultCounts?
     /// Credential-free upload transport evidence. `nil` for imports, face scans, and legacy data.
     let deliveryTransportSecurity: DeliveryTransportSecurity?
-    /// Durable-write failure, retained separately from per-photo detection counts.
+    /// Durable-write failure, retained separately from per-photo detection counts. For an
+    /// import, the error that stopped it after copying had started.
     let persistenceError: String?
     let files: [ActivityFileRecord]
+    /// Successful per-file rows dropped from `files` to bound the stored log. The summary counts
+    /// above are unaffected. `nil` (legacy data, or nothing dropped) means `files` is complete.
+    let omittedSuccessfulFileCount: Int?
 
     init(
         id: UUID = UUID(),
@@ -95,7 +136,8 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         importResultCounts: ActivityImportResultCounts? = nil,
         deliveryTransportSecurity: DeliveryTransportSecurity? = nil,
         persistenceError: String? = nil,
-        files: [ActivityFileRecord]
+        files: [ActivityFileRecord],
+        omittedSuccessfulFileCount: Int? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -110,10 +152,47 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         self.deliveryTransportSecurity = deliveryTransportSecurity
         self.persistenceError = persistenceError
         self.files = files
+        self.omittedSuccessfulFileCount = omittedSuccessfulFileCount
     }
 
-    /// Failed files (attempted but not completed).
-    var failureCount: Int { max(0, totalCount - successCount) }
+    /// A copy that keeps every failed row but at most `limit` successful ones, recording how many
+    /// successes were dropped. Per-file rows (with full destination paths for imports) are the
+    /// bulk of the persisted log; failures are what the user needs to act on.
+    func cappingSuccessfulFiles(to limit: Int) -> ActivityEntry {
+        let successfulCount = files.lazy.filter(\.succeeded).count
+        guard successfulCount > limit else { return self }
+        var keptSuccesses = 0
+        let kept = files.filter { record in
+            guard record.succeeded else { return true }
+            keptSuccesses += 1
+            return keptSuccesses <= limit
+        }
+        return ActivityEntry(
+            id: id,
+            kind: kind,
+            date: date,
+            title: title,
+            successCount: successCount,
+            totalCount: totalCount,
+            verificationFailures: verificationFailures,
+            verificationEnabled: verificationEnabled,
+            wasCancelled: wasCancelled,
+            importResultCounts: importResultCounts,
+            deliveryTransportSecurity: deliveryTransportSecurity,
+            persistenceError: persistenceError,
+            files: kept,
+            omittedSuccessfulFileCount: (omittedSuccessfulFileCount ?? 0) + successfulCount - limit
+        )
+    }
+
+    /// Failed files (attempted but not completed). Skipped import files were deliberately
+    /// not copied and are not failures.
+    var failureCount: Int {
+        max(0, totalCount - successCount - (importResultCounts?.skipped ?? 0))
+    }
+
+    private var backupFailureCount: Int { importResultCounts?.backupFailed ?? 0 }
+    private var metadataFailureCount: Int { importResultCounts?.metadataFailed ?? 0 }
 
     /// One-line headline for the completion banner and the Layer 1 row.
     var summary: String {
@@ -136,13 +215,19 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         } else {
             line = "\(noun) of \(successCount) file\(successCount == 1 ? "" : "s") completed"
         }
-        if kind == .importJob && verificationEnabled && verificationFailures == 0 && failureCount == 0 {
+        if kind == .importJob && verificationEnabled && verificationFailures == 0 && failureCount == 0
+            && backupFailureCount == 0 {
             line += " with copy verification"
         }
         var problems: [String] = []
-        if failureCount > 0 { problems.append("\(failureCount) failed") }
+        if let skipped = importResultCounts?.skipped, skipped > 0 { problems.append("\(skipped) skipped") }
+        // A verification failure is also a failed file; name it once, as a verification issue.
+        let otherFailureCount = max(0, failureCount - verificationFailures)
+        if otherFailureCount > 0 { problems.append("\(otherFailureCount) failed") }
         if verificationFailures > 0 { problems.append("\(verificationFailures) verification issue\(verificationFailures == 1 ? "" : "s")") }
-        if persistenceError != nil { problems.append("save failed") }
+        if backupFailureCount > 0 { problems.append("backup failed for \(backupFailureCount)") }
+        if metadataFailureCount > 0 { problems.append("metadata failed for \(metadataFailureCount)") }
+        if persistenceError != nil { problems.append(kind == .importJob ? "stopped early" : "save failed") }
         if !problems.isEmpty { line += " (\(problems.joined(separator: ", ")))" }
         return line
     }
@@ -150,6 +235,7 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
     /// True when every attempted file succeeded and nothing failed verification.
     var isClean: Bool {
         !wasCancelled && failureCount == 0 && verificationFailures == 0 && persistenceError == nil
+            && backupFailureCount == 0 && metadataFailureCount == 0
     }
 }
 
@@ -158,6 +244,9 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
 @MainActor
 final class ActivityHistoryStore {
     static let maxEntries = 50
+    /// Successful per-file rows kept per entry (all failures are kept). Totals are stored
+    /// separately on the entry, so the summary stays exact.
+    static let maxSuccessfulFileRecordsPerEntry = 200
 
     private(set) var entries: [ActivityEntry] = []
 
@@ -167,7 +256,7 @@ final class ActivityHistoryStore {
 
     /// Records a finished operation at the front of the log, trimming to the cap.
     func record(_ entry: ActivityEntry) {
-        entries.insert(entry, at: 0)
+        entries.insert(entry.cappingSuccessfulFiles(to: Self.maxSuccessfulFileRecordsPerEntry), at: 0)
         if entries.count > Self.maxEntries {
             entries = Array(entries.prefix(Self.maxEntries))
         }
@@ -186,7 +275,8 @@ final class ActivityHistoryStore {
               let decoded = try? JSONDecoder().decode([ActivityEntry].self, from: data) else {
             return
         }
-        entries = decoded
+        // Logs written before the per-entry cap shrink on their next save.
+        entries = decoded.map { $0.cappingSuccessfulFiles(to: Self.maxSuccessfulFileRecordsPerEntry) }
     }
 
     private func save() {

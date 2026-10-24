@@ -21,7 +21,10 @@ final class WebMediaImportService {
         destination: URL, caption: String,
         onRetainedBatch: (URL) -> Void = { _ in }, progress: @escaping (String) -> Void
     ) async throws -> URL {
-        let batch = destination.appendingPathComponent("Web Import \(UUID().uuidString)", isDirectory: true)
+        let batch = try await filesystem.uniqueBatchURL(
+            in: destination,
+            baseName: Self.batchFolderName(inspection: inspection, selected: selected, date: Date())
+        )
         let originals = batch.appendingPathComponent("Originals", isDirectory: true)
         let working = batch.appendingPathComponent("Working", isDirectory: true)
         let provenance = batch.appendingPathComponent("Provenance", isDirectory: true)
@@ -58,20 +61,23 @@ final class WebMediaImportService {
                 metadata.source = file.item.username.isEmpty ? inspection.url : "@\(file.item.username)"
                 metadata.instructions = "Source post: \(inspection.url)\nPosted: \(file.item.publishedAt)\nCarousel item: \(file.item.position)"
                 // A posting account is not evidence of authorship or publication permission.
-                let isJPEG = ["jpg", "jpeg"].contains(copy.pathExtension.lowercased())
-                let hasCredential = isJPEG ? (try await reader.readTechnicalMetadata(url: copy)).hasC2PA : false
+                let canEmbed = Self.embeddableExtensions.contains(copy.pathExtension.lowercased())
+                let hasCredential = canEmbed ? (try await reader.readTechnicalMetadata(url: copy)).hasC2PA : false
                 try Task.checkCancellation()
-                let mode: MetadataWriteMode = isJPEG && !hasCredential ? .writeToFile : .writeToXMPSidecar
-                _ = try await writer.write(metadata: metadata, for: copy, requestedMode: mode, semantics: .merge)
-                try Task.checkCancellation()
-                if mode == .writeToFile {
+                let mode = Self.metadataWriteMode(for: copy, hasCredential: hasCredential)
+                if mode != .historyOnly {
+                    _ = try await writer.write(metadata: metadata, for: copy, requestedMode: mode, semantics: .merge)
+                    try Task.checkCancellation()
+                }
+                if mode.writesEmbedded {
                     let readBack = try await reader.readFullMetadata(url: copy)
                     guard readBack.description == metadata.description,
                           readBack.source == metadata.source,
                           readBack.instructions == metadata.instructions else {
                         throw WebDownloadRuntimeService.RuntimeError.failed("Downloaded metadata could not be verified. The original is retained.")
                     }
-                } else {
+                }
+                if mode.writesXMPSidecar {
                     let readBack = try await filesystem.readSidecar(for: copy)
                     guard readBack?.description == metadata.description,
                           readBack?.source == metadata.source,
@@ -83,7 +89,7 @@ final class WebMediaImportService {
                     downloadedAt: Date(), downloaderVersions: result.versions, media: file.item,
                     originalFilename: "Originals/\(file.filename)", originalSHA256: digest,
                     workingFilename: "Working/\(file.filename)",
-                    metadataStorage: mode == .writeToFile ? "embedded IPTC/XMP" : "XMP sidecar")
+                    metadataStorage: Self.metadataStorageDescription(for: mode))
                 try await filesystem.writeProvenance(record, to: provenance.appendingPathComponent(file.filename + ".json"))
             }
             try Task.checkCancellation()
@@ -95,5 +101,49 @@ final class WebMediaImportService {
             }
             throw error
         }
+    }
+
+    /// Formats the metadata writer embeds into reliably; anything else (video, WebP, …) gets
+    /// an XMP sidecar even when the preset asks for embedding.
+    static let embeddableExtensions: Set<String> = ["jpg", "jpeg"]
+
+    /// The user's write preset decides the destination, like every other descriptive write.
+    static func metadataWriteMode(for url: URL, hasCredential: Bool) -> MetadataWriteMode {
+        let mode = MetadataWriteMode.current(
+            forC2PA: hasCredential, isRaw: SupportedImageFormats.isRaw(url: url)
+        )
+        guard mode.writesEmbedded,
+              !embeddableExtensions.contains(url.pathExtension.lowercased()) else { return mode }
+        return .writeToXMPSidecar
+    }
+
+    static func metadataStorageDescription(for mode: MetadataWriteMode) -> String {
+        switch mode {
+        case .writeToFile: return "embedded IPTC/XMP"
+        case .writeToXMPSidecar: return "XMP sidecar"
+        case .writeToFileAndXMPSidecar: return "embedded IPTC/XMP and XMP sidecar"
+        case .historyOnly: return "not written (Save History Only)"
+        }
+    }
+
+    /// "Web Import 2026-10-24 153012 @account <post>" — sortable and recognisable in Finder,
+    /// unlike the old UUID names. Uniqueness comes from `uniqueBatchURL`.
+    static func batchFolderName(inspection: WebPostInspection, selected: Set<String>, date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HHmmss"
+        var parts = ["Web Import", formatter.string(from: date)]
+        let items = inspection.items.filter { selected.contains($0.id) }
+        if let account = items.first(where: { !$0.username.isEmpty })?.username {
+            parts.append("@\(account)")
+        }
+        if let post = items.first(where: { !$0.postID.isEmpty })?.postID {
+            parts.append(post)
+        }
+        let unsafe = CharacterSet(charactersIn: "/:\\").union(.controlCharacters).union(.newlines)
+        let name = parts.joined(separator: " ")
+            .components(separatedBy: unsafe).joined(separator: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ". ").union(.whitespaces))
+        return String(name.prefix(120))
     }
 }

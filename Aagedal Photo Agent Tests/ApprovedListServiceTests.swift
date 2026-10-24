@@ -394,7 +394,7 @@ private nonisolated final class BlockingApprovedListImportWriteProbe: @unchecked
                     writeStarted = true
                     condition.broadcast()
                     while !shouldReleaseWrite {
-                        condition.wait()
+                        if !condition.waitBounded() { break }
                     }
                 }
             }
@@ -407,6 +407,8 @@ private nonisolated final class BlockingApprovedListImportWriteProbe: @unchecked
         let deadline = ContinuousClock.now + .seconds(30)
         while !condition.withLock({ writeStarted }) {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseWrite()
                 throw ApprovedListImportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -449,7 +451,7 @@ private nonisolated final class BlockingApprovedListImportAccessProbe: @unchecke
                     firstReadStarted = true
                     condition.broadcast()
                     while !shouldReleaseFirstRead {
-                        condition.wait()
+                        if !condition.waitBounded() { break }
                     }
                 }
                 condition.unlock()
@@ -471,6 +473,8 @@ private nonisolated final class BlockingApprovedListImportAccessProbe: @unchecke
         let deadline = ContinuousClock.now + .seconds(30)
         while !condition.withLock({ firstReadStarted }) {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw ApprovedListImportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1136,5 +1140,29 @@ private nonisolated final class ApprovedListManagedAccessGate: @unchecked Sendab
                 try pause($0, operation: 1)
             }
         )
+    }
+}
+
+@MainActor
+@Suite("Approved list typeahead in large vocabularies")
+struct ApprovedListLargeVocabularySuggestionTests {
+    @Test("many early substring hits never hide later prefix matches, which rank first")
+    func prefixMatchesSurviveSubstringFlood() {
+        let substringHits = (0..<500).map { "xx-tennis-\($0)" }
+        let entries = substringHits + ["tennis", "Tennisbane", "bordtennis"]
+        let suggestions = ApprovedListService.suggestions(prefix: "tennis", in: entries, limit: 12)
+
+        #expect(suggestions.count == 12)
+        #expect(suggestions.prefix(2).map(\.canonical) == ["tennis", "Tennisbane"])
+        #expect(suggestions.prefix(2).allSatisfy { $0.matchKind == .prefix })
+        #expect(suggestions.dropFirst(2).allSatisfy { $0.matchKind == .substring })
+    }
+
+    @Test("substring matches still fill the list when there are few prefix matches")
+    func substringFillsRemainingSlots() {
+        let suggestions = ApprovedListService.suggestions(
+            prefix: "ball", in: ["fotball", "håndball", "ballett", "basket"], limit: 12
+        )
+        #expect(suggestions.map(\.canonical) == ["ballett", "fotball", "håndball"])
     }
 }

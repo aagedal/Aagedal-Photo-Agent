@@ -3,6 +3,21 @@ import os
 
 nonisolated private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "AppPaths")
 
+/// Test seam for the ubiquity-container lookup, so tests never touch real iCloud. Task-local (and
+/// declared outside any actor) like `KeywordListsStoreStorageOverride`. `.some(nil)` simulates
+/// iCloud Drive being unavailable; `.some(url)` stands in for the container's Documents folder.
+nonisolated enum AppPathsICloudOverride {
+    @TaskLocal static var documents: URL?? = nil
+}
+
+/// Sync is on but iCloud Drive can't be reached. Writing to the local fallback instead would
+/// strand the change there once iCloud returns, so such writes are refused with this error.
+nonisolated struct ICloudStorageUnavailableError: LocalizedError, Equatable, Sendable {
+    var errorDescription: String? {
+        "iCloud Drive is unavailable — changes can't be saved until it's back."
+    }
+}
+
 nonisolated enum AppPaths {
     /// True when this process hosts a test run (the app is launched as the test
     /// host, so XCTest/Swift Testing is loaded). Services that touch real user
@@ -20,6 +35,7 @@ nonisolated enum AppPaths {
     /// Drive is unavailable (no account, not signed in, entitlement missing).
     /// Apple notes the first call can block briefly, so avoid calling on a hot path.
     static var iCloudDocuments: URL? {
+        if let override = AppPathsICloudOverride.documents { return override }
         guard let container = FileManager.default.url(forUbiquityContainerIdentifier: iCloudContainerID) else {
             return nil
         }
@@ -69,22 +85,42 @@ nonisolated enum AppPaths {
     /// The returned `release` closure MUST be invoked once the caller is done with the URL,
     /// so security-scoped access is balanced.
     static func templatesDirectory() -> (url: URL, release: @Sendable () -> Void) {
+        let resolution = templatesDirectoryResolution()
+        return (resolution.url, resolution.release)
+    }
+
+    /// Like `templatesDirectory()`, also reporting whether Templates sync is on while the iCloud
+    /// container is unreachable. The local folder is then returned for reading only: callers
+    /// must refuse writes (`ICloudStorageUnavailableError`) instead of stranding them locally.
+    static func templatesDirectoryResolution() -> (
+        url: URL, release: @Sendable () -> Void, cloudUnavailable: Bool
+    ) {
         // iCloud sync, when enabled and reachable, takes precedence over any
         // user-chosen folder so templates land in the synced container.
-        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.templatesICloudEnabled),
-           let cloud = iCloudTemplatesURL {
-            // Coordinated so the iCloud daemon doesn't fork this folder into
-            // "Templates 2" when it races our create with a remote pull.
-            try? CloudCoordinatedIO.ensureDirectory(cloud)
-            return (cloud, {})
+        if AppDefaults.store.bool(forKey: UserDefaultsKeys.templatesICloudEnabled) {
+            if let cloud = iCloudTemplatesURL {
+                // Coordinated so the iCloud daemon doesn't fork this folder into
+                // "Templates 2" when it races our create with a remote pull.
+                try? CloudCoordinatedIO.ensureDirectory(cloud)
+                return (cloud, {}, false)
+            }
+            let local = localTemplatesDirectory()
+            return (local.url, local.release, true)
         }
-        return localTemplatesDirectory()
+        let local = localTemplatesDirectory()
+        return (local.url, local.release, false)
+    }
+
+    /// True when Templates sync is on but iCloud Drive is unreachable. May block briefly on the
+    /// ubiquity lookup; call off the main actor.
+    static var templatesCloudUnavailable: Bool {
+        AppDefaults.store.bool(forKey: UserDefaultsKeys.templatesICloudEnabled) && iCloudTemplatesURL == nil
     }
 
     /// Resolves the non-iCloud templates location even while iCloud sync is enabled.
     /// Migration code uses this to copy first and flip the preference only after success.
     static func localTemplatesDirectory() -> (url: URL, release: @Sendable () -> Void) {
-        if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.templatesFolderBookmark) {
+        if let data = AppDefaults.store.data(forKey: UserDefaultsKeys.templatesFolderBookmark) {
             var stale = false
             if let url = try? URL(
                 resolvingBookmarkData: data,
@@ -104,10 +140,17 @@ nonisolated enum AppPaths {
     /// and security-scoped custom folders) but live in a separate directory so
     /// their JSON cannot be mistaken for metadata templates.
     static func developTemplatesDirectory() -> (url: URL, release: @Sendable () -> Void) {
-        let (root, release) = templatesDirectory()
+        let resolution = developTemplatesDirectoryResolution()
+        return (resolution.url, resolution.release)
+    }
+
+    static func developTemplatesDirectoryResolution() -> (
+        url: URL, release: @Sendable () -> Void, cloudUnavailable: Bool
+    ) {
+        let (root, release, unavailable) = templatesDirectoryResolution()
         let url = root.appendingPathComponent("Develop", isDirectory: true)
-        try? CloudCoordinatedIO.ensureDirectory(url)
-        return (url, release)
+        if !unavailable { try? CloudCoordinatedIO.ensureDirectory(url) }
+        return (url, release, unavailable)
     }
 
     static var certificatesDirectory: URL {

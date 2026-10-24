@@ -40,13 +40,41 @@ actor CaptionVoiceMemoStatusService {
     private let loadTranscript: @Sendable (URL) async throws -> VoiceMemoTranscriptDraft?
     private let discoverAssociation: @Sendable (URL) async throws -> Bool
 
+    /// One listing per folder revision, so grid badges for photos with neither a relationship
+    /// record nor a same-stem WAV resolve without per-photo stats or a full directory listing.
+    private struct FolderIndex {
+        let folderModificationDate: Date
+        /// Every entry name (hidden included), NFC + lowercased: a superset of what the
+        /// case/normalization-insensitive record existence checks could find.
+        let entryNames: Set<String>
+        /// `SonyDualCardVoiceMemoAssociationService.stem` of every `.wav` entry.
+        let wavStems: Set<String>
+        /// Entry names grouped by stem, only for stems that have a WAV. The unlinked-memo
+        /// probe result depends only on these files, so their stat identities key its cache.
+        let wavStemEntries: [String: [String]]
+        /// Whether this listing may be reused (its folder date was safely in the past).
+        let isSettled: Bool
+    }
+    private var folderIndexes: [String: FolderIndex] = [:]
+    private static let folderIndexCapacity = 32
+
+    /// Cached unlinked-memo probe results, keyed per photo on the settled folder date and the
+    /// stat identity of every same-stem file. Navigating the filmstrip back and forth then asks
+    /// the filesystem for a few stats instead of re-running discovery.
+    private struct DiscoveryKey: Equatable {
+        let folderModificationDate: Date
+        let files: [String: CaptionVoiceMemoFileRevision]
+    }
+    private var discoveries: [String: (key: DiscoveryKey, found: Bool)] = [:]
+    private static let discoveryCapacity = 512
+
     init(lookup: @escaping @Sendable (URL) throws -> VoiceMemoCompanionRepository.Lookup = {
         try VoiceMemoCompanionRepository().lookup(for: $0)
     }, loadTranscript: @escaping @Sendable (URL) async throws -> VoiceMemoTranscriptDraft? = {
         try await VoiceMemoTranscriptionService().loadPersistedDraft(imageURL: $0)
     }, discoverAssociation: @escaping @Sendable (URL) async throws -> Bool = {
-        _ = try await CaptionVoiceMemoAssociationService().discover(imageURL: $0)
-        return true
+        // Badges only need the unique-match decision; content hashing happens when linking.
+        try await CaptionVoiceMemoAssociationService().hasUnlinkedMatch(imageURL: $0)
     }) {
         self.lookup = lookup
         self.loadTranscript = loadTranscript
@@ -58,12 +86,15 @@ actor CaptionVoiceMemoStatusService {
         let folder = imageURL.deletingLastPathComponent()
         let accessed = folder.startAccessingSecurityScopedResource()
         defer { if accessed { folder.stopAccessingSecurityScopedResource() } }
+        // Most photos have no memo. When the folder listing proves there is neither a
+        // relationship record nor a same-stem WAV, lookup and discovery would both end in .none.
+        let index = folderIndex(for: imageURL)
+        if let index, !Self.mayHaveVoiceMemo(imageURL, in: index) { return .none }
         do {
             switch try lookup(imageURL) {
             case .none:
                 // Detect unlinked memos for badges without creating a relationship here.
-                do { return try await discoverAssociation(imageURL) ? .needsTranscription : .none }
-                catch { return .none }
+                return await unlinkedMatchExists(imageURL, index: index) ? .needsTranscription : .none
             case .missing: return .missing
             case .available:
                 let draft = try await loadTranscript(imageURL)
@@ -74,6 +105,90 @@ actor CaptionVoiceMemoStatusService {
         } catch VoiceMemoTranscriptionError.sourceChanged {
             return .needsTranscription
         } catch { return .unavailable }
+    }
+
+    private func unlinkedMatchExists(_ imageURL: URL, index: FolderIndex?) async -> Bool {
+        let path = imageURL.standardizedFileURL.path
+        let key = index.flatMap { discoveryKey(for: imageURL, in: $0) }
+        if let key, let cached = discoveries[path], cached.key == key { return cached.found }
+        let found: Bool
+        do { found = try await discoverAssociation(imageURL) }
+        catch { return false }
+        // A cancelled probe may have stopped early; never remember its answer.
+        guard let key, !Task.isCancelled else { return found }
+        if discoveries[path] == nil, discoveries.count >= Self.discoveryCapacity {
+            discoveries.removeAll(keepingCapacity: true)
+        }
+        discoveries[path] = (key, found)
+        return found
+    }
+
+    /// Nil when the listing is not reusable yet or a same-stem file cannot be sampled.
+    private func discoveryKey(for imageURL: URL, in index: FolderIndex) -> DiscoveryKey? {
+        guard index.isSettled else { return nil }
+        let image = imageURL.standardizedFileURL
+        let folder = image.deletingLastPathComponent()
+        let names = index.wavStemEntries[SonyDualCardVoiceMemoAssociationService.stem(image)] ?? []
+        var files: [String: CaptionVoiceMemoFileRevision] = [:]
+        for name in names {
+            guard let revision = try? CaptionVoiceMemoFileRevision.read(folder.appendingPathComponent(name))
+            else { return nil }
+            files[name] = revision
+        }
+        return DiscoveryKey(folderModificationDate: index.folderModificationDate, files: files)
+    }
+
+    /// The current listing for the photo's folder, or nil on any filesystem doubt (callers then
+    /// fall through to the full lookup/discovery path).
+    private func folderIndex(for imageURL: URL) -> FolderIndex? {
+        let folder = imageURL.standardizedFileURL.deletingLastPathComponent()
+        // Fresh URL: never answer from a cached resource value. Entry additions, removals and
+        // renames advance the directory's modification date, which keys the listing.
+        guard let modified = try? URL(fileURLWithPath: folder.path)
+            .resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { return nil }
+        if let cached = folderIndexes[folder.path], cached.folderModificationDate == modified {
+            return cached
+        }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return nil }
+        var wavStems = Set<String>()
+        for name in names where (name as NSString).pathExtension.lowercased() == "wav" {
+            wavStems.insert(SonyDualCardVoiceMemoAssociationService.stem(folder.appendingPathComponent(name)))
+        }
+        var wavStemEntries: [String: [String]] = [:]
+        if !wavStems.isEmpty {
+            for name in names {
+                let stem = SonyDualCardVoiceMemoAssociationService.stem(folder.appendingPathComponent(name))
+                if wavStems.contains(stem) { wavStemEntries[stem, default: []].append(name) }
+            }
+        }
+        // Reuse a listing only once the folder date is safely in the past, so a later change
+        // on a coarse-timestamp volume (FAT: 2 s) cannot land on the same recorded date.
+        let isSettled = Date().timeIntervalSince(modified) > 3
+        let index = FolderIndex(folderModificationDate: modified,
+                                entryNames: Set(names.map(Self.normalizedName)), wavStems: wavStems,
+                                wavStemEntries: wavStemEntries, isSettled: isSettled)
+        if isSettled {
+            if folderIndexes[folder.path] == nil, folderIndexes.count >= Self.folderIndexCapacity {
+                folderIndexes.removeAll(keepingCapacity: true)
+            }
+            folderIndexes[folder.path] = index
+        } else {
+            folderIndexes[folder.path] = nil
+        }
+        return index
+    }
+
+    /// Returns false only when a current folder listing contains neither the photo's
+    /// relationship record nor a same-stem WAV.
+    private static func mayHaveVoiceMemo(_ imageURL: URL, in index: FolderIndex) -> Bool {
+        let image = imageURL.standardizedFileURL
+        let recordName = VoiceMemoCompanionRepository().recordURL(for: image).lastPathComponent
+        return index.entryNames.contains(normalizedName(recordName))
+            || index.wavStems.contains(SonyDualCardVoiceMemoAssociationService.stem(image))
+    }
+
+    private static func normalizedName(_ name: String) -> String {
+        name.precomposedStringWithCanonicalMapping.lowercased(with: Locale(identifier: "en_US_POSIX"))
     }
 }
 

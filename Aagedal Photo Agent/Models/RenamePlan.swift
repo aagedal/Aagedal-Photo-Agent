@@ -186,6 +186,10 @@ nonisolated struct RenameArtifactAction: Codable, Equatable, Sendable {
     /// Frozen value-level metadata work. Execution must not infer either the property or filename
     /// again after the user accepts a plan.
     let originalFilenameMetadataMutation: RenameOriginalFilenameMetadataMutation?
+    /// True when the source must stay in place because an image outside the move still uses it
+    /// (a stem-named XMP shared by a RAW+JPEG pair whose partner is not renamed). Execution
+    /// copies such an artifact instead of moving it.
+    let preservesSource: Bool
 
     init(
         identifier: String,
@@ -193,7 +197,8 @@ nonisolated struct RenameArtifactAction: Codable, Equatable, Sendable {
         role: RenameArtifactRole,
         sourceURL: URL,
         destinationURL: URL,
-        originalFilenameMetadataMutation: RenameOriginalFilenameMetadataMutation? = nil
+        originalFilenameMetadataMutation: RenameOriginalFilenameMetadataMutation? = nil,
+        preservesSource: Bool = false
     ) {
         self.identifier = identifier
         self.displayName = displayName
@@ -201,6 +206,19 @@ nonisolated struct RenameArtifactAction: Codable, Equatable, Sendable {
         self.sourceURL = sourceURL
         self.destinationURL = destinationURL
         self.originalFilenameMetadataMutation = originalFilenameMetadataMutation
+        self.preservesSource = preservesSource
+    }
+
+    func preservingSource() -> Self {
+        Self(
+            identifier: identifier,
+            displayName: displayName,
+            role: role,
+            sourceURL: sourceURL,
+            destinationURL: destinationURL,
+            originalFilenameMetadataMutation: originalFilenameMetadataMutation,
+            preservesSource: true
+        )
     }
 
     var changesPath: Bool {
@@ -277,6 +295,9 @@ nonisolated struct RenamePlanIssue: Codable, Equatable, Sendable {
         case deterministicSuffixExhausted(maximumAttempts: Int)
         case originalFilenameXMPSidecarMissing
         case unrecognizedImageExtension
+        /// A stem-named artifact shared with another planned image would be moved to two
+        /// different names, splitting a RAW+JPEG (or photo+video) pair.
+        case sharedArtifactSplit(otherItemIndex: Int)
     }
 
     /// Stable, presentation-independent categories for grouping and filtering preview issues.
@@ -292,6 +313,7 @@ nonisolated struct RenamePlanIssue: Codable, Equatable, Sendable {
         case deterministicSuffixExhausted
         case originalFilenameXMPSidecarMissing
         case unrecognizedImageExtension
+        case sharedArtifactSplit
     }
 
     let severity: Severity
@@ -313,6 +335,7 @@ nonisolated struct RenamePlanIssue: Codable, Equatable, Sendable {
         case .deterministicSuffixExhausted: return .deterministicSuffixExhausted
         case .unrecognizedImageExtension: return .unrecognizedImageExtension
         case .originalFilenameXMPSidecarMissing: return .originalFilenameXMPSidecarMissing
+        case .sharedArtifactSplit: return .sharedArtifactSplit
         }
     }
 }

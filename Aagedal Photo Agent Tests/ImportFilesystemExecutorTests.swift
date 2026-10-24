@@ -2,6 +2,47 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
+@Suite("Back Up Edited Files discovery")
+struct EditedFolderBackupDiscoveryTests {
+    @Test("Discovery includes Develop's Edited/, the custom export folder, Uploaded/ and .xmp sidecars")
+    func discoversAllEditedOutputs() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("apa-backup-discovery-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        for folder in ["Edited", "Edited_JPEG", "Signed_JPEG", "My Exports/2026", "Uploaded", ".photo_metadata", "Unrelated"] {
+            let url = root.appendingPathComponent(folder, isDirectory: true)
+            try fm.createDirectory(at: url, withIntermediateDirectories: true)
+            try Data("render".utf8).write(to: url.appendingPathComponent("file.jpg"))
+        }
+        try Data("raw".utf8).write(to: root.appendingPathComponent("IMG_1.ARW"))
+        try Data("<xmp/>".utf8).write(to: root.appendingPathComponent("IMG_1.xmp"))
+
+        let discovery = EditedFolderBackupService.discover(
+            in: root, customExportSubfolderName: "My Exports/2026"
+        )
+
+        let paths = Set(discovery.folders.map(\.relativePath))
+        #expect(paths == [
+            "Edited", "Edited_JPEG", "Signed_JPEG", "My Exports", "Uploaded", ".photo_metadata",
+            EditedFolderBackupService.xmpSidecarsRelativePath
+        ])
+        let xmpEntry = try #require(discovery.folders.first { $0.kind == .xmpSidecars })
+        #expect(xmpEntry.fileCount == 1)
+
+        let destination = fm.temporaryDirectory.appendingPathComponent("apa-backup-dest-\(UUID().uuidString)")
+        let jobs = EditedFolderBackupService.buildJobs(
+            from: discovery, sourceRoot: root, destinationRoot: destination
+        )
+        let relativeDestinations = Set(jobs.map {
+            $0.desiredPrimaryDest.path.replacingOccurrences(of: destination.path + "/", with: "")
+        })
+        #expect(relativeDestinations.contains("IMG_1.xmp"))
+        #expect(relativeDestinations.contains("My Exports/2026/file.jpg"))
+        #expect(!relativeDestinations.contains("IMG_1.ARW"))
+        #expect(!relativeDestinations.contains("Unrelated/file.jpg"))
+    }
+}
+
 @Suite("Import filesystem Dispatch executors")
 struct ImportFilesystemExecutorTests {
     @Test("Opt-in Sony card import automatically persists all validated adjacent memo relationships",

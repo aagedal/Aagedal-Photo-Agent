@@ -50,11 +50,26 @@ struct StructuredKeywordEditor: View {
     @State private var importRequestID: UUID?
     @State private var exportTask: Task<Void, Never>?
     @State private var exportRequestID: UUID?
+    /// Serialized tree as loaded, used to detect unsaved edits on Cancel.
+    @State private var savedText: String?
+    @State private var showingDiscardConfirmation = false
+    /// The managed file's text when this editor loaded; the save is refused if it changed since.
+    @State private var baselineText: String?
+    @State private var showingSaveConflict = false
     @FocusState private var renameFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            if isCloudStorageUnavailable {
+                Label("iCloud Drive is unavailable — changes can't be saved until it's back.",
+                      systemImage: "icloud.slash")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+            }
             Divider()
             toolbar
                 .disabled(isLoading || isSaving)
@@ -176,7 +191,7 @@ struct StructuredKeywordEditor: View {
                     .truncationMode(.middle)
             }
             Spacer()
-            Button("Cancel") { dismiss() }
+            Button("Cancel") { requestCancel() }
                 .keyboardShortcut(.cancelAction)
             Button(isSaving ? "Saving…" : "Save") { save() }
                 .disabled(isLoading || isSaving || (initialTree == nil && service.hasReadFailure))
@@ -185,6 +200,37 @@ struct StructuredKeywordEditor: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .alert("Discard Changes?", isPresented: $showingDiscardConfirmation) {
+            Button("Keep Editing", role: .cancel) {}
+            Button("Discard", role: .destructive) { dismiss() }
+        } message: {
+            Text("Your unsaved changes to \u{201C}\(title)\u{201D} will be lost.")
+        }
+        .alert("\(title) Changed Elsewhere", isPresented: $showingSaveConflict) {
+            Button("Keep Editing", role: .cancel) {}
+            Button("Reload") { reloadDiscardingEdits() }
+            Button("Overwrite", role: .destructive) { save(overwriting: true) }
+        } message: {
+            Text("The list was changed elsewhere after you opened it (for example on another Mac). Reload to see the current list and discard your edits, or Overwrite to replace it with your version.")
+        }
+    }
+
+    /// List sync is on but iCloud is unreachable, so the tree shown is the local fallback and
+    /// saving is refused.
+    private var isCloudStorageUnavailable: Bool {
+        if initialTree == nil { return service.isCloudStorageUnavailable }
+        let store = KeywordListsStore.shared
+        return store.iCloudEnabled && !store.isSettledRoute(store.currentURL(for: .structuredLibrary))
+    }
+
+    private func reloadDiscardingEdits() {
+        isLoading = true
+        Task {
+            await service.reload()
+            load()
+            feedback = service.loadError
+            isLoading = false
+        }
     }
 
     // MARK: - Row
@@ -503,6 +549,34 @@ struct StructuredKeywordEditor: View {
         }
     }
 
+    /// Cancel / Esc. While renaming, Esc only ends the rename (the Cancel button's key
+    /// equivalent can win over the text field's exit command). Otherwise unsaved edits
+    /// require confirmation before the editor closes.
+    private func requestCancel() {
+        if let id = renamingID {
+            if let node = findNode(id: id, in: root) {
+                cancelRename(node)
+            } else {
+                renamingID = nil
+            }
+            return
+        }
+        if hasUnsavedChanges {
+            showingDiscardConfirmation = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private var currentText: String {
+        StructuredKeywordSerializer.serialize(root.snapshotChildren().compactMap { strip($0) })
+    }
+
+    private var hasUnsavedChanges: Bool {
+        guard let savedText, !isLoading else { return false }
+        return currentText != savedText
+    }
+
     // MARK: - Keyboard helpers
 
     private func moveFocus(by delta: Int) -> KeyPress.Result {
@@ -592,21 +666,27 @@ struct StructuredKeywordEditor: View {
             expandedIDs.insert(child.id)
         }
         focusedID = root.children.first?.id
+        savedText = currentText
+        baselineText = initialTree == nil ? service.loadedText : nil
     }
 
-    private func save() {
+    private func save(overwriting: Bool = false) {
         // Drop empty-name nodes before serialising. This is forgiving — the user
         // can't accidentally lose a real node, only blanks they left behind.
         let cleaned = root.snapshotChildren().compactMap { strip($0) }
         guard !isSaving else { return }
         isSaving = true
+        let expectedText = overwriting ? nil : baselineText
         saveTask = Task {
             defer { isSaving = false }
             do {
                 let saved: Bool
                 if let saveHandler { saved = try await saveHandler(cleaned) }
-                else { saved = try await service.saveTree(cleaned) }
+                else { saved = try await service.saveTree(cleaned, expectedText: expectedText) }
                 if saved, !Task.isCancelled { dismiss() }
+            } catch is KeywordListBaselineConflictError {
+                guard !Task.isCancelled else { return }
+                showingSaveConflict = true
             } catch {
                 guard !Task.isCancelled else { return }
                 feedback = "Save failed: \(error.localizedDescription)"

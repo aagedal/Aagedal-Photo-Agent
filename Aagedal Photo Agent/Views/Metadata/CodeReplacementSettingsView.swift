@@ -63,11 +63,12 @@ struct CodeReplacementSettingsView: View {
                             .foregroundStyle(.red)
                     }
 
-                    if store.list.diagnostics.isEmpty, store.configuration.source != nil,
-                       store.sourceLoadError == nil {
+                    if store.configuration.source != nil, store.sourceLoadError == nil,
+                       !store.list.hasInvalidEncoding {
                         Label("\(store.list.entries.count) codes loaded", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
-                    } else {
+                    }
+                    if !store.list.diagnostics.isEmpty {
                         ForEach(Array(store.list.diagnostics.enumerated()), id: \.offset) { _, diagnostic in
                             Label {
                                 Text(diagnosticMessage(diagnostic))
@@ -83,7 +84,7 @@ struct CodeReplacementSettingsView: View {
                 }
 
                 Section("Format") {
-                    Text("Each nonblank line must contain exactly two columns: code, one tab, and replacement. UTF-8 BOM and CRLF/LF/CR line endings are accepted. Quoted, multiline, and tab-containing values are intentionally rejected with diagnostics.")
+                    Text("Each nonblank line holds two columns: code, one tab, and replacement. Trailing empty columns are ignored. UTF-8, UTF-16 with BOM and Windows-1252 text, and CRLF/LF/CR line endings are accepted. Lines that don't fit are skipped with a warning; the rest of the list still works. The file is re-read automatically when it changes.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -131,13 +132,13 @@ struct CodeReplacementSettingsView: View {
         let prefix = diagnostic.line.map { "Line \($0): " } ?? ""
         switch diagnostic.kind {
         case .invalidUTF8:
-            return "The source is not valid UTF-8."
+            return "The source text could not be decoded."
         case let .malformedRow(columnCount):
-            return "\(prefix)expected 2 tab-delimited columns, found \(columnCount)."
+            return "\(prefix)expected 2 tab-delimited columns, found \(columnCount). Line skipped."
         case .emptyCode:
-            return "\(prefix)the code is empty."
+            return "\(prefix)the code is empty. Line skipped."
         case let .emptyValue(code):
-            return "\(prefix)the replacement for “\(code)” is empty."
+            return "\(prefix)the replacement for “\(code)” is empty. Line skipped."
         case let .duplicateCode(code, originalLine):
             return "\(prefix)“\(code)” duplicates line \(originalLine) with the same value."
         case let .ambiguousCode(code, originalLine):

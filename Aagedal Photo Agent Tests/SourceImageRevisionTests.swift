@@ -1,4 +1,5 @@
 import Foundation
+import os
 import AVFoundation
 import SwiftMediaMetadata
 import Testing
@@ -204,6 +205,132 @@ struct SourceImageRevisionTests {
         #expect(probe.snapshotURLs == [firstURL, firstURL, secondURL, secondURL])
         #expect(probe.hashURLs == [firstURL, secondURL])
     }
+
+    @Test("an unchanged file reuses its memoized digest without re-reading bytes")
+    func unchangedFileHitsDigestCache() async throws {
+        let fixture = try TemporaryFixture(contents: Data("abc".utf8), extension: "jpg")
+        defer { fixture.remove() }
+        let counter = HashCallCounter()
+        let service = SourceImageRevisionCaptureService(io: counter.io)
+
+        let first = try await service.capture(at: fixture.fileURL)
+        let second = try await service.capture(at: fixture.fileURL, pixelWidth: 7)
+
+        #expect(counter.count == 1)
+        #expect(first.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        #expect(second.sha256 == first.sha256)
+        #expect(second.pixelWidth == 7)
+        #expect(second.relationship(to: first) == .exactRevision)
+    }
+
+    @Test("a file written moments ago is re-hashed until its timestamps settle")
+    func freshlyWrittenFileIsNotCached() async throws {
+        let fixture = try TemporaryFixture(contents: Data("abc".utf8), extension: "jpg")
+        defer { fixture.remove() }
+        let counter = HashCallCounter(clockOffset: 0)
+        let service = SourceImageRevisionCaptureService(io: counter.io)
+
+        _ = try await service.capture(at: fixture.fileURL)
+        _ = try await service.capture(at: fixture.fileURL)
+
+        #expect(counter.count == 2)
+    }
+
+    @Test("same-size in-place rewrite with a restored mtime misses the digest cache")
+    func restoredModificationDateStillMisses() async throws {
+        let fixture = try TemporaryFixture(contents: Data("aaaa".utf8), extension: "jpg")
+        defer { fixture.remove() }
+        let counter = HashCallCounter()
+        let service = SourceImageRevisionCaptureService(io: counter.io)
+        let before = try await service.capture(at: fixture.fileURL)
+        // Restore the exact nanosecond mtime the way `touch -r`/rsync would.
+        var original = stat()
+        #expect(stat(fixture.fileURL.path, &original) == 0)
+
+        let handle = try FileHandle(forWritingTo: fixture.fileURL)
+        try handle.write(contentsOf: Data("bbbb".utf8))
+        try handle.close()
+        var times = [original.st_atimespec, original.st_mtimespec]
+        #expect(utimensat(AT_FDCWD, fixture.fileURL.path, &times, 0) == 0)
+        let after = try await service.capture(at: fixture.fileURL)
+
+        #expect(after.byteCount == before.byteCount)
+        #expect(after.contentModificationDate == before.contentModificationDate)
+        #expect(after.fileResourceIdentifier == before.fileResourceIdentifier)
+        #expect(counter.count == 2)
+        #expect(after.sha256 != before.sha256)
+        #expect(before.relationship(to: after) == .sameFileChanged)
+    }
+
+    @Test("FAT/exFAT volumes never store or serve cached digests; other volumes do",
+          arguments: [("exfat", 2), ("msdos", 2), ("apfs", 1), ("smbfs", 1)])
+    func volumeTypeGatesDigestCache(fileSystemType: String, expectedHashes: Int) async throws {
+        let fixture = try TemporaryFixture(contents: Data("abc".utf8), extension: "jpg")
+        defer { fixture.remove() }
+        let counter = HashCallCounter()
+        let probes = OSAllocatedUnfairLock(initialState: 0)
+        let policy = SourceImageRevisionVolumeCachePolicy(probe: .init(
+            device: { _ in 1 },
+            fileSystemType: { _ in
+                probes.withLock { $0 += 1 }
+                return fileSystemType
+            }))
+        let service = SourceImageRevisionCaptureService(io: counter.io, volumePolicy: policy)
+
+        _ = try await service.capture(at: fixture.fileURL)
+        _ = try await service.capture(at: fixture.fileURL)
+
+        #expect(counter.count == expectedHashes)
+        // The volume type is probed once per device, not per capture.
+        #expect(probes.withLock { $0 } == 1)
+    }
+
+    @Test("digest cache evicts least-recently-used entries beyond its bound")
+    func digestCacheIsBounded() async throws {
+        let first = try TemporaryFixture(contents: Data("one".utf8))
+        let second = try TemporaryFixture(contents: Data("two".utf8))
+        defer {
+            first.remove()
+            second.remove()
+        }
+        let counter = HashCallCounter()
+        let service = SourceImageRevisionCaptureService(io: counter.io, digestCacheCapacity: 1)
+
+        _ = try await service.capture(at: first.fileURL)
+        _ = try await service.capture(at: second.fileURL)
+        _ = try await service.capture(at: second.fileURL)
+        #expect(counter.count == 2)
+        _ = try await service.capture(at: first.fileURL)
+        #expect(counter.count == 3)
+    }
+}
+
+/// Real filesystem primitives with a counted hash, proving when bytes are actually read.
+nonisolated private final class HashCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    /// Seconds the service clock runs ahead of the file timestamps. Fixtures are written just
+    /// before capture, so caching tests move the clock past the cache's settle interval.
+    private let clockOffset: TimeInterval
+
+    init(clockOffset: TimeInterval = 10) {
+        self.clockOffset = clockOffset
+    }
+
+    var count: Int { lock.withLock { calls } }
+
+    var io: SourceImageRevisionCaptureIO {
+        let system = SourceImageRevisionCaptureIO.system
+        return SourceImageRevisionCaptureIO(
+            canonicalURL: system.canonicalURL,
+            snapshot: system.snapshot,
+            hash: { [self] url in
+                lock.withLock { calls += 1 }
+                return try system.hash(url)
+            },
+            now: { [clockOffset] in system.now().addingTimeInterval(clockOffset) }
+        )
+    }
 }
 
 @Suite("File system offline availability")
@@ -276,6 +403,29 @@ struct FileSystemOfflineAvailabilityTests {
         #expect(result.files.isEmpty)
         #expect(result.deferredICloudItemCount == 1)
         #expect(requests.urls == [fixture.directoryURL])
+    }
+
+    @Test("scan resolves XMP sidecar dates from its listing exactly like a per-file stat")
+    func scanSidecarDatesMatchPerFileStat() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let paired = try fixture.write("paired.jpg", contents: "photo")
+        let sidecar = try fixture.write("paired.xmp", contents: "<x/>")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: sidecar.path)
+        _ = try fixture.write("raw.cr3", contents: "raw")
+        _ = try fixture.write("RAW.XMP", contents: "<x/>")
+        _ = try fixture.write("lonely.jpg", contents: "photo")
+
+        let result = try await FileSystemService().scanFolderWithStatus(at: fixture.directoryURL)
+
+        #expect(result.files.count == 3)
+        for file in result.files {
+            #expect(file.sidecarModified == ImageFile.sidecarModificationDate(for: file.url), "\(file.filename)")
+        }
+        let byName = Dictionary(uniqueKeysWithValues: result.files.map { ($0.filename, $0) })
+        #expect(byName[paired.lastPathComponent]?.sidecarModified == Date(timeIntervalSince1970: 1_700_000_000))
+        #expect(byName["lonely.jpg"]?.sidecarModified == nil)
     }
 }
 
@@ -529,6 +679,92 @@ struct SerializedFileSystemServiceTests {
         ))
         #expect(probe.urls == [first, upright, missing])
         #expect(!probe.ranOnMainThread)
+    }
+
+    @Test("photos the scan saw without an .xmp skip the sidecar probe; others keep sidecar-first reads")
+    @MainActor
+    func displayOrientationSnapshotSkipsKnownMissingSidecars() async {
+        let withSidecar = URL(fileURLWithPath: "/virtual/rotated.raw")
+        let plain = URL(fileURLWithPath: "/virtual/plain.jpg")
+        let requestID = UUID()
+        let sidecarFirst = DisplayOrientationProbe(values: [withSidecar: 8, plain: 3])
+        let embeddedOnly = DisplayOrientationProbe(values: [withSidecar: 1, plain: 6])
+        let service = FileSystemService(
+            displayOrientation: sidecarFirst.read,
+            embeddedDisplayOrientation: embeddedOnly.read
+        )
+
+        let snapshot = await service.displayOrientationSnapshot(
+            for: [withSidecar, plain],
+            requestID: requestID,
+            urlsWithoutSidecar: [plain]
+        )
+
+        #expect(snapshot.orientations == [withSidecar: 8, plain: 6])
+        #expect(snapshot.completion == .complete)
+        #expect(sidecarFirst.urls == [withSidecar])
+        #expect(embeddedOnly.urls == [plain])
+        #expect(!embeddedOnly.ranOnMainThread)
+    }
+
+    @Test("the eager orientation pass never overwrites an orientation an authoritative source wrote")
+    @MainActor
+    func eagerOrientationPassYieldsToAuthoritativeWrites() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("eager-orientation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for name in ["a.jpg", "b.jpg"] {
+            try Data("x".utf8).write(to: folder.appendingPathComponent(name))
+        }
+        // Neither photo has an .xmp, so the pass reads the (blocked) embedded header. The
+        // XMP gate holds the real metadata pass so only this test's batch apply lands.
+        let embedded = BlockingDisplayOrientationProbe(orientation: 6)
+        let xmpGate = BlockingDisplayOrientationProbe(orientation: nil)
+        defer {
+            embedded.release()
+            xmpGate.release()
+        }
+        let model = BrowserViewModel(
+            fileSystemService: FileSystemService(
+                displayOrientation: { _ in 6 },
+                embeddedDisplayOrientation: embedded.read
+            ),
+            xmpSidecarLoadService: BrowserXMPSidecarLoadService(access: .init(read: { url in
+                _ = xmpGate.read(url)
+                return nil
+            })),
+            subfolderLoader: { _ in [] },
+            refreshSidecarLoader: { _ in [:] }
+        )
+        model.loadFolder(url: folder, addToOpenFolders: false)
+        let didBlock = await embedded.waitUntilBlocked()
+        #expect(didBlock, "The eager orientation read did not start within 30 seconds")
+        guard didBlock else { return }
+
+        let a = try #require(model.images.first { $0.filename == "a.jpg" }?.url)
+        let b = try #require(model.images.first { $0.filename == "b.jpg" }?.url)
+        #expect(model.images.allSatisfy { $0.exifOrientation == 1 })
+
+        // A metadata batch decides a's orientation is 1 — equal to the pass's starting value.
+        model.applyBatchMetadataResults(
+            [[MetadataDictKey.sourceFile: a.path, MetadataDictKey.orientation: 1, MetadataDictKey.rating: 4]],
+            to: &model.images,
+            localIndex: model.urlToImageIndex,
+            nativeHDRByURL: [:]
+        )
+        let aIndex = try #require(model.urlToImageIndex[a])
+        #expect(model.images[aIndex].starRating == .four, "the authoritative batch apply must land")
+
+        embedded.release()
+        await model.waitForEagerOrientationPass()
+
+        let bIndex = try #require(model.urlToImageIndex[b])
+        #expect(model.images[aIndex].exifOrientation == 1)
+        #expect(model.images[bIndex].exifOrientation == 6, "untouched rows still get the eager value")
+
+        xmpGate.release()
+        await model.waitForFolderLoad()
     }
 
     @Test("pre-cancelled Browser orientation snapshot performs no reads")
@@ -971,7 +1207,7 @@ nonisolated private final class SourceRevisionCaptureProbe: @unchecked Sendable 
             firstSnapshotStarted = true
             condition.broadcast()
             while !firstSnapshotReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         condition.unlock()
@@ -1151,7 +1387,7 @@ nonisolated private final class BlockingDisplayOrientationProbe: @unchecked Send
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return orientation
@@ -1198,7 +1434,7 @@ nonisolated private final class BlockingSidecarPresenceProbe: @unchecked Sendabl
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return true
@@ -1252,7 +1488,7 @@ nonisolated private final class BlockingDropSourceProbe: @unchecked Sendable {
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return .regularFile

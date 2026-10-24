@@ -251,6 +251,9 @@ final class DeadlineDeliveryExecutionModel {
     private(set) var acceptedWarningIDs: Set<String> = []
     private(set) var canResume = false
     private(set) var isRecovering = false
+    /// Per-item outcome of the last failed or cancelled upload: which output files failed and
+    /// the fixed reason for each (never server output). `nil` when every attempted file arrived.
+    private(set) var uploadFailureSummary: String?
 
     @ObservationIgnored private let dependencies: DeadlineDeliveryExecutionDependencies
     @ObservationIgnored private var preparedBatch: DeadlinePreparedDeliveryBatch?
@@ -327,6 +330,7 @@ final class DeadlineDeliveryExecutionModel {
         preparedBatch = nil
         canResume = false
         error = nil
+        uploadFailureSummary = nil
         state = .idle
     }
 
@@ -515,6 +519,7 @@ final class DeadlineDeliveryExecutionModel {
 
     private func execute(_ batch: DeadlinePreparedDeliveryBatch, resume: Bool) {
         error = nil
+        uploadFailureSummary = nil
         activeTask?.cancel()
         activeExecutionWorkflowIdentifier = batch.workflowIdentifier
         if resume, recoveredWorkflowIdentifier == batch.workflowIdentifier {
@@ -543,6 +548,9 @@ final class DeadlineDeliveryExecutionModel {
                 // newer preflight publication has replaced this batch.
                 guard executionIsCurrent(batch, resume: resume) else { return }
                 canResume = result.hasRecoverableStagedEvidence && !result.isSent
+                uploadFailureSummary = result.uploadResult.flatMap {
+                    Self.uploadFailureSummary($0, plan: batch.plan)
+                }
                 switch result.manifest.stage {
                 case .sent:
                     guard let receiptID = result.manifest.completedReceiptIdentifier else {
@@ -576,6 +584,32 @@ final class DeadlineDeliveryExecutionModel {
                 resetCompletedBatchAcceptanceIfNeeded()
             }
         }
+    }
+
+    /// "2 of 10 photos were not delivered: a.jpg — Login denied …; b.jpg — …". Items never
+    /// attempted after a batch stop are counted as not sent. Uses only plan output names and
+    /// fixed failure codes.
+    nonisolated static func uploadFailureSummary(
+        _ result: DeliveryUploadBatchResult,
+        plan: DeliveryPlan
+    ) -> String? {
+        let undelivered = result.items.filter { $0.stage != .sent }
+        guard !undelivered.isEmpty, result.status != .completed else { return nil }
+        let names = Dictionary(uniqueKeysWithValues: plan.items.map { ($0.itemIndex, $0.outputFilename) })
+        let failed = undelivered.compactMap { item -> String? in
+            guard let code = item.failure?.code else { return nil }
+            return "\(names[item.itemIndex] ?? "Item \(item.itemIndex + 1)") — \(code.userMessage)"
+        }
+        let notAttempted = undelivered.count - failed.count
+        var parts: [String] = []
+        if !failed.isEmpty { parts.append(failed.prefix(5).joined(separator: "; ")) }
+        if failed.count > 5 { parts.append("and \(failed.count - 5) more failed") }
+        if notAttempted > 0 {
+            parts.append("\(notAttempted) not sent")
+        }
+        let header = "\(undelivered.count) of \(result.items.count) "
+            + (result.items.count == 1 ? "photo was" : "photos were") + " not delivered"
+        return header + ": " + parts.joined(separator: "; ") + ". Resume re-sends only these."
     }
 
     private func executionIsCurrent(
@@ -861,6 +895,7 @@ final class DeadlineDeliveryProductionSession {
         connections: [FTPConnection],
         writeEngine: any MetadataWriteEngine,
         resume: Bool,
+        onCompatibilityLearned: @escaping @Sendable (UUID, FTPUploadOutcome, String) -> Void = { _, _, _ in },
         progress: @escaping DeadlineDeliveryExecutionDependencies.Progress
     ) async throws -> DeliveryWorkflowResult {
         guard activeCoordinator == nil,
@@ -908,7 +943,10 @@ final class DeadlineDeliveryProductionSession {
                 writeEngine: writeEngine
             ).makeCoordinator(for: batch.plan),
             uploadCoordinator: VerifiedDeliveryUploadCoordinator(
-                transport: DeliveryFTPTransportFactory.make(connections: connections)
+                transport: DeliveryFTPTransportFactory.make(
+                    connections: connections,
+                    onCompatibilityLearned: onCompatibilityLearned
+                )
             ),
             receiptAssembler: DeliveryReceiptAssembler(applicationVersion: {
                 DeliveryApplicationVersion(

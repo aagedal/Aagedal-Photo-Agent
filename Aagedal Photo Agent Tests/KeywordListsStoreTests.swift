@@ -1151,6 +1151,74 @@ struct KeywordListBackupFileServiceTests {
         }
     }
 
+    @Test("A list the user emptied on purpose is excluded from recovery until it has content again")
+    @MainActor
+    func deliberatelyClearedListSkipsRecovery() async throws {
+        let root = URL(fileURLWithPath: "/virtual/recovery-deliberately-cleared")
+        let suiteName = "KeywordListsDeliberatelyCleared-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        // Every list reads empty while each has a non-empty backup.
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { directory in [directory.appendingPathComponent("version.txt")] },
+            inspectTextFile: { url in .init(url: url, date: .now, text: "Berlin", byteCount: 6) },
+            createDirectory: { _ in },
+            readData: { _ in Data() },
+            writeData: { _, _ in }, removeItem: { _ in }
+        )
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore(defaults: defaults)
+            let service = KeywordListsBackupService(filesystem: KeywordListBackupFileService(io: io), store: store)
+            let city = KeywordListKey.quick(.city)
+            let approved = KeywordListKey.approved(.keywords)
+
+            store.recordExternalWrite(to: city, destinationURL: store.currentURL(for: city), entries: [])
+            store.recordExternalDeletion(to: approved)
+            #expect(store.deliberatelyClearedPaths == [city.relativePath, approved.relativePath])
+
+            await service.refreshRecoverable()
+            #expect(!service.recoverableKeys.isEmpty)
+            #expect(!service.recoverableKeys.contains(city))
+            #expect(!service.recoverableKeys.contains(approved))
+            #expect(service.recoverableKeys.contains(.quick(.keywords)))
+
+            // Adding content again removes the mark so a later unexpected loss prompts again.
+            store.recordExternalWrite(to: city, destinationURL: store.currentURL(for: city), entries: ["Oslo"])
+            #expect(store.deliberatelyClearedPaths == [approved.relativePath])
+            await service.refreshRecoverable()
+            #expect(service.recoverableKeys.contains(city))
+            #expect(!service.recoverableKeys.contains(approved))
+        }
+    }
+
+    @Test("Recovery forgets a cleared mark once the list reads non-empty")
+    @MainActor
+    func deliberatelyClearedMarkIsForgottenWhenContentReturns() async throws {
+        let root = URL(fileURLWithPath: "/virtual/recovery-cleared-content-returns")
+        let suiteName = "KeywordListsDeliberatelyCleared-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let city = KeywordListKey.quick(.city)
+        // Only the city list has content (e.g. synced back from another Mac).
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { directory in [directory.appendingPathComponent("version.txt")] },
+            inspectTextFile: { url in .init(url: url, date: .now, text: "Berlin", byteCount: 6) },
+            createDirectory: { _ in },
+            readData: { url in url.path.hasSuffix(city.relativePath) ? Data("Oslo\n".utf8) : Data() },
+            writeData: { _, _ in }, removeItem: { _ in }
+        )
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore(defaults: defaults)
+            let service = KeywordListsBackupService(filesystem: KeywordListBackupFileService(io: io), store: store)
+            store.recordExternalDeletion(to: city)
+            store.recordExternalDeletion(to: .quick(.event))
+
+            await service.refreshRecoverable()
+            #expect(store.deliberatelyClearedPaths == [KeywordListKey.quick(.event).relativePath])
+            #expect(!service.recoverableKeys.contains(.quick(.event)))
+        }
+    }
+
     @Test("Inventory Dispatch worker retains caller context and stops after cancelled I/O", arguments: [0, 1, 2])
     @MainActor
     func dispatchInventoryContext(cancellationStage: Int) async {
@@ -1523,7 +1591,7 @@ private nonisolated final class KeywordListBackupRetentionIOProbe: @unchecked Se
                 condition.lock()
                 defer { condition.unlock() }
                 deletionStarted = true
-                while !deletionReleased { condition.wait() }
+                while !deletionReleased { if !condition.waitBounded() { break } }
                 names.removeAll { $0 == url.lastPathComponent }
             }
         )
@@ -1532,7 +1600,7 @@ private nonisolated final class KeywordListBackupRetentionIOProbe: @unchecked Se
     func waitUntilDeletionStarts() async throws {
         let deadline = ContinuousClock.now + .seconds(30)
         while !hasStartedDeletion {
-            guard ContinuousClock.now < deadline else { throw KeywordListBackupPreviewProbeError.timedOut }
+            guard ContinuousClock.now < deadline else { releaseDeletion(); throw KeywordListBackupPreviewProbeError.timedOut }
             try await Task.sleep(for: .milliseconds(10))
         }
     }
@@ -1591,7 +1659,7 @@ private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked
                 maximumActiveEnumerations = max(maximumActiveEnumerations, activeEnumerations)
                 condition.broadcast()
                 if contentsCount == enumerationToBlock {
-                    while !firstEnumerationReleased { condition.wait() }
+                    while !firstEnumerationReleased { if !condition.waitBounded() { break } }
                 }
                 activeEnumerations -= 1
                 condition.unlock()
@@ -1616,6 +1684,8 @@ private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked
         let deadline = ContinuousClock.now + .seconds(30)
         while contentsInvocationCount < enumerationToBlock {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstEnumeration()
                 throw KeywordListBackupPreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1668,7 +1738,7 @@ private nonisolated final class BlockingKeywordListBackupPreviewReaderProbe: @un
         condition.broadcast()
         if readCount == 1 {
             while !firstReadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeReads -= 1
@@ -1680,6 +1750,8 @@ private nonisolated final class BlockingKeywordListBackupPreviewReaderProbe: @un
         let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw KeywordListBackupPreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

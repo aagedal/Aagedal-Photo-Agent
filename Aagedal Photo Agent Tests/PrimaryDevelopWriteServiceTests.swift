@@ -96,6 +96,271 @@ struct PrimaryDevelopWriteServiceTests {
         #expect(model.metadata != nil)
     }
 
+    @Test("A RAW+JPEG pair's JPEG saves Develop into its own file; the RAW's crs stays; a C2PA pair is refused unretained")
+    func pairedJPEGDevelopUsesEmbeddedDestination() async throws {
+        let folder = URL(fileURLWithPath: "/private/tmp/PrimaryDevelopPair-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let raw = folder.appendingPathComponent("IMG_1.ARW")
+        try Data("placeholder raw".utf8).write(to: raw)
+        let jpeg = folder.appendingPathComponent("IMG_1.jpg")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 5, pixelsHigh: 3,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .jpeg, properties: [:])).write(to: jpeg)
+        // The JPEG's own embedded caption differs from the shared sidecar record.
+        try await SwiftExifWriteEngine().writeFields([.description: "JPEG own caption"], to: [jpeg])
+        var rawCRS = CameraRawSettings(); rawCRS.temperature = 5500; rawCRS.exposure2012 = 1.25
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(title: "Shared caption", cameraRaw: rawCRS), for: raw)
+
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+        try await load(model, image: jpeg, folder: folder)
+        #expect(model.editingMetadata.title == "Shared caption")
+        #expect(model.editingMetadata.cameraRaw?.exposure2012 == nil)
+
+        var jpegCRS = CameraRawSettings(); jpegCRS.exposure2012 = -0.5
+        model.editingMetadata.cameraRaw = jpegCRS
+        // An unsaved panel edit rides along in the editor buffer; it must not be embedded.
+        model.editingMetadata.title = "Unsaved panel headline"
+        model.markChanged()
+        var outcome: MetadataCommitResult?
+        model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar) { outcome = $0 }
+        await model.waitForPrimaryDevelopWrites()
+        if case .succeeded = outcome {} else { Issue.record("Paired JPEG Develop save did not succeed: \(String(describing: outcome)) \(model.saveError ?? "")") }
+        #expect(!model.hasRetainedPrimaryDevelopWrites)
+        let physical = try #require(try await SwiftExifReadService().readBatchFullMetadata(urls: [jpeg])[jpeg])
+        #expect(physical.cameraRaw?.exposure2012 == -0.5)
+        // Develop-only embed: the JPEG's own descriptive record is untouched.
+        #expect(physical.description == "JPEG own caption")
+        #expect(physical.title == nil)
+        let shared = try #require(XMPSidecarService().loadSidecar(for: raw))
+        #expect(shared.cameraRaw?.exposure2012 == 1.25)
+        #expect(shared.cameraRaw?.temperature == 5500)
+
+        // Reload reads the JPEG's own embedded develop, not the RAW's sidecar block.
+        let other = folder.appendingPathComponent("other.jpg")
+        try FileManager.default.copyItem(at: jpeg, to: other)
+        try await load(model, image: other, folder: folder)
+        try await load(model, image: jpeg, folder: folder)
+        #expect(model.editingMetadata.cameraRaw?.exposure2012 == -0.5)
+
+        // A paired JPEG with Content Credentials has no destination: refused, nothing retained.
+        var credentialed = ImageFile(url: jpeg); credentialed.hasC2PA = true
+        model.loadMetadata(for: [credentialed], folderURL: folder)
+        let deadline = ContinuousClock.now + .seconds(10)
+        while model.isLoading, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.primaryDevelopRefusal(for: jpeg) != nil)
+        model.editingMetadata.cameraRaw?.exposure2012 = 2
+        model.markChanged()
+        outcome = nil
+        model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar) { outcome = $0 }
+        if case .failed = outcome {} else { Issue.record("A C2PA paired JPEG must be refused") }
+        #expect(model.retainedPrimaryDevelopWrites.isEmpty && !model.hasRetainedPrimaryDevelopWrites)
+        #expect(model.editingMetadata.cameraRaw?.exposure2012 == -0.5)
+        #expect(!model.hasUncapturedPrimaryDevelopEdits(mode: .writeToXMPSidecar))
+        let unchanged = try #require(try await SwiftExifReadService().readBatchFullMetadata(urls: [jpeg])[jpeg])
+        #expect(unchanged.cameraRaw?.exposure2012 == -0.5)
+        #expect(XMPSidecarService().loadSidecar(for: raw)?.cameraRaw?.exposure2012 == 1.25)
+    }
+
+    @Test("Named Develop versions follow a paired JPEG's metadata-only Primary rewrite")
+    func developVersionsFollowMetadataOnlyRewrite() async throws {
+        let folder = URL(fileURLWithPath: "/private/tmp/PrimaryDevelopVersions-\(UUID().uuidString)", isDirectory: true)
+        let support = folder.appendingPathComponent("support", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try Data("placeholder raw".utf8).write(to: folder.appendingPathComponent("IMG_9.ARW"))
+        let jpeg = folder.appendingPathComponent("IMG_9.jpg")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 6, pixelsHigh: 4,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .jpeg, properties: [:])).write(to: jpeg)
+        let factory: DevelopVersionSessionCoordinator.RepositoryFactory = {
+            DevelopVersionCatalogRepository(sourceFolderURL: $0, applicationSupportURL: support)
+        }
+
+        func openSession() async throws -> DevelopVersionSessionCoordinator {
+            let session = DevelopVersionSessionCoordinator(repositoryFactory: factory)
+            session.beginLoading(imageURL: jpeg, orientation: 1, onCatalogReady: {})
+            let deadline = ContinuousClock.now + .seconds(10)
+            while session.persistenceState == .loading, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            return session
+        }
+
+        let session = try await openSession()
+        var catalog = try #require(session.catalog)
+        var look = CameraRawSettings(); look.exposure2012 = 0.75
+        try catalog.createVersion(name: "Look", settings: look)
+        session.storage = try await DevelopVersionCatalogRepository(sourceFolderURL: folder,
+            applicationSupportURL: support).save(catalog)
+        session.catalog = catalog
+
+        // The paired JPEG's Develop save: a metadata-only rewrite of the source.
+        var crs = CameraRawSettings(); crs.exposure2012 = -1
+        try await SwiftExifWriteEngine().writeFields(crs.developWriteFields(), to: [jpeg])
+        let rewritten = try await SourceImageRevision.capture(at: jpeg)
+        #expect(rewritten.sha256 != catalog.source.sha256)
+        await session.followMetadataOnlyRewrite(of: jpeg)
+        await session.waitForPendingSave()
+        #expect(session.revision?.sha256 == rewritten.sha256)
+        #expect(session.catalog?.source.sha256 == rewritten.sha256)
+        #expect(session.notice == nil)
+
+        let reopened = try await openSession()
+        #expect(reopened.notice == nil)
+        #expect(reopened.catalog?.versions.map(\.name) == ["Look"])
+
+        // Many sequential commits leave exactly one catalog file (no orphan per release).
+        let catalogs = folder.appendingPathComponent(".photo_versions/catalogs", isDirectory: true)
+        for exposure in [-0.75, -0.5, -0.25] {
+            var next = CameraRawSettings(); next.exposure2012 = exposure
+            try await SwiftExifWriteEngine().writeFields(next.developWriteFields(), to: [jpeg])
+            await reopened.followMetadataOnlyRewrite(of: jpeg)
+            await reopened.waitForPendingSave()
+        }
+        let files = try FileManager.default.contentsOfDirectory(atPath: catalogs.path)
+            .filter { $0.hasSuffix(".versions.json") }
+        #expect(files.count == 1)
+        let finalRevision = try await SourceImageRevision.capture(at: jpeg)
+        #expect(files.first == "\(finalRevision.sha256).versions.json")
+
+        // A version switch issued while a follow-up is rebinding is neither lost nor overwritten.
+        var switched = try #require(reopened.catalog)
+        let lookID = try #require(switched.versions.first?.id)
+        try switched.setActiveVersion(lookID)
+        var last = CameraRawSettings(); last.exposure2012 = 0.1
+        try await SwiftExifWriteEngine().writeFields(last.developWriteFields(), to: [jpeg])
+        let followUp = Task { await reopened.followMetadataOnlyRewrite(of: jpeg) }
+        reopened.persist(switched, onSuccess: {})
+        await followUp.value
+        await reopened.waitForPendingSave()
+        #expect(reopened.persistenceState == .saved)
+        #expect(reopened.catalog?.activeVersionID == lookID)
+        let afterSwitch = try await openSession()
+        #expect(afterSwitch.notice == nil)
+        #expect(afterSwitch.catalog?.activeVersionID == lookID)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: catalogs.path)
+            .filter { $0.hasSuffix(".versions.json") }.count == 1)
+
+        // Promotion on the paired JPEG is refused before any write, including the recovery catalog.
+        var promotable = try #require(afterSwitch.catalog)
+        let preparation = try promotable.preparePromotion(of: lookID, currentSettings: look,
+            primarySettings: nil, recoveryName: "Primary before promotion")
+        let saves = PrimaryTestCallCounter()
+        let service = DevelopVersionPromotionService(saveCatalog: { _ in await saves.record(); return .folderLocal },
+            writePrimary: { _ in await saves.record() }, readPrimary: { nil },
+            refusal: DevelopVersionPromotionService.pairedJPEGRefusal(for: jpeg))
+        await #expect(throws: DevelopVersionPromotionRefusal.self) { _ = try await service.promote(preparation) }
+        #expect(await saves.count == 0)
+    }
+
+    private func pairedFixture(_ name: String) throws -> (folder: URL, raw: URL, jpeg: URL) {
+        let folder = URL(fileURLWithPath: "/private/tmp/\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let raw = folder.appendingPathComponent("IMG_7.ARW")
+        try Data("placeholder raw".utf8).write(to: raw)
+        let jpeg = folder.appendingPathComponent("IMG_7.jpg")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 6, pixelsHigh: 4,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .jpeg, properties: [:])).write(to: jpeg)
+        var rawCRS = CameraRawSettings(); rawCRS.exposure2012 = 1.25
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(title: "Shared", cameraRaw: rawCRS), for: raw)
+        return (folder, raw, jpeg)
+    }
+
+    @Test("A paired JPEG Develop commit keeps Lightroom crs fields the app doesn't model")
+    func pairedJPEGDevelopKeepsUnmodelledCRS() async throws {
+        let pair = try pairedFixture("PrimaryDevelopUnmodelled")
+        defer { try? FileManager.default.removeItem(at: pair.folder) }
+        var metadata = try SwiftMediaMetadata.readMetadata(from: pair.jpeg)
+        var xmp = metadata.xmp ?? XMPData()
+        xmp.setValue(.simple("+20"), namespace: XMPNamespace.crs, property: "Texture")
+        xmp.setValue(.simple("vendor"), namespace: XMPNamespace.crs, property: "FutureVendorSetting")
+        metadata.xmp = xmp
+        _ = try metadata.write(to: pair.jpeg)
+
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+        try await load(model, image: pair.jpeg, folder: pair.folder)
+        var settings = model.editingMetadata.cameraRaw ?? CameraRawSettings()
+        settings.exposure2012 = 0.5
+        model.editingMetadata.cameraRaw = settings
+        model.markChanged()
+        var outcome: MetadataCommitResult?
+        model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar) { outcome = $0 }
+        await model.waitForPrimaryDevelopWrites()
+        if case .succeeded = outcome {} else { Issue.record("Commit failed: \(String(describing: outcome))") }
+        let written = try #require(try SwiftMediaMetadata.readMetadata(from: pair.jpeg).xmp)
+        #expect(written.simpleValue(namespace: XMPNamespace.crs, property: "Texture") == "+20")
+        #expect(written.simpleValue(namespace: XMPNamespace.crs, property: "FutureVendorSetting") == "vendor")
+        #expect(written.simpleValue(namespace: XMPNamespace.crs, property: "Exposure2012") == "+0.50")
+        #expect(XMPSidecarService().loadSidecar(for: pair.raw)?.cameraRaw?.exposure2012 == 1.25)
+    }
+
+    @Test("Develop metadata too large for the JPEG is refused: file byte-identical, nothing retained")
+    func oversizedPairedJPEGDevelopIsRefused() async throws {
+        let pair = try pairedFixture("PrimaryDevelopOversized")
+        defer { try? FileManager.default.removeItem(at: pair.folder) }
+        let original = try Data(contentsOf: pair.jpeg)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+        try await load(model, image: pair.jpeg, folder: pair.folder)
+        let dabs = (0..<6_000).map { index in
+            BrushDab(x: Double(index % 97) / 97.0 + 0.000123, y: Double(index % 89) / 89.0 + 0.000456,
+                     flow: 0.73, hardness: 0.41)
+        }
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.25
+        settings.localAdjustments = [MaskAdjustment(name: "Heavy brush",
+            brush: BrushMaskGeometry(strokes: [BrushStroke(dabs: dabs, radius: 0.02, density: 1, erase: false)]),
+            exposure: 0.4)]
+        model.editingMetadata.cameraRaw = settings
+        model.markChanged()
+        var outcome: MetadataCommitResult?
+        model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar) { outcome = $0 }
+        await model.waitForPrimaryDevelopWrites()
+        if case .failed = outcome {} else { Issue.record("An oversized embed must be refused: \(String(describing: outcome))") }
+        #expect(try Data(contentsOf: pair.jpeg) == original)
+        #expect(model.retainedPrimaryDevelopWrites.isEmpty && !model.hasRetainedPrimaryDevelopWrites)
+        #expect(model.editingMetadata.cameraRaw?.localAdjustments?.isEmpty != false)
+        #expect(XMPSidecarService().loadSidecar(for: pair.raw)?.cameraRaw?.exposure2012 == 1.25)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: pair.folder.path)
+            .filter { $0.hasPrefix(".aagedal_primary_") }
+        #expect(leftovers.isEmpty)
+    }
+
+    @Test("Camera Raw-only paste/reset writes never resync descriptive carriers and refuse oversized metadata")
+    func developFieldWritesAreGuarded() async throws {
+        let pair = try pairedFixture("DevelopFieldWrites")
+        defer { try? FileManager.default.removeItem(at: pair.folder) }
+        // IIM and XMP disagree; a develop write must not resync IIM into XMP.
+        var metadata = try SwiftMediaMetadata.readMetadata(from: pair.jpeg)
+        metadata.iptc.caption = "IIM caption"
+        var xmp = XMPData(); xmp.description = "XMP caption"
+        metadata.xmp = xmp
+        _ = try metadata.write(to: pair.jpeg)
+        let engine = SwiftExifWriteEngine()
+        var crs = CameraRawSettings(); crs.exposure2012 = 0.3
+        let report = try await engine.writeDevelopFields(crs.developWriteFields(), to: [pair.jpeg],
+            structuredData: .empty, allowsCredentialedEmbed: false)
+        #expect(report.isEmpty)
+        let written = try #require(try SwiftMediaMetadata.readMetadata(from: pair.jpeg).xmp)
+        #expect(written.description == "XMP caption")
+        #expect(written.simpleValue(namespace: XMPNamespace.crs, property: "Exposure2012") == "+0.30")
+
+        let before = try Data(contentsOf: pair.jpeg)
+        let dabs = (0..<6_000).map { BrushDab(x: Double($0 % 97) / 97.0 + 0.000123, y: Double($0 % 89) / 89.0, flow: 0.7, hardness: 0.4) }
+        let heavy = [MaskAdjustment(name: "Heavy", brush: BrushMaskGeometry(strokes: [BrushStroke(dabs: dabs, radius: 0.02, density: 1, erase: false)]), exposure: 0.2)]
+        let refused = try await engine.writeDevelopFields(crs.developWriteFields(), to: [pair.jpeg],
+            structuredData: StructuredWriteData(masks: heavy), allowsCredentialedEmbed: false)
+        #expect(refused.refusedForMetadataSize == [pair.jpeg])
+        #expect(try Data(contentsOf: pair.jpeg) == before)
+    }
+
     @Test("XMP Primary save preserves pixels and actual mask/settings receipt")
     func xmpCompletion() async throws {
         let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
@@ -711,6 +976,38 @@ struct PrimaryDevelopWriteRequestBuilderTests {
         let absentSidecar = build(edited: metadata(exposure: 1), source: source)
         #expect(absentSidecar.captureFailure == nil)
         #expect(absentSidecar.expectedXMP == .init(data: nil))
+    }
+
+    @Test("Opening a folder sweeps only stale, exactly named Primary staging directories")
+    func staleStagingDirectorySweep() throws {
+        let manager = FileManager.default
+        let folder = manager.temporaryDirectory.appendingPathComponent("staging-sweep-\(UUID().uuidString)", isDirectory: true)
+        try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: folder) }
+        let now = Date()
+        let old = now.addingTimeInterval(-2 * 3600)
+        func makeDirectory(_ name: String, modified: Date) throws -> URL {
+            let url = folder.appendingPathComponent(name, isDirectory: true)
+            try manager.createDirectory(at: url, withIntermediateDirectories: false)
+            try Data("staged".utf8).write(to: url.appendingPathComponent("photo.jpg"))
+            try manager.setAttributes([.modificationDate: modified, .creationDate: modified], ofItemAtPath: url.path)
+            return url
+        }
+        let stale = try makeDirectory(".aagedal_primary_\(UUID().uuidString)", modified: old)
+        let fresh = try makeDirectory(".aagedal_primary_\(UUID().uuidString)", modified: now)
+        let lookalike = try makeDirectory(".aagedal_primary_not-a-uuid", modified: old)
+        let lowercase = try makeDirectory(".aagedal_primary_\(UUID().uuidString.lowercased())", modified: old)
+        let other = try makeDirectory("Selects", modified: old)
+        let staleFile = folder.appendingPathComponent(".aagedal_primary_\(UUID().uuidString)")
+        try Data("not a directory".utf8).write(to: staleFile)
+        try manager.setAttributes([.modificationDate: old], ofItemAtPath: staleFile.path)
+
+        let removed = PrimaryStagingDirectorySweeper.sweep(folder: folder, now: now)
+        #expect(removed.map(\.lastPathComponent) == [stale.lastPathComponent])
+        #expect(!manager.fileExists(atPath: stale.path))
+        for kept in [fresh, lookalike, lowercase, other, staleFile] {
+            #expect(manager.fileExists(atPath: kept.path), "\(kept.lastPathComponent) must never be removed")
+        }
     }
 
 }

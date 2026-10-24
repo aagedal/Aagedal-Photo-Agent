@@ -1259,6 +1259,49 @@ struct MetadataTemplatePersistenceTests {
         #expect(probe.maximumConcurrentOperations == 1)
     }
 
+    @MainActor
+    @Test("template shortcut waiters survive a superseding load and later shortcuts re-read the inventory")
+    func templateShortcutWaiterSurvivesSupersededLoad() async throws {
+        let probe = BlockingMetadataTemplateCRUDProbe()
+        defer { probe.releaseFirstLoad() }
+        let viewModel = TemplateViewModel(
+            storage: TemplateStorageService(directoryURL: URL(fileURLWithPath: "/virtual/templates")),
+            crudService: TemplateCRUDService(access: probe.access)
+        )
+
+        var delivered: [[String]?] = []
+        viewModel.withLoadedTemplates { delivered.append($0?.map(\.name)) }
+        try await probe.waitUntilFirstLoadStarts()
+        // A storage-change reload cancels the shortcut's load; its waiter must still run.
+        viewModel.loadTemplates()
+        probe.releaseFirstLoad()
+
+        let deadline = ContinuousClock.now + .seconds(30)
+        while delivered.isEmpty {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for the template shortcut waiter")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(delivered == [["second"]])
+
+        // Settings edits templates through its own view model, so a later shortcut reads the
+        // inventory again instead of trusting this instance's copy.
+        viewModel.withLoadedTemplates { delivered.append($0?.map(\.name)) }
+        let rereadDeadline = ContinuousClock.now + .seconds(30)
+        while delivered.count < 2 {
+            guard ContinuousClock.now < rereadDeadline else {
+                Issue.record("Timed out waiting for the re-read template inventory")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(delivered.count == 2)
+        #expect(delivered[1] != nil)
+        #expect(probe.loadCount == 3)
+    }
+
     @Test("template view models keep synchronous CRUD below the actor boundary")
     func templateCRUDSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
@@ -1323,7 +1366,7 @@ nonisolated private final class BlockingTemplateImportPreviewProbe: @unchecked S
         condition.broadcast()
         if readCount == 1 {
             while !firstReadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeReads -= 1
@@ -1342,6 +1385,8 @@ nonisolated private final class BlockingTemplateImportPreviewProbe: @unchecked S
         let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw TemplateImportPreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1531,7 +1576,7 @@ nonisolated private final class BlockingMetadataTemplateCRUDProbe: @unchecked Se
         maximumActiveOperations = max(maximumActiveOperations, activeOperations)
         condition.broadcast()
         if invocation == 1 {
-            while !firstLoadReleased { condition.wait() }
+            while !firstLoadReleased { if !condition.waitBounded() { break } }
         }
         activeOperations -= 1
         condition.unlock()
@@ -1542,6 +1587,8 @@ nonisolated private final class BlockingMetadataTemplateCRUDProbe: @unchecked Se
         let deadline = ContinuousClock.now + .seconds(30)
         while loadCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstLoad()
                 throw TemplateImportPreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

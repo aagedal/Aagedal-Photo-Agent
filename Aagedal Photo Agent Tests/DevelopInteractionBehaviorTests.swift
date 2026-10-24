@@ -235,7 +235,7 @@ struct DevelopInteractionBehaviorTests {
     @Test("Explicit sort selection persists across browser model recreation")
     @MainActor
     func explicitSortSelectionPersistsAcrossRecreation() {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let sortKey = UserDefaultsKeys.thumbnailSortOrder
         let reverseKey = UserDefaultsKeys.thumbnailSortReversed
         let originalSort = defaults.object(forKey: sortKey)
@@ -270,6 +270,249 @@ struct DevelopInteractionBehaviorTests {
         recreated.selectSortOrder(.fileType)
         #expect(recreated.sortOrder == .fileType)
         #expect(defaults.string(forKey: sortKey) == BrowserViewModel.SortOrder.fileType.rawValue)
+    }
+
+    /// Sort changes persist to AppDefaults.store; restore the user's values afterwards.
+    @MainActor
+    private func withRestoredSortDefaults(_ body: () async throws -> Void) async rethrows {
+        let defaults = AppDefaults.store
+        let keys = [UserDefaultsKeys.thumbnailSortOrder, UserDefaultsKeys.thumbnailSortReversed]
+        let originals = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, original) in zip(keys, originals) {
+                if let original { defaults.set(original, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+        try await body()
+    }
+
+    private func browserImages(_ names: [String]) -> [ImageFile] {
+        names.map { ImageFile(url: URL(fileURLWithPath: "/tmp/browse-sort/\($0).jpg")) }
+    }
+
+    @Test("Rating sort breaks ties by ascending filename, also when reversed")
+    @MainActor
+    func ratingSortTieBreaksByName() async {
+        await withRestoredSortDefaults {
+            // Directory order deliberately differs from name order.
+            var images = browserImages(["b", "a", "c", "d"])
+            for index in images.indices { images[index].starRating = .three }
+            images[2].starRating = .five
+            let viewModel = BrowserViewModel()
+            viewModel.sortReversed = false
+            viewModel.sortOrder = .rating
+            viewModel.images = images
+            viewModel.batchUpdate {}
+            #expect(viewModel.sortedImages.map(\.filename) == ["c.jpg", "a.jpg", "b.jpg", "d.jpg"])
+
+            viewModel.sortReversed = true
+            viewModel.batchUpdate {}
+            #expect(viewModel.sortedImages.map(\.filename) == ["a.jpg", "b.jpg", "d.jpg", "c.jpg"])
+        }
+    }
+
+    @Test("Manual sort without an arranged order falls back to name order")
+    @MainActor
+    func manualSortFallsBackToNameOrder() async {
+        await withRestoredSortDefaults {
+            let viewModel = BrowserViewModel()
+            viewModel.sortReversed = false
+            viewModel.sortOrder = .name
+            viewModel.images = browserImages(["c", "a", "b"])
+            viewModel.batchUpdate {}
+
+            viewModel.sortOrder = .manual
+            viewModel.batchUpdate {}
+            #expect(viewModel.sortedImages.map(\.filename) == ["a.jpg", "b.jpg", "c.jpg"])
+        }
+    }
+
+    @Test("Only an in-grid reorder switches the sort to Manual, seeded from the visible order")
+    @MainActor
+    func inGridReorderSwitchesToManual() async {
+        await withRestoredSortDefaults {
+            let viewModel = BrowserViewModel()
+            viewModel.sortReversed = false
+            viewModel.sortOrder = .name
+            let images = browserImages(["c", "a", "b"])
+            viewModel.images = images
+            viewModel.batchUpdate {}
+
+            // Dropping onto one of the dragged items is not a reorder.
+            viewModel.reorderManually([images[0].url], to: images[0].url, insertBefore: true)
+            #expect(viewModel.sortOrder == .name)
+
+            viewModel.reorderManually([images[0].url], to: images[1].url, insertBefore: true)
+            viewModel.batchUpdate {}
+            #expect(viewModel.sortOrder == .manual)
+            #expect(viewModel.sortedImages.map(\.filename) == ["c.jpg", "a.jpg", "b.jpg"])
+        }
+    }
+
+    @Test("Shift-arrow selection shrinks back toward its fixed anchor")
+    @MainActor
+    func shiftArrowSelectionShrinks() async {
+        await withRestoredSortDefaults {
+            let viewModel = BrowserViewModel()
+            viewModel.sortReversed = false
+            viewModel.sortOrder = .name
+            let images = browserImages(["a", "b", "c", "d", "e", "f"])
+            viewModel.images = images
+            viewModel.batchUpdate {}
+            let url = images.map(\.url)
+
+            viewModel.applySelection(ids: [url[2]], active: url[2])
+            viewModel.selectNext(extending: true)
+            viewModel.selectNext(extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[2...4]))
+
+            viewModel.selectPrevious(extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[2...3]))
+            #expect(viewModel.lastClickedImageURL == url[3])
+
+            viewModel.selectPrevious(extending: true)
+            viewModel.selectPrevious(extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[1...2]))
+
+            // Row moves use the same anchor.
+            viewModel.selectDown(columns: 3, extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[2...4]))
+
+            // A plain move resets the anchor.
+            viewModel.selectNext()
+            viewModel.selectPrevious(extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[4...5]))
+        }
+    }
+
+    @Test("Closing the current folder while it loads returns to an idle no-folder state")
+    @MainActor
+    func closingLoadingFolderResetsState() throws {
+        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let viewModel = BrowserViewModel(favoritesDefaults: defaults)
+        let folder = URL(fileURLWithPath: "/virtual/closing-folder")
+        let image = ImageFile(url: folder.appendingPathComponent("a.jpg"))
+        viewModel.openFolders = [folder]
+        viewModel.currentFolderURL = folder
+        viewModel.isLoading = true
+        viewModel.iCloudDownloadNotice = "Downloading"
+        viewModel.images = [image]
+        viewModel.applySelection(ids: [image.url], active: image.url)
+        viewModel.searchText = "harbour"
+        viewModel.minimumStarRating = .three
+
+        viewModel.closeOpenFolder(folder)
+
+        #expect(viewModel.currentFolderURL == nil)
+        #expect(!viewModel.isLoading)
+        #expect(viewModel.iCloudDownloadNotice == nil)
+        #expect(viewModel.images.isEmpty)
+        #expect(viewModel.selectedImageIDs.isEmpty)
+        #expect(viewModel.lastClickedImageURL == nil)
+        #expect(viewModel.searchText.isEmpty)
+        #expect(viewModel.minimumStarRating == .none)
+    }
+
+    @Test("A split-view pane showing a subfolder of a closed root is released too")
+    @MainActor
+    func secondaryPaneReleasesClosedFolder() throws {
+        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let pane = BrowserViewModel(favoritesDefaults: defaults)
+        let root = URL(fileURLWithPath: "/virtual/closing-root")
+        pane.currentFolderURL = root.appendingPathComponent("Sub")
+        pane.isLoading = true
+
+        pane.releaseClosedFolder(URL(fileURLWithPath: "/virtual/closing-root-other"))
+        #expect(pane.currentFolderURL != nil)
+
+        pane.releaseClosedFolder(root)
+        #expect(pane.currentFolderURL == nil)
+        #expect(!pane.isLoading)
+    }
+
+    @Test("Moves and duplicates during a suppressed metadata load keep the image index and selection consistent")
+    @MainActor
+    func inventoryChangeDuringSuppressedMetadataLoadReindexes() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-reindex-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let destination = root.appendingPathComponent("Moved")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = ["a.jpg", "b.jpg", "c.jpg"].map { root.appendingPathComponent($0) }
+        for file in files { try Data(file.lastPathComponent.utf8).write(to: file) }
+
+        let viewModel = BrowserViewModel(imageTrashHandler: TrashStub())
+        viewModel.currentFolderURL = root
+        viewModel.images = files.map { ImageFile(url: $0) }
+        await Task.yield()
+
+        // `loadBasicMetadata` holds the cascade suppressed across its awaits.
+        viewModel.setImagesCascadeSuppressedForTesting(true)
+        viewModel.moveImages([files[0]], into: destination)
+        await viewModel.waitForPendingImageMutation()
+
+        #expect(viewModel.images.map(\.url) == [files[1], files[2]])
+        #expect(viewModel.urlToImageIndex == [files[1]: 0, files[2]: 1])
+        #expect(viewModel.visibleImages.map(\.url) == [files[1], files[2]])
+        // A stale index (c → 2) would read out of range or a neighbour here.
+        viewModel.applySelection(ids: [files[2]], active: files[2])
+        #expect(viewModel.selectedImages.map(\.url) == [files[2]])
+
+        viewModel.duplicateSelectedImages()
+        await viewModel.waitForPendingImageMutation()
+        let duplicate = try #require(viewModel.selectedImageIDs.first)
+        #expect(viewModel.images.map(\.url) == [files[1], files[2], duplicate])
+        #expect(viewModel.urlToImageIndex == [files[1]: 0, files[2]: 1, duplicate: 2])
+        #expect(viewModel.selectedImages.map(\.url) == [duplicate])
+        viewModel.setImagesCascadeSuppressedForTesting(false)
+    }
+
+    @Test("Full Screen delete trashes only the shown photo, not the hidden multi-selection")
+    @MainActor
+    func fullScreenDeleteTargetsShownPhoto() async {
+        let images = urls.prefix(3).map { ImageFile(url: $0) }
+        let viewModel = BrowserViewModel(imageTrashHandler: TrashStub())
+        viewModel.images = images
+        await Task.yield()
+        viewModel.applySelection(ids: Set(images.map(\.url)), active: images[1].url)
+        viewModel.isFullScreen = true
+        #expect(viewModel.fullScreenImage?.url == images[1].url)
+
+        viewModel.confirmDeleteFullScreenImage()
+        #expect(viewModel.showDeleteConfirmation)
+        #expect(viewModel.deleteConfirmationCount == 1)
+        viewModel.deleteConfirmedImages()
+        await viewModel.waitForPendingImageMutation()
+
+        #expect(viewModel.images.map(\.url) == [images[0].url, images[2].url])
+
+        // The grid path still confirms and deletes the whole selection.
+        viewModel.isFullScreen = false
+        viewModel.applySelection(ids: [images[0].url, images[2].url], active: images[0].url)
+        viewModel.confirmDeleteSelectedImages()
+        #expect(viewModel.deleteConfirmationCount == 2)
+        viewModel.deleteConfirmedImages()
+        await viewModel.waitForPendingImageMutation()
+        #expect(viewModel.images.isEmpty)
+    }
+
+    @Test("A second file operation waits for the running one instead of cancelling it")
+    @MainActor
+    func fileOperationsAreSerialized() async {
+        let images = urls.prefix(3).map { ImageFile(url: $0) }
+        let viewModel = BrowserViewModel(imageTrashHandler: TrashStub())
+        viewModel.images = images
+        await Task.yield()
+
+        viewModel.applySelection(ids: [images[0].url], active: images[0].url)
+        viewModel.deleteSelectedImages()
+        viewModel.applySelection(ids: [images[1].url], active: images[1].url)
+        viewModel.deleteSelectedImages()
+        await viewModel.waitForPendingImageMutation()
+
+        #expect(viewModel.images.map(\.url) == [images[2].url])
+        #expect(viewModel.errorMessage == nil)
     }
 
     @Test("Brush axis follows the first dominant cursor direction")
@@ -450,6 +693,57 @@ struct DevelopInteractionBehaviorTests {
         #expect(EditZoomBehavior.clampedScale(0.5) == 1)
     }
 
+    @Test("100% zoom uses native pixels in the displayed orientation, not the screen-res texture")
+    func actualPixelsZoomUsesNativeDimensions() {
+        let container = CGSize(width: 1_000, height: 800)
+        // 6000×4000 landscape on a 2× display: fit = 1000/6000 → 100% = 6000 / (1000 · 2) = 3.
+        let landscape = EditZoomBehavior.displayPixelSize(
+            nativePixelSize: CGSize(width: 6_000, height: 4_000),
+            orientation: 1
+        )
+        #expect(landscape == CGSize(width: 6_000, height: 4_000))
+        #expect(abs(EditZoomBehavior.actualPixelsScale(
+            containerSize: container, displayPixelSize: landscape, backingScale: 2
+        ) - 3) < 0.0001)
+        // The old basis — a 3200 px screen-res texture — would have stopped at 1.6×.
+        #expect(EditZoomBehavior.actualPixelsScale(
+            containerSize: container,
+            displayPixelSize: CGSize(width: 3_200, height: 2_133),
+            backingScale: 2
+        ) < 1.7)
+
+        // Orientations 5–8 transpose the stored dimensions: portrait 4000×6000 is
+        // height-limited in an 1000×800 view → fit = 800/6000 → 100% = 6000 / (800 · 2) = 3.75.
+        for orientation in 5...8 {
+            let portrait = EditZoomBehavior.displayPixelSize(
+                nativePixelSize: CGSize(width: 6_000, height: 4_000),
+                orientation: orientation
+            )
+            #expect(portrait == CGSize(width: 4_000, height: 6_000))
+            #expect(abs(EditZoomBehavior.actualPixelsScale(
+                containerSize: container, displayPixelSize: portrait, backingScale: 2
+            ) - 3.75) < 0.0001)
+        }
+        for orientation in [1, 2, 3, 4] {
+            #expect(EditZoomBehavior.displayPixelSize(
+                nativePixelSize: CGSize(width: 6_000, height: 4_000),
+                orientation: orientation
+            ) == CGSize(width: 6_000, height: 4_000))
+        }
+
+        // An image smaller than the fitted view yields < 1; clamping keeps it at fit.
+        let small = EditZoomBehavior.actualPixelsScale(
+            containerSize: container,
+            displayPixelSize: CGSize(width: 800, height: 600),
+            backingScale: 2
+        )
+        #expect(small < 1)
+        #expect(EditZoomBehavior.clampedScale(small) == 1)
+        #expect(EditZoomBehavior.actualPixelsScale(
+            containerSize: .zero, displayPixelSize: landscape, backingScale: 2
+        ) == 1)
+    }
+
     @Test("Crop handle padding is limited to the active crop tool")
     func cropPreviewHandlePadding() {
         #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: true) == 64)
@@ -498,6 +792,331 @@ struct DevelopInteractionBehaviorTests {
         #expect(settings.localAdjustments == [mask])
         #expect(settings.watermarkLayers == [watermark])
         #expect(settings.layerOrder == order)
+    }
+
+    @Test("Single-image paste merges exactly like multi-image paste, with fresh mask IDs")
+    func singlePasteMatchesMultiPaste() throws {
+        let sourceMask = MaskAdjustment(name: "Sky", exposure: -0.5)
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        var source = CameraRawSettings(exposure2012: 1.0)
+        source.localAdjustments = [sourceMask]
+        source.watermarkLayers = [watermark]
+        source.anonymizer = AnonymizerSettings(amount: 40, blackOut: nil)
+        source.layerOrder = [.mask(sourceMask.id), .global, .watermark(watermark.id)]
+        source.asShotNeutralTemperature = 5000
+
+        let preserved = PreservedMaskCorrection(fields: ["What": .string("Correction")])
+        var target = CameraRawSettings(exposure2012: -0.3)
+        target.toneCurve = ToneCurve(
+            master: [ToneCurvePoint(x: 0, y: 0.1), ToneCurvePoint(x: 1, y: 1)],
+            red: nil, green: nil, blue: nil
+        )
+        target.hslAdjustments = HSLAdjustments(red: HSLColorAdjustment(saturation: 20))
+        target.unparsedMaskCorrections = [preserved]
+        target.crop = CameraRawCrop(top: 0.1, left: 0.1, bottom: 0.9, right: 0.9, angle: 0, hasCrop: true)
+        target.asShotNeutralTemperature = 6500
+
+        let multi = CameraRawSettings.pasted(source, onto: target, includeCrop: false)
+        let single = CameraRawSettings.pastedIntoEditor(source, onto: target, includeCrop: false)
+
+        // Everything but the mask identities agrees with the multi-image merge.
+        let freshID = try #require(single.localAdjustments?.first?.id)
+        #expect(freshID != sourceMask.id)
+        var normalized = single
+        normalized.localAdjustments = single.localAdjustments?.map { mask in
+            var copy = mask
+            copy.id = sourceMask.id
+            return copy
+        }
+        normalized.layerOrder = [.mask(sourceMask.id), .global, .watermark(watermark.id)]
+        #expect(normalized == multi)
+        #expect(single.layerOrder == [.mask(freshID), .global, .watermark(watermark.id)])
+
+        // Copied collections arrive; target collections the source lacks survive.
+        #expect(single.exposure2012 == 1.0)
+        #expect(single.watermarkLayers == [watermark])
+        #expect(single.anonymizer == source.anonymizer)
+        #expect(single.toneCurve == target.toneCurve)
+        #expect(single.hslAdjustments == target.hslAdjustments)
+        // Pasted masks replace the target's ordinary masks, ACR-only corrections included.
+        #expect(single.unparsedMaskCorrections == nil)
+        #expect(single.crop == target.crop)
+        #expect(single.asShotNeutralTemperature == 6500)
+    }
+
+    @Test("Pasting a blur onto a photo with its own blur keeps both, and pasting twice adds nothing")
+    func pasteAppendsMasksWithoutDuplicates() throws {
+        var sourceBlur = MaskAdjustment(name: "Face A", anonymizer: AnonymizerSettings(amount: 70, blackOut: nil))
+        sourceBlur.geometry.centerX = 0.25
+        var source = CameraRawSettings(exposure2012: 0.5)
+        source.localAdjustments = [sourceBlur]
+
+        var targetBlur = MaskAdjustment(name: "Face B", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        targetBlur.geometry.centerX = 0.75
+        let targetWatermark = WatermarkLayer(libraryAssetID: UUID())
+        var target = CameraRawSettings(exposure2012: -0.2)
+        target.localAdjustments = [targetBlur]
+        target.watermarkLayers = [targetWatermark]
+
+        for paste in [CameraRawSettings.pasted, CameraRawSettings.pastedIntoEditor] {
+            let once = paste(source, target, false)
+            let masks = try #require(once.localAdjustments)
+            #expect(masks.count == 2)
+            #expect(masks[0] == targetBlur)
+            #expect(masks[1].anonymizer == sourceBlur.anonymizer)
+            #expect(masks[1].geometry == sourceBlur.geometry)
+            #expect(once.watermarkLayers == [targetWatermark])
+            #expect(once.exposure2012 == 0.5)
+
+            let twice = paste(source, once, false)
+            #expect(twice.localAdjustments == once.localAdjustments)
+        }
+    }
+
+    @Test("Paste duplicate detection survives an XMP round trip's zeros and rounding")
+    func pasteDuplicateDetectionToleratesRoundTrip() {
+        var mask = MaskAdjustment(name: "Sky", exposure: -0.5)
+        mask.geometry.centerX = 0.333333333
+        var reread = mask
+        reread.id = UUID()
+        reread.name = "Mask 1"
+        reread.geometry.centerX = 0.333333
+        reread.contrast = 0
+        reread.fullFrame = false
+
+        #expect(CameraRawSettings.layerFingerprint(mask, clearing: \.id, \.name)
+            == CameraRawSettings.layerFingerprint(reread, clearing: \.id, \.name))
+        var different = reread
+        different.exposure = -0.4
+        #expect(CameraRawSettings.layerFingerprint(mask, clearing: \.id, \.name)
+            != CameraRawSettings.layerFingerprint(different, clearing: \.id, \.name))
+    }
+
+    private func ordinaryMask(_ name: String, x: Double, exposure: Double = 0.3) -> MaskAdjustment {
+        var mask = MaskAdjustment(name: name, exposure: exposure)
+        mask.geometry.centerX = x
+        return mask
+    }
+
+    private func redactionMask(_ name: String, x: Double) -> MaskAdjustment {
+        var mask = MaskAdjustment(name: name, anonymizer: AnonymizerSettings(amount: nil, blackOut: true))
+        mask.geometry.centerX = x
+        return mask
+    }
+
+    @Test("Paste replaces the target's ordinary masks but always keeps its Anonymizer masks")
+    func pasteReplacesOrdinaryMasksKeepsRedactions() throws {
+        let ownMask = ordinaryMask("Own", x: 0.1)
+        let ownRedaction = redactionMask("Own face", x: 0.9)
+        let ownWatermark = WatermarkLayer(libraryAssetID: UUID())
+        var target = CameraRawSettings()
+        target.localAdjustments = [ownMask, ownRedaction]
+        target.watermarkLayers = [ownWatermark]
+        target.unparsedMaskCorrections = [PreservedMaskCorrection(fields: ["What": .string("ACR")])]
+
+        let sky = ordinaryMask("Sky", x: 0.4)
+        var lut = ordinaryMask("LUT", x: 0.5)
+        lut.colorTransform = ColorTransformSettings()
+        var source = CameraRawSettings(exposure2012: 0.7)
+        source.localAdjustments = [sky, lut]
+
+        let pasted = CameraRawSettings.pasted(source, onto: target, includeCrop: false)
+        let masks = try #require(pasted.localAdjustments)
+        #expect(masks.map(\.name) == ["Own face", "Sky", "LUT"])
+        #expect(masks[0] == ownRedaction)
+        // Source has no watermarks: the target keeps its own.
+        #expect(pasted.watermarkLayers == [ownWatermark])
+        // Preserved ACR-only corrections are ordinary masks: replaced too.
+        #expect(pasted.unparsedMaskCorrections == nil)
+        // Source chain first; the kept redaction (after Global) follows the source's adjustment
+        // layers; the kept watermark goes last.
+        #expect(pasted.resolvedLayerOrder() == [
+            .global, .mask(sky.id), .mask(lut.id), .mask(ownRedaction.id), .watermark(ownWatermark.id),
+        ])
+
+        // A source without masks leaves every target mask alone.
+        let scalarsOnly = CameraRawSettings.pasted(CameraRawSettings(exposure2012: 1), onto: target, includeCrop: false)
+        #expect(scalarsOnly.localAdjustments == target.localAdjustments)
+        #expect(scalarsOnly.unparsedMaskCorrections == target.unparsedMaskCorrections)
+
+        // Source watermarks replace the target's.
+        let otherWatermark = WatermarkLayer(libraryAssetID: UUID())
+        var watermarkSource = CameraRawSettings()
+        watermarkSource.watermarkLayers = [otherWatermark]
+        let rewatermarked = CameraRawSettings.pasted(watermarkSource, onto: target, includeCrop: false)
+        #expect(rewatermarked.watermarkLayers == [otherWatermark])
+        #expect(rewatermarked.localAdjustments == target.localAdjustments)
+    }
+
+    @Test("A kept Anonymizer mask below Global stays below it after a replacing paste")
+    func pasteKeepsRedactionSideOfGlobal() {
+        let ownRedaction = redactionMask("Face", x: 0.8)
+        let ownMask = ordinaryMask("Own", x: 0.2)
+        var target = CameraRawSettings()
+        target.localAdjustments = [ownRedaction, ownMask]
+        target.layerOrder = [.mask(ownRedaction.id), .global, .mask(ownMask.id)]
+
+        let sky = ordinaryMask("Sky", x: 0.4)
+        var source = CameraRawSettings()
+        source.localAdjustments = [sky]
+        source.layerOrder = [.global, .mask(sky.id)]
+
+        let pasted = CameraRawSettings.pasted(source, onto: target, includeCrop: false)
+        #expect(pasted.resolvedLayerOrder() == [.mask(ownRedaction.id), .global, .mask(sky.id)])
+    }
+
+    @Test("Over the layer limit, every target Anonymizer mask is kept first")
+    func pasteLimitKeepsTargetRedactions() throws {
+        let ownRedactions = (0..<DevelopLayerLimits.maxEnabledMasks).map {
+            redactionMask("Face \($0)", x: 0.05 + Double($0) * 0.1)
+        }
+        var target = CameraRawSettings()
+        target.localAdjustments = ownRedactions + [ordinaryMask("Own", x: 0.33)]
+
+        var source = CameraRawSettings()
+        source.localAdjustments = [ordinaryMask("Sky", x: 0.44), redactionMask("New face", x: 0.58)]
+
+        let result = CameraRawSettings.pastedResult(
+            source, onto: target, includeCrop: false,
+            maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
+        )
+        #expect(result.settings.localAdjustments == ownRedactions)
+        #expect(result.skippedMasks == 2)
+
+        // With one slot free, the source's redaction wins it over its ordinary mask.
+        var roomier = target
+        roomier.localAdjustments = Array(ownRedactions.dropLast())
+        let partial = CameraRawSettings.pastedResult(
+            source, onto: roomier, includeCrop: false,
+            maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
+        )
+        let masks = try #require(partial.settings.localAdjustments)
+        #expect(masks.count == DevelopLayerLimits.maxEnabledMasks)
+        #expect(masks.last?.name == "New face")
+        #expect(partial.skippedMasks == 1)
+    }
+
+    @Test("Paste never turns the target's global Anonymizer off or weaker")
+    func pasteNeverWeakensGlobalAnonymizer() {
+        var target = CameraRawSettings()
+        target.anonymizer = AnonymizerSettings(amount: 80, blackOut: nil)
+
+        let off = CameraRawSettings.pasted(CameraRawSettings(exposure2012: 1), onto: target, includeCrop: false)
+        #expect(off.anonymizer == target.anonymizer)
+
+        var weaker = CameraRawSettings()
+        weaker.anonymizer = AnonymizerSettings(amount: 30, blackOut: nil)
+        #expect(CameraRawSettings.pasted(weaker, onto: target, includeCrop: false).anonymizer == target.anonymizer)
+
+        var blackOut = CameraRawSettings()
+        blackOut.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        #expect(CameraRawSettings.pasted(blackOut, onto: target, includeCrop: false).anonymizer
+            == AnonymizerSettings(amount: 80, blackOut: true))
+        // Turning it on from the source is fine.
+        #expect(CameraRawSettings.pasted(weaker, onto: CameraRawSettings(), includeCrop: false).anonymizer
+            == weaker.anonymizer)
+    }
+
+    @Test("Key-repeat stepping previews every step and commits once")
+    @MainActor func sliderKeyStepperCommitsOnce() async throws {
+        let stepper = EditSliderKeyStepper(settleDelay: .milliseconds(20))
+        var begins = 0
+        var previews: [Double] = []
+        var commits: [Double] = []
+        stepper.onBegin = { begins += 1 }
+        stepper.onPreview = { previews.append($0) }
+        stepper.onCommit = { commits.append($0) }
+
+        for _ in 0..<5 {
+            stepper.step(from: 0, range: -100...100, step: 1, direction: 1, large: false)
+        }
+        #expect(begins == 1)
+        #expect(previews == [1, 2, 3, 4, 5])
+        #expect(commits.isEmpty)
+        stepper.commitNow()
+        #expect(commits == [5])
+        stepper.commitNow()
+        #expect(commits == [5])
+
+        // Without a key-up the settle timer commits once.
+        stepper.step(from: 5, range: -100...100, step: 1, direction: -1, large: true)
+        for _ in 0..<100 where commits.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(commits == [5, -5])
+        #expect(begins == 2)
+    }
+
+    @Test("Arrow-key slider stepping uses at least 1/200 of the range and Shift for 10x")
+    func sliderKeyboardStepping() {
+        #expect(EditSliderStepping.steppedValue(from: 0, range: -100...100, step: 1, direction: 1, large: false) == 1)
+        #expect(EditSliderStepping.steppedValue(from: 0, range: -100...100, step: 1, direction: -1, large: true) == -10)
+        let exposure = EditSliderStepping.steppedValue(from: 0, range: -5...5, step: 0.01, direction: 1, large: false)
+        #expect(abs(exposure - 0.05) < 1e-9)
+        #expect(EditSliderStepping.steppedValue(from: 99, range: -100...100, step: 1, direction: 1, large: true) == 100)
+        #expect(EditSliderStepping.direction(forKeyCode: 126) == 1)
+        #expect(EditSliderStepping.direction(forKeyCode: 125) == -1)
+        #expect(EditSliderStepping.direction(forKeyCode: 0) == nil)
+    }
+
+    @Test("Reset develop adjustments clears every adjustment except crop and HDR mode")
+    func developResetKeepsOnlyFraming() {
+        let crop = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: 2, hasCrop: true)
+        let mask = MaskAdjustment(name: "Local", exposure: 1)
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        var settings = CameraRawSettings(exposure2012: 1.25, crop: crop, hdrEditMode: 1, sdrBrightness: 20)
+        settings.hslAdjustments = HSLAdjustments(red: HSLColorAdjustment(saturation: 20))
+        settings.localAdjustments = [mask]
+        settings.watermarkLayers = [watermark]
+        settings.layerOrder = [.mask(mask.id), .global, .watermark(watermark.id)]
+
+        DevelopAdjustmentsResetBehavior.reset(&settings, isRaw: true)
+
+        #expect(settings.whiteBalance == "As Shot")
+        #expect(settings.exposure2012 == nil)
+        #expect(settings.sdrBrightness == nil)
+        #expect(settings.hslAdjustments == nil)
+        #expect(settings.localAdjustments == nil)
+        #expect(settings.watermarkLayers == nil)
+        #expect(settings.layerOrder == nil)
+        #expect(settings.crop == crop)
+        #expect(settings.hdrEditMode == 1)
+        #expect(!DevelopAdjustmentsResetBehavior.hasResettableAdjustments(settings, isRaw: true))
+    }
+
+    @Test("Reset develop adjustments is offered exactly when it would change something")
+    func developResetVisibility() {
+        func resettable(_ build: (inout CameraRawSettings) -> Void, isRaw: Bool = true) -> Bool {
+            var settings = CameraRawSettings()
+            build(&settings)
+            return DevelopAdjustmentsResetBehavior.hasResettableAdjustments(settings, isRaw: isRaw)
+        }
+        #expect(!DevelopAdjustmentsResetBehavior.hasResettableAdjustments(nil, isRaw: true))
+        #expect(!resettable { $0.whiteBalance = "As Shot" })
+        #expect(!resettable({ $0.whiteBalance = "As Shot" }, isRaw: false))
+        #expect(!resettable { $0.crop = CameraRawCrop(top: 0.1, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true) })
+        #expect(!resettable { $0.hdrEditMode = 1 })
+        #expect(resettable { $0.hslAdjustments = HSLAdjustments(red: HSLColorAdjustment(saturation: 20)) })
+        #expect(resettable { $0.sdrContrast = 10 })
+        #expect(resettable { $0.watermarkLayers = [WatermarkLayer(libraryAssetID: UUID())] })
+        #expect(resettable { $0.whiteBalance = "Daylight" })
+    }
+
+    @Test("Toggling HDR off is a kept Develop setting even without other edits")
+    func hdrToggleSurvivesAsSetting() {
+        let enabled = DevelopSettingsMutation.applying({ $0.hdrEditMode = 1 }, to: nil)
+        #expect(enabled?.hdrEditMode == 1)
+        #expect(enabled?.hasSettings == nil)
+
+        let disabled = DevelopSettingsMutation.applying({ $0.hdrEditMode = 0 }, to: enabled)
+        #expect(disabled?.hdrEditMode == 0)
+        #expect(disabled?.hasSettings == nil)
+
+        let edited = DevelopSettingsMutation.applying({ $0.exposure2012 = 0.5 }, to: disabled)
+        #expect(edited?.hasSettings == true)
+        let reset = DevelopSettingsMutation.applying({ $0.exposure2012 = nil }, to: edited)
+        #expect(reset?.hdrEditMode == 0)
+        #expect(DevelopSettingsMutation.applying({ $0.exposure2012 = nil }, to: nil) == nil)
     }
 }
 
@@ -682,6 +1301,75 @@ struct DevelopLayerGeometryInteractionCoordinatorTests {
     }
 }
 
+@Suite("Develop straighten pivot and layer limits")
+@MainActor
+struct DevelopStraightenPivotAndLimitTests {
+    @Test("mask display mapping and AI picks rotate about the crop viewport centre")
+    func straightenRotatesAboutCropCentre() {
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        let projection = DevelopLayerGeometryProjection(
+            displayImageSize: CGSize(width: 1_000, height: 1_000),
+            crop: NormalizedCropRegion(top: 0.1, left: 0.5, bottom: 0.5, right: 0.9),
+            straightenAngle: 90,
+            straightenPivot: CGPoint(x: 0.7, y: 0.3)
+        )
+        // Shader sampling: source = pivot + R(90°)·(displayed − pivot).
+        // Displayed (0.7, 0.5) → offset (0, 0.2) → rotated (−0.2, 0) → source (0.5, 0.3).
+        let source = coordinator.sourcePointForAIMask(
+            fromDisplayedUV: CGPoint(x: 0.7, y: 0.5),
+            projection: projection
+        )
+        #expect(abs(source.x - 0.5) < 0.000_001)
+        #expect(abs(source.y - 0.3) < 0.000_001)
+
+        // The overlay needs the inverse: a mask at source (0.5, 0.3) is drawn at (0.7, 0.5).
+        var mask = EllipseMaskGeometry()
+        mask.centerX = 0.5
+        mask.centerY = 0.3
+        let display = coordinator.maskForDisplay(mask, projection: projection)
+        #expect(abs(display.centerX - 0.7) < 0.000_001)
+        #expect(abs(display.centerY - 0.5) < 0.000_001)
+        let back = coordinator.maskForSensor(display, projection: projection)
+        #expect(abs(back.centerX - 0.5) < 0.000_001)
+        #expect(abs(back.centerY - 0.3) < 0.000_001)
+    }
+
+    @Test("layer limit counts enabled local layers only")
+    func layerLimitGating() {
+        func settings(enabled: Int, disabled: Int) -> CameraRawSettings {
+            var settings = CameraRawSettings()
+            settings.localAdjustments = (0..<enabled).map { _ in MaskAdjustment(name: "on", geometry: EllipseMaskGeometry()) }
+                + (0..<disabled).map { _ in
+                    var mask = MaskAdjustment(name: "off", geometry: EllipseMaskGeometry())
+                    mask.enabled = false
+                    return mask
+                }
+            return settings
+        }
+        let limit = DevelopLayerLimits.maxEnabledMasks
+        #expect(limit == 8)
+        #expect(DevelopLayerLimits.canAddMask(to: nil))
+        #expect(DevelopLayerLimits.canAddMask(to: settings(enabled: limit - 1, disabled: 3)))
+        #expect(!DevelopLayerLimits.canAddMask(to: settings(enabled: limit, disabled: 0)))
+        #expect(!DevelopLayerLimits.exceedsMaskLimit(settings(enabled: limit, disabled: 4)))
+        #expect(DevelopLayerLimits.exceedsMaskLimit(settings(enabled: limit + 1, disabled: 0)))
+    }
+
+    @Test("oversized LUT files report a size error, not an encoding error")
+    func oversizedLUTReportsSize() async {
+        let oversized = Data(repeating: 0x20, count: CubeLUTParser.maxFileSize + 1)
+        #expect {
+            try CubeLUTParser.parse(oversized)
+        } throws: { error in
+            guard case CubeLUTParser.ParseError.tooLarge = error else { return false }
+            return error.localizedDescription == "The LUT file is too large (max 8 MB)."
+        }
+        await #expect(throws: CubeLUTParser.ParseError.self) {
+            try await CubeLUTParser.parseOffMain(Data([0xFF, 0xFE]))
+        }
+    }
+}
+
 @Suite("Develop export session coordinator")
 @MainActor
 struct DevelopExportSessionCoordinatorTests {
@@ -775,6 +1463,9 @@ struct DevelopExportSessionCoordinatorTests {
         #expect(source.contains("exportSession.requestExport {"))
         #expect(source.contains("exportSession.endWorkspaceSession()"))
         #expect(source.contains("DevelopExportPersistenceResult("))
+        // Develop Save must surface a missing watermark like the batch export paths.
+        #expect(source.contains("watermarkWasMissing: !watermarkWarnings.isEmpty"))
+        #expect(source.contains("result.watermarkWasMissing"))
         #expect(!source.contains("@State private var isSavingRenderedJPEG"))
         #expect(!source.contains("@State private var saveError"))
     }
@@ -1094,7 +1785,7 @@ private nonisolated final class BlockingColorLUTImportReaderProbe: @unchecked Se
         condition.broadcast()
         if readCount == 1 {
             while !firstReadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeReads -= 1
@@ -1106,6 +1797,8 @@ private nonisolated final class BlockingColorLUTImportReaderProbe: @unchecked Se
         let deadline = ContinuousClock.now + .seconds(5)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw ColorLUTImportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -2189,12 +2882,298 @@ struct DevelopCleanFeedPublicationCoordinatorTests {
         #expect(frozen?.crop == committed)
         #expect(published?.crop == draft)
     }
+
+    @Test("a redacting photo keeps the feed on the redacted render through Before and mutes")
+    func redactingPhotoHoldsRedactedRender() {
+        let coordinator = DevelopCleanFeedPublicationCoordinator()
+        let controller = CleanFeedController.shared
+        coordinator.beginWorkspace(controller: controller)
+        defer { coordinator.endWorkspace(editorPipeline: nil, controller: controller) }
+
+        func decide(
+            texture: Bool = true, before: Bool = false, mute: Bool = false, layer: Bool = false,
+            redaction: RedactionKnowledge
+        ) -> DevelopCleanFeedPublicationCoordinator.PublicationDecision? {
+            coordinator.publicationDecision(
+                hasSourceTexture: texture, isShowingBefore: before, isMutingDevelop: mute,
+                isMutingLayer: layer, redaction: redaction, isCropToolActive: false, proposedCrop: nil
+            )
+        }
+
+        for (before, mute, layer) in [(true, false, false), (false, true, false), (false, false, true)] {
+            let held = decide(before: before, mute: mute, layer: layer, redaction: .redacts)
+            #expect(held?.usesEditPipeline == true, "the live pipeline keeps the redacted params")
+            #expect(held?.holdsRedactedRender == true)
+            #expect(held?.allowsFallbackImage == false, "never the unblurred source")
+        }
+
+        let live = decide(redaction: .redacts)
+        #expect(live?.usesEditPipeline == true)
+        #expect(live?.holdsRedactedRender == false)
+        #expect(live?.allowsFallbackImage == false)
+
+        let loading = decide(texture: false, before: true, redaction: .redacts)
+        #expect(loading?.usesEditPipeline == false)
+        #expect(loading?.allowsFallbackImage == false, "black until the GPU source is ready")
+        #expect(loading?.holdsRedactedRender == false)
+
+        let unknown = decide(redaction: .unknown)
+        #expect(unknown?.usesEditPipeline == false)
+        #expect(unknown?.allowsFallbackImage == false)
+
+        // Unredacted photos keep the historical Before/mute fallback.
+        let plain = decide(before: true, redaction: .none)
+        #expect(plain?.usesEditPipeline == false)
+        #expect(plain?.allowsFallbackImage == true)
+        #expect(plain?.holdsRedactedRender == false)
+    }
+
+    @Test("publishing a redacting photo never hands the unedited source to the feed")
+    func redactingPublishClearsFallbackImage() {
+        let coordinator = DevelopCleanFeedPublicationCoordinator()
+        let controller = CleanFeedController(makeFeedPipeline: { nil })
+        coordinator.beginWorkspace(controller: controller)
+        defer { coordinator.endWorkspace(editorPipeline: nil, controller: controller) }
+        let source = CIImage(color: CIColor(red: 1, green: 0, blue: 0))
+            .cropped(to: CGRect(x: 0, y: 0, width: 8, height: 8))
+
+        coordinator.publish(
+            fallbackImage: source, isHDR: false, hasSourceTexture: false, isShowingBefore: true,
+            isMutingDevelop: false, redaction: .redacts, isCropToolActive: false,
+            proposedCrop: nil, controller: controller
+        )
+        #expect(controller.feedImage == nil)
+
+        coordinator.publish(
+            fallbackImage: source, isHDR: false, hasSourceTexture: false, isShowingBefore: true,
+            isMutingDevelop: false, redaction: .none, isCropToolActive: false,
+            proposedCrop: nil, controller: controller
+        )
+        #expect(controller.feedImage != nil)
+    }
+
+    @Test("the held feed payload ignores press-and-hold comparisons but keeps redactions")
+    func transientFreeProjectionKeepsRedactions() {
+        let preview = DevelopTransientPreviewCoordinator()
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1
+        settings.anonymizer = AnonymizerSettings(amount: 80, blackOut: nil)
+        var blur = MaskAdjustment()
+        blur.anonymizer = AnonymizerSettings(amount: 100, blackOut: nil)
+        settings.localAdjustments = [blur]
+
+        preview.beginDevelopMute()
+        #expect(preview.isTransientComparisonActive)
+        let muted = preview.settingsForPipeline(settings, isRawSource: false, sectionMutes: .init())
+        #expect(muted?.localAdjustments == nil, "the editor's mute drops the masks")
+        let held = preview.settingsForPipelineIgnoringTransientComparisons(
+            settings, isRawSource: false, sectionMutes: .init()
+        )
+        #expect(held?.hasActiveRedaction == true)
+        #expect(held?.exposure2012 == 1)
+        preview.endDevelopMute()
+
+        #expect(preview.beginLayerMute(maskIndex: nil))
+        #expect(preview.settingsForPipeline(settings, isRawSource: false, sectionMutes: .init())?
+            .anonymizer == nil, "Cmd-D on Global drops the global Anonymizer in the editor")
+        #expect(preview.settingsForPipelineIgnoringTransientComparisons(
+            settings, isRawSource: false, sectionMutes: .init()
+        )?.anonymizer == settings.anonymizer)
+        preview.endLayerMute()
+        #expect(!preview.isTransientComparisonActive)
+    }
+}
+
+@Suite("Redaction privacy guard")
+@MainActor
+struct RedactionPrivacyGuardTests {
+    private func photo(_ path: String, redacts: Bool = false, loaded: Bool = true) -> ImageFile {
+        var image = ImageFile(url: URL(fileURLWithPath: path))
+        image.developSettingsLoaded = loaded
+        if redacts {
+            var settings = CameraRawSettings()
+            var blur = MaskAdjustment()
+            blur.anonymizer = AnonymizerSettings(amount: 100, blackOut: nil)
+            settings.localAdjustments = [blur]
+            image.cameraRawSettings = settings
+        }
+        return image
+    }
+
+    @Test("knowledge separates unredacted, redacting and not-yet-loaded photos")
+    func knowledge() {
+        #expect(RedactionPrivacyGuard.knowledge(for: photo("/p/a.jpg")) == .none)
+        #expect(RedactionPrivacyGuard.knowledge(for: photo("/p/a.jpg", redacts: true)) == .redacts)
+        #expect(RedactionPrivacyGuard.knowledge(for: photo("/p/a.jpg", loaded: false)) == .unknown)
+        var disabled = photo("/p/a.jpg", redacts: true)
+        disabled.cameraRawSettings?.localAdjustments?[0].enabled = false
+        #expect(RedactionPrivacyGuard.knowledge(for: disabled) == .none)
+    }
+
+    @Test("drags out of the app refuse redacting, unloaded and unredacted paired JPEG photos")
+    func outsideDrag() {
+        let plain = photo("/p/plain.jpg")
+        let blurred = photo("/p/blurred.jpg", redacts: true)
+        let raw = photo("/p/IMG_1.CR3", redacts: true)
+        let pairedJPEG = photo("/p/IMG_1.JPG")
+        let all = [plain, blurred, raw, pairedJPEG]
+
+        #expect(RedactionPrivacyGuard.outsideDragDecision(for: [plain], candidates: all) == .allow)
+        #expect(RedactionPrivacyGuard.outsideDragDecision(for: [plain, blurred], candidates: all).message
+            == RedactionPrivacyGuard.dragBlockedMessage)
+        #expect(RedactionPrivacyGuard.outsideDragDecision(
+            for: [photo("/p/new.jpg", loaded: false)], candidates: all
+        ).message == RedactionPrivacyGuard.dragPendingMessage)
+        #expect(RedactionPrivacyGuard.outsideDragDecision(for: [pairedJPEG], candidates: all).message
+            == RedactionPrivacyGuard.pairedRawDragMessage)
+    }
+
+    @Test("only the unredacted non-RAW half of a redacted RAW+JPEG pair is flagged")
+    func pairedJPEGs() {
+        let raw = photo("/p/IMG_1.NEF", redacts: true)
+        let jpeg = photo("/p/img_1.jpg")
+        let otherFolderJPEG = photo("/q/IMG_1.jpg")
+        let redactedJPEG = photo("/p/IMG_1.jpeg", redacts: true)
+        let unredactedRaw = photo("/p/IMG_2.NEF")
+        let jpeg2 = photo("/p/IMG_2.jpg")
+        let all = [raw, jpeg, otherFolderJPEG, redactedJPEG, unredactedRaw, jpeg2]
+
+        let flagged = RedactionPrivacyGuard.unredactedPairedJPEGs(
+            in: [raw, jpeg, otherFolderJPEG, redactedJPEG, jpeg2], candidates: all
+        )
+        #expect(flagged.map(\.url) == [jpeg.url])
+    }
+
+    @Test("Clean Feed only shows frames of a redacting photo that were rendered redacted")
+    func cleanFeedPanePolicy() {
+        #expect(RedactionPrivacyGuard.mayPublishToCleanFeed(rendersRedaction: false, photo: .none))
+        #expect(RedactionPrivacyGuard.mayPublishToCleanFeed(rendersRedaction: true, photo: .redacts))
+        #expect(!RedactionPrivacyGuard.mayPublishToCleanFeed(rendersRedaction: false, photo: .redacts))
+        #expect(!RedactionPrivacyGuard.mayPublishToCleanFeed(rendersRedaction: false, photo: .unknown))
+    }
+
+    @Test("a sidecar redaction the in-memory copy lacks still counts for warnings")
+    func sidecarRedaction() {
+        var redacting = CameraRawSettings()
+        redacting.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        let unloaded = photo("/p/a.jpg", loaded: false)
+        #expect(RedactionPrivacyGuard.redactsIncludingSidecar(unloaded, readSidecar: { _ in redacting }))
+        #expect(!RedactionPrivacyGuard.redactsIncludingSidecar(unloaded, readSidecar: { _ in nil }))
+        // Loaded with no sidecar on disk: nothing to read.
+        var reads = 0
+        #expect(!RedactionPrivacyGuard.redactsIncludingSidecar(photo("/p/a.jpg"), readSidecar: { _ in
+            reads += 1
+            return redacting
+        }))
+        #expect(reads == 0)
+    }
+
+    @Test("only Export, Save As and FTP commands run the paired-JPEG check in the file-operation switch")
+    func commandClassification() {
+        #expect(AppCommand.renderSelected.publishesSelectionPixels)
+        #expect(AppCommand.uploadAll.publishesSelectionPixels)
+        #expect(AppCommand.uploadAll.publishesWholeFolder)
+        #expect(!AppCommand.saveAsJPEG.publishesWholeFolder)
+        #expect(!AppCommand.renderAndSignSelected.publishesSelectionPixels)
+        #expect(!AppCommand.openInExternalEditor.publishesSelectionPixels)
+    }
+
+    @Test("the develop-settings-loaded flag is part of row equality and survives copies")
+    func loadedFlag() {
+        let url = URL(fileURLWithPath: "/p/a.jpg")
+        var loaded = ImageFile(url: url)
+        let unloaded = loaded
+        loaded.developSettingsLoaded = true
+        #expect(loaded != unloaded)
+        #expect(ImageFile(url: URL(fileURLWithPath: "/p/b.jpg"), relocating: loaded).developSettingsLoaded)
+    }
+
+    private func temporaryFolder(_ name: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    @Test("an on-demand read resolves a photo's develop settings without waiting for the batch")
+    func onDemandDevelopRead() async throws {
+        let folder = try temporaryFolder("OnDemandDevelop")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let raw = folder.appendingPathComponent("IMG_1.CR3")
+        let plain = folder.appendingPathComponent("IMG_2.CR3")
+        try Data("not a real raw".utf8).write(to: raw)
+        try Data("not a real raw".utf8).write(to: plain)
+        var settings = CameraRawSettings()
+        settings.hasSettings = true
+        settings.anonymizer = AnonymizerSettings(amount: 75, blackOut: nil)
+        var metadata = IPTCMetadata()
+        metadata.cameraRaw = settings
+        try XMPSidecarService().saveSidecar(metadata: metadata, for: raw)
+
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        model.images = [ImageFile(url: raw), ImageFile(url: plain)]
+        #expect(RedactionPrivacyGuard.knowledge(for: model.images[0]) == .unknown)
+
+        model.ensureDevelopSettingsLoaded(for: [raw, plain])
+        let deadline = ContinuousClock.now + .seconds(15)
+        while model.images.contains(where: { !$0.developSettingsLoaded }), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(RedactionPrivacyGuard.knowledge(for: try #require(model.image(at: raw))) == .redacts)
+        #expect(RedactionPrivacyGuard.knowledge(for: try #require(model.image(at: plain))) == .none)
+    }
+
+    @Test("the folder scan finds Anonymizer settings in sidecars and embedded XMP, not in RAW bytes")
+    func folderScan() throws {
+        let folder = try temporaryFolder("FolderRedactionScan")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let nested = folder.appendingPathComponent("day 2", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let marker = Data("<aaphoto:AnonymizerAmount>80.0</aaphoto:AnonymizerAmount>".utf8)
+
+        try Data("plain".utf8).write(to: folder.appendingPathComponent("a.jpg"))
+        // RAW files never carry embedded develop settings; a marker there is just bytes.
+        try marker.write(to: folder.appendingPathComponent("b.NEF"))
+        // Hidden app folders are skipped.
+        let hidden = folder.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
+        try marker.write(to: hidden.appendingPathComponent("a.xmp"))
+        #expect(FolderRedactionScanner.scan(folderURL: folder) == .clean)
+
+        try marker.write(to: nested.appendingPathComponent("c.xmp"))
+        #expect(FolderRedactionScanner.scan(folderURL: folder) == .redacts)
+        try FileManager.default.removeItem(at: nested.appendingPathComponent("c.xmp"))
+
+        var jpeg = Data([0xFF, 0xD8, 0xFF, 0xE1])
+        jpeg.append(marker)
+        try jpeg.write(to: nested.appendingPathComponent("d.jpg"))
+        #expect(FolderRedactionScanner.scan(folderURL: folder) == .redacts)
+
+        // Too many photos to check: incomplete, never "clean".
+        try FileManager.default.removeItem(at: nested.appendingPathComponent("d.jpg"))
+        try Data("plain".utf8).write(to: nested.appendingPathComponent("e.jpg"))
+        #expect(FolderRedactionScanner.scan(folderURL: folder) == .clean)
+        #expect(FolderRedactionScanner.scan(folderURL: folder, fileLimit: 1) == .incomplete)
+    }
+
+    @Test("folder drags leave the app only once the folder is known to be clean")
+    func folderOutsideDragPolicy() {
+        #expect(FolderOutsideDragPolicy.refusalMessage(for: .clean) == nil)
+        #expect(FolderOutsideDragPolicy.refusalMessage(for: .checking) == FolderOutsideDragPolicy.checkingMessage)
+        #expect(FolderOutsideDragPolicy.refusalMessage(for: .redacts) == FolderOutsideDragPolicy.redactsMessage)
+        #expect(FolderOutsideDragPolicy.state(for: .incomplete) == .tooLarge)
+        #expect(FolderOutsideDragPolicy.refusalMessage(for: .tooLarge) != nil)
+        let folder = URL(fileURLWithPath: "/shoots/2026")
+        #expect(FolderOutsideDragPolicy.folder(folder, contains: URL(fileURLWithPath: "/shoots/2026/day 1")))
+        #expect(!FolderOutsideDragPolicy.folder(folder, contains: URL(fileURLWithPath: "/shoots/2026-b")))
+    }
 }
 
 @Suite("Develop preview render coordinator")
 @MainActor
 struct DevelopPreviewRenderCoordinatorTests {
-    @Test("edit workspace has one materialized preview publication owner")
+    @Test("edit workspace has one scope-source publication owner and no dead preview image")
     func sourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -2207,7 +3186,9 @@ struct DevelopPreviewRenderCoordinatorTests {
         )
 
         #expect(source.contains("@State private var previewRender = DevelopPreviewRenderCoordinator()"))
-        #expect(source.contains("isShowingBefore ? sourceImage : previewRender.previewImage"))
+        #expect(source.contains("guard decision.shouldMaterializeScopeSource else {"))
+        #expect(!source.contains("previewRender.previewImage"))
+        #expect(!source.contains("private var displayImage: NSImage?"))
         #expect(!source.contains("@State private var previewCIImage"))
         #expect(!source.contains("previewCIImage ="))
     }
@@ -2215,67 +3196,100 @@ struct DevelopPreviewRenderCoordinatorTests {
     @Test("a replacement request rejects a cancelled renderer's late publication")
     func replacementRejectsLatePublication() async throws {
         let coordinator = DevelopPreviewRenderCoordinator()
-        let staleImage = NSImage(size: NSSize(width: 10, height: 10))
-        let currentImage = NSImage(size: NSSize(width: 20, height: 20))
         var publishedWidths: [Int] = []
 
         coordinator.beginImageSession()
         coordinator.requestRender(
-            fallback: nil,
             isHDR: false,
             operation: {
                 try? await Task.sleep(for: .milliseconds(80))
-                return Self.output(image: staleImage, width: 10)
+                return Self.output(width: 10)
             },
             scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
         )
         await Task.yield()
         coordinator.requestRender(
-            fallback: nil,
             isHDR: false,
-            operation: { Self.output(image: currentImage, width: 20) },
+            operation: { Self.output(width: 20) },
             scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
         )
 
-        try await eventually { coordinator.previewImage === currentImage }
+        try await eventually { publishedWidths == [20] }
         try await Task.sleep(for: .milliseconds(100))
 
-        #expect(coordinator.previewImage === currentImage)
         #expect(publishedWidths == [20])
         #expect(!coordinator.isRendering)
     }
 
-    @Test("ending an image session clears output and rejects an uncooperative late render")
+    @Test("requests made in the same main-actor turn coalesce to the last operation")
+    func sameTurnRequestsCoalesce() async throws {
+        let coordinator = DevelopPreviewRenderCoordinator()
+        var operationRuns: [Int] = []
+        var publishedWidths: [Int] = []
+
+        for width in [10, 20, 30] {
+            coordinator.requestRender(
+                isHDR: false,
+                operation: {
+                    operationRuns.append(width)
+                    return Self.output(width: width)
+                },
+                scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
+            )
+        }
+
+        try await eventually { !coordinator.isRendering }
+        #expect(operationRuns == [30])
+        #expect(publishedWidths == [30])
+    }
+
+    @Test("replacing a request cancels the running operation")
+    func replacementCancelsRunningOperation() async throws {
+        let coordinator = DevelopPreviewRenderCoordinator()
+        var observedCancellation = false
+
+        coordinator.requestRender(
+            isHDR: false,
+            operation: {
+                try? await Task.sleep(for: .seconds(5))
+                observedCancellation = Task.isCancelled
+                return nil
+            },
+            scopePublisher: { _, _ in }
+        )
+        try await Task.sleep(for: .milliseconds(30))
+        coordinator.cancelRender()
+
+        try await eventually { observedCancellation }
+        #expect(!coordinator.isRendering)
+    }
+
+    @Test("ending an image session rejects an uncooperative late render")
     func endingSessionRejectsLateRender() async throws {
         let coordinator = DevelopPreviewRenderCoordinator()
-        let image = NSImage(size: NSSize(width: 10, height: 10))
         var publicationCount = 0
 
         coordinator.requestRender(
-            fallback: nil,
             isHDR: true,
             operation: {
                 try? await Task.sleep(for: .milliseconds(50))
-                return Self.output(image: image, width: 10)
+                return Self.output(width: 10)
             },
             scopePublisher: { _, _ in publicationCount += 1 }
         )
         coordinator.endImageSession()
         try await Task.sleep(for: .milliseconds(80))
 
-        #expect(coordinator.previewImage == nil)
         #expect(publicationCount == 0)
         #expect(!coordinator.isRendering)
     }
 
-    @Test("a failed materialization preserves the source fallback and scope HDR state")
-    func failedMaterializationUsesFallback() async throws {
+    @Test("a failed materialization still publishes the scope HDR state")
+    func failedMaterializationPublishesHDRState() async throws {
         let coordinator = DevelopPreviewRenderCoordinator()
-        let fallback = NSImage(size: NSSize(width: 30, height: 30))
         var published: (hasImage: Bool, isHDR: Bool)?
 
         coordinator.requestRender(
-            fallback: fallback,
             isHDR: true,
             operation: { nil },
             scopePublisher: { image, isHDR in
@@ -2284,41 +3298,36 @@ struct DevelopPreviewRenderCoordinatorTests {
         )
         try await eventually { !coordinator.isRendering }
 
-        #expect(coordinator.previewImage === fallback)
         #expect(published?.hasImage == false)
         #expect(published?.isHDR == true)
     }
 
-    @Test("explicit cancellation retains the last preview and rejects late publication")
-    func cancellationRetainsLastPreview() async throws {
+    @Test("publishing without an image cancels pending work and reports the HDR mode")
+    func publishWithoutImageCancelsPendingWork() async throws {
         let coordinator = DevelopPreviewRenderCoordinator()
-        let retained = NSImage(size: NSSize(width: 15, height: 15))
-        let late = NSImage(size: NSSize(width: 40, height: 40))
-        var publishedWidths: [Int] = []
+        var publications: [(width: Int, isHDR: Bool)] = []
 
-        coordinator.publishFallback(
-            retained,
-            isHDR: false,
-            scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
-        )
         coordinator.requestRender(
-            fallback: retained,
             isHDR: false,
             operation: {
                 try? await Task.sleep(for: .milliseconds(50))
-                return Self.output(image: late, width: 40)
+                return Self.output(width: 40)
             },
-            scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
+            scopePublisher: { image, isHDR in publications.append((image?.width ?? 0, isHDR)) }
         )
-        coordinator.cancelRender()
+        coordinator.publishWithoutImage(
+            isHDR: true,
+            scopePublisher: { image, isHDR in publications.append((image?.width ?? 0, isHDR)) }
+        )
         try await Task.sleep(for: .milliseconds(80))
 
-        #expect(coordinator.previewImage === retained)
-        #expect(publishedWidths == [0])
+        #expect(publications.count == 1)
+        #expect(publications.first?.width == 0)
+        #expect(publications.first?.isHDR == true)
         #expect(!coordinator.isRendering)
     }
 
-    private static func output(image: NSImage, width: Int) -> DevelopPreviewRenderCoordinator.Output {
+    private static func output(width: Int) -> DevelopPreviewRenderCoordinator.Output {
         let context = CGContext(
             data: nil,
             width: width,
@@ -2328,10 +3337,7 @@ struct DevelopPreviewRenderCoordinatorTests {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )!
-        return DevelopPreviewRenderCoordinator.Output(
-            previewImage: image,
-            scopeImage: context.makeImage()!
-        )
+        return DevelopPreviewRenderCoordinator.Output(scopeImage: context.makeImage()!)
     }
 
     private func eventually(
@@ -2524,6 +3530,27 @@ struct DevelopRenderPolicyCoordinatorTests {
         #expect(!settled.shouldUpdateMetalPipeline)
     }
 
+    @Test("settled edits materialize a CPU scope source only when the Metal scope is unavailable")
+    func scopeMaterializationPolicy() {
+        func decision(scopePipeline: Bool, texture: Bool, dragging: Bool = false, crop: Bool = false)
+            -> DevelopRenderPolicyDecision {
+            coordinator.decision(for: DevelopRenderPolicyInput(
+                hasSourceImage: true,
+                isSliderInteractionActive: dragging,
+                hasMetalScopePipeline: scopePipeline,
+                hasMetalSourceTexture: texture,
+                isCropInteractionActive: crop,
+                isComparisonActive: false
+            ))
+        }
+
+        #expect(!decision(scopePipeline: true, texture: true).shouldMaterializeScopeSource)
+        #expect(decision(scopePipeline: false, texture: true).shouldMaterializeScopeSource)
+        #expect(decision(scopePipeline: true, texture: false).shouldMaterializeScopeSource)
+        #expect(!decision(scopePipeline: false, texture: true, dragging: true).shouldMaterializeScopeSource)
+        #expect(!decision(scopePipeline: false, texture: true, crop: true).shouldMaterializeScopeSource)
+    }
+
     @Test("display and clipping gamut mappings remain exact")
     func gamutPolicy() {
         #expect(coordinator.displayGamut(
@@ -2578,6 +3605,15 @@ struct DevelopSaveExportRoutingTests {
         #expect(!source.contains("copyMetadataToRenderedFile("))
         #expect(source.contains("failureTracker.sidecarOverlayFailures"))
         #expect(source.contains("copyFailures.isEmpty && overlayFailures.isEmpty"))
+    }
+
+    @Test("Develop Save honors the Export Location setting and never overwrites an existing file")
+    func destinationAndCollisionPolicy() throws {
+        let source = try saveImplementation()
+        #expect(source.contains("EditedImageRenderer.resolveOutputFolder("))
+        #expect(source.contains("collisionPolicy: .appendNumber"))
+        #expect(!source.contains("appendingPathComponent(\"Edited\""))
+        #expect(source.contains("revealURL:"))
     }
 
     @Test("Develop Save retains its single-session owner and cancellation admission")

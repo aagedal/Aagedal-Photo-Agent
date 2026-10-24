@@ -199,21 +199,39 @@ actor DevelopSourceDecodeService {
         ).ciImage
     }
 
-    func materialize(_ source: CIImage, maxPixelSize: CGFloat) -> CIImage? {
-        guard !Task.isCancelled else { return nil }
-        let extent = source.extent
-        let maxDimension = max(extent.width, extent.height)
-        let scale = maxDimension > maxPixelSize * 1.5 ? maxPixelSize / maxDimension : 1.0
-        let downsampled = scale < 1.0
-            ? source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-            : source
-        guard let cgImage = CameraRawApproximation.ciContext.createCGImage(
-            downsampled,
-            from: downsampled.extent,
-            format: .RGBAh,
-            colorSpace: CameraRawApproximation.workingColorSpace
-        ), !Task.isCancelled else { return nil }
-        return CIImage(cgImage: cgImage)
+    /// Decodes an adjacent RAW exactly like Develop's foreground screen-resolution decode
+    /// (`loadRAW` with the same size and orientation, no extra resampling) and stores the
+    /// texture in `pipeline`'s speculative cache tagged with those decode parameters, so a later
+    /// `applyCachedTexture` hit is interchangeable with the decode it replaces. Returns whether
+    /// a decode result was handed to the pipeline (it may still reject a stale permit).
+    @concurrent
+    nonisolated func precacheRAWTexture(
+        for url: URL,
+        targetOrientation: Int,
+        maxPixelSize: CGFloat,
+        into pipeline: MetalLivePreviewPipeline
+    ) async -> Bool {
+        // The permit is taken before decoding: a RAW decode-settings change (which invalidates
+        // in-flight permits) during this decode must reject the result decoded with the old
+        // settings, rather than let it into the cache after the purge.
+        guard !Task.isCancelled,
+              let permit = pipeline.beginSpeculativePrecache(),
+              let result = await loadRAW(
+                  from: url,
+                  maxPixelSize: maxPixelSize,
+                  targetOrientation: targetOrientation
+              ),
+              !Task.isCancelled else { return false }
+        pipeline.precacheTexture(
+            for: url,
+            ciImage: result.image,
+            neutralTemperature: result.neutralTemperature,
+            neutralTint: result.neutralTint,
+            exifOrientation: targetOrientation,
+            decodeMaxPixelSize: maxPixelSize,
+            permit: permit
+        )
+        return true
     }
 
     nonisolated static func orientedToTarget(

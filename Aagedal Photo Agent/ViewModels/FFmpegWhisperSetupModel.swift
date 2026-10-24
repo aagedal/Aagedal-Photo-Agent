@@ -26,6 +26,46 @@ final class FFmpegWhisperSetupModel {
 
     func finishTranscription() { isTranscribing = false }
 
+    /// A Caption transcription that keeps running after its photo was left. It still holds the
+    /// shared lock above, so Caption shows it (with Cancel) wherever the lock blocks new work.
+    struct DetachedTranscription: Equatable {
+        let id: UUID
+        let imageURL: URL
+    }
+    private(set) var detachedTranscription: DetachedTranscription?
+    /// Failure of a detached transcription, kept until dismissed because its panel is gone.
+    private(set) var detachedTranscriptionFailure: String?
+    @ObservationIgnored private var cancelDetached: (() -> Void)?
+    @ObservationIgnored private var detachedCancelRequested = false
+
+    func recordDetachedTranscription(imageURL: URL, cancel: @escaping () -> Void) -> UUID {
+        let job = DetachedTranscription(id: UUID(), imageURL: imageURL.standardizedFileURL)
+        detachedTranscription = job
+        detachedTranscriptionFailure = nil
+        cancelDetached = cancel
+        detachedCancelRequested = false
+        return job.id
+    }
+
+    func finishDetachedTranscription(id: UUID, failure: String?) {
+        guard let job = detachedTranscription, job.id == id else { return }
+        detachedTranscription = nil
+        cancelDetached = nil
+        if let failure, !detachedCancelRequested {
+            detachedTranscriptionFailure = "Transcribing \(job.imageURL.lastPathComponent) failed: \(failure)"
+        }
+        detachedCancelRequested = false
+    }
+
+    func cancelDetachedTranscription() {
+        detachedCancelRequested = true
+        cancelDetached?()
+    }
+
+    func dismissDetachedTranscriptionFailure() {
+        detachedTranscriptionFailure = nil
+    }
+
     static let preferenceKey = "voiceMemo.transcriptionProvider"
     static let executableBookmarkKey = "voiceMemo.whisper.executableBookmark"
     static let modelBookmarkKey = "voiceMemo.whisper.modelBookmark"

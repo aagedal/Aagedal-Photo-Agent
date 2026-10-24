@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import os
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -45,6 +46,108 @@ struct FFmpegWhisperJobRunnerTests {
         let job = try String(contentsOf: witness, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(!FileManager.default.fileExists(atPath: job))
         #expect(FileManager.default.fileExists(atPath: request.audio.url.path))
+    }
+
+    @Test("Verified executable and model snapshots are reused across jobs and re-verified after a change")
+    func snapshotReuse() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let snapshots = FFmpegWhisperVerifiedSnapshotCache()
+        defer { snapshots.removeAll() }
+        let request = try request("printf '%s' '{\"start\":0,\"end\":100,\"text\":\"Hei!\"}' > output.json\n",
+                                  directory: directory)
+        let hashed = OSAllocatedUnfairLock(initialState: [String]())
+        try await FFmpegWhisperHashObserver.$current.withValue({ url in
+            hashed.withLock { $0.append(url.lastPathComponent) }
+        }) {
+            for _ in 0..<3 {
+                let result = try await FFmpegWhisperJobRunner(snapshots: snapshots).run(request)
+                #expect(result.transcript.editableText == "Hei!")
+            }
+        }
+        let names = hashed.withLock { $0 }
+        #expect(names.filter { $0 == "producer" }.count == 1)
+        #expect(names.filter { $0 == "model.bin" }.count == 1)
+        #expect(names.filter { $0 == "audio.wav" }.count == 3)
+
+        // A same-size rewrite changes the source identity: the snapshot is discarded, the new
+        // bytes are verified against the pin and refused before execution.
+        try Data("MODEL fixture".utf8).write(to: request.model.url)
+        await #expect(throws: FFmpegWhisperJobError.identityMismatch) {
+            try await FFmpegWhisperJobRunner(snapshots: snapshots).run(request)
+        }
+    }
+
+    @Test("Concurrent jobs share one verification and neither loses its snapshot")
+    func concurrentJobsShareSnapshots() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let request = try request("printf '%s' '{\"start\":0,\"end\":100,\"text\":\"Hei!\"}' > output.json\n",
+                                  directory: directory)
+        func runConcurrently(_ snapshots: FFmpegWhisperVerifiedSnapshotCache) async throws -> [String] {
+            let hashed = OSAllocatedUnfairLock(initialState: [String]())
+            try await FFmpegWhisperHashObserver.$current.withValue({ url in
+                hashed.withLock { $0.append(url.lastPathComponent) }
+            }) {
+                try await withThrowingTaskGroup(of: String.self) { group in
+                    for _ in 0..<4 {
+                        group.addTask {
+                            try await FFmpegWhisperJobRunner(snapshots: snapshots).run(request).transcript.editableText
+                        }
+                    }
+                    for try await text in group { #expect(text == "Hei!") }
+                }
+            }
+            return hashed.withLock { $0 }
+        }
+
+        // Concurrent misses for the same artifact are verified once.
+        let shared = FFmpegWhisperVerifiedSnapshotCache()
+        defer { shared.removeAll() }
+        let names = try await runConcurrently(shared)
+        #expect(names.filter { $0 == "producer" }.count == 1)
+        #expect(names.filter { $0 == "model.bin" }.count == 1)
+        #expect(names.filter { $0 == "audio.wav" }.count == 4)
+
+        // Capacity 1 makes the executable and model evict each other while other jobs hold
+        // leases on them; no job may lose the snapshot it is cloning.
+        let tight = FFmpegWhisperVerifiedSnapshotCache(capacity: 1)
+        defer { tight.removeAll() }
+        _ = try await runConcurrently(tight)
+    }
+
+    @Test("A failed per-job clone falls back to a verified copy of the snapshot")
+    func cloneFailureFallsBackToCopy() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let snapshots = FFmpegWhisperVerifiedSnapshotCache(cloneFile: { _, _ in
+            errno = ENOTSUP
+            return -1
+        })
+        defer { snapshots.removeAll() }
+        let request = try request("printf '%s' '{\"start\":0,\"end\":100,\"text\":\"Hei!\"}' > output.json\n",
+                                  directory: directory)
+        for _ in 0..<2 {
+            let result = try await FFmpegWhisperJobRunner(snapshots: snapshots).run(request)
+            #expect(result.transcript.editableText == "Hei!")
+        }
+    }
+
+    @Test("Idle snapshots are evicted by the timer without another job")
+    func idleSnapshotsAreEvicted() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let snapshots = FFmpegWhisperVerifiedSnapshotCache(idleLifetime: .milliseconds(100))
+        defer { snapshots.removeAll() }
+        let request = try request("printf '%s' '{\"start\":0,\"end\":100,\"text\":\"Hei!\"}' > output.json\n",
+                                  directory: directory)
+        _ = try await FFmpegWhisperJobRunner(snapshots: snapshots).run(request)
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while snapshots.snapshotCount > 0, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(snapshots.snapshotCount == 0)
     }
 
     @Test("A valid-looking output cannot override failed process termination")

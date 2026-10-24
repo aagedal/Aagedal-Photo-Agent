@@ -1,4 +1,5 @@
 import Foundation
+import SwiftMediaMetadata
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -370,6 +371,62 @@ struct RejectMoveServiceTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: result.rejectedFolder.path).isEmpty)
     }
 
+    @Test("Rejecting a RAW+JPEG pair keeps one name and one shared XMP")
+    func rejectPairKeepsSharedXMP() async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        let xmp = root.appendingPathComponent("photo.xmp")
+        try Data("raw".utf8).write(to: raw)
+        try Data("jpeg".utf8).write(to: jpeg)
+        try Data("shared xmp".utf8).write(to: xmp)
+
+        let result = await FileSystemService().moveRejectedItems([raw, jpeg], in: root)
+
+        let rejected = root.appendingPathComponent(RejectMoveService.rejectedFolderName)
+        #expect(result.failedFiles.isEmpty)
+        #expect(result.movedFiles == [
+            rejected.appendingPathComponent("photo.ARW"),
+            rejected.appendingPathComponent("photo.JPG"),
+        ])
+        #expect(try Data(contentsOf: rejected.appendingPathComponent("photo.xmp")) == Data("shared xmp".utf8))
+        #expect(!FileManager.default.fileExists(atPath: rejected.appendingPathComponent("photo-1.JPG").path))
+        #expect(!FileManager.default.fileExists(atPath: xmp.path))
+    }
+
+    @Test("Rejecting one half of a RAW+JPEG pair leaves the RAW's develop only beside the RAW",
+          arguments: ["JPG", "ARW"])
+    func rejectOneHalfDetachesRawDevelopFromJPEG(rejectedExtension: String) async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        let xmp = root.appendingPathComponent("photo.xmp")
+        try Data("raw".utf8).write(to: raw)
+        try Data("jpeg".utf8).write(to: jpeg)
+        var shared = XMPData()
+        shared.description = "Pair caption"
+        var develop = CameraRawSettings()
+        develop.exposure2012 = 1.25
+        develop.anonymizer = AnonymizerSettings(amount: 50, blackOut: nil)
+        XMPDataBuilder.applyCameraRaw(develop, imageAspect: nil, into: &shared)
+        let sharedBytes = Data(XMPWriter.generateXML(shared).utf8)
+        try sharedBytes.write(to: xmp)
+
+        let rejectedURL = rejectedExtension == "ARW" ? raw : jpeg
+        let result = await FileSystemService().moveRejectedItems([rejectedURL], in: root)
+
+        #expect(result.failedFiles.isEmpty)
+        let rejectedXMP = root.appendingPathComponent(RejectMoveService.rejectedFolderName)
+            .appendingPathComponent("photo.xmp")
+        let (besideJPEG, besideRAW) = rejectedExtension == "JPG" ? (rejectedXMP, xmp) : (xmp, rejectedXMP)
+        let jpegSide = try #require(XMPMetadataReader.read(try Data(contentsOf: besideJPEG)))
+        #expect(jpegSide.cameraRaw == nil, "the JPEG must keep its own embedded develop, not the RAW's")
+        #expect(jpegSide.description == "Pair caption")
+        #expect(try Data(contentsOf: besideRAW) == sharedBytes)
+    }
+
     @Test("Name collisions keep image and sidecars associated")
     func collisionRenamesWholeBundle() async throws {
         let root = try makeTempFolder()
@@ -546,6 +603,60 @@ struct RejectMoveServiceTests {
         #expect(viewModel.currentFolderName == nextFolder.lastPathComponent)
     }
 
+    private func ledgerEntry(_ destination: String, hash: String) -> ImportLedger.Entry {
+        ImportLedger.Entry(name: "DSC_\(hash).JPG", size: 3, captureDate: nil, quickHash: hash,
+            destination: destination, importedAt: "2026-10-24T10:00:00Z", destinationSize: 3, finished: true)
+    }
+
+    @Test("Move Rejected reports the moved sources (for face cleanup) and the import ledger follows them")
+    func rejectMoveFollowUpUpdatesLedger() async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let shoot = root.appendingPathComponent("2026-10-24", isDirectory: true)
+        try FileManager.default.createDirectory(at: shoot, withIntermediateDirectories: true)
+        let names = ["a.jpg", "b.jpg", "kept.jpg"]
+        for name in names { try Data("abc".utf8).write(to: shoot.appendingPathComponent(name)) }
+        try ImportLedger.append(names.map { ledgerEntry("2026-10-24/\($0)", hash: $0) }, root: root)
+        let rejected = [shoot.appendingPathComponent("a.jpg"), shoot.appendingPathComponent("b.jpg")]
+
+        let result = await FileSystemService().moveRejectedItems(rejected, in: shoot)
+        #expect(result.movedFiles.count == 2)
+        let moved = await BrowserViewModel.finishRejectedMove(sources: rejected, movedFiles: result.movedFiles)
+
+        #expect(moved == Set(rejected))
+        let ledger = ImportLedger.load(root: root)
+        let latest = Dictionary(ledger.map { (ImportLedger.pathKey($0.destination), $0) }, uniquingKeysWith: { _, new in new })
+        #expect(latest[ImportLedger.pathKey("2026-10-24/.Rejected/a.jpg")]?.quickHash == "a.jpg")
+        #expect(latest[ImportLedger.pathKey("2026-10-24/.Rejected/b.jpg")]?.quickHash == "b.jpg")
+        #expect(ledger.count == 5)
+    }
+
+    @Test("Renames inside a library append relocated ledger entries; moves outside any ledger are ignored")
+    func renameRelocatesLedgerEntries() throws {
+        let root = try makeTempFolder()
+        let outside = try makeTempFolder()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let shoot = root.appendingPathComponent("shoot", isDirectory: true)
+        try FileManager.default.createDirectory(at: shoot, withIntermediateDirectories: true)
+        try ImportLedger.append([ledgerEntry("shoot/DSC_1.JPG", hash: "one")], root: root)
+        #expect(ImportLedger.root(containing: shoot.appendingPathComponent("DSC_1.JPG"))?.standardizedFileURL.path
+            == root.standardizedFileURL.path)
+
+        let appended = ImportLedger.recordRelocations([
+            (from: shoot.appendingPathComponent("DSC_1.JPG"), to: shoot.appendingPathComponent("2026-10-24_Oslo_001.JPG")),
+            (from: shoot.appendingPathComponent("unknown.JPG"), to: shoot.appendingPathComponent("renamed.JPG")),
+            (from: outside.appendingPathComponent("x.JPG"), to: outside.appendingPathComponent("y.JPG")),
+        ])
+        #expect(appended == 1)
+        let ledger = ImportLedger.load(root: root)
+        #expect(ledger.map(\.destination) == ["shoot/DSC_1.JPG", "shoot/2026-10-24_Oslo_001.JPG"])
+        #expect(ledger.last?.quickHash == "one")
+        #expect(!FileManager.default.fileExists(atPath: ImportLedger.url(forRoot: outside).path))
+    }
+
     private func makeTempFolder() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("reject-move-\(UUID().uuidString)", isDirectory: true)
@@ -594,7 +705,7 @@ private nonisolated final class BundleCommitGate: @unchecked Sendable {
         committedCount += 1
         condition.broadcast()
         while !released {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
     }
@@ -631,7 +742,7 @@ private nonisolated final class BlockingRejectMoveProbe: @unchecked Sendable {
         started = true
         condition.broadcast()
         while !released {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
 

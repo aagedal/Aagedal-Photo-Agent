@@ -11,8 +11,8 @@ nonisolated enum BrowserFileVisibility: String, CaseIterable, Sendable {
         }
     }
     static func saved() -> Self {
-        if let value = UserDefaults.standard.string(forKey: UserDefaultsKeys.browserFileVisibility), let mode = Self(rawValue: value) { return mode }
-        return UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles) ? .all : .photos
+        if let value = AppDefaults.store.string(forKey: UserDefaultsKeys.browserFileVisibility), let mode = Self(rawValue: value) { return mode }
+        return AppDefaults.store.bool(forKey: UserDefaultsKeys.showAllFiles) ? .all : .photos
     }
     static func isVideo(_ url: URL) -> Bool {
         UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true

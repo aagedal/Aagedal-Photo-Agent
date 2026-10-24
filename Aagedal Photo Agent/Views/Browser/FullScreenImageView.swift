@@ -46,10 +46,10 @@ private struct ImageDeletionConfirmationModifier: ViewModifier {
             .alert("Move to Trash", isPresented: isPresented) {
                 Button("Cancel", role: .cancel) { }
                 Button("Move to Trash", role: .destructive) {
-                    viewModel.deleteSelectedImages()
+                    viewModel.deleteConfirmedImages()
                 }
             } message: {
-                let count = viewModel.selectedImageIDs.count
+                let count = viewModel.deleteConfirmationCount
                 Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?\n\n\(TrashOperationFeedback.recoveryGuidance)")
             }
     }
@@ -348,6 +348,20 @@ struct FullScreenImageView: View {
     @State private var showFaceRectangles: Bool = false
     // The face whose name popover is open (keyed by face id, carrying its group id).
     @State private var renamingFace: RenamingFace?
+    // File-tag → display frame for the shown photo's stored face boxes (resolved off-main).
+    // Boxes are hidden until it matches the current photo and display orientation.
+    @State private var faceOverlayOrientation: FaceOverlayOrientationKey.Resolved?
+
+    /// Identifies the photo + model display orientation the face overlay frame belongs to.
+    private struct FaceOverlayOrientationKey: Hashable {
+        let url: URL
+        let displayOrientation: Int
+
+        struct Resolved: Equatable {
+            let key: FaceOverlayOrientationKey
+            let orientation: FaceDisplayOrientation
+        }
+    }
 
     /// Identifies the face box whose inline rename popover is currently presented.
     private struct RenamingFace: Identifiable {
@@ -369,6 +383,9 @@ struct FullScreenImageView: View {
     /// which SwiftUI runs the .task body vs the onChange handler on a navigation — either
     /// way the reload is correctly skipped, so we don't discard the prefetched image.
     @State private var lastDecodedURL: URL?
+    /// Photo whose pixels (placeholder or decoded) `currentImage` holds. While it differs
+    /// from the current photo, nothing of that photo is on screen yet.
+    @State private var displayedImageURL: URL?
     @State private var lastDecodedSettings: CameraRawSettings?
     /// Shared linear/nearest-neighbor scaling toggle (View menu + Option+S).
     @ObservedObject private var scaling = ImageScalingController.shared
@@ -384,13 +401,9 @@ struct FullScreenImageView: View {
     }
     private let maxZoom: CGFloat = 40.0
 
+    /// Narrow read: edits to other rows of `images` don't re-evaluate the viewer.
     private var currentImageFile: ImageFile? {
-        if let activeURL = viewModel.lastClickedImageURL,
-           viewModel.selectedImageIDs.contains(activeURL),
-           let index = viewModel.urlToImageIndex[activeURL] {
-            return viewModel.images[index]
-        }
-        return viewModel.firstSelectedImage
+        viewModel.fullScreenImage
     }
 
     private var isHDR: Bool {
@@ -556,7 +569,7 @@ struct FullScreenImageView: View {
                     // Cold load only: while there's nothing on screen yet. Once any
                     // preview is up, background quality upgrades (retina Phase 2)
                     // happen silently — no overlay.
-                    if isLoading && currentImage == nil {
+                    if loadFailure == nil, let url = currentImageFile?.url, displayedImageURL != url {
                         loadingOverlay(
                             text: "Loading\u{2026}",
                             guidance: highResolutionLoadingGuidance
@@ -756,20 +769,22 @@ struct FullScreenImageView: View {
             settingsReloadTask?.cancel()
             imageCache.cancelAllPrefetch()
         }
+        // Opened on a multi-selection, the arrows step through the selected photos only and
+        // keep the set; at either end they stop.
         .onKeyPress(.leftArrow) {
-            viewModel.selectPrevious()
+            viewModel.stepFullScreen(by: -1)
             return .handled
         }
         .onKeyPress(.rightArrow) {
-            viewModel.selectNext()
+            viewModel.stepFullScreen(by: 1)
             return .handled
         }
         .onKeyPress(.upArrow) {
-            viewModel.selectPrevious()
+            viewModel.stepFullScreen(by: -1)
             return .handled
         }
         .onKeyPress(.downArrow) {
-            viewModel.selectNext()
+            viewModel.stepFullScreen(by: 1)
             return .handled
         }
         .task(id: "\(currentImageFile?.url.absoluteString ?? "nil")|\(renderEdits)") {
@@ -947,23 +962,19 @@ struct FullScreenImageView: View {
     /// Apply CameraRaw adjustments + crop to a CGImage, preserving HDR color space.
     /// When `fileOrientation` differs from `exifOrientation`, the image pixels have
     /// the file's orientation baked in (e.g. C2PA images where the file wasn't modified).
-    /// Crop uses `fileOrientation` to match the pixel layout, then a corrective rotation
-    /// is applied to reach the target `exifOrientation`.
+    /// The pixels are rotated to `exifOrientation` before the edit, which then runs in the
+    /// display frame like Develop and export (`FullScreenImageCache.applyEditsInDisplayFrame`),
+    /// so watermarks stay upright on sidecar-rotated files.
     nonisolated private static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings?, exifOrientation: Int = 1, fileOrientation: Int = 0) -> CGImage {
         guard let settings else {
             return applyOrientationCorrection(cgImage, fileOrientation: fileOrientation, targetOrientation: exifOrientation)
         }
-        let cropOrientation = fileOrientation > 0 ? fileOrientation : exifOrientation
-        let ciImage = CIImage(cgImage: cgImage)
-        var processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: cropOrientation)
-
-        let correction = ImageFile.orientationCorrection(from: cropOrientation, to: exifOrientation)
-        if correction != .up { processed = processed.oriented(correction) }
-
-        let extent = processed.extent
-        guard extent.width > 0, extent.height > 0 else { return cgImage }
-
-        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
+        return FullScreenImageCache.applyCameraRaw(
+            to: cgImage,
+            settings: settings,
+            fileOrientation: fileOrientation > 0 ? fileOrientation : exifOrientation,
+            displayOrientation: exifOrientation
+        )
     }
 
     /// Apply gamut clipping to a CGImage by rendering through a target color space CGContext.
@@ -1013,24 +1024,24 @@ struct FullScreenImageView: View {
     }
 
     /// Apply CameraRaw adjustments + crop to a CIImage source, preserving HDR float values.
+    /// Edits in the display frame like the CGImage overload above.
     nonisolated private static func applyCameraRaw(to ciImage: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1, fileOrientation: Int = 0) -> CGImage? {
-        let cropOrientation = fileOrientation > 0 ? fileOrientation : exifOrientation
-        var processed: CIImage
-        if let settings {
-            processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: cropOrientation)
-        } else {
-            processed = ciImage
+        // A failed-GPU placeholder is registered so the image cache never keeps it.
+        RedactionPlaceholderTracking.trackSync {
+            let processed = FullScreenImageCache.applyEditsInDisplayFrame(
+                to: ciImage,
+                settings: settings,
+                fileOrientation: fileOrientation > 0 ? fileOrientation : exifOrientation,
+                displayOrientation: exifOrientation
+            )
+
+            let extent = processed.extent
+            guard extent.width > 0, extent.height > 0 else { return nil }
+            // Stamp the rendered HDR pixels with their content headroom so the CALayer engages EDR
+            // (a Metal-rendered CGImage otherwise reports unknown headroom and is excluded from
+            // tone mapping → clamped to SDR). See CameraRawApproximation.createDisplayCGImage.
+            return CameraRawApproximation.createDisplayCGImage(processed, from: extent)
         }
-
-        let correction = ImageFile.orientationCorrection(from: cropOrientation, to: exifOrientation)
-        if correction != .up { processed = processed.oriented(correction) }
-
-        let extent = processed.extent
-        guard extent.width > 0, extent.height > 0 else { return nil }
-        // Stamp the rendered HDR pixels with their content headroom so the CALayer engages EDR
-        // (a Metal-rendered CGImage otherwise reports unknown headroom and is excluded from
-        // tone mapping → clamped to SDR). See CameraRawApproximation.createDisplayCGImage.
-        return CameraRawApproximation.createDisplayCGImage(processed, from: extent)
     }
 
     /// Correct a CGImage's orientation when the file's baked-in orientation
@@ -1222,6 +1233,7 @@ struct FullScreenImageView: View {
         guard let url = currentImageFile?.url else {
             presentationFactsRequestID = nil
             currentImage = nil
+            displayedImageURL = nil
             sourcePixelSize = nil
             isLoading = false
             loadFailure = nil
@@ -1232,6 +1244,19 @@ struct FullScreenImageView: View {
         // tell an in-place edit from a navigation (handled by .task(id:)).
         lastDecodedURL = url
         lastDecodedSettings = currentImageFile?.cameraRawSettings
+        // Navigation: never leave the previous photo's pixels under this photo's name while
+        // its presentation facts load. Show its thumbnail, or nothing (cold-load overlay).
+        if displayedImageURL != url {
+            if let thumb = viewModel.thumbnailService.thumbnail(for: url, preferOriginal: !renderEdits),
+               let thumbImage = makeLoadedImage(from: thumb) {
+                currentImage = thumbImage
+                lastLoadedOrientation = currentImageFile?.exifOrientation ?? 1
+                displayedImageURL = url
+            } else {
+                currentImage = nil
+                originalCGImage = nil
+            }
+        }
 
         // Non-image files: show system icon and return
         guard SupportedImageFormats.isSupported(url: url) else {
@@ -1239,6 +1264,7 @@ struct FullScreenImageView: View {
             if let cgIcon = icon.cgImage(forProposedRect: nil, context: nil, hints: nil) {
                 currentImage = makeLoadedImage(from: cgIcon)
             }
+            displayedImageURL = url
             sourcePixelSize = nil
             isLoading = false
             return
@@ -1329,6 +1355,7 @@ struct FullScreenImageView: View {
         ) {
             imageLogger.info("\(filename): Phase 0 cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: cached)
+            displayedImageURL = url
             lastLoadedOrientation = imageOrientation
             hiResApplied = true
             isLoading = false
@@ -1345,11 +1372,13 @@ struct FullScreenImageView: View {
         )
         if let displayPreview {
             currentImage = makeLoadedImage(from: displayPreview)
+            displayedImageURL = url
             lastLoadedOrientation = imageOrientation
-        } else if let thumb = viewModel.thumbnailService.thumbnail(for: url),
+        } else if let thumb = viewModel.thumbnailService.thumbnail(for: url, preferOriginal: !renderEdits),
                   let thumbImage = makeLoadedImage(from: thumb) {
             imageLogger.info("\(filename): Phase 0 thumbnail placeholder")
             currentImage = thumbImage
+            displayedImageURL = url
             lastLoadedOrientation = imageOrientation
         }
 
@@ -1465,6 +1494,7 @@ struct FullScreenImageView: View {
                     if !isFullResLoaded {
                         currentImage = makeLoadedImage(from: image)
                     }
+                    displayedImageURL = url
                     hiResApplied = true
                     lastLoadedOrientation = imageOrientation
                     isLoading = false
@@ -1535,6 +1565,7 @@ struct FullScreenImageView: View {
             if !hiResApplied {
                 imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
                 currentImage = makeLoadedImage(from: preview)
+                displayedImageURL = url
                 lastLoadedOrientation = imageOrientation
             } else {
                 imageLogger.info("\(filename): Phase 0.5 ready but retina already applied — keeping hi-res")
@@ -1632,6 +1663,7 @@ struct FullScreenImageView: View {
                 guard let image else { return }
                 imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.width)x\(image.height))")
                 currentImage = makeLoadedImage(from: image)
+                displayedImageURL = url
                 lastLoadedOrientation = orientation
                 isFullResLoaded = true
                 hiResApplied = true
@@ -1779,7 +1811,8 @@ struct FullScreenImageView: View {
     }
 
     /// Maps a detection rect (Vision-normalized, bottom-left origin, in the full
-    /// display-oriented image frame) into display-space corners, replicating the
+    /// display-oriented image frame — stored boxes are file-tag framed, so map them with
+    /// `FaceDisplayOrientation.displayRect(forFileRect:)` first) into display-space corners, replicating the
     /// crop + straighten geometry that `CameraRawApproximation.applyCrop` bakes into
     /// the rendered image. Without an effective crop this reduces to a plain
     /// aspect-fit placement (the old `convertFaceRect` behaviour).
@@ -1883,9 +1916,18 @@ struct FullScreenImageView: View {
 
         if let faceVM = faceContext?.faceRecognitionViewModel,
            let url = currentImageFile?.url {
-            let facesInImage = faceVM.facesForImage(url)
+            // Stored boxes are in the file-tag frame; a sidecar-only rotation turns the shown
+            // photo. Map every box into the display frame first (detectionCorners then only
+            // applies the crop) and draw nothing until that frame is known for this photo.
+            let overlayKey = FaceOverlayOrientationKey(
+                url: url, displayOrientation: currentImageFile?.exifOrientation ?? 1)
+            let faceOrientation = faceOverlayOrientation?.key == overlayKey
+                ? faceOverlayOrientation?.orientation : nil
+            let shown: (CGRect) -> CGRect = { faceOrientation?.displayRect(forFileRect: $0) ?? $0 }
+            let facesInImage = faceOrientation == nil ? [] : faceVM.facesForImage(url)
             let showsSportsNumbers = faceVM.activeLens == .sports
-            let standaloneNumbers = showsSportsNumbers ? faceVM.numberDetectionsForImage(url) : []
+            let standaloneNumbers = showsSportsNumbers && faceOrientation != nil
+                ? faceVM.numberDetectionsForImage(url) : []
             // Follow the crop/straighten geometry baked into the rendered image so the
             // boxes stay glued to faces and numbers after a rotated crop.
             let displayCrop = renderEdits ? currentImageFile?.cameraRawSettings?.crop : nil
@@ -1893,7 +1935,7 @@ struct FullScreenImageView: View {
                 Canvas { context, _ in
                     for face in facesInImage {
                         let isHighlighted = face.id == highlightedFaceID
-                        let corners = detectionCorners(face.faceRect, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)
+                        let corners = detectionCorners(shown(face.faceRect), crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)
                         let groupColor = colorForGroup(face.groupID)
                         let lineWidth: CGFloat = isHighlighted ? 4 : 2
                         let opacity: CGFloat = isHighlighted ? 1.0 : 0.5
@@ -1920,7 +1962,7 @@ struct FullScreenImageView: View {
                             guard let number = face.jerseyNumber, let box = face.jerseyNumberBox else { continue }
                             drawNumberBox(
                                 context: context,
-                                corners: detectionCorners(box, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                                corners: detectionCorners(shown(box), crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
                                 number: number,
                                 confidence: face.numberConfidence,
                                 color: .orange,
@@ -1930,7 +1972,7 @@ struct FullScreenImageView: View {
                         for detection in standaloneNumbers {
                             drawNumberBox(
                                 context: context,
-                                corners: detectionCorners(detection.boundingBox, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                                corners: detectionCorners(shown(detection.boundingBox), crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
                                 number: detection.number,
                                 confidence: detection.numberConfidence,
                                 color: .red,
@@ -1945,12 +1987,14 @@ struct FullScreenImageView: View {
                 // addressable (synthetic-only faces have nothing to persist a name to).
                 ForEach(facesInImage, id: \.id) { face in
                     if let groupID = face.groupID {
-                        let box = quadPath(detectionCorners(face.faceRect, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)).boundingRect
+                        let box = quadPath(detectionCorners(shown(face.faceRect), crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)).boundingRect
                         Color.clear
                             .contentShape(Rectangle())
                             .frame(width: max(box.width, 12), height: max(box.height, 12))
                             .position(x: box.midX, y: box.midY)
                             .onTapGesture {
+                                // A running scan of this folder would overwrite the rename.
+                                guard !faceVM.faceEditingPausedForScan() else { return }
                                 renamingFace = RenamingFace(id: face.id, groupID: groupID, initialName: faceVM.groupName(groupID) ?? "")
                             }
                             .popover(isPresented: Binding(
@@ -1965,6 +2009,13 @@ struct FullScreenImageView: View {
                     }
                 }
             }
+            .task(id: overlayKey) {
+                let resolved = await FaceDisplayOrientation.resolved(
+                    for: overlayKey.url, modelDisplayOrientation: overlayKey.displayOrientation)
+                guard !Task.isCancelled else { return }
+                faceOverlayOrientation = .init(key: overlayKey, orientation: resolved)
+            }
+            .modifier(PersonShownUpdatePromptModifier(viewModel: faceVM, images: { viewModel.images }))
         }
     }
 
@@ -2078,7 +2129,7 @@ struct FullScreenImageView: View {
 
     private func colorLabelButton(_ label: ColorLabel, for file: ImageFile) -> some View {
         Button {
-            viewModel.setLabel(label)
+            viewModel.setLabelOnFullScreenImage(label)
             showLabelPicker = false
         } label: {
             if let color = label.color {
@@ -2126,7 +2177,7 @@ struct FullScreenImageView: View {
             let newRating: StarRating = star == file.starRating.rawValue
                 ? .none
                 : StarRating(rawValue: star) ?? .none
-            viewModel.setRating(newRating)
+            viewModel.setRatingOnFullScreenImage(newRating)
         } label: {
             Image(systemName: star <= file.starRating.rawValue ? "star.fill" : "star")
                 .font(.title3)
@@ -2191,11 +2242,11 @@ struct FullScreenPresenter: ViewModifier {
         } : nil
         window.onSetRating = { [weak viewModel] ratingValue in
             guard let rating = StarRating(rawValue: ratingValue) else { return }
-            viewModel?.setRating(rating)
+            viewModel?.setRatingOnFullScreenImage(rating)
         }
         window.onSetLabel = { [weak viewModel] index in
             guard let label = ColorLabel.fromShortcutIndex(index) else { return }
-            viewModel?.setLabel(label)
+            viewModel?.setLabelOnFullScreenImage(label)
         }
         window.onToggleZoom = { [weak controller] location in
             controller?.toggleZoom(at: location)

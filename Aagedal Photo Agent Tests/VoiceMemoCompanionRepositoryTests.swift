@@ -1334,7 +1334,7 @@ nonisolated private final class BlockingVoiceMemoPlanningProbe: @unchecked Senda
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return []

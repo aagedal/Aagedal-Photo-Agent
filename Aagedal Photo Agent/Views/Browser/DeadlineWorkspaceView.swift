@@ -395,11 +395,27 @@ struct DeadlineWorkspaceView: View {
             Label("Sent and receipt recorded", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         case .failed:
-            Text(deliveryModel.error?.localizedDescription ?? "Delivery failed; evidence retained.")
-                .foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(deliveryModel.error?.localizedDescription ?? "Delivery failed; evidence retained.")
+                    .foregroundStyle(.red)
+                if let summary = deliveryModel.uploadFailureSummary {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         case .cancelled:
-            Text("Cancelled at a file boundary; evidence retained.")
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Cancelled; evidence retained.")
+                    .foregroundStyle(.secondary)
+                if let summary = deliveryModel.uploadFailureSummary {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
@@ -469,7 +485,7 @@ struct DeadlineWorkspaceView: View {
         case .preparing:
             return "Wait while the exact delivery plan is frozen."
         case .executing:
-            return "Monitor delivery or cancel at the next safe file boundary."
+            return "Monitor delivery, or cancel — the file in transit is stopped and its partial upload removed."
         case .sent:
             return "Inspect the recorded receipt in Activity."
         case .failed:

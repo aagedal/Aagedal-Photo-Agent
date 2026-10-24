@@ -3,6 +3,51 @@ import os
 
 private nonisolated let sidecarLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataSidecarService")
 
+/// Process-wide record of app-sidecar mutations, so a reader that took a directory listing
+/// can tell which photos' carriers may have changed after it. Keyed by filename (case and
+/// Unicode normalization folded): a collision across folders only over-reports, which costs
+/// the reader one fresh read and never hides a write. Writers note *after* touching disk, so
+/// a listing taken before the note is always flagged.
+nonisolated final class MetadataSidecarWriteJournal: @unchecked Sendable {
+    static let shared = MetadataSidecarWriteJournal()
+
+    private let lock = NSLock()
+    private var generationValue: UInt64 = 0
+    private var lastWriteByName: [String: UInt64] = [:]
+    private var lastWildcardWrite: UInt64 = 0
+
+    /// Capture before taking the listing; pass to `urlsWritten(since:among:)` afterwards.
+    var generation: UInt64 { lock.withLock { generationValue } }
+
+    func noteWrite(_ imageURLs: URL...) {
+        lock.withLock {
+            generationValue &+= 1
+            for url in imageURLs { lastWriteByName[Self.key(url)] = generationValue }
+        }
+    }
+
+    /// Folder-wide mutation (e.g. deleting `.photo_metadata`): every photo is flagged.
+    func noteWriteAll() {
+        lock.withLock {
+            generationValue &+= 1
+            lastWildcardWrite = generationValue
+        }
+    }
+
+    func urlsWritten(since generation: UInt64, among urls: [URL]) -> Set<URL> {
+        lock.withLock {
+            guard generationValue > generation else { return [] }
+            if lastWildcardWrite > generation { return Set(urls) }
+            return Set(urls.filter { (lastWriteByName[Self.key($0)] ?? 0) > generation })
+        }
+    }
+
+    private static func key(_ url: URL) -> String {
+        url.lastPathComponent.precomposedStringWithCanonicalMapping
+            .lowercased(with: Locale(identifier: "en_US_POSIX"))
+    }
+}
+
 struct MetadataSidecarService: Sendable {
 
     nonisolated static let sidecarDirectoryName = ".photo_metadata"
@@ -128,6 +173,7 @@ struct MetadataSidecarService: Sendable {
         beforeInstall: @Sendable () throws -> Void = {},
         install: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
     ) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(destinationImageURL) }
         let snapshots = try carrierSnapshots(for: sourceImageURL, in: folderURL)
         let owned = snapshots.filter(\.isOwned)
         try requireMetadataDirectory(in: folderURL)
@@ -341,6 +387,50 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    /// Browser metadata-batch read. One listing of `.photo_metadata` decides which photos
+    /// currently have a carrier, so photos without one cost no per-file probes; the result is
+    /// authoritative for every URL in `imageURLs` (absent key = no readable owned sidecar,
+    /// exactly what `loadSidecar(for:in:)` would report). A cached record is reused while one
+    /// of its carriers is still listed; carriers that appeared since are read from disk.
+    @MetadataSidecarFilesystemActor
+    func loadSidecarsForBrowserBatch(
+        _ imageURLs: [URL], in folderURL: URL,
+        reusing cached: [URL: MetadataSidecar] = [:],
+        beforeRead: @escaping @Sendable (URL) -> Void = { _ in }
+    ) async -> [URL: MetadataSidecar] {
+        guard !Task.isCancelled, !imageURLs.isEmpty else { return [:] }
+        // Same outcomes as the per-file path: a missing directory means no carriers, and a
+        // non-directory entry fails every ownership read.
+        do { try requireMetadataDirectory(in: folderURL) } catch { return [:] }
+        guard let names = try? FileManager.default.contentsOfDirectory(
+            atPath: sidecarDirectory(for: folderURL).path
+        ) else { return [:] }
+        guard !names.isEmpty else { return [:] }
+        // Over-approximate matches (case and Unicode normalization folded) only cost a
+        // real read, which then decides; they can never hide an existing carrier.
+        let listed = Set(names.map(Self.carrierNameKey))
+        var result: [URL: MetadataSidecar] = [:]
+        var toRead: [URL] = []
+        for imageURL in imageURLs {
+            let hasCarrier = sidecarCandidateURLs(for: imageURL, in: folderURL)
+                .contains { listed.contains(Self.carrierNameKey($0.lastPathComponent)) }
+            guard hasCarrier else { continue }
+            if let record = cached[imageURL] {
+                result[imageURL] = record
+            } else {
+                toRead.append(imageURL)
+            }
+        }
+        guard !toRead.isEmpty else { return result }
+        let loaded = await loadSidecars(for: toRead, in: folderURL, beforeRead: beforeRead)
+        result.merge(loaded) { _, fresh in fresh }
+        return result
+    }
+
+    private nonisolated static func carrierNameKey(_ name: String) -> String {
+        name.precomposedStringWithCanonicalMapping.lowercased(with: Locale(identifier: "en_US_POSIX"))
+    }
+
     @MetadataSidecarFilesystemActor
     func imagesWithPendingChanges(in folderURL: URL) async -> Set<URL> {
         let sidecars = await loadAllSidecars(in: folderURL)
@@ -485,6 +575,7 @@ struct MetadataSidecarService: Sendable {
         createOnly: Bool = false,
         beforeCommit: @escaping @Sendable () throws -> Void = {}
     ) async throws -> VoiceMemoTranscriptRecord {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         try Task.checkCancellation()
         guard transcript.schemaVersion == VoiceMemoTranscriptRecord.currentSchemaVersion else {
             throw EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
@@ -551,6 +642,7 @@ struct MetadataSidecarService: Sendable {
     @MetadataSidecarFilesystemActor
     func resetVoiceMemoTranscriptSerialized(for imageURL: URL, in folderURL: URL,
         beforeCommit: @escaping @Sendable () throws -> Void = {}) async throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         try Task.checkCancellation()
         let reservation = try MCPProcessReservation.acquirePhoto(imageURL)
         defer { reservation.release() }
@@ -646,6 +738,7 @@ struct MetadataSidecarService: Sendable {
         expectedContentTokens: [Data?]? = nil,
         preserveModificationDate: Bool
     ) throws -> MetadataSidecar {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         try requireIncomingOwner(sidecar, imageURL: imageURL)
         let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
         if let expectedContentTokens {
@@ -1010,8 +1103,10 @@ struct MetadataSidecarService: Sendable {
             if !allowPendingOrientation, current?.orientationDraft != nil { throw PendingOrientationWriteError() }
             guard Self.sameOptionalRecord(current, expectedSidecar) else { throw self.ownershipChanged(imageURL) }
             let xmpData = try self.xmpBytes(for: imageURL)
-            let technical = xmpData.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
-                imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) }
+            let technical = PhotoSidecarOwnership.applyingDevelopOwnership(
+                xmpData.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
+                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) },
+                for: imageURL)
             guard xmpData == nil || technical != nil else {
                 throw DescriptiveMetadataWriteError.staleXMPSidecar(XMPSidecarService().sidecarURL(for: imageURL))
             }
@@ -1157,8 +1252,11 @@ struct MetadataSidecarService: Sendable {
 
     private nonisolated func metadataFromXMPReceipt(_ receipt: MetadataSidecarXMPCommitReceipt,
                                                    imageURL: URL) -> IPTCMetadata? {
-        receipt.snapshot?.data.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
-            imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) }
+        // A RAW+JPEG pair's stem crs belongs to the RAW, never to the JPEG's editor state.
+        PhotoSidecarOwnership.applyingDevelopOwnership(
+            receipt.snapshot?.data.flatMap { XMPSidecarService().loadSidecar(fromData: $0,
+                imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) },
+            for: imageURL)
     }
 
     private nonisolated func xmpBytes(for imageURL: URL) throws -> Data? {
@@ -1297,9 +1395,9 @@ struct MetadataSidecarService: Sendable {
                 let xmpService = XMPSidecarService()
                 let xmpURL = xmpService.sidecarURL(for: request.imageURL)
                 let xmpData = try self.xmpBytes(for: request.imageURL)
-                let xmpMetadata = xmpData.flatMap {
+                let xmpMetadata = PhotoSidecarOwnership.applyingDevelopOwnership(xmpData.flatMap {
                     xmpService.loadSidecar(fromData: $0, imageAspect: { ImagePixelAspect.aspect(at: request.imageURL) })
-                }
+                }, for: request.imageURL)
                 guard (xmpData == nil || xmpMetadata != nil),
                       request.expectedXMPSnapshot.map({ $0.data == xmpData }) ?? (xmpMetadata == request.expectedXMPMetadata) else {
                     throw DescriptiveMetadataWriteError.staleXMPSidecar(xmpURL)
@@ -1536,6 +1634,7 @@ struct MetadataSidecarService: Sendable {
     }
 
     nonisolated func deleteSidecar(for imageURL: URL, in folderURL: URL) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
         let owned = snapshots.filter(\.isOwned)
         _ = try decodeOwnedRecords(owned)
@@ -1563,6 +1662,7 @@ struct MetadataSidecarService: Sendable {
     }
 
     nonisolated func deleteAllSidecars(in folderURL: URL) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWriteAll() }
         let dir = sidecarDirectory(for: folderURL)
         if try entryExists(dir) {
             try requireMetadataDirectory(in: folderURL)
@@ -1572,6 +1672,7 @@ struct MetadataSidecarService: Sendable {
 
     func renameSidecar(from oldImageURL: URL, to newImageURL: URL, in folderURL: URL) throws {
         guard oldImageURL.standardizedFileURL != newImageURL.standardizedFileURL else { return }
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(oldImageURL, newImageURL) }
         let snapshots = try carrierSnapshots(for: oldImageURL, in: folderURL)
         let owned = snapshots.filter(\.isOwned)
         guard !owned.isEmpty else { return }
@@ -1585,6 +1686,7 @@ struct MetadataSidecarService: Sendable {
     }
 
     nonisolated func moveSidecar(for imageURL: URL, from sourceFolderURL: URL, to destinationFolderURL: URL) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(imageURL) }
         let fm = FileManager.default
         let sourceURLs = try ownedRelocationSources(for: imageURL, in: sourceFolderURL)
         guard !sourceURLs.isEmpty else { return }
@@ -1642,6 +1744,7 @@ struct MetadataSidecarService: Sendable {
         from sourceFolderURL: URL,
         to destinationFolderURL: URL
     ) throws {
+        defer { MetadataSidecarWriteJournal.shared.noteWrite(sourceImageURL, destinationImageURL) }
         let fm = FileManager.default
         let sourceURLs = try ownedRelocationSources(for: sourceImageURL, in: sourceFolderURL)
         guard let sourceURL = sourceURLs.first else { return }

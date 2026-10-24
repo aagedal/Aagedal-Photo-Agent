@@ -22,6 +22,8 @@ final class DevelopWorkspaceSessionCoordinator {
 
     private(set) var isWorkspaceActive = false
     private(set) var notice: String?
+    /// File the current notice can reveal in Finder (e.g. a just-saved render), if any.
+    private(set) var noticeRevealURL: URL?
 
     @ObservationIgnored private let noticeDuration: Duration
     @ObservationIgnored private var flushRegistration: FlushRegistration?
@@ -47,12 +49,15 @@ final class DevelopWorkspaceSessionCoordinator {
 
     /// Publishes one short-lived notice. Replacement invalidates both the previous task and its
     /// request identity because cancellation alone cannot stop already-resumed task code.
-    func showNotice(_ message: String) {
+    /// A notice with a `revealURL` offers "Show in Finder" and stays up longer so it can be
+    /// clicked.
+    func showNotice(_ message: String, revealURL: URL? = nil) {
         guard isWorkspaceActive else { return }
         invalidateNotice()
         notice = message
+        noticeRevealURL = revealURL
         let requestID = noticeRequestID
-        let duration = noticeDuration
+        let duration = revealURL == nil ? noticeDuration : noticeDuration * 5
         noticeTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: duration)
@@ -64,6 +69,7 @@ final class DevelopWorkspaceSessionCoordinator {
                   isWorkspaceActive,
                   noticeRequestID == requestID else { return }
             notice = nil
+            noticeRevealURL = nil
             noticeTask = nil
         }
     }
@@ -72,6 +78,7 @@ final class DevelopWorkspaceSessionCoordinator {
     func endWorkspace() {
         invalidateNotice()
         notice = nil
+        noticeRevealURL = nil
         flushRegistration?.cancel()
         flushRegistration = nil
         isWorkspaceActive = false

@@ -42,6 +42,132 @@ struct CaptionVoiceMemoStatusTests {
     }
 }
 
+@Suite("Caption preview pipeline")
+@MainActor
+struct CaptionPreviewPipelineTests {
+    private actor DecodeLog {
+        private(set) var decoded: [URL] = []
+        private var running = 0
+        private(set) var maximumConcurrent = 0
+        func begin(_ url: URL) { decoded.append(url); running += 1; maximumConcurrent = max(maximumConcurrent, running) }
+        func end() { running -= 1 }
+    }
+
+    private nonisolated static func bitmap(_ size: Int) -> CGImage {
+        let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        return context.makeImage()!
+    }
+
+    private func request(_ name: String, size: CGFloat = 2_048) -> CaptionPreviewPipeline.Request {
+        .init(url: URL(fileURLWithPath: "/caption/\(name).jpg"), orientation: 1, renderToken: "none",
+              fileSize: 10, fileModified: .distantPast, maxPixelSize: size)
+    }
+
+    private func pipeline(_ log: DecodeLog, delay: Duration = .zero) -> CaptionPreviewPipeline {
+        CaptionPreviewPipeline { url, _, _, maxPixelSize in
+            await log.begin(url)
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            await log.end()
+            return Self.bitmap(Int(maxPixelSize / 64))
+        }
+    }
+
+    @Test("Pane sizes round up to a small set of decode buckets")
+    func buckets() {
+        #expect(CaptionPreviewPipeline.pixelBucket(forLongestBackingPixels: 900) == 1_024)
+        #expect(CaptionPreviewPipeline.pixelBucket(forLongestBackingPixels: 1_500) == 1_536)
+        #expect(CaptionPreviewPipeline.pixelBucket(forLongestBackingPixels: 2_049) == 2_560)
+        #expect(CaptionPreviewPipeline.pixelBucket(forLongestBackingPixels: 9_000) == 3_840)
+    }
+
+    @Test("Returning to a photo, or asking for a smaller size, is served from memory")
+    func cacheHits() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log)
+        #expect(await pipeline.image(for: request("a", size: 2_560), settings: nil) != nil)
+        #expect(await pipeline.image(for: request("a", size: 2_560), settings: nil) != nil)
+        #expect(await pipeline.image(for: request("a", size: 1_536), settings: nil) != nil)
+        #expect(await log.decoded.count == 1)
+        // A larger request or different edits decode again.
+        _ = await pipeline.image(for: request("a", size: 3_840), settings: nil)
+        let edited = CaptionPreviewPipeline.Request(url: request("a").url, orientation: 1, renderToken: "edited",
+            fileSize: 10, fileModified: .distantPast, maxPixelSize: 2_048)
+        _ = await pipeline.image(for: edited, settings: nil)
+        #expect(await log.decoded.count == 3)
+    }
+
+    @Test("Decodes run one at a time and prefetched photos are ready on arrival")
+    func serialPrefetch() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(20))
+        pipeline.prefetch(request("b"), settings: nil)
+        pipeline.prefetch(request("c"), settings: nil)
+        _ = await pipeline.image(for: request("a"), settings: nil)
+        #expect(await pipeline.image(for: request("b"), settings: nil) != nil)
+        #expect(await pipeline.image(for: request("c"), settings: nil) != nil)
+        #expect(await log.decoded.count == 3)
+        #expect(await log.maximumConcurrent == 1)
+    }
+
+    @Test("The current photo jumps ahead of queued prefetches")
+    func foregroundJumpsQueue() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(30))
+        pipeline.prefetch(request("a"), settings: nil)   // takes the slot
+        pipeline.prefetch(request("b"), settings: nil)
+        pipeline.prefetch(request("c"), settings: nil)
+        await Task.yield()
+        _ = await pipeline.image(for: request("d"), settings: nil)
+        let decoded = await log.decoded
+        #expect(decoded.prefix(2) == [request("a").url, request("d").url])
+        #expect(await log.maximumConcurrent == 1)
+    }
+
+    @Test("A queued prefetch the user navigates to is promoted to the front")
+    func navigatingToPrefetchPromotesIt() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(30))
+        pipeline.prefetch(request("a"), settings: nil)
+        pipeline.prefetch(request("b"), settings: nil)
+        pipeline.prefetch(request("c"), settings: nil)
+        await Task.yield()
+        _ = await pipeline.image(for: request("c"), settings: nil)
+        #expect(await log.decoded.prefix(2) == [request("a").url, request("c").url])
+    }
+
+    @Test("A new pane size supersedes queued decodes of the old size")
+    func paneSizeChangeSupersedesOldSize() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(30))
+        pipeline.prefetch(request("a", size: 1_536), settings: nil)   // takes the slot
+        pipeline.prefetch(request("b", size: 1_536), settings: nil)
+        await Task.yield()
+        pipeline.retain(only: [request("a").url, request("b").url], maxPixelSize: 2_560)
+        _ = await pipeline.image(for: request("b", size: 2_560), settings: nil)
+        let decoded = await log.decoded
+        // The running 1,536 px decode of "a" may finish; the queued 1,536 px "b" never starts.
+        #expect(decoded.filter { $0 == request("b").url }.count == 1)
+        #expect(decoded.last == request("b").url)
+    }
+
+    @Test("Requests that left the navigation window never start decoding")
+    func supersededRequestsAreSkipped() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(50))
+        pipeline.prefetch(request("a"), settings: nil)
+        pipeline.prefetch(request("b"), settings: nil)
+        pipeline.prefetch(request("c"), settings: nil)
+        pipeline.retain(only: [request("c").url])
+        #expect(await pipeline.image(for: request("c"), settings: nil) != nil)
+        let decoded = await log.decoded
+        #expect(!decoded.contains(request("b").url))
+        #expect(decoded.last == request("c").url)
+        #expect(await log.maximumConcurrent == 1)
+    }
+}
+
 @Suite("Browser transcript badge notifications")
 struct BrowserTranscriptBadgeNotificationTests {
     @MainActor
@@ -1546,8 +1672,111 @@ struct CaptionWorkspaceSpeedToolsTests {
             scanComplete: true
         )
 
-        let people = CaptionConfirmedPersonOrdering.people(for: imageURL, in: data)
+        let people = CaptionConfirmedPersonOrdering.people(for: imageURL, in: data, orientation: .identity)
         #expect(people.map(\.name) == ["Left Person", "Right Person"])
+    }
+
+    private func approxRect(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        abs(lhs.minX - rhs.minX) < 1e-9 && abs(lhs.minY - rhs.minY) < 1e-9
+            && abs(lhs.width - rhs.width) < 1e-9 && abs(lhs.height - rhs.height) < 1e-9
+    }
+
+    /// Two named faces stored in the file-tag frame: A top-left, B bottom-right.
+    private func twoPeopleFaceData(_ imageURL: URL) -> FolderFaceData {
+        let a = FaceGroup(id: UUID(), name: "A", representativeFaceID: UUID(), faceIDs: [])
+        let b = FaceGroup(id: UUID(), name: "B", representativeFaceID: UUID(), faceIDs: [])
+        return FolderFaceData(
+            folderURL: imageURL.deletingLastPathComponent(),
+            faces: [
+                face(imageURL, CGRect(x: 0.1, y: 0.6, width: 0.2, height: 0.3), a.id),
+                face(imageURL, CGRect(x: 0.6, y: 0.1, width: 0.2, height: 0.2), b.id),
+            ],
+            groups: [a, b], lastScanDate: .distantPast, scanComplete: true)
+    }
+
+    @Test("a 180° sidecar-only rotation reverses left-to-right order and maps the boxes")
+    func sidecarHalfTurnOrdering() throws {
+        let imageURL = URL(fileURLWithPath: "/caption/raw.arw")
+        let data = twoPeopleFaceData(imageURL)
+        #expect(CaptionConfirmedPersonOrdering.people(for: imageURL, in: data, orientation: .identity)
+            .map(\.name) == ["A", "B"])
+
+        let halfTurn = FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 3)
+        let people = CaptionConfirmedPersonOrdering.people(for: imageURL, in: data, orientation: halfTurn)
+        #expect(people.map(\.name) == ["B", "A"])
+        #expect(approxRect(people[0].normalizedFaceRect, CGRect(x: 0.2, y: 0.7, width: 0.2, height: 0.2)))
+        #expect(approxRect(people[1].normalizedFaceRect, CGRect(x: 0.7, y: 0.1, width: 0.2, height: 0.3)))
+
+        // The appended caption names B first, as the photo is displayed.
+        let request = DescriptionAssistantRequest(imageURL: imageURL, editorLoadID: nil,
+            originalDescription: "", action: .writeFromImage, language: .bokmal, people: people)
+        #expect(request.personListing == "Fra venstre: B og A.")
+        let context = DescriptionAssistantFaceContext.make(for: imageURL, data: {
+            var d = data
+            d.scannedFiles[imageURL.path] = FileSignature(modificationDate: .distantPast, fileSize: 1)
+            return d
+        }(), currentSignature: FileSignature(modificationDate: .distantPast, fileSize: 1), orientation: halfTurn)
+        #expect(context.people.map(\.name) == ["B", "A"])
+    }
+
+    @Test("90° sidecar rotations map boxes into the display frame before ordering")
+    func sidecarQuarterTurnOrdering() throws {
+        let imageURL = URL(fileURLWithPath: "/caption/raw.nef")
+        let data = twoPeopleFaceData(imageURL)
+
+        // 90° CW: top-left → top-right, bottom-right → bottom-left.
+        let clockwise = FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 6)
+        let cw = CaptionConfirmedPersonOrdering.people(for: imageURL, in: data, orientation: clockwise)
+        #expect(cw.map(\.name) == ["B", "A"])
+        #expect(approxRect(cw[0].normalizedFaceRect, CGRect(x: 0.1, y: 0.2, width: 0.2, height: 0.2)))
+        #expect(approxRect(cw[1].normalizedFaceRect, CGRect(x: 0.6, y: 0.7, width: 0.3, height: 0.2)))
+
+        // 90° CCW: top-left → bottom-left, bottom-right → top-right.
+        let counter = FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 8)
+        let ccw = CaptionConfirmedPersonOrdering.people(for: imageURL, in: data, orientation: counter)
+        #expect(ccw.map(\.name) == ["A", "B"])
+        #expect(approxRect(ccw[0].normalizedFaceRect, CGRect(x: 0.1, y: 0.1, width: 0.3, height: 0.2)))
+        #expect(approxRect(ccw[1].normalizedFaceRect, CGRect(x: 0.7, y: 0.6, width: 0.2, height: 0.2)))
+
+        // Only the residual between the embedded tag and the sidecar counts.
+        let alreadyTagged = FaceDisplayOrientation(fileOrientation: 6, displayOrientation: 6)
+        #expect(CaptionConfirmedPersonOrdering.people(for: imageURL, in: data, orientation: alreadyTagged)
+            .map(\.normalizedFaceRect) == data.faces.map(\.faceRect))
+        let taggedThenTurned = FaceDisplayOrientation(fileOrientation: 6, displayOrientation: 3)
+        #expect(taggedThenTurned.correction == .right)
+    }
+
+    @Test("orientation mapping composes with the Caption crop without rotating twice")
+    func orientationComposesWithCrop() throws {
+        // The sensor-frame left half, displayed at 180°, is the display's right half. A face
+        // inside that crop in the file frame must stay inside it after both steps.
+        let halfTurn = FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 3)
+        let leftHalf = CameraRawCrop(top: 0, left: 0, bottom: 1, right: 0.5, angle: 0, hasCrop: true)
+        let displayRect = halfTurn.displayRect(forFileRect: CGRect(x: 0.1, y: 0.2, width: 0.2, height: 0.1))
+        let cropped = try #require(CaptionPreviewGeometry.croppedVisionRect(displayRect, crop: leftHalf,
+            displayOrientation: 3, renderedSize: CGSize(width: 500, height: 1000)))
+        #expect(approxRect(cropped, CGRect(x: 0.4, y: 0.7, width: 0.4, height: 0.1)))
+    }
+
+    @Test("residual rotation of decoded pixels matches the rect mapping")
+    func orientImagePixels() throws {
+        // 2×1: red left, blue right. After 180°, blue is on the left.
+        let context = try #require(CGContext(data: nil, width: 2, height: 1, bitsPerComponent: 8,
+            bytesPerRow: 8, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        context.setFillColor(red: 0, green: 0, blue: 1, alpha: 1)
+        context.fill(CGRect(x: 1, y: 0, width: 1, height: 1))
+        let image = try #require(context.makeImage())
+        let turned = try #require(FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 3)
+            .orientImage(image))
+        let rep = NSBitmapImageRep(cgImage: turned)
+        let left = try #require(rep.colorAt(x: 0, y: 0)?.usingColorSpace(.deviceRGB))
+        #expect(left.blueComponent > 0.8 && left.redComponent < 0.2)
+        let quarter = try #require(FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 6)
+            .orientImage(image))
+        #expect(quarter.width == 1 && quarter.height == 2)
     }
 
     @Test("priority fields preserve profile order and separate technical fields")
@@ -1688,6 +1917,54 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(face == CGRect(x: 75, y: 112.5, width: 150, height: 75))
     }
 
+    @Test("face rectangles follow the Develop crop the Caption preview renders")
+    func previewFaceRectsFollowCrop() throws {
+        func approx(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+            abs(lhs.minX - rhs.minX) < 1e-9 && abs(lhs.minY - rhs.minY) < 1e-9
+                && abs(lhs.width - rhs.width) < 1e-9 && abs(lhs.height - rhs.height) < 1e-9
+        }
+        let face = CGRect(x: 0.6, y: 0.7, width: 0.1, height: 0.1)
+        // No effective crop: the rect is unchanged.
+        #expect(CaptionPreviewGeometry.croppedVisionRect(face, crop: nil, displayOrientation: 1,
+            renderedSize: CGSize(width: 1000, height: 1000)) == face)
+        #expect(CaptionPreviewGeometry.croppedVisionRect(face,
+            crop: CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true),
+            displayOrientation: 1, renderedSize: CGSize(width: 1000, height: 1000)) == face)
+
+        // Right half: x is rescaled into the crop, y is untouched.
+        let rightHalf = CameraRawCrop(top: 0, left: 0.5, bottom: 1, right: 1, angle: 0, hasCrop: true)
+        let mapped = try #require(CaptionPreviewGeometry.croppedVisionRect(face, crop: rightHalf,
+            displayOrientation: 1, renderedSize: CGSize(width: 500, height: 1000)))
+        #expect(approx(mapped, CGRect(x: 0.2, y: 0.7, width: 0.2, height: 0.1)))
+        // A face in the cropped-away half is dropped.
+        #expect(CaptionPreviewGeometry.croppedVisionRect(CGRect(x: 0.1, y: 0.4, width: 0.1, height: 0.1),
+            crop: rightHalf, displayOrientation: 1, renderedSize: CGSize(width: 500, height: 1000)) == nil)
+
+        // Top half (crop is top-left origin, Vision is bottom-left).
+        let topHalf = CameraRawCrop(top: 0, left: 0, bottom: 0.5, right: 1, angle: 0, hasCrop: true)
+        let top = try #require(CaptionPreviewGeometry.croppedVisionRect(face, crop: topHalf,
+            displayOrientation: 1, renderedSize: CGSize(width: 1000, height: 500)))
+        #expect(approx(top, CGRect(x: 0.6, y: 0.4, width: 0.1, height: 0.2)))
+
+        // A straightened crop keeps a centred face centred and boxes its rotated corners.
+        let straightened = try #require(CaptionPreviewGeometry.croppedVisionRect(
+            CGRect(x: 0.45, y: 0.45, width: 0.1, height: 0.1),
+            crop: CameraRawCrop(top: 0.1, left: 0.1, bottom: 0.9, right: 0.9, angle: 10, hasCrop: true),
+            displayOrientation: 1, renderedSize: CGSize(width: 800, height: 800)))
+        #expect(abs(straightened.midX - 0.5) < 1e-9)
+        #expect(abs(straightened.midY - 0.5) < 1e-9)
+        #expect(straightened.width > 0.125)
+
+        // Pane-sized previews: the mapping depends only on the rendered aspect ratio, so a
+        // 1,024 px and a 3,840 px rendering of the same crop place faces identically.
+        let angled = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.8, right: 0.9, angle: 7, hasCrop: true)
+        let small = try #require(CaptionPreviewGeometry.croppedVisionRect(face, crop: angled,
+            displayOrientation: 6, renderedSize: CGSize(width: 1_024, height: 768)))
+        let large = try #require(CaptionPreviewGeometry.croppedVisionRect(face, crop: angled,
+            displayOrientation: 6, renderedSize: CGSize(width: 3_840, height: 2_880)))
+        #expect(approx(small, large))
+    }
+
     @Test("write and next advances only after success for the unchanged image")
     func writeAndNextGate() {
         let current = URL(fileURLWithPath: "/caption/a.jpg")
@@ -1802,7 +2079,7 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(caption.contains("settingsViewModel.requestedDestination = .metadata"))
         #expect(caption.contains("openSettings()"))
         #expect(caption.contains("caption.metadataSettings"))
-        #expect(caption.contains("try await flushCoordinator.flushAsync()"))
+        #expect(caption.contains("try await flushCoordinator.flushAsync(owner: captionEditorOwner)"))
         #expect(caption.contains("session.isTransitioning || flushCoordinator.isTransitioning"))
         #expect(caption.contains(".disabled(isCurrentPhotoUnderReview || isEditorTransitioning)"))
         #expect(caption.contains("!isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return event }"))
@@ -2143,13 +2420,135 @@ struct DescriptionAssistantFaceContextTests {
         }
         var data = FolderFaceData(folderURL: photo.deletingLastPathComponent(), faces: faces,
             groups: groups, lastScanDate: .now, scanComplete: true, scannedFiles: [photo.path: signature])
-        let context = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature)
+        let context = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature, orientation: .identity)
         #expect(context.people.map(\.name) == ["Person 0"])
         data.faces[0].imageURL = URL(fileURLWithPath: "/photos/two.jpg")
-        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature).people.isEmpty)
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature, orientation: .identity).people.isEmpty)
         #expect(DescriptionAssistantFaceContext.make(for: photo, data: data,
-            currentSignature: FileSignature(modificationDate: .now, fileSize: 100)).people.isEmpty)
-        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: nil).people.isEmpty)
+            currentSignature: FileSignature(modificationDate: .now, fileSize: 100), orientation: .identity).people.isEmpty)
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: nil, orientation: .identity).people.isEmpty)
+    }
+
+    @Test("A metadata-only write keeps face context current under the same rule as the face scan")
+    func metadataOnlyWriteKeepsContext() {
+        let photo = URL(fileURLWithPath: "/photos/fingerprinted.jpg")
+        let group = FaceGroup(id: UUID(), name: "Støre, Jonas Gahr", representativeFaceID: UUID(), faceIDs: [])
+        let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: CGRect(x: 0.1, y: 0.2, width: 0.1, height: 0.1),
+            featurePrintData: Data(), groupID: group.id, detectedAt: .now)
+        let stored = FileSignature(modificationDate: Date(timeIntervalSince1970: 10), fileSize: 100,
+            contentFingerprint: "jpeg-v1:same")
+        let data = FolderFaceData(folderURL: photo.deletingLastPathComponent(), faces: [face], groups: [group],
+            lastScanDate: .now, scanComplete: true, scannedFiles: [photo.path: stored])
+        let rewritten = FileSignature(modificationDate: Date(timeIntervalSince1970: 20), fileSize: 140,
+            contentFingerprint: "jpeg-v1:same")
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: rewritten, orientation: .identity)
+            .people.map(\.name) == ["Støre, Jonas Gahr"])
+        let repixelled = FileSignature(modificationDate: Date(timeIntervalSince1970: 20), fileSize: 140,
+            contentFingerprint: "jpeg-v1:other")
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: repixelled, orientation: .identity).people.isEmpty)
+        #expect(FileSignature.storedFacesAreCurrent(stored: stored, current: rewritten))
+        #expect(!FileSignature.storedFacesAreCurrent(stored: stored, current: repixelled))
+    }
+
+    /// Two named faces: "Left" around x 0.15, "Right" around x 0.75 (Vision, bottom-left origin,
+    /// both at y 0.4…0.6 so the top-left frame puts them at y 0.4…0.6 too).
+    private func twoFacePhoto() -> (URL, FolderFaceData, FileSignature) {
+        let photo = URL(fileURLWithPath: "/photos/blurred.jpg")
+        let signature = FileSignature(modificationDate: Date(timeIntervalSince1970: 10), fileSize: 100)
+        let left = FaceGroup(id: UUID(), name: "Left", representativeFaceID: UUID(), faceIDs: [])
+        let right = FaceGroup(id: UUID(), name: "Right", representativeFaceID: UUID(), faceIDs: [])
+        let faces = [
+            DetectedFace(id: UUID(), imageURL: photo, faceRect: CGRect(x: 0.1, y: 0.4, width: 0.1, height: 0.2),
+                         featurePrintData: Data(), groupID: left.id, detectedAt: .now),
+            DetectedFace(id: UUID(), imageURL: photo, faceRect: CGRect(x: 0.7, y: 0.4, width: 0.1, height: 0.2),
+                         featurePrintData: Data(), groupID: right.id, detectedAt: .now)
+        ]
+        let data = FolderFaceData(folderURL: photo.deletingLastPathComponent(), faces: faces,
+            groups: [left, right], lastScanDate: .now, scanComplete: true, scannedFiles: [photo.path: signature])
+        return (photo, data, signature)
+    }
+
+    private func blur(_ configure: (inout MaskAdjustment) -> Void) -> CameraRawSettings {
+        var mask = MaskAdjustment()
+        mask.anonymizer = AnonymizerSettings(amount: 100, blackOut: nil)
+        configure(&mask)
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        return settings
+    }
+
+    @Test("Faces under an Anonymizer mask are left out of the caption context")
+    func blurredFacesAreOmitted() {
+        let (photo, data, signature) = twoFacePhoto()
+        let overLeft = blur { $0.geometry = EllipseMaskGeometry(centerX: 0.15, centerY: 0.5, radiusX: 0.06, radiusY: 0.08) }
+        let context = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [overLeft], sensorAspect: 1.5)
+        #expect(context.people.map(\.name) == ["Right"])
+        #expect(context.notice == "Blurred faces are left out.")
+
+        // A disabled mask redacts nothing.
+        var disabled = overLeft
+        disabled.localAdjustments?[0].enabled = false
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [disabled], sensorAspect: 1.5).people.count == 2)
+
+        // The global Anonymizer, or an inverted mask, covers every face.
+        var global = CameraRawSettings()
+        global.anonymizer = AnonymizerSettings(amount: 50, blackOut: nil)
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [global], sensorAspect: 1.5).people.isEmpty)
+        let inverted = blur { $0.inverted = true }
+        let none = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [inverted], sensorAspect: 1.5)
+        #expect(none.people.isEmpty)
+        #expect(none.notice == "The named faces in this photo are blurred, so their names are left out.")
+    }
+
+    @Test("Mask geometry is rotated into the displayed frame before matching faces")
+    func maskAndFaceShareTheDisplayFrame() {
+        let (photo, data, signature) = twoFacePhoto()
+        // Displayed rotated 180°: the stored left face shows on the right (display x ≈ 0.85),
+        // and a sensor-frame mask at x 0.15 shows at display x 0.85 — they still meet.
+        let halfTurn = FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 3)
+        let sensorLeft = blur { $0.geometry = EllipseMaskGeometry(centerX: 0.15, centerY: 0.5, radiusX: 0.06, radiusY: 0.08) }
+        let context = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: halfTurn, redactionSettings: [sensorLeft], sensorAspect: 1.5)
+        #expect(context.people.map(\.name) == ["Right"])
+
+        // A brush stroke over the right face in the sensor frame.
+        let brushRight = blur {
+            $0.brush = BrushMaskGeometry(strokes: [BrushStroke(
+                dabs: [BrushDab(x: 0.75, y: 0.5, flow: 1, hardness: 1)], radius: 0.03)])
+        }
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [brushRight], sensorAspect: 1.5)
+            .people.map(\.name) == ["Left"])
+
+        // An AI matte authored upright over the left face, while the photo is displayed rotated
+        // 90° clockwise: the left face (Vision x 0.1…0.2) maps to display top-left y 0.1…0.2.
+        let quarter = FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 6)
+        let aiLeft = blur {
+            $0.aiMask = AIMaskGeometry(width: 10, height: 10, pngData: Data([1]), sourceOrientation: 1)
+        }
+        let rotatedMatte = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: quarter, redactionSettings: [aiLeft], sensorAspect: 1.5,
+            aiMaskBounds: { _ in CGRect(x: 0.1, y: 0.4, width: 0.1, height: 0.2) })
+        #expect(rotatedMatte.people.map(\.name) == ["Right"])
+        // An undecodable matte covers everything rather than letting a name through.
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [aiLeft], sensorAspect: 1.5,
+            aiMaskBounds: { _ in nil }).people.isEmpty)
+    }
+
+    @Test("Top-left rect rotation matches the display-orientation quarter turns")
+    func rectRotation() {
+        let rect = CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.1)
+        let quarter = RedactedFaceFilter.rotated(rect, from: 1, to: 6)
+        #expect(quarter.map { abs($0.minX - 0.7) < 1e-9 && abs($0.minY - 0.1) < 1e-9
+            && abs($0.width - 0.1) < 1e-9 && abs($0.height - 0.3) < 1e-9 } == true)
+        let back = RedactedFaceFilter.rotated(quarter ?? .zero, from: 6, to: 1)
+        #expect(back.map { abs($0.minX - rect.minX) < 1e-9 && abs($0.minY - rect.minY) < 1e-9 } == true)
+        #expect(RedactedFaceFilter.rotated(rect, from: 1, to: 2) == nil, "mirrors fall back to full coverage")
     }
 }
 
@@ -2533,6 +2932,19 @@ struct ImageDescriptionAssistantTests {
         #expect(thumbnail.width * thumbnail.height <= 2_000_000)
         #expect(abs(Double(thumbnail.height) / Double(thumbnail.width) - 1.5) < 0.01)
         #expect(DescriptionAssistantImageInput.thumbnailDimension(width: 300, height: 200) == 300)
+    }
+
+    @Test("Image input follows a sidecar-only rotation on top of the embedded tag")
+    func sidecarRotatedThumbnail() throws {
+        let url = try makeOrientedPhoto()  // landscape pixels, embedded tag 6 → portrait
+        defer { try? FileManager.default.removeItem(at: url) }
+        let sameAsFile = try DescriptionAssistantImageInput.load(url, sidecarOrientation: { _ in 6 })
+        #expect(sameAsFile.height > sameAsFile.width)
+        // A culling rotation recorded only in the sidecar turns the photo back to landscape.
+        let culled = try DescriptionAssistantImageInput.load(url, sidecarOrientation: { _ in 1 })
+        #expect(culled.width > culled.height)
+        #expect(abs(Double(culled.width) / Double(culled.height) - 1.5) < 0.01)
+        #expect(culled.width * culled.height <= 2_000_000)
     }
 
     @Test("Apple image drafts receive upright bounded pixels, metadata and reporting notes")

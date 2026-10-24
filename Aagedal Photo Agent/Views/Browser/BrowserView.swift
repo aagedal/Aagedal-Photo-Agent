@@ -10,10 +10,16 @@ struct BrowserView: View {
     var faceGroupCount: Int = 0
     /// Fired when the user clicks into this grid (split-view pane focus).
     var onFocus: (() -> Void)? = nil
+    /// Whether this is the active split pane. Only the active pane's grid takes keyboard
+    /// focus, since app commands and the full-screen viewer act on the active pane.
+    var isActivePane: Bool = true
     /// Whether this pane contributes the filter/sort/search toolbar items. In split view
     /// both panes are in the hierarchy, so only the active one provides them — otherwise
     /// the groups duplicate and overflow into the toolbar's "»" menu.
     var providesToolbar: Bool = true
+    /// Routes a file-visibility change through the app-wide setting (all panes + Settings).
+    /// Without it the change applies to this pane only.
+    var selectFileVisibility: ((BrowserFileVisibility) -> Void)? = nil
 
     var body: some View {
         browserContent
@@ -30,6 +36,22 @@ struct BrowserView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: viewModel.errorMessage)
+            // On the whole workspace (not just the grid) so it still shows when the operation
+            // emptied the folder, e.g. after moving every photo to .Rejected.
+            .overlay(alignment: .bottom) {
+                if let notice = viewModel.fileOperationNotice {
+                    fileOperationNoticeView(notice)
+                        .padding(.bottom, 44)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: viewModel.fileOperationNotice)
+            // Selected photos are what Clean Feed shows and what gets dragged out; read their
+            // develop settings now rather than when the folder's metadata batch reaches them.
+            .onChange(of: viewModel.selectedImageIDs) { _, selected in
+                let active = viewModel.lastClickedImageURL.map { [$0] } ?? []
+                viewModel.ensureDevelopSettingsLoaded(for: active + selected.prefix(24))
+            }
             .sheet(isPresented: $showingDescriptionBatch) {
                 BatchDescriptionAssistantView(urls: descriptionBatchURLs, browser: viewModel)
             }
@@ -42,14 +64,14 @@ struct BrowserView: View {
                 if providesToolbar {
                     ToolbarItemGroup(placement: .automatic) {
                         ColorLabelFilterBar(selectedLabels: $viewModel.selectedColorLabels)
-                            .disabled(viewModel.images.isEmpty)
+                            .disabled(!viewModel.hasImages)
                             .padding(8)
                     }
 
 
                     ToolbarItemGroup(placement: .automatic) {
                         StarRatingFilterBar(minimumRating: $viewModel.minimumStarRating)
-                            .disabled(viewModel.images.isEmpty)
+                            .disabled(!viewModel.hasImages)
                             .padding(8)
 
                         filterMenu
@@ -84,16 +106,28 @@ struct BrowserView: View {
     private var browserContent: some View {
         if viewModel.isLoading {
             ProgressView("Loading images...")
-        } else if viewModel.images.isEmpty {
+        } else if !viewModel.hasImages || viewModel.folderLoadErrorMessage != nil {
+            // A folder that vanished after loading (ejected card, unmounted share) keeps its
+            // rows in memory so editor state survives, but shows this state over the grid.
             if let error = viewModel.folderLoadErrorMessage {
                 ContentUnavailableView {
-                    Label("Couldn’t Open Folder", systemImage: "exclamationmark.triangle")
+                    Label(
+                        error == BrowserViewModel.folderUnavailableMessage
+                            ? "Folder Unavailable"
+                            : "Couldn’t Open Folder",
+                        systemImage: "exclamationmark.triangle"
+                    )
                 } description: {
                     Text(error)
                 } actions: {
                     if let folderURL = viewModel.currentFolderURL {
                         Button("Retry") {
-                            viewModel.loadFolder(url: folderURL, addToOpenFolders: false)
+                            if viewModel.isCurrentFolderUnavailable, viewModel.hasImages {
+                                // Rescan in place once it's back; rows and editor state stay.
+                                Task { await viewModel.retryUnavailableFolder() }
+                            } else {
+                                viewModel.loadFolder(url: folderURL, addToOpenFolders: false)
+                            }
                         }
                     }
                     Button("Open Another Folder") {
@@ -119,6 +153,17 @@ struct BrowserView: View {
                         Text("No supported images found in this folder")
                     }
                 } actions: {
+                    if viewModel.currentFolderURL != nil,
+                       viewModel.iCloudDownloadNotice == nil,
+                       viewModel.fileVisibility == .photos {
+                        Button("Show Videos & Other Media") {
+                            if let selectFileVisibility {
+                                selectFileVisibility(.media)
+                            } else {
+                                viewModel.fileVisibility = .media
+                            }
+                        }
+                    }
                     Button("Open Folder") {
                         viewModel.openFolder()
                     }
@@ -129,6 +174,7 @@ struct BrowserView: View {
                 CollectionViewGridRepresentable(
                     viewModel: viewModel,
                     onFocus: onFocus,
+                    isActivePane: isActivePane,
                     onImproveDescriptions: presentDescriptionBatch,
                     onExtractVideoStills: { url in extractionVideo = ExtractionVideo(url: url) }
                 )
@@ -156,6 +202,17 @@ struct BrowserView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
 
+                    if viewModel.isPreparingRename {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Preparing rename…").font(.callout)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
                     if let progress = viewModel.metadataLoadingProgress {
                         VStack(alignment: .leading, spacing: 5) {
                             Label(
@@ -177,7 +234,7 @@ struct BrowserView: View {
 
                     // Permanent image count overlay
                     ImageCountOverlayView(
-                        totalImageCount: viewModel.images.count,
+                        totalImageCount: viewModel.imageCount,
                         visibleImageCount: viewModel.visibleImages.count,
                         isFiltering: viewModel.isFilteringActive,
                         selectedCount: viewModel.selectedImageIDs.count,
@@ -190,6 +247,7 @@ struct BrowserView: View {
                 .animation(.easeInOut(duration: 0.2), value: viewModel.sortFeedback)
                 .animation(.easeInOut(duration: 0.25), value: viewModel.iCloudDownloadNotice)
                 .animation(.easeInOut(duration: 0.2), value: viewModel.metadataLoadingProgress)
+                .animation(.easeInOut(duration: 0.2), value: viewModel.isPreparingRename)
 
                 // Thumbnail size slider (bottom-right)
                 VStack {
@@ -236,6 +294,36 @@ struct BrowserView: View {
         descriptionBatchURLs = viewModel.selectedImages.filter { $0.isImageFile }.map(\.url)
         guard !descriptionBatchURLs.isEmpty else { return }
         showingDescriptionBatch = true
+    }
+
+    private func fileOperationNoticeView(_ notice: FileOperationNotice) -> some View {
+        HStack(spacing: 8) {
+            Label(notice.message, systemImage: notice.systemImage)
+                .font(.callout)
+            if let url = notice.revealURL {
+                // Open the folder itself: `.Rejected` is hidden, so selecting it in its parent
+                // would show nothing in a default Finder window.
+                Button("Reveal in Finder") { NSWorkspace.shared.open(url) }
+                    .controlSize(.small)
+            }
+            Button {
+                viewModel.fileOperationNotice = nil
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss notice")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .task(id: notice.id) {
+            try? await Task.sleep(for: .seconds(8))
+            if viewModel.fileOperationNotice?.id == notice.id {
+                viewModel.fileOperationNotice = nil
+            }
+        }
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -323,7 +411,9 @@ struct BrowserView: View {
             )
         }
         .help("Filter images")
-        .disabled(viewModel.images.isEmpty)
+        // Stays enabled for an open folder with nothing visible: "Show" is how a
+        // videos-only folder reveals its files.
+        .disabled(viewModel.currentFolderURL == nil)
     }
 
     private var searchField: some View {
@@ -333,6 +423,15 @@ struct BrowserView: View {
                 .frame(width: 200)
                 .focused($searchFieldFocused)
                 .accessibilityIdentifier("browser.search")
+                // Return/Escape hand the keyboard back to the grid so culling keys work
+                // again (metadata panel convention: Escape ends editing, keeps the text).
+                .onSubmit { returnFocusToGrid() }
+                .onKeyPress(.escape) {
+                    // Escape cancels an input-method composition; let the text view handle it.
+                    if (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true { return .ignored }
+                    returnFocusToGrid()
+                    return .handled
+                }
 
             Button {
                 viewModel.searchText = ""
@@ -347,7 +446,12 @@ struct BrowserView: View {
             .disabled(viewModel.searchText.isEmpty)
             .accessibilityHidden(viewModel.searchText.isEmpty)
         }
-        .disabled(viewModel.images.isEmpty)
+        .disabled(!viewModel.hasImages)
+    }
+
+    private func returnFocusToGrid() {
+        searchFieldFocused = false
+        viewModel.shouldRestoreGridFocus = true
     }
 
 }

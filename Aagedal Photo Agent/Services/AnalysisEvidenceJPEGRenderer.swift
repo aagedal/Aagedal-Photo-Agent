@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 
 enum AnalysisEvidenceJPEGError: Error, LocalizedError {
     case sourceImageUnavailable
@@ -22,6 +23,10 @@ enum AnalysisEvidenceJPEGError: Error, LocalizedError {
 /// Creates flattened, display-oriented evidence figures without changing the source file.
 /// Photo coordinates use the case's normalized top-left frame; map coordinates use the frozen
 /// WGS 84 viewport also used by analysis reports.
+///
+/// Bitmap drawing and JPEG encoding run in `@concurrent` functions that take and return only
+/// Sendable values (`CGImage`, `Data`), so multi-megapixel evidence never blocks the main actor.
+/// The MainActor entry points only fetch inputs and wrap results for AppKit callers.
 @MainActor
 enum AnalysisEvidenceJPEGRenderer {
     static func photoJPEG(
@@ -29,12 +34,14 @@ enum AnalysisEvidenceJPEGRenderer {
         annotations: [AnalysisAnnotation],
         maxPixelSize: CGFloat = 8_192
     ) async throws -> Data {
-        let image = try await annotatedPhotoImage(
+        let source = try await displayOrientedSourceCGImage(
             sourceURL: sourceURL,
-            annotations: annotations,
             maxPixelSize: maxPixelSize
         )
-        return try jpegData(from: image)
+        return try await renderAnnotatedPhotoJPEG(
+            source: source,
+            annotations: annotations.filter(\.isVisible)
+        )
     }
 
     static func annotatedPhotoImage(
@@ -46,21 +53,12 @@ enum AnalysisEvidenceJPEGRenderer {
             sourceURL: sourceURL,
             maxPixelSize: maxPixelSize
         )
-        let size = CGSize(width: source.width, height: source.height)
-        let image = try bitmapImage(size: size) {
-            NSGraphicsContext.current?.cgContext.interpolationQuality = .high
-            NSImage(cgImage: source, size: size).draw(
-                in: CGRect(origin: .zero, size: size),
-                from: .zero,
-                operation: .copy,
-                fraction: 1
-            )
-            drawPhotoAnnotations(
-                annotations.filter(\.isVisible),
-                in: CGRect(origin: .zero, size: size)
-            )
-        }
-        return image
+        let rendered = try await renderAnnotatedPhoto(
+            source: source,
+            annotations: annotations.filter(\.isVisible),
+            interpolationQuality: .high
+        )
+        return nsImage(rendered)
     }
 
     static func displayOrientedSourceCGImage(
@@ -101,44 +99,107 @@ enum AnalysisEvidenceJPEGRenderer {
         }
         try Task.checkCancellation()
 
-        let size = CGSize(width: croppedSource.width, height: croppedSource.height)
         let cropAnnotations = cropRelativeAnnotations(
             annotations.filter(\.isVisible),
             cropRect: crop.normalizedDisplayRect
         )
-        return try bitmapImage(size: size) {
-            NSGraphicsContext.current?.cgContext.interpolationQuality = .none
-            NSImage(cgImage: croppedSource, size: size).draw(
-                in: CGRect(origin: .zero, size: size),
-                from: .zero,
-                operation: .copy,
-                fraction: 1
-            )
-            drawPhotoAnnotations(cropAnnotations, in: CGRect(origin: .zero, size: size))
-        }
+        let rendered = try await renderAnnotatedPhoto(
+            source: croppedSource,
+            annotations: cropAnnotations,
+            interpolationQuality: .none
+        )
+        return nsImage(rendered)
     }
 
     static func mapJPEG(
         evidence: AnalysisReportMapEvidence,
         pixelSize: CGSize = CGSize(width: 2_000, height: 1_200)
     ) async throws -> Data {
-        let image = try await annotatedMapImage(evidence: evidence, pixelSize: pixelSize)
-        return try jpegData(from: image)
+        let basemap = try await mapBasemap(evidence: evidence, pixelSize: pixelSize)
+        return try await renderMapJPEG(evidence: evidence, basemap: basemap, pixelSize: pixelSize)
     }
 
     static func annotatedMapImage(
         evidence: AnalysisReportMapEvidence,
         pixelSize: CGSize = CGSize(width: 2_000, height: 1_200)
     ) async throws -> NSImage {
+        let basemap = try await mapBasemap(evidence: evidence, pixelSize: pixelSize)
+        let rendered = try await renderMap(evidence: evidence, basemap: basemap, pixelSize: pixelSize)
+        return nsImage(rendered)
+    }
+
+    /// The tile snapshotter is MainActor-bound; convert its result to a Sendable CGImage here
+    /// so the expensive flattening can run off the main actor.
+    private static func mapBasemap(
+        evidence: AnalysisReportMapEvidence,
+        pixelSize: CGSize
+    ) async throws -> CGImage? {
         let basemap = try? await AnalysisOpenStreetMapSnapshotter.image(
             viewport: evidence.viewport,
             pixelSize: pixelSize
         )
         try Task.checkCancellation()
-        return try bitmapImage(size: pixelSize) {
+        return basemap?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    private static func nsImage(_ image: CGImage) -> NSImage {
+        NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height))
+    }
+
+    @concurrent
+    nonisolated private static func renderAnnotatedPhotoJPEG(
+        source: CGImage,
+        annotations: [AnalysisAnnotation]
+    ) async throws -> Data {
+        let rendered = try await renderAnnotatedPhoto(
+            source: source,
+            annotations: annotations,
+            interpolationQuality: .high
+        )
+        try Task.checkCancellation()
+        return try jpegData(from: rendered)
+    }
+
+    @concurrent
+    nonisolated private static func renderAnnotatedPhoto(
+        source: CGImage,
+        annotations: [AnalysisAnnotation],
+        interpolationQuality: CGInterpolationQuality
+    ) async throws -> CGImage {
+        let size = CGSize(width: source.width, height: source.height)
+        return try bitmapImage(size: size) { context in
+            context.interpolationQuality = interpolationQuality
+            context.setBlendMode(.copy)
+            context.draw(source, in: CGRect(origin: .zero, size: size))
+            context.setBlendMode(.normal)
+            drawPhotoAnnotations(annotations, in: CGRect(origin: .zero, size: size))
+        }
+    }
+
+    @concurrent
+    nonisolated private static func renderMapJPEG(
+        evidence: AnalysisReportMapEvidence,
+        basemap: CGImage?,
+        pixelSize: CGSize
+    ) async throws -> Data {
+        let rendered = try await renderMap(evidence: evidence, basemap: basemap, pixelSize: pixelSize)
+        try Task.checkCancellation()
+        return try jpegData(from: rendered)
+    }
+
+    @concurrent
+    nonisolated private static func renderMap(
+        evidence: AnalysisReportMapEvidence,
+        basemap: CGImage?,
+        pixelSize: CGSize
+    ) async throws -> CGImage {
+        try bitmapImage(size: pixelSize) { context in
             let rect = CGRect(origin: .zero, size: pixelSize)
             if let basemap {
-                basemap.draw(in: rect, from: .zero, operation: .copy, fraction: 1)
+                context.interpolationQuality = .high
+                context.setBlendMode(.copy)
+                context.draw(basemap, in: rect)
+                context.setBlendMode(.normal)
             } else {
                 NSColor(calibratedWhite: 0.92, alpha: 1).setFill()
                 rect.fill()
@@ -149,10 +210,12 @@ enum AnalysisEvidenceJPEGRenderer {
         }
     }
 
-    private static func bitmapImage(
+    /// Draws into a private bitmap. `NSGraphicsContext.current` is per-thread, so AppKit path and
+    /// text drawing into this offscreen context is safe off the main thread.
+    nonisolated private static func bitmapImage(
         size: CGSize,
-        drawing: () -> Void
-    ) throws -> NSImage {
+        drawing: (CGContext) -> Void
+    ) throws -> CGImage {
         let width = max(1, Int(size.width.rounded()))
         let height = max(1, Int(size.height.rounded()))
         guard let representation = NSBitmapImageRep(
@@ -172,29 +235,36 @@ enum AnalysisEvidenceJPEGRenderer {
 
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = graphicsContext
-        drawing()
+        drawing(graphicsContext.cgContext)
         graphicsContext.flushGraphics()
         NSGraphicsContext.restoreGraphicsState()
 
-        let image = NSImage(size: CGSize(width: width, height: height))
-        image.addRepresentation(representation)
+        guard let image = representation.cgImage else {
+            throw AnalysisEvidenceJPEGError.bitmapCreationFailed
+        }
         return image
     }
 
-    private static func jpegData(from image: NSImage) throws -> Data {
-        guard let representation = image.representations.compactMap({
-            $0 as? NSBitmapImageRep
-        }).first,
-        let data = representation.representation(
-            using: .jpeg,
-            properties: [.compressionFactor: 0.94]
+    nonisolated private static func jpegData(from image: CGImage) throws -> Data {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data as CFMutableData,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
         ) else {
             throw AnalysisEvidenceJPEGError.encodingFailed
         }
-        return data
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationLossyCompressionQuality: 0.94,
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            throw AnalysisEvidenceJPEGError.encodingFailed
+        }
+        return data as Data
     }
 
-    private static func drawPhotoAnnotations(
+    nonisolated private static func drawPhotoAnnotations(
         _ annotations: [AnalysisAnnotation],
         in rect: CGRect
     ) {
@@ -301,7 +371,7 @@ enum AnalysisEvidenceJPEGRenderer {
         }
     }
 
-    private static func cropRelativeAnnotations(
+    nonisolated private static func cropRelativeAnnotations(
         _ annotations: [AnalysisAnnotation],
         cropRect: CGRect
     ) -> [AnalysisAnnotation] {
@@ -334,7 +404,7 @@ enum AnalysisEvidenceJPEGRenderer {
         }
     }
 
-    private static func annotationBounds(_ geometry: AnalysisAnnotationGeometry) -> CGRect {
+    nonisolated private static func annotationBounds(_ geometry: AnalysisAnnotationGeometry) -> CGRect {
         let points: [AnalysisNormalizedPoint]
         switch geometry {
         case .segment(let start, let end): points = [start, end]
@@ -358,7 +428,7 @@ enum AnalysisEvidenceJPEGRenderer {
         )
     }
 
-    private static func drawPhotoLabel(
+    nonisolated private static func drawPhotoLabel(
         _ annotation: AnalysisAnnotation,
         near point: CGPoint,
         scale: CGFloat
@@ -375,7 +445,7 @@ enum AnalysisEvidenceJPEGRenderer {
         )
     }
 
-    private static func photoPoint(
+    nonisolated private static func photoPoint(
         _ point: AnalysisNormalizedPoint,
         in rect: CGRect
     ) -> CGPoint {
@@ -385,7 +455,7 @@ enum AnalysisEvidenceJPEGRenderer {
         )
     }
 
-    private static func drawArrowHead(
+    nonisolated private static func drawArrowHead(
         from start: CGPoint,
         to end: CGPoint,
         color: NSColor,
@@ -411,7 +481,7 @@ enum AnalysisEvidenceJPEGRenderer {
         path.stroke()
     }
 
-    private static func drawMapEvidence(
+    nonisolated private static func drawMapEvidence(
         _ evidence: AnalysisReportMapEvidence,
         in rect: CGRect
     ) {
@@ -483,7 +553,7 @@ enum AnalysisEvidenceJPEGRenderer {
         }
     }
 
-    private static func drawMapLabel(
+    nonisolated private static func drawMapLabel(
         _ annotation: AnalysisMapAnnotation,
         near point: CGPoint,
         scale: CGFloat
@@ -498,7 +568,7 @@ enum AnalysisEvidenceJPEGRenderer {
         )
     }
 
-    private static func drawLabel(
+    nonisolated private static func drawLabel(
         _ text: String,
         at point: CGPoint,
         color: NSColor,
@@ -529,7 +599,7 @@ enum AnalysisEvidenceJPEGRenderer {
         ))
     }
 
-    private static func mapPoint(
+    nonisolated private static func mapPoint(
         _ coordinate: AnalysisGeoCoordinate,
         viewport: AnalysisMapViewport,
         in rect: CGRect
@@ -546,7 +616,7 @@ enum AnalysisEvidenceJPEGRenderer {
         )
     }
 
-    private static func drawMapGrid(in rect: CGRect) {
+    nonisolated private static func drawMapGrid(in rect: CGRect) {
         NSColor(calibratedWhite: 0.72, alpha: 1).setStroke()
         for index in 1..<5 {
             let fraction = CGFloat(index) / 5
@@ -560,7 +630,7 @@ enum AnalysisEvidenceJPEGRenderer {
         }
     }
 
-    private static func drawMapAttribution(hasBasemap: Bool, in rect: CGRect) {
+    nonisolated private static func drawMapAttribution(hasBasemap: Bool, in rect: CGRect) {
         let text = hasBasemap
             ? "OpenStreetMap | © OpenStreetMap contributors"
             : "Schematic WGS 84 viewport"
@@ -574,15 +644,15 @@ enum AnalysisEvidenceJPEGRenderer {
         )
     }
 
-    private static func midpoint(_ first: CGPoint, _ second: CGPoint) -> CGPoint {
+    nonisolated private static func midpoint(_ first: CGPoint, _ second: CGPoint) -> CGPoint {
         CGPoint(x: (first.x + second.x) / 2, y: (first.y + second.y) / 2)
     }
 
-    private static func isFieldOfView(_ annotation: AnalysisMapAnnotation) -> Bool {
+    nonisolated private static func isFieldOfView(_ annotation: AnalysisMapAnnotation) -> Bool {
         annotation.kind == .shape && annotation.text == "Field of view"
     }
 
-    private static func nsColor(_ color: AnalysisAnnotationColor) -> NSColor {
+    nonisolated private static func nsColor(_ color: AnalysisAnnotationColor) -> NSColor {
         switch color {
         case .palette(let palette):
             switch palette {

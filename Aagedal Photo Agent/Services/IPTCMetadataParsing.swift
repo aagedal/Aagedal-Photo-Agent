@@ -122,6 +122,9 @@ nonisolated enum MetadataDictKey {
     /// App-private (aaphoto namespace): the global Anonymizer redaction settings.
     static let anonymizerAmount = "AnonymizerAmount"
     static let anonymizerBlackOut = "AnonymizerBlackOut"
+    /// App-private (aaphoto namespace): the develop record already reflects the file's embedded
+    /// redactions (`CameraRawSettings.embeddedRedactionsReviewed`).
+    static let embeddedRedactionsReviewed = "EmbeddedRedactionsReviewed"
     /// App-private (aaphoto namespace): global density render adjustment.
     static let globalDensity = "GlobalDensity"
     static let filmGrain = "FilmGrain"
@@ -551,6 +554,12 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> ParsedMaskCorr
         parsingLog.warning("Preserving MaskGroupBasedCorrections[\(index)] (\(name, privacy: .private(mask: .hash))) verbatim: unmodeled mask type \(what ?? "unknown", privacy: .private)")
         result.preserved.append(PreservedMaskCorrection(fields: preservedFields(from: corr)))
     }
+    // A mask identity must be unique within the chain (copied ACR corrections can repeat a
+    // CorrectionSyncID); later repeats get fresh IDs.
+    var seenIDs = Set<UUID>()
+    for index in result.masks.indices where !seenIDs.insert(result.masks[index].id).inserted {
+        result.masks[index].id = UUID()
+    }
     return result
 }
 
@@ -769,7 +778,7 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
         )
     }()
 
-    return MaskAdjustment(
+    var parsed = MaskAdjustment(
         name: name,
         enabled: active,
         inverted: inverted,
@@ -790,6 +799,24 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
         tint: tint.flatMap { abs($0) < 0.01 ? nil : $0 },
         anonymizer: anonymizer
     )
+    // Stable identity across reloads: the writer stores the mask's UUID (dashes stripped) as
+    // ACR's CorrectionSyncID. Without it every reload would mint new IDs, orphaning the
+    // explicit layer order and the Develop undo history. Duplicates are resolved by the caller.
+    if let syncID = crsMaskField(corr, "CorrectionSyncID") as? String, let id = maskUUID(fromSyncID: syncID) {
+        parsed.id = id
+    }
+    return parsed
+}
+
+/// `CorrectionSyncID` → UUID: 32 hex digits (our writer and ACR) or a dashed UUID string.
+nonisolated func maskUUID(fromSyncID raw: String) -> UUID? {
+    let trimmed = raw.trimmingCharacters(in: .whitespaces)
+    if let uuid = UUID(uuidString: trimmed) { return uuid }
+    let hex = trimmed.replacingOccurrences(of: "-", with: "")
+    guard hex.count == 32, hex.allSatisfy(\.isHexDigit) else { return nil }
+    let chars = Array(hex)
+    let dashed = [0..<8, 8..<12, 12..<16, 16..<20, 20..<32].map { String(chars[$0]) }.joined(separator: "-")
+    return UUID(uuidString: dashed)
 }
 
 /// Recursively convert an unwrapped XMP correction dictionary (namespace-prefixed keys,
@@ -841,10 +868,11 @@ nonisolated struct ACRMaskCorrection {
     var correctionMasks: [ACRMaskNode]? = nil
 }
 
-/// Encode enabled masks into ACR's `MaskGroupBasedCorrections` schema —
-/// the exact inverse of `parseMaskGroupBasedCorrections`.
+/// Encode masks into ACR's `MaskGroupBasedCorrections` schema — the exact inverse of
+/// `parseMaskGroupBasedCorrections`. Muted masks are written too, with
+/// `CorrectionActive=false` (ACR and our renderer skip them), so muting survives a reload.
 nonisolated func encodeMaskGroupBasedCorrections(_ masks: [MaskAdjustment]) -> [ACRMaskCorrection] {
-    masks.filter(\.enabled).enumerated().map { index, mask in
+    masks.enumerated().map { index, mask in
         let correctionFields = encodeCorrectionFields(mask)
         let appPrivateFields = encodeMaskAppPrivateFields(mask)
 
@@ -987,7 +1015,7 @@ nonisolated private func encodeCorrectionFields(_ mask: MaskAdjustment) -> [(nam
     let tint = (mask.tint ?? 0) / 100.0
 
     return [
-        ("CorrectionActive", "true"),
+        ("CorrectionActive", mask.enabled ? "true" : "false"),
         ("CorrectionAmount", acrNum(mask.amount)),
         ("CorrectionName", mask.name),
         ("CorrectionSyncID", mask.id.uuidString.replacingOccurrences(of: "-", with: "")),
@@ -1117,7 +1145,7 @@ nonisolated func encodeHSLAdjustments(_ hsl: HSLAdjustments) -> [(name: String, 
 /// Decode per-color HSL adjustments from a property-name → signed-int `lookup` —
 /// the exact inverse of `encodeHSLAdjustments`. Returns nil when no channel
 /// carries a value. Shared by the embedded-file dict parsers
-/// (`iptcMetadataFromDict`, `BrowserViewModel.cameraRawSettings`) and the .xmp
+/// (`iptcMetadataFromDict`, which the Browser grid also uses) and the .xmp
 /// sidecar reader so every read path reconstructs HSL identically.
 nonisolated func decodeHSLAdjustments(_ lookup: (String) -> Int?) -> HSLAdjustments? {
     var hsl = HSLAdjustments()
@@ -1217,6 +1245,9 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
     let anonymizerBlackOut = parseBoolValue(dict[MetadataDictKey.anonymizerBlackOut])
     if (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true {
         cameraRaw.anonymizer = AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
+    }
+    if parseBoolValue(dict[MetadataDictKey.embeddedRedactionsReviewed]) == true {
+        cameraRaw.embeddedRedactionsReviewed = true
     }
     let film = FilmEmulationSettings(
         grain: parseDoubleValue(dict[MetadataDictKey.filmGrain]),

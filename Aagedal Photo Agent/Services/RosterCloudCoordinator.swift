@@ -87,7 +87,7 @@ final class RosterCloudCoordinator {
 
     init(
         isEnabled: @escaping () -> Bool = {
-            UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
+            AppDefaults.store.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
         },
         resolveRoot: @escaping @Sendable () async -> URL? = {
             await LibraryICloudRoutingService.teams.cloudRootURL(ensuringDirectory: true)

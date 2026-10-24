@@ -69,60 +69,99 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
             self.parent = parent
         }
 
-        func rebuildEvidence(in mapView: MKMapView) {
-            let evidenceOverlays = mapView.overlays.filter { !($0 is AnalysisOpenStreetMapTileOverlay) }
-            mapView.removeOverlays(evidenceOverlays)
-            mapView.removeAnnotations(mapView.annotations)
+        /// Evidence currently installed in the map, keyed by everything that affects drawing, so
+        /// an update only touches what changed instead of removing and re-adding everything.
+        private var installedOverlayKeys: [AnalysisOSMEvidenceKey] = []
+        private var installedOverlays: [any MKOverlay] = []
+        private var installedAnnotations: [AnalysisOSMEvidenceKey: [AnalysisOSMPointAnnotation]] = [:]
+        private var lastSelectedAnnotationID: UUID?
 
+        func rebuildEvidence(in mapView: MKMapView) {
+            let desired = desiredEvidence()
+            let overlayKeys = desired.filter(\.isOverlay)
+
+            // Overlays at one level draw in insertion order, so a changed overlay list is
+            // reinstalled in order to keep the layering the full rebuild produced.
+            if overlayKeys != installedOverlayKeys {
+                mapView.removeOverlays(installedOverlays)
+                installedOverlays = overlayKeys.compactMap(makeOverlay)
+                mapView.addOverlays(installedOverlays, level: .aboveLabels)
+                installedOverlayKeys = overlayKeys
+            }
+
+            var reusable = installedAnnotations
+            var installed: [AnalysisOSMEvidenceKey: [AnalysisOSMPointAnnotation]] = [:]
+            var added: [AnalysisOSMPointAnnotation] = []
+            for key in desired where !key.isOverlay {
+                let annotation: AnalysisOSMPointAnnotation
+                if var candidates = reusable[key], let existing = candidates.popLast() {
+                    reusable[key] = candidates
+                    annotation = existing
+                } else {
+                    annotation = makeAnnotation(for: key)
+                    added.append(annotation)
+                }
+                installed[key, default: []].append(annotation)
+            }
+            let removed = reusable.values.flatMap { $0 }
+            if !removed.isEmpty { mapView.removeAnnotations(removed) }
+            if !added.isEmpty { mapView.addAnnotations(added) }
+            installedAnnotations = installed
+
+            if !added.isEmpty || parent.selectedAnnotationID != lastSelectedAnnotationID {
+                restoreSelectionAfterEvidenceUpdate(in: mapView)
+            }
+            lastSelectedAnnotationID = parent.selectedAnnotationID
+        }
+
+        /// The evidence to draw, in the order the map has always layered it.
+        private func desiredEvidence() -> [AnalysisOSMEvidenceKey] {
+            var keys: [AnalysisOSMEvidenceKey] = []
             if let embeddedLocation {
-                mapView.addAnnotation(AnalysisOSMPointAnnotation(
-                    coordinate: embeddedLocation.clLocationCoordinate,
+                keys.append(AnalysisOSMEvidenceKey(
+                    shape: .point(color: .system(.blue), usesSmallSymbol: false),
+                    coordinates: [embeddedLocation],
                     title: "Embedded GPS",
-                    color: .systemBlue,
                     annotationID: nil
                 ))
             }
             if let investigationLocation {
-                mapView.addAnnotation(AnalysisOSMPointAnnotation(
-                    coordinate: investigationLocation.coordinate.clLocationCoordinate,
+                keys.append(AnalysisOSMEvidenceKey(
+                    shape: .point(color: .system(.orange), usesSmallSymbol: false),
+                    coordinates: [investigationLocation.coordinate],
                     title: investigationLocation.placeName ?? "Photo location",
-                    color: .systemOrange,
                     annotationID: nil
                 ))
             }
             if let preview = parent.fieldOfViewPreview {
-                addPolygon(
-                    preview,
-                    style: AnalysisMapAnnotationStyle(
+                keys.append(AnalysisOSMEvidenceKey(
+                    shape: .polygon(style: AnalysisMapAnnotationStyle(
                         color: .palette(.cyan),
                         lineWidthPoints: 2,
                         fillOpacity: 0.22
-                    ),
-                    annotationID: nil,
+                    )),
+                    coordinates: preview,
                     title: nil,
-                    to: mapView
-                )
+                    annotationID: nil
+                ))
             }
             if let solarRenderModel = parent.solarRenderModel {
                 for ray in solarRenderModel.rays {
-                    let overlay = AnalysisOSMSolarPolyline(
-                        coordinates: [
-                            ray.origin.clLocationCoordinate,
-                            ray.destination.clLocationCoordinate,
-                        ],
-                        count: 2
-                    )
-                    overlay.kind = ray.kind
-                    mapView.addOverlay(overlay, level: .aboveLabels)
+                    keys.append(AnalysisOSMEvidenceKey(
+                        shape: .solarRay(kind: ray.kind),
+                        coordinates: [ray.origin, ray.destination],
+                        title: nil,
+                        annotationID: nil
+                    ))
                 }
             }
             for annotation in parent.annotations where annotation.isVisible {
-                add(annotation, dimmed: false, to: mapView)
+                appendKeys(for: annotation, dimmed: false, to: &keys)
             }
             for item in parent.folderAnnotations where item.annotation.isVisible {
-                add(item.annotation, dimmed: true, fallbackTitle: item.sourceName, to: mapView)
+                appendKeys(for: item.annotation, dimmed: true, fallbackTitle: item.sourceName, to: &keys)
             }
-            restoreSelectionAfterEvidenceUpdate(in: mapView)
+            return keys
         }
 
         private func restoreSelectionAfterEvidenceUpdate(in mapView: MKMapView) {
@@ -146,40 +185,55 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
         private var embeddedLocation: AnalysisGeoCoordinate? { parent.embeddedLocation }
         private var investigationLocation: AnalysisLocationEvidence? { parent.investigationLocation }
 
-        private func add(
-            _ annotation: AnalysisMapAnnotation,
+        private func appendKeys(
+            for annotation: AnalysisMapAnnotation,
             dimmed: Bool,
             fallbackTitle: String? = nil,
-            to mapView: MKMapView
+            to keys: inout [AnalysisOSMEvidenceKey]
         ) {
             let title = annotation.text ?? fallbackTitle ?? annotation.kind.displayName
-            let color = annotation.style.color.nsColor.withAlphaComponent(dimmed ? 0.72 : 1)
+            let color = AnalysisOSMEvidenceKey.Color.annotation(annotation.style.color)
             switch annotation.geometry {
             case .point(let coordinate):
-                mapView.addAnnotation(AnalysisOSMPointAnnotation(
-                    coordinate: coordinate.clLocationCoordinate,
+                keys.append(AnalysisOSMEvidenceKey(
+                    shape: .point(color: color, usesSmallSymbol: false),
+                    coordinates: [coordinate],
                     title: title,
-                    color: color,
-                    annotationID: annotation.id
+                    annotationID: annotation.id,
+                    isDimmed: dimmed
                 ))
             case .segment(let start, let end):
-                let overlay = AnalysisOSMPolyline(
-                    coordinates: [start.clLocationCoordinate, end.clLocationCoordinate],
-                    count: 2
-                )
-                overlay.style = annotation.style
-                overlay.isDimmed = dimmed
-                mapView.addOverlay(overlay, level: .aboveLabels)
-                addSelectionAnnotation(annotation, title: title, color: color, to: mapView)
+                keys.append(AnalysisOSMEvidenceKey(
+                    shape: .polyline(style: annotation.style),
+                    coordinates: [start, end],
+                    title: nil,
+                    annotationID: nil,
+                    isDimmed: dimmed
+                ))
+                keys.append(AnalysisOSMEvidenceKey(
+                    shape: .point(color: color, usesSmallSymbol: true),
+                    coordinates: [annotation.representativeCoordinate],
+                    title: title,
+                    annotationID: annotation.id,
+                    isDimmed: dimmed
+                ))
             case .polygon(let coordinates):
-                addPolygon(
-                    coordinates,
-                    style: annotation.style,
-                    annotationID: isFieldOfView(annotation) ? nil : annotation.id,
-                    title: isFieldOfView(annotation) ? nil : title,
-                    dimmed: dimmed,
-                    to: mapView
-                )
+                keys.append(AnalysisOSMEvidenceKey(
+                    shape: .polygon(style: annotation.style),
+                    coordinates: coordinates,
+                    title: nil,
+                    annotationID: nil,
+                    isDimmed: dimmed
+                ))
+                if !isFieldOfView(annotation) {
+                    keys.append(AnalysisOSMEvidenceKey(
+                        shape: .polygonHandle(color: color),
+                        coordinates: coordinates,
+                        title: title,
+                        annotationID: annotation.id,
+                        isDimmed: dimmed
+                    ))
+                }
             }
         }
 
@@ -187,50 +241,58 @@ struct AnalysisOpenStreetMapView: NSViewRepresentable {
             annotation.kind == .shape && annotation.text == "Field of view"
         }
 
-        private func addPolygon(
-            _ coordinates: [AnalysisGeoCoordinate],
-            style: AnalysisMapAnnotationStyle,
-            annotationID: UUID?,
-            title: String?,
-            dimmed: Bool = false,
-            to mapView: MKMapView
-        ) {
-            var mapCoordinates = coordinates.map(\.clLocationCoordinate)
-            let polygon = AnalysisOSMPolygon(
-                coordinates: &mapCoordinates,
-                count: mapCoordinates.count
-            )
-            polygon.style = style
-            polygon.isDimmed = dimmed
-            mapView.addOverlay(polygon, level: .aboveLabels)
-            if let annotationID, let title {
-                let representative = AnalysisGeoCoordinate(
-                    latitude: polygon.coordinate.latitude,
-                    longitude: polygon.coordinate.longitude
+        private func makeOverlay(for key: AnalysisOSMEvidenceKey) -> (any MKOverlay)? {
+            var mapCoordinates = key.coordinates.map(\.clLocationCoordinate)
+            switch key.shape {
+            case .polyline(let style):
+                let overlay = AnalysisOSMPolyline(coordinates: mapCoordinates, count: mapCoordinates.count)
+                overlay.style = style
+                overlay.isDimmed = key.isDimmed
+                return overlay
+            case .solarRay(let kind):
+                let overlay = AnalysisOSMSolarPolyline(
+                    coordinates: mapCoordinates,
+                    count: mapCoordinates.count
                 )
-                mapView.addAnnotation(AnalysisOSMPointAnnotation(
-                    coordinate: representative.clLocationCoordinate,
-                    title: title,
-                    color: style.color.nsColor.withAlphaComponent(dimmed ? 0.72 : 1),
-                    annotationID: annotationID,
-                    usesSmallSymbol: true
-                ))
+                overlay.kind = kind
+                return overlay
+            case .polygon(let style):
+                let polygon = AnalysisOSMPolygon(
+                    coordinates: &mapCoordinates,
+                    count: mapCoordinates.count
+                )
+                polygon.style = style
+                polygon.isDimmed = key.isDimmed
+                return polygon
+            case .point, .polygonHandle:
+                return nil
             }
         }
 
-        private func addSelectionAnnotation(
-            _ annotation: AnalysisMapAnnotation,
-            title: String,
-            color: NSColor,
-            to mapView: MKMapView
-        ) {
-            mapView.addAnnotation(AnalysisOSMPointAnnotation(
-                coordinate: annotation.representativeCoordinate.clLocationCoordinate,
-                title: title,
-                color: color,
-                annotationID: annotation.id,
-                usesSmallSymbol: true
-            ))
+        private func makeAnnotation(for key: AnalysisOSMEvidenceKey) -> AnalysisOSMPointAnnotation {
+            switch key.shape {
+            case .point(let color, let usesSmallSymbol):
+                return AnalysisOSMPointAnnotation(
+                    coordinate: key.coordinates[0].clLocationCoordinate,
+                    title: key.title,
+                    color: color.nsColor(dimmed: key.isDimmed),
+                    annotationID: key.annotationID,
+                    usesSmallSymbol: usesSmallSymbol
+                )
+            case .polygonHandle(let color):
+                // The handle sits on MapKit's representative point of the drawn polygon.
+                var mapCoordinates = key.coordinates.map(\.clLocationCoordinate)
+                let polygon = MKPolygon(coordinates: &mapCoordinates, count: mapCoordinates.count)
+                return AnalysisOSMPointAnnotation(
+                    coordinate: polygon.coordinate,
+                    title: key.title,
+                    color: color.nsColor(dimmed: key.isDimmed),
+                    annotationID: key.annotationID,
+                    usesSmallSymbol: true
+                )
+            case .polyline, .solarRay, .polygon:
+                preconditionFailure("Overlay evidence is not an annotation")
+            }
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
@@ -331,6 +393,72 @@ nonisolated private final class AnalysisOpenStreetMapTileOverlay: MKTileOverlay 
         Self.session.dataTask(with: url) { data, _, error in
             result(data, error)
         }.resume()
+    }
+}
+
+/// Everything that determines how one piece of map evidence is drawn. Two equal keys draw
+/// identically, so an installed object can be kept when its key is still wanted.
+nonisolated private struct AnalysisOSMEvidenceKey: Hashable {
+    enum SystemColor: Hashable {
+        case blue
+        case orange
+    }
+
+    enum Color: Equatable {
+        case system(SystemColor)
+        case annotation(AnalysisAnnotationColor)
+
+        @MainActor func nsColor(dimmed: Bool) -> NSColor {
+            switch self {
+            case .system(.blue): .systemBlue
+            case .system(.orange): .systemOrange
+            case .annotation(let color): color.nsColor.withAlphaComponent(dimmed ? 0.72 : 1)
+            }
+        }
+    }
+
+    enum Shape: Equatable {
+        case point(color: Color, usesSmallSymbol: Bool)
+        /// The small selection handle of a titled polygon.
+        case polygonHandle(color: Color)
+        case polyline(style: AnalysisMapAnnotationStyle)
+        case solarRay(kind: AnalysisSolarMapRayKind)
+        case polygon(style: AnalysisMapAnnotationStyle)
+    }
+
+    let shape: Shape
+    let coordinates: [AnalysisGeoCoordinate]
+    let title: String?
+    let annotationID: UUID?
+    var isDimmed = false
+
+    var isOverlay: Bool {
+        switch shape {
+        case .point, .polygonHandle: false
+        case .polyline, .solarRay, .polygon: true
+        }
+    }
+
+    // Equality compares every field; the hash uses only the Hashable subset, which equal keys
+    // always share.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.shape == rhs.shape
+            && lhs.coordinates == rhs.coordinates
+            && lhs.title == rhs.title
+            && lhs.annotationID == rhs.annotationID
+            && lhs.isDimmed == rhs.isDimmed
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(title)
+        hasher.combine(annotationID)
+        hasher.combine(isDimmed)
+        hasher.combine(isOverlay)
+        hasher.combine(coordinates.count)
+        for coordinate in coordinates {
+            hasher.combine(coordinate.latitude)
+            hasher.combine(coordinate.longitude)
+        }
     }
 }
 

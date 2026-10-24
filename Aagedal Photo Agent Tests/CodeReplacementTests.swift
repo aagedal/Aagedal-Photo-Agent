@@ -24,17 +24,17 @@ struct CodeReplacementTests {
         #expect(list.diagnostics.isEmpty)
     }
 
-    @Test("Malformed rows and empty columns are diagnosed while valid rows remain usable")
+    @Test("Malformed rows and empty columns are skipped with warnings while valid rows remain usable")
     func malformedRows() {
         let list = parser.parse(Data("good\tValue\nno-tab\ntoo\tmany\ttabs\n\tMissing code\nempty\t\n \tWhitespace code".utf8))
 
         #expect(list.entries == [CodeReplacementEntry(code: "good", replacement: "Value", sourceLine: 1)])
         #expect(list.diagnostics == [
-            CodeReplacementDiagnostic(severity: .error, kind: .malformedRow(columnCount: 1), line: 2),
-            CodeReplacementDiagnostic(severity: .error, kind: .malformedRow(columnCount: 3), line: 3),
-            CodeReplacementDiagnostic(severity: .error, kind: .emptyCode, line: 4),
-            CodeReplacementDiagnostic(severity: .error, kind: .emptyValue(code: "empty"), line: 5),
-            CodeReplacementDiagnostic(severity: .error, kind: .emptyCode, line: 6),
+            CodeReplacementDiagnostic(severity: .warning, kind: .malformedRow(columnCount: 1), line: 2),
+            CodeReplacementDiagnostic(severity: .warning, kind: .malformedRow(columnCount: 3), line: 3),
+            CodeReplacementDiagnostic(severity: .warning, kind: .emptyCode, line: 4),
+            CodeReplacementDiagnostic(severity: .warning, kind: .emptyValue(code: "empty"), line: 5),
+            CodeReplacementDiagnostic(severity: .warning, kind: .emptyCode, line: 6),
         ])
 
         let preview = engine.preview(
@@ -46,15 +46,42 @@ struct CodeReplacementTests {
         #expect(preview.sourceDiagnostics == list.diagnostics)
     }
 
-    @Test("Invalid UTF-8 is explicit and blocks all expansion")
-    func invalidUTF8() {
-        let list = parser.parse(Data([0x66, 0x6f, 0x80, 0x6f]))
-        #expect(list.entries.isEmpty)
-        #expect(list.diagnostics == [CodeReplacementDiagnostic(
+    @Test("Text that is not UTF-8 is read as Windows-1252, keeping æøå")
+    func windows1252Fallback() throws {
+        // "oslo<TAB>Bærum og Øvre Årdal" plus a "€" in Windows-1252 bytes.
+        var bytes = Array("oslo\t".utf8)
+        bytes += [0x42, 0xE6, 0x72, 0x75, 0x6D, 0x20, 0x6F, 0x67, 0x20, 0xD8, 0x76, 0x72, 0x65, 0x20, 0xC5, 0x72, 0x64, 0x61, 0x6C]
+        bytes += Array("\r\neuro\t".utf8) + [0x80]
+        let list = parser.parse(Data(bytes))
+        #expect(list.diagnostics.isEmpty)
+        #expect(list.entries.map(\.replacement) == ["Bærum og Øvre Årdal", "€"])
+    }
+
+    @Test("UTF-16 with a byte-order mark is decoded")
+    func utf16WithBOM() throws {
+        let data = try #require("ndla\tNorsk digital læringsarena\n".data(using: .utf16))
+        #expect(data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]))
+        let list = parser.parse(data)
+        #expect(list.diagnostics.isEmpty)
+        #expect(list.entries == [CodeReplacementEntry(code: "ndla", replacement: "Norsk digital læringsarena", sourceLine: 1)])
+    }
+
+    @Test("Excel-style trailing tabs and blank or whitespace-only lines are ignored")
+    func excelTrailingColumnsAndBlankLines() {
+        let list = parser.parse(Data("oslo\tOslo\t\t\n\n   \n\t\t\nbgo\tBergen\t\r\n".utf8))
+        #expect(list.diagnostics.isEmpty)
+        #expect(list.entries.map(\.code) == ["oslo", "bgo"])
+        #expect(list.entries.map(\.replacement) == ["Oslo", "Bergen"])
+    }
+
+    @Test("Undecodable source text is explicit and blocks all expansion")
+    func invalidEncoding() {
+        let list = CodeReplacementList(diagnostics: [CodeReplacementDiagnostic(
             severity: .error,
             kind: .invalidUTF8,
             line: nil
         )])
+        #expect(list.hasInvalidEncoding)
 
         let preview = engine.preview(
             text: "\\code\\",
@@ -508,7 +535,7 @@ nonisolated private final class CodeReplacementSourceAccessProbe: @unchecked Sen
         condition.broadcast()
         if blockFirstRead, reads == 1 {
             while !firstReadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeReads -= 1
@@ -530,6 +557,8 @@ nonisolated private final class CodeReplacementSourceAccessProbe: @unchecked Sen
         let deadline = ContinuousClock.now + .seconds(5)
         while readCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw CodeReplacementSourceProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -561,5 +590,74 @@ nonisolated private final class CodeReplacementSourceAccessProbe: @unchecked Sen
 
     var observedMainThread: Bool {
         condition.withLock { didObserveMainThread }
+    }
+}
+
+/// In-memory code-replacement source whose bytes and modification date a test can change.
+private nonisolated final class MutableCodeReplacementSource: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data: Data
+    private var modified: Date
+    private var reads = 0
+
+    init(_ text: String, modified: Date) {
+        data = Data(text.utf8)
+        self.modified = modified
+    }
+
+    func replace(_ text: String, modified: Date) {
+        lock.withLock {
+            data = Data(text.utf8)
+            self.modified = modified
+        }
+    }
+
+    var readCount: Int { lock.withLock { reads } }
+
+    var access: CodeReplacementSourceAccess {
+        CodeReplacementSourceAccess(
+            createBookmark: { Data($0.path.utf8) },
+            resolveBookmark: { CodeReplacementBookmarkResolution(
+                url: URL(fileURLWithPath: String(decoding: $0, as: UTF8.self)), isStale: false
+            ) },
+            readData: { [self] _ in lock.withLock { reads += 1; return data } },
+            modificationDate: { [self] _ in lock.withLock { modified } },
+            byteCount: { [self] _ in lock.withLock { Int64(data.count) } }
+        )
+    }
+}
+
+@Suite("Code replacement source refresh", .serialized)
+struct CodeReplacementSourceRefreshTests {
+    @MainActor
+    @Test("a list file changed between previews is re-read before the next preview")
+    func changedFileIsReloadedBeforePreview() async throws {
+        let suiteName = "CodeReplacementRefreshTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = MutableCodeReplacementSource("oslo\tOslo\n", modified: Date(timeIntervalSince1970: 100))
+        let store = CodeReplacementSettingsStore(defaults: defaults, access: source.access)
+
+        try await store.selectSource(URL(fileURLWithPath: "/virtual/codes.txt"))
+        #expect(store.list.entries.map(\.replacement) == ["Oslo"])
+        let readsAfterSelect = source.readCount
+
+        // Unchanged file: no re-read.
+        await store.reloadSourceIfChanged()
+        #expect(source.readCount == readsAfterSelect)
+
+        source.replace("oslo\tOslo kommune\nbgo\tBergen\n", modified: Date(timeIntervalSince1970: 200))
+        await store.reloadSourceIfChanged()
+        #expect(source.readCount == readsAfterSelect + 1)
+        #expect(store.list.entries.map(\.replacement) == ["Oslo kommune", "Bergen"])
+        #expect(store.configuration.source?.fingerprint?.modificationDate == Date(timeIntervalSince1970: 200))
+
+        let result = CaptionCodeReplacementCoordinator().plan(
+            metadata: IPTCMetadata(description: "Fra \\bgo\\"),
+            list: store.list,
+            configuration: store.configuration,
+            compositionState: .committed
+        )
+        #expect(result.metadata?.description == "Fra Bergen")
     }
 }

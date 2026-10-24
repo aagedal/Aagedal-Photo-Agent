@@ -1,4 +1,5 @@
 import Foundation
+import SwiftMediaMetadata
 
 nonisolated enum RAWArchiveLocationError: LocalizedError {
     case archiveRootNotConfigured
@@ -286,7 +287,7 @@ actor RAWArchiveSigningFailureCleanupService {
 
 nonisolated enum RAWArchiveService {
     static var currentLocationMode: RAWArchiveLocationMode {
-        let raw = UserDefaults.standard.string(
+        let raw = AppDefaults.store.string(
             forKey: UserDefaultsKeys.rawArchiveLocationMode
         ) ?? RAWArchiveLocationMode.workFolderArchive.rawValue
         return RAWArchiveLocationMode(rawValue: raw) ?? .workFolderArchive
@@ -308,7 +309,7 @@ nonisolated enum RAWArchiveService {
     }
 
     static var usesSourceRootOverride: Bool {
-        UserDefaults.standard.data(
+        AppDefaults.store.data(
             forKey: UserDefaultsKeys.rawArchiveSourceRootBookmark
         ) != nil
     }
@@ -393,6 +394,32 @@ nonisolated enum RAWArchiveService {
             at: sourceSidecar,
             to: destinationSidecar
         )
+        carryEmbeddedOrientation(from: sourceURL, intoArchiveSidecar: destinationSidecar,
+                                 archiveURL: destinationURL)
+    }
+
+    /// Rendered (TIFF/JPEG XL) archives are written in the RAW's sensor frame whenever a
+    /// sidecar exists (`EditedImageRenderer.ExportOrientationPolicy.rawArchive`), so the
+    /// copied sidecar's crop/masks still line up and its `tiff:Orientation` orients the
+    /// pixels exactly as it does the RAW. A sidecar without its own orientation relied on
+    /// the RAW's embedded tag, which the rendered archive (EXIF 1) no longer carries; write
+    /// that tag into the copy so the archive displays as the original does. DNG archives
+    /// keep their own embedded orientation and are left byte-identical.
+    private static func carryEmbeddedOrientation(
+        from sourceURL: URL,
+        intoArchiveSidecar sidecarURL: URL,
+        archiveURL: URL
+    ) {
+        guard !SupportedImageFormats.isRaw(url: archiveURL),
+              XMPSidecarService().sidecarOrientation(for: sourceURL) == nil else { return }
+        let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: sourceURL)
+        guard fileOrientation != 1,
+              var xmp = try? XMPSidecar.read(from: sidecarURL) else { return }
+        let value = String(fileOrientation)
+        xmp.setValue(.simple(value), namespace: XMPNamespace.tiff, property: "Orientation")
+        xmp.setValue(.simple(value), namespace: XMPNamespace.exif, property: "Orientation")
+        guard let data = XMPWriter.generateXML(xmp).data(using: .utf8) else { return }
+        try? data.write(to: sidecarURL, options: .atomic)
     }
 
     static func saveBookmark(for url: URL, key: String) {
@@ -408,14 +435,16 @@ nonisolated enum RAWArchiveService {
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
-            UserDefaults.standard.set(data, forKey: key)
+            AppDefaults.store.set(data, forKey: key)
         } catch {
-            UserDefaults.standard.removeObject(forKey: key)
+            AppDefaults.store.removeObject(forKey: key)
         }
     }
 
-    static func resolveBookmark(key: String) -> URL? {
-        guard let data = UserDefaults.standard.data(forKey: key) else {
+    /// `removeOnFailure: false` keeps a bookmark that can't resolve right now (for example an
+    /// unmounted external volume) so the destination comes back when the drive does.
+    static func resolveBookmark(key: String, removeOnFailure: Bool = true) -> URL? {
+        guard let data = AppDefaults.store.data(forKey: key) else {
             return nil
         }
         var isStale = false
@@ -431,7 +460,7 @@ nonisolated enum RAWArchiveService {
             }
             return url
         } catch {
-            UserDefaults.standard.removeObject(forKey: key)
+            if removeOnFailure { AppDefaults.store.removeObject(forKey: key) }
             return nil
         }
     }

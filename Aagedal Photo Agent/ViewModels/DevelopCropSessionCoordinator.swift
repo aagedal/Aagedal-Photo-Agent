@@ -15,6 +15,14 @@ struct DevelopCropDragSnapshot: Equatable {
     let region: NormalizedCropRegion?
 }
 
+/// The image's stored crop (rect + straighten) when the crop tool was entered. Cancelling the
+/// tool (Esc) restores it, matching Camera Raw; Done/Return keeps the edited framing.
+struct DevelopCropEntrySnapshot: Equatable {
+    let crop: CameraRawCrop?
+    /// The full-frame crop the tool enabled on entry (its own undo step), if it enabled one.
+    var autoEnabledCrop: CameraRawCrop?
+}
+
 /// Owns crop-tool presentation and image-scoped interaction state for the Develop workspace.
 ///
 /// The coordinator deliberately does not write XMP or named-version JSON. It mutates the value
@@ -33,19 +41,53 @@ final class DevelopCropSessionCoordinator {
     var lockedImageRect: CGRect?
     private(set) var dragAngle: Double?
     private(set) var dragRegion: NormalizedCropRegion?
+    /// Captured on tool entry for the current image only. A tool left open across navigation
+    /// takes the new image's snapshot once that image's settings have loaded
+    /// (`adoptLoadedPhoto`), so Esc still restores the framing it was opened on.
+    private(set) var entrySnapshot: DevelopCropEntrySnapshot?
+    /// The tool stayed open across navigation and still needs the new image's entry snapshot.
+    private(set) var awaitsLoadedPhoto = false
 
     func beginImageSession(_ imageURL: URL?, isCropEnabled: Bool) {
+        let isNewImage = imageURL != activeImageURL
         activeImageURL = imageURL
+        if isNewImage {
+            // `isCropEnabled` may still describe the previous photo here (its settings load
+            // later); `adoptLoadedPhoto` makes the final decision for an open tool.
+            entrySnapshot = nil
+            awaitsLoadedPhoto = isToolActive && isCropEnabled
+        }
         resetPreviewZoom()
         cancelInteraction()
         if !isCropEnabled {
             isToolActive = false
+            awaitsLoadedPhoto = false
         }
+    }
+
+    /// Called once the current image's own settings have loaded. If the crop tool stayed open
+    /// across navigation, it records the entry snapshot for this image (returns true), or closes
+    /// the tool when this image has no crop.
+    @discardableResult
+    func adoptLoadedPhoto(crop: CameraRawCrop?, isCropEnabled: Bool) -> Bool {
+        guard awaitsLoadedPhoto else { return false }
+        awaitsLoadedPhoto = false
+        guard isToolActive else { return false }
+        guard isCropEnabled else {
+            isToolActive = false
+            resetPreviewZoom()
+            cancelInteraction()
+            return false
+        }
+        entrySnapshot = DevelopCropEntrySnapshot(crop: crop)
+        return true
     }
 
     func endImageSession() {
         activeImageURL = nil
         isToolActive = false
+        entrySnapshot = nil
+        awaitsLoadedPhoto = false
         aspectRatio = .original
         resetPreviewZoom()
         cancelInteraction()
@@ -54,11 +96,40 @@ final class DevelopCropSessionCoordinator {
     @discardableResult
     func toggleTool() -> Bool {
         isToolActive.toggle()
+        awaitsLoadedPhoto = false
         if !isToolActive {
+            entrySnapshot = nil
             resetPreviewZoom()
             cancelInteraction()
         }
         return isToolActive
+    }
+
+    /// Records the crop to restore if this crop session is cancelled. Call on tool entry, before
+    /// the tool enables or reshapes the crop.
+    func captureEntryCrop(_ crop: CameraRawCrop?) {
+        guard isToolActive else { return }
+        entrySnapshot = DevelopCropEntrySnapshot(crop: crop)
+    }
+
+    /// Records the crop the tool enabled on entry, so cancelling an untouched session can undo
+    /// that step instead of adding a second one.
+    func recordAutoEnabledCrop(_ crop: CameraRawCrop?) {
+        guard isToolActive, entrySnapshot != nil else { return }
+        entrySnapshot?.autoEnabledCrop = crop
+    }
+
+    /// Closes the tool without keeping its edits. Returns the entry snapshot the caller should
+    /// restore, or `nil` when no snapshot belongs to this image session.
+    @discardableResult
+    func cancelTool() -> DevelopCropEntrySnapshot? {
+        let snapshot = entrySnapshot
+        entrySnapshot = nil
+        awaitsLoadedPhoto = false
+        isToolActive = false
+        resetPreviewZoom()
+        cancelInteraction()
+        return snapshot
     }
 
     func resetPreviewZoom() {
@@ -125,6 +196,9 @@ final class DevelopCropSessionCoordinator {
         return .commit
     }
 
+    /// Clears the crop and straighten. Like Lightroom's Reset, an open crop tool stays open on
+    /// the full frame (crop still enabled, so the handles remain) and keeps its entry snapshot,
+    /// so Esc still restores the framing the tool was opened on.
     @discardableResult
     func resetCrop(
         in settings: inout CameraRawSettings
@@ -135,10 +209,9 @@ final class DevelopCropSessionCoordinator {
             bottom: 1,
             right: 1,
             angle: 0,
-            hasCrop: false
+            hasCrop: isToolActive
         )
         aspectRatio = .original
-        isToolActive = false
         resetPreviewZoom()
         cancelInteraction()
         return .commit

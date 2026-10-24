@@ -31,7 +31,7 @@ struct DescriptionAssistantModelSetupView: View {
                     set: { path in
                         guard let model = setup.availableModels.first(where: { $0.url.path == path }) else { return }
                         do { try setup.select(model.url) }
-                        catch { setup.message = error.localizedDescription }
+                        catch { setup.reportError(error.localizedDescription) }
                     }
                 )) {
                     Text("Select a model").tag("")
@@ -50,7 +50,10 @@ struct DescriptionAssistantModelSetupView: View {
                 }
                 Text("Choose a model already on this Mac. Download models or add an existing GGUF file or MLX folder in Settings → Description Models.")
                     .font(.caption).foregroundStyle(.secondary)
-                if let message = setup.message { Text(message).font(.caption).textSelection(.enabled) }
+                if let message = setup.message {
+                    Text(message).font(.caption).textSelection(.enabled)
+                        .foregroundStyle(setup.messageIsError ? .red : .primary)
+                }
             }
         }
         Section("Description Presets") {
@@ -102,6 +105,7 @@ struct DescriptionAssistantModelDownloadsView: View {
     @State private var downloadModel: DescriptionAssistantDownloadModel = .recommended
     @State private var choosingModel = false
     @State private var choosingMLX = false
+    @State private var modelPendingRemoval: DescriptionAssistantDownloadModel?
 
     var body: some View {
         Form {
@@ -120,7 +124,14 @@ struct DescriptionAssistantModelDownloadsView: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 if setup.downloadedModels.contains(downloadModel) {
-                    Label("Downloaded", systemImage: "checkmark.circle")
+                    HStack {
+                        Label("Downloaded", systemImage: "checkmark.circle")
+                        Spacer()
+                        Button("Remove Downloaded Model…", role: .destructive) {
+                            modelPendingRemoval = downloadModel
+                        }
+                        .disabled(setup.isInstalling)
+                    }
                 } else {
                     Button("Download Model (\(downloadModel.downloadSize))") { setup.install(downloadModel) }
                         .disabled(setup.isInstalling)
@@ -130,7 +141,10 @@ struct DescriptionAssistantModelDownloadsView: View {
                     ProgressView(value: setup.progress)
                     Button("Cancel Download") { setup.cancelInstall() }
                 }
-                if let message = setup.message { Text(message).font(.caption).textSelection(.enabled) }
+                if let message = setup.message {
+                    Text(message).font(.caption).textSelection(.enabled)
+                        .foregroundStyle(setup.messageIsError ? .red : .primary)
+                }
                 Link("Model and license", destination: downloadModel.sourceURL)
                 Text("Downloads use 4-bit quantization and run locally with the included llama.cpp runtime and Metal on Apple Silicon.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -146,13 +160,28 @@ struct DescriptionAssistantModelDownloadsView: View {
         }
         .formStyle(.grouped)
         .onAppear { setup.refreshDownloadedModels() }
+        .alert(
+            "Remove \(modelPendingRemoval?.title ?? "Model")?",
+            isPresented: Binding(
+                get: { modelPendingRemoval != nil },
+                set: { if !$0 { modelPendingRemoval = nil } }
+            ),
+            presenting: modelPendingRemoval
+        ) { model in
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                Task { await setup.removeDownloaded(model) }
+            }
+        } message: { model in
+            Text("The \(model.downloadSize) model file Photo Agent downloaded is deleted from this Mac. Copies in shared model caches and files you chose yourself are not affected. You can download it again later.")
+        }
         .fileImporter(isPresented: $choosingModel, allowedContentTypes: [UTType(filenameExtension: "gguf") ?? .data]) { result in
             do { try setup.select(result.get()) }
-            catch { setup.message = error.localizedDescription }
+            catch { setup.reportError(error.localizedDescription) }
         }
         .fileImporter(isPresented: $choosingMLX, allowedContentTypes: [.folder]) { result in
             do { try setup.select(result.get()) }
-            catch { setup.message = error.localizedDescription }
+            catch { setup.reportError(error.localizedDescription) }
         }
     }
 }
@@ -162,10 +191,13 @@ struct DescriptionAssistantView: View {
     let compact: Bool
     /// Checks and applies to the editor's captured load, never whichever photo is selected later.
     let apply: (DescriptionAssistantProposal, String) -> Bool
+    /// Opens Settings → Description Assistant when the caller can reach the Settings window.
+    let openSettings: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var setup = DescriptionAssistantModelSetup.shared
     @State private var action: DescriptionAssistantAction = .grammar
-    @State private var language: DescriptionAssistantLanguage = .bokmal
+    @AppStorage(UserDefaultsKeys.descriptionAssistantLanguage, store: AppDefaults.store)
+    private var language: DescriptionAssistantLanguage = .bokmal
     @State private var draftDescription: String
     @State private var reportingNotes = ""
     @State private var includePeople = false
@@ -178,9 +210,11 @@ struct DescriptionAssistantView: View {
     @State private var generationTask: Task<Void, Never>?
     @State private var showSetup = false
 
-    init(source: DescriptionAssistantRequest, compact: Bool = false, apply: @escaping (DescriptionAssistantProposal, String) -> Bool) {
+    init(source: DescriptionAssistantRequest, compact: Bool = false, openSettings: (() -> Void)? = nil,
+         apply: @escaping (DescriptionAssistantProposal, String) -> Bool) {
         self.source = source
         self.compact = compact
+        self.openSettings = openSettings
         self.apply = apply
         _draftDescription = State(initialValue: source.originalDescription)
     }
@@ -221,6 +255,9 @@ struct DescriptionAssistantView: View {
                             .font(.caption).textSelection(.enabled)
                         Text("Order uses the upright original photo. Unnamed and excluded faces are omitted; review identities before applying.")
                             .font(.caption).foregroundStyle(.secondary)
+                        if let faceNotice {
+                            Text(faceNotice).font(.caption).foregroundStyle(.secondary)
+                        }
                     } else { Text(faceNotice ?? "No named faces are available for this photo.") .font(.caption).foregroundStyle(.secondary) }
                 }
                 if !compact || proposal == nil {
@@ -248,8 +285,18 @@ struct DescriptionAssistantView: View {
                     Text(issue).font(.caption).foregroundStyle(.secondary)
                 }
                 if compact && setup.backend == nil {
-                    Text("Configure a description model in Settings → Description Assistant.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Text("Configure a description model in Settings → Description Assistant.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let openSettings {
+                            Button("Open Settings…") {
+                                generationTask?.cancel()
+                                openSettings()
+                            }
+                            .controlSize(.small)
+                            .accessibilityIdentifier("descriptionAssistant.openSettings")
+                        }
+                    }
                 }
                 if let errorMessage { Text(errorMessage).foregroundStyle(.red).textSelection(.enabled) }
                 HStack {
@@ -269,6 +316,9 @@ struct DescriptionAssistantView: View {
             }
             .padding(compact ? 16 : 24)
         }.frame(width: compact ? 480 : 720, height: compact ? 400 : 820)
+        // A click outside the compact popover must not throw away a running generation or a
+        // suggestion under review; Close and Apply remain the explicit ways out.
+        .interactiveDismissDisabled(generationTask != nil || proposal != nil)
         .task {
             setup.refreshAppleAvailability()
             if setup.backend == nil { showSetup = true }
@@ -281,7 +331,9 @@ struct DescriptionAssistantView: View {
 
     private func loadPeople() async {
         defer { loadingPeople = false }
-        let context = await DescriptionAssistantFaceContext.load(for: source.imageURL)
+        let context = await DescriptionAssistantFaceContext.load(
+            for: source.imageURL, developSettings: source.developSettings
+        )
         guard !Task.isCancelled else { return }
         people = context.people
         faceNotice = context.notice
@@ -315,7 +367,8 @@ struct BatchDescriptionAssistantView: View {
     let urls: [URL]
     @Bindable var browser: BrowserViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var language: DescriptionAssistantLanguage = .bokmal
+    @AppStorage(UserDefaultsKeys.descriptionAssistantLanguage, store: AppDefaults.store)
+    private var language: DescriptionAssistantLanguage = .bokmal
     @State private var action: DescriptionAssistantAction = .wording
     @State private var proposals: [DescriptionAssistantProposal] = []
     @State private var reviewed: [UUID: String] = [:]
@@ -393,7 +446,7 @@ struct BatchDescriptionAssistantView: View {
                         continue
                     }
                     var metadata = editor.draft
-                    for (field, text) in editor.textBuffers { field.setTextValue(text, in: &metadata) }
+                    for (field, text) in editor.textBuffers { field.setReviewTextValue(text, in: &metadata) }
                     let request = DescriptionAssistantRequest(imageURL: url, editorLoadID: editor.id,
                         originalDescription: browser.metadataReviewText(for: .description, imageURL: url),
                         action: action, language: language, metadata: DescriptionAssistantMetadata(metadata), editorialPrompt: prompt)

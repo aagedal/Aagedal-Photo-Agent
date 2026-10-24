@@ -23,6 +23,11 @@ struct AnalysisMapEvidenceView: View {
     let onSet3DContentVisible: (Bool) -> Void
     let onSetViewport: (AnalysisMapViewport) -> Void
     let onSetInvestigationLocation: (AnalysisLocationEvidence?) -> Void
+    /// The open case when this view was built. Asynchronous place lookups capture it at request
+    /// start and apply their result only if that case is still open when the response arrives.
+    let caseID: UUID?
+    let onSetLookedUpInvestigationLocation: (AnalysisLocationEvidence, UUID?) -> Bool
+    let onApplyReverseGeocodedPlaceName: (String, AnalysisGeoCoordinate, UUID?) -> Bool
     let timestampEvidence: [AnalysisTimestampEvidence]
     let onSetSolarOverlay: (AnalysisSolarOverlayState) -> Void
     let onClearSolarOverlay: () -> Void
@@ -78,6 +83,9 @@ struct AnalysisMapEvidenceView: View {
         onSet3DContentVisible: @escaping (Bool) -> Void,
         onSetViewport: @escaping (AnalysisMapViewport) -> Void,
         onSetInvestigationLocation: @escaping (AnalysisLocationEvidence?) -> Void,
+        caseID: UUID?,
+        onSetLookedUpInvestigationLocation: @escaping (AnalysisLocationEvidence, UUID?) -> Bool,
+        onApplyReverseGeocodedPlaceName: @escaping (String, AnalysisGeoCoordinate, UUID?) -> Bool,
         timestampEvidence: [AnalysisTimestampEvidence],
         onSetSolarOverlay: @escaping (AnalysisSolarOverlayState) -> Void,
         onClearSolarOverlay: @escaping () -> Void,
@@ -104,6 +112,9 @@ struct AnalysisMapEvidenceView: View {
         self.onSet3DContentVisible = onSet3DContentVisible
         self.onSetViewport = onSetViewport
         self.onSetInvestigationLocation = onSetInvestigationLocation
+        self.caseID = caseID
+        self.onSetLookedUpInvestigationLocation = onSetLookedUpInvestigationLocation
+        self.onApplyReverseGeocodedPlaceName = onApplyReverseGeocodedPlaceName
         self.timestampEvidence = timestampEvidence
         self.onSetSolarOverlay = onSetSolarOverlay
         self.onClearSolarOverlay = onClearSolarOverlay
@@ -1405,25 +1416,35 @@ struct AnalysisMapEvidenceView: View {
         return [origin] + arcCoordinates
     }
 
+    /// `requestedForCaseID` is set only for asynchronous lookups: it wraps the case that was open
+    /// when the request started (which may itself be nil), and the result is dropped if that case
+    /// is no longer the open one.
     private func setInvestigationLocation(
         coordinate: AnalysisGeoCoordinate,
         source: AnalysisLocationEvidenceSource,
         detail: String,
         placeName: String? = nil,
-        placeNameSource: AnalysisPlaceNameSource? = nil
+        placeNameSource: AnalysisPlaceNameSource? = nil,
+        requestedForCaseID: UUID?? = nil
     ) {
         guard coordinate.isValid else {
             coordinateError = "The selected map coordinate is invalid."
             return
         }
-        geocodingError = nil
-        onSetInvestigationLocation(AnalysisLocationEvidence(
+        let location = AnalysisLocationEvidence(
             coordinate: coordinate,
             source: source,
             sourceDetail: detail,
             placeName: placeName,
             placeNameSource: placeNameSource
-        ))
+        )
+        if let requestedForCaseID {
+            // A lookup that finished after another photo was opened must not touch that case.
+            guard onSetLookedUpInvestigationLocation(location, requestedForCaseID) else { return }
+        } else {
+            onSetInvestigationLocation(location)
+        }
+        geocodingError = nil
         if source != .mapCenter {
             moveMap(to: coordinate)
         }
@@ -1433,6 +1454,7 @@ struct AnalysisMapEvidenceView: View {
         searchError = nil
         let title = result.title
         let subtitle = result.subtitle
+        let requestCaseID = caseID
         let request = MKLocalSearch.Request(completion: result)
         MKLocalSearch(request: request).start { response, error in
             Task { @MainActor in
@@ -1450,7 +1472,8 @@ struct AnalysisMapEvidenceView: View {
                     source: .placeSearch,
                     detail: detail,
                     placeName: title,
-                    placeNameSource: .placeSearch
+                    placeNameSource: .placeSearch,
+                    requestedForCaseID: .some(requestCaseID)
                 )
                 searchText = ""
                 searchCompleter.results = []
@@ -1464,6 +1487,7 @@ struct AnalysisMapEvidenceView: View {
 
         searchError = nil
         isSearching = true
+        let requestCaseID = caseID
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = query
         request.region = visibleRegion
@@ -1484,7 +1508,8 @@ struct AnalysisMapEvidenceView: View {
                     source: .placeSearch,
                     detail: query,
                     placeName: item.name ?? query,
-                    placeNameSource: .placeSearch
+                    placeNameSource: .placeSearch,
+                    requestedForCaseID: .some(requestCaseID)
                 )
                 searchText = ""
                 searchCompleter.results = []
@@ -1493,26 +1518,31 @@ struct AnalysisMapEvidenceView: View {
     }
 
     private func reverseGeocodeInvestigationLocation() {
-        guard var location = mapState.investigationLocation else { return }
+        guard let location = mapState.investigationLocation else { return }
         isReverseGeocoding = true
         geocodingError = nil
         let coordinate = location.coordinate
+        // This view value is captured by the task, so its `mapState` is stale by the time the
+        // response arrives; the model re-checks the live case and location instead.
+        let requestCaseID = caseID
         Task {
             do {
                 let result = try await GeocodingService().reverseGeocode(
                     latitude: coordinate.latitude,
                     longitude: coordinate.longitude
                 )
-                guard mapState.investigationLocation?.coordinate == coordinate else { return }
                 let components = [result.city, result.country].compactMap { $0 }
                 guard !components.isEmpty else {
                     geocodingError = "The geocoder returned no city or country for this coordinate."
                     isReverseGeocoding = false
                     return
                 }
-                location.placeName = components.joined(separator: ", ")
-                location.placeNameSource = .reverseGeocoded
-                onSetInvestigationLocation(location)
+                // Dropped (without an error) when another case is open or the location moved.
+                _ = onApplyReverseGeocodedPlaceName(
+                    components.joined(separator: ", "),
+                    coordinate,
+                    requestCaseID
+                )
                 isReverseGeocoding = false
             } catch {
                 geocodingError = error.localizedDescription

@@ -238,11 +238,11 @@ struct MCPNativeFaceScanReviewServiceTests {
             private let lock = NSLock()
             private var first = true
             func take() -> Bool { lock.withLock { let result = first; first = false; return result } }
-            func wait(_ semaphore: DispatchSemaphore) { semaphore.wait() }
+            func wait(_ semaphore: DispatchSemaphore) { semaphore.waitBounded() }
         }
         let once = Once()
         let f = try fixture(validateSession: {
-            if once.take() { entered.signal(); release.wait() }
+            if once.take() { entered.signal(); release.waitBounded() }
         }, schedule: refusingScheduler)
         defer { try? FileManager.default.removeItem(at: f.root) }
         let service = f.service, path = f.photos.path

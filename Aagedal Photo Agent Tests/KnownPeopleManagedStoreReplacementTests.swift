@@ -523,13 +523,13 @@ struct KnownPeopleManagedStoreReplacementTests {
         let root = try makeManagedRoot(in: parent)
         let priorOverride = KnownPeopleService.storageOverrideURL
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let priorPreference = UserDefaults.standard.object(forKey: defaultsKey)
+        let priorPreference = AppDefaults.store.object(forKey: defaultsKey)
         KnownPeopleService.storageOverrideURL = root
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
             KnownPeopleService.storageOverrideURL = priorOverride
-            if let priorPreference { UserDefaults.standard.set(priorPreference, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let priorPreference { AppDefaults.store.set(priorPreference, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let admitted = try await snapshot(in: parent)
         let service = KnownPeopleService()
@@ -568,13 +568,13 @@ struct KnownPeopleManagedStoreReplacementTests {
         let root = try makeManagedRoot(in: parent)
         let priorOverride = KnownPeopleService.storageOverrideURL
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let priorPreference = UserDefaults.standard.object(forKey: defaultsKey)
+        let priorPreference = AppDefaults.store.object(forKey: defaultsKey)
         KnownPeopleService.storageOverrideURL = root
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
             KnownPeopleService.storageOverrideURL = priorOverride
-            if let priorPreference { UserDefaults.standard.set(priorPreference, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let priorPreference { AppDefaults.store.set(priorPreference, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let admitted = try await snapshot(in: parent)
         let service = KnownPeopleService()
@@ -601,13 +601,13 @@ struct KnownPeopleManagedStoreReplacementTests {
         let root = try makeManagedRoot(in: parent)
         let priorOverride = KnownPeopleService.storageOverrideURL
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let priorPreference = UserDefaults.standard.object(forKey: defaultsKey)
+        let priorPreference = AppDefaults.store.object(forKey: defaultsKey)
         KnownPeopleService.storageOverrideURL = root
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
             KnownPeopleService.storageOverrideURL = priorOverride
-            if let priorPreference { UserDefaults.standard.set(priorPreference, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let priorPreference { AppDefaults.store.set(priorPreference, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let admitted = try await snapshot(in: parent)
         let service = KnownPeopleService()
@@ -649,13 +649,13 @@ struct KnownPeopleManagedStoreReplacementTests {
         let root = try makeManagedRoot(in: parent)
         let priorOverride = KnownPeopleService.storageOverrideURL
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let priorPreference = UserDefaults.standard.object(forKey: defaultsKey)
+        let priorPreference = AppDefaults.store.object(forKey: defaultsKey)
         KnownPeopleService.storageOverrideURL = root
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
             KnownPeopleService.storageOverrideURL = priorOverride
-            if let priorPreference { UserDefaults.standard.set(priorPreference, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let priorPreference { AppDefaults.store.set(priorPreference, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let removals = KnownPeopleManagedRemovalProbe()
         var archiveAccess = KnownPeopleArchiveFileAccess.system
@@ -701,13 +701,13 @@ struct KnownPeopleManagedStoreReplacementTests {
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
         let priorOverride = KnownPeopleService.storageOverrideURL
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let priorPreference = UserDefaults.standard.object(forKey: defaultsKey)
+        let priorPreference = AppDefaults.store.object(forKey: defaultsKey)
         KnownPeopleService.storageOverrideURL = root
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
             KnownPeopleService.storageOverrideURL = priorOverride
-            if let priorPreference { UserDefaults.standard.set(priorPreference, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let priorPreference { AppDefaults.store.set(priorPreference, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let admitted = try await snapshot(in: parent)
         let service = KnownPeopleService()
@@ -743,16 +743,16 @@ struct KnownPeopleManagedStoreReplacementTests {
         let priorOverride = KnownPeopleService.storageOverrideURL
         let cloudKey = UserDefaultsKeys.knownPeopleICloudEnabled
         let versionKey = UserDefaultsKeys.knownPeopleEmbeddingVersion
-        let priorCloud = UserDefaults.standard.object(forKey: cloudKey)
-        let priorVersion = UserDefaults.standard.object(forKey: versionKey)
+        let priorCloud = AppDefaults.store.object(forKey: cloudKey)
+        let priorVersion = AppDefaults.store.object(forKey: versionKey)
         KnownPeopleService.storageOverrideURL = root
-        UserDefaults.standard.set(false, forKey: cloudKey)
+        AppDefaults.store.set(false, forKey: cloudKey)
         defer {
             KnownPeopleService.storageOverrideURL = priorOverride
-            if let priorCloud { UserDefaults.standard.set(priorCloud, forKey: cloudKey) }
-            else { UserDefaults.standard.removeObject(forKey: cloudKey) }
-            if let priorVersion { UserDefaults.standard.set(priorVersion, forKey: versionKey) }
-            else { UserDefaults.standard.removeObject(forKey: versionKey) }
+            if let priorCloud { AppDefaults.store.set(priorCloud, forKey: cloudKey) }
+            else { AppDefaults.store.removeObject(forKey: cloudKey) }
+            if let priorVersion { AppDefaults.store.set(priorVersion, forKey: versionKey) }
+            else { AppDefaults.store.removeObject(forKey: versionKey) }
         }
         let admitted = try await snapshot(in: parent)
         let installer = KnownPeopleService()
@@ -760,13 +760,13 @@ struct KnownPeopleManagedStoreReplacementTests {
         let installed = await installer.replaceManagedStore(plan: plan, decision: .replaceUntracked,
             routingActive: false, routeMutationGate: KnownPeopleRouteMutationGate())
         #expect(installed.committed && installed.failure == nil)
-        UserDefaults.standard.set(FaceRecognitionDefaults.embeddingVersion - 1, forKey: versionKey)
+        AppDefaults.store.set(FaceRecognitionDefaults.embeddingVersion - 1, forKey: versionKey)
 
         let loaded = KnownPeopleService().loadDatabase()
 
         #expect(loaded.people.map(\.id) == admitted.people.map(\.id))
         #expect(KnownPeopleManagedStoreState.protectsCurrentEmbeddingStore(at: root))
-        #expect(UserDefaults.standard.integer(forKey: versionKey) == FaceRecognitionDefaults.embeddingVersion)
+        #expect(AppDefaults.store.integer(forKey: versionKey) == FaceRecognitionDefaults.embeddingVersion)
     }
 
     private func emptySnapshot(in parent: URL, libraryID: UUID, suffix: Int = 0) async throws -> KnownPeoplePackageSnapshot {
@@ -805,7 +805,7 @@ nonisolated private final class KnownPeopleManagedBlockingHook: @unchecked Senda
         condition.lock()
         entered = true
         condition.broadcast()
-        while !released { condition.wait() }
+        while !released { if !condition.waitBounded() { break } }
         condition.unlock()
     }
 

@@ -63,13 +63,30 @@ actor FFmpegWhisperArtifactAdmissionService {
             modifiedSeconds = info.st_mtimespec.tv_sec; modifiedNanos = info.st_mtimespec.tv_nsec
             changedSeconds = info.st_ctimespec.tv_sec; changedNanos = info.st_ctimespec.tv_nsec
         }
+
+        /// Whether both timestamps were safely in the past at `now`. On volumes with coarse
+        /// timestamps (HFS+ 1 s, FAT/exFAT 2 s) a same-size rewrite within the same tick would
+        /// keep every identity field, so an unsettled identity is re-hashed on revalidation.
+        func isSettled(at now: Date) -> Bool {
+            let modified = Date(timeIntervalSince1970: TimeInterval(modifiedSeconds) + TimeInterval(modifiedNanos) / 1e9)
+            let changed = Date(timeIntervalSince1970: TimeInterval(changedSeconds) + TimeInterval(changedNanos) / 1e9)
+            return now.timeIntervalSince(modified) >= 2.5 && now.timeIntervalSince(changed) >= 2.5
+        }
     }
     private struct Entry: Sendable {
         let receipt: Receipt
         let executableIdentity: Identity
         let modelIdentity: Identity
+        /// Both identities had settled when their digests were last verified, so an unchanged
+        /// identity is sufficient evidence of unchanged bytes.
+        var identitiesSettled: Bool
     }
     private var entries: [UUID: Entry] = [:]
+    private let now: @Sendable () -> Date
+
+    init(now: @escaping @Sendable () -> Date = Date.init) {
+        self.now = now
+    }
 
     private struct BundledRuntimeManifest: Decodable {
         let schemaVersion: Int
@@ -163,8 +180,11 @@ actor FFmpegWhisperArtifactAdmissionService {
                         modelIdentifier: String) -> Receipt {
         let receipt = Receipt(id: UUID(), executable: executable.0, model: model.0,
                               buildIdentifier: buildIdentifier, modelIdentifier: modelIdentifier)
+        let verifiedAt = now()
         entries[receipt.id] = Entry(receipt: receipt, executableIdentity: executable.1,
-                                    modelIdentity: model.1)
+                                    modelIdentity: model.1,
+                                    identitiesSettled: executable.1.isSettled(at: verifiedAt)
+                                        && model.1.isSettled(at: verifiedAt))
         return receipt
     }
 
@@ -172,6 +192,15 @@ actor FFmpegWhisperArtifactAdmissionService {
 
     /// Checks both the pinned files and the provider metadata; the runner still snapshots and
     /// verifies exact bytes immediately before launch, closing the path-to-process substitution gap.
+    ///
+    /// The files were hashed when admitted. Revalidation (twice per memo: before and after
+    /// inference) re-checks their full stat identity instead of re-reading a multi-GB model:
+    /// the same link-free path walk and file checks as admission, and an identity (device,
+    /// inode, size, mode, mtime, ctime; one link) equal to the one recorded with the verified
+    /// digest. Any write, truncate, chmod or replacement changes that identity and ctime cannot
+    /// be set back by user tools, so an unchanged identity means unchanged admitted bytes. A
+    /// changed identity was already rejected before this change, hash or no hash. The bytes
+    /// actually executed are independently verified against the pins by the job runner.
     func revalidate(_ receipt: Receipt,
                     configuration: FFmpegWhisperTranscriptionProvider.Configuration) throws {
         try Task.checkCancellation()
@@ -182,11 +211,19 @@ actor FFmpegWhisperArtifactAdmissionService {
               configuration.modelIdentifier == entry.receipt.modelIdentifier else {
             throw AdmissionError.configurationMismatch
         }
-        let executable = try Self.capture(entry.receipt.executable.url, executable: true)
-        let model = try Self.capture(entry.receipt.model.url, executable: false)
-        guard executable.0 == entry.receipt.executable, model.0 == entry.receipt.model,
-              executable.1 == entry.executableIdentity, model.1 == entry.modelIdentity else {
+        // Identities that had not settled when last verified are re-hashed, as before.
+        let hashing = !entry.identitiesSettled
+        let verifiedAt = now()
+        let executable = try Self.capture(entry.receipt.executable.url, executable: true, hashing: hashing)
+        let model = try Self.capture(entry.receipt.model.url, executable: false, hashing: hashing)
+        guard executable.1 == entry.executableIdentity, model.1 == entry.modelIdentity,
+              hashing ? (executable.0 == entry.receipt.executable && model.0 == entry.receipt.model)
+                      : (executable.0.byteCount == entry.receipt.executable.byteCount
+                         && model.0.byteCount == entry.receipt.model.byteCount) else {
             throw AdmissionError.artifactChanged
+        }
+        if hashing, executable.1.isSettled(at: verifiedAt), model.1.isSettled(at: verifiedAt) {
+            entries[receipt.id]?.identitiesSettled = true
         }
     }
 
@@ -215,7 +252,10 @@ actor FFmpegWhisperArtifactAdmissionService {
         return data
     }
 
-    private static func capture(_ url: URL, executable: Bool, maximumBytes: Int64? = nil) throws -> (FFmpegWhisperJobInput, Identity) {
+    /// Opens `url` without following any link and validates it. With `hashing`, streams the
+    /// bytes through SHA-256; without, returns an empty digest and only the verified identity.
+    private static func capture(_ url: URL, executable: Bool, maximumBytes: Int64? = nil,
+                                hashing: Bool = true) throws -> (FFmpegWhisperJobInput, Identity) {
         try Task.checkCancellation()
         guard url.isFileURL, url.host == nil || url.host == "" || url.host == "localhost",
               url.path.hasPrefix("/"), !url.path.utf8.contains(0) else { throw AdmissionError.unsafePath }
@@ -241,17 +281,24 @@ actor FFmpegWhisperArtifactAdmissionService {
               !executable || before.st_mode & 0o111 != 0,
               before.st_mode & (S_ISUID | S_ISGID) == 0 else { throw AdmissionError.invalidArtifact }
         var hash = SHA256()
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         var total: Int64 = 0
-        while true {
-            try Task.checkCancellation()
-            let count = Darwin.read(descriptor, &buffer, min(buffer.count, Int(before.st_size - total + 1)))
-            if count < 0, errno == EINTR { continue }
-            guard count >= 0 else { throw AdmissionError.invalidArtifact }
-            if count == 0 { break }
-            total += Int64(count)
-            guard total <= before.st_size else { throw AdmissionError.artifactChanged }
-            hash.update(data: Data(buffer.prefix(count)))
+        if hashing {
+            FFmpegWhisperHashObserver.current?(url)
+            let buffer = UnsafeMutableRawBufferPointer.allocate(
+                byteCount: FFmpegWhisperHashObserver.bufferSize, alignment: 16)
+            defer { buffer.deallocate() }
+            while true {
+                try Task.checkCancellation()
+                let count = Darwin.read(descriptor, buffer.baseAddress, min(buffer.count, Int(before.st_size - total + 1)))
+                if count < 0, errno == EINTR { continue }
+                guard count >= 0 else { throw AdmissionError.invalidArtifact }
+                if count == 0 { break }
+                total += Int64(count)
+                guard total <= before.st_size else { throw AdmissionError.artifactChanged }
+                hash.update(bufferPointer: UnsafeRawBufferPointer(rebasing: buffer[0..<count]))
+            }
+        } else {
+            total = Int64(before.st_size)
         }
         var after = stat()
         var pathInfo = stat()
@@ -260,6 +307,7 @@ actor FFmpegWhisperArtifactAdmissionService {
               fstatat(directory, String(parts.last!), &pathInfo, AT_SYMLINK_NOFOLLOW) == 0,
               Identity(after) == Identity(pathInfo) else { throw AdmissionError.artifactChanged }
         return (.init(url: url, byteCount: total,
-                      sha256: hash.finalize().map { String(format: "%02x", $0) }.joined()), Identity(after))
+                      sha256: hashing ? hash.finalize().map { String(format: "%02x", $0) }.joined() : ""),
+                Identity(after))
     }
 }

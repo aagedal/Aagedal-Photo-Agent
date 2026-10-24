@@ -108,12 +108,12 @@ final class FaceRecognitionViewModel {
     /// from the displayed face set without re-scanning. Bound to the slider in the expanded face
     /// view and persisted to `faceMinQuality`.
     var displayQualityThreshold: Float = Float(
-        UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinQuality) as? Double
+        AppDefaults.store.object(forKey: UserDefaultsKeys.faceMinQuality) as? Double
             ?? Double(FaceRecognitionDefaults.minFaceQuality)
     ) {
         didSet {
             guard displayQualityThreshold != oldValue else { return }
-            UserDefaults.standard.set(Double(displayQualityThreshold), forKey: UserDefaultsKeys.faceMinQuality)
+            AppDefaults.store.set(Double(displayQualityThreshold), forKey: UserDefaultsKeys.faceMinQuality)
             invalidateCaches()
         }
     }
@@ -143,6 +143,32 @@ final class FaceRecognitionViewModel {
         scanComplete || faceData?.faces.isEmpty == false
     }
     var errorMessage: String?
+
+    /// "Update Person Shown on N photos?" offer created by a face edit that made a name this app
+    /// applied wrong (rename, move, merge, delete, Known People change). Nil when none is pending.
+    var pendingPersonShownUpdate: PersonShownUpdateProposal?
+    @ObservationIgnored nonisolated(unsafe) private var knownPeopleObserver: (any NSObjectProtocol)?
+    /// Face-data updates that arrived while this folder was scanning. The scan publishes its own
+    /// snapshot at the end, so these are replayed afterwards instead of being overwritten.
+    @ObservationIgnored private var deferredAfterScan: [@MainActor () -> Void] = []
+    /// The face data the pending proposal was planned from. A later edit re-plans from this
+    /// snapshot (Alice → Alicia → Alicja becomes one Alice → Alicja proposal) instead of
+    /// appending a correction that would target a name the photos never received.
+    @ObservationIgnored private var pendingProposalBase: FolderFaceData?
+    @ObservationIgnored private var pendingProposalExcludedPaths: Set<String> = []
+    /// Applied-name changes of Person Shown writes that are queued or running, in order. Planning
+    /// overlays them so it starts from the names the photos will carry once they land.
+    @ObservationIgnored private var inFlightAppliedNameChanges: [(id: UUID, folder: String, changes: AppliedPersonShownChanges)] = []
+
+    /// Whether Apply All has anything to write: named face groups, or — with the Sports lens
+    /// active — confirmed jersey players (sports resolution never names face groups). Partial
+    /// data from a cancelled or partly failed scan is still applicable; `scanComplete` only
+    /// drives the "resume scanning" affordance.
+    var canApplyAllNames: Bool {
+        guard faceData != nil else { return false }
+        if !namedGroups.isEmpty { return true }
+        return activeLens == .sports && !confirmedPlayerCards.isEmpty
+    }
 
     // Keep compressed crops for the displayed folder so an evicted decoded image can be
     // recreated when its card scrolls back into view.
@@ -584,19 +610,19 @@ final class FaceRecognitionViewModel {
     var detectionConfig: FaceDetectionService.DetectionConfig {
         var config = FaceDetectionService.DetectionConfig()
 
-        let confidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
+        let confidence = AppDefaults.store.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
         config.minConfidence = Float(confidence ?? 0.7)
-        let minSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
+        let minSize = AppDefaults.store.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         config.minFaceSize = minSize ?? 50
 
         // Fast is the default. Thorough adds tiled detection for small/off-angle group-shot faces.
-        config.tiledDetection = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? false
+        config.tiledDetection = AppDefaults.store.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? false
 
         // OCR is an explicit scan action, independent of the legacy saved Sports toggle.
         config.sportsModeEnabled = false
-        let ocrConf = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsOCRConfidenceThreshold) as? Double
+        let ocrConf = AppDefaults.store.object(forKey: UserDefaultsKeys.sportsOCRConfidenceThreshold) as? Double
         config.sportsOCRConfidenceThreshold = Float(ocrConf ?? 0.5)
-        let minHeight = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsNumberMinHeightFraction) as? Double
+        let minHeight = AppDefaults.store.object(forKey: UserDefaultsKeys.sportsNumberMinHeightFraction) as? Double
         config.sportsNumberMinHeightFraction = CGFloat(minHeight ?? 0.02)
 
         return config
@@ -608,6 +634,9 @@ final class FaceRecognitionViewModel {
     /// folder was displayed when their background scan completed.
     @ObservationIgnored private var deferredPostprocessingFolders: Set<URL> = []
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
+    /// Person Shown write batches admitted and not yet finished (quit warns about and awaits them).
+    @ObservationIgnored private var activeFieldMutationWriteCount = 0
+    var hasPendingFieldMutationWrites: Bool { activeFieldMutationWriteCount > 0 }
     @ObservationIgnored private let injectedFieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)?
     @ObservationIgnored private let fieldMutationModeResolver: @MainActor (Bool, Bool) -> MetadataWriteMode
     private(set) var fieldMutationResults: [MetadataFieldMutationWriteResult] = []
@@ -662,9 +691,17 @@ final class FaceRecognitionViewModel {
         self.fileSignatureService = fileSignatureService
         self.scanDetector = scanDetector
         self.thumbnailRegenerator = thumbnailRegenerator
+        knownPeopleObserver = NotificationCenter.default.addObserver(
+            forName: .knownPeopleDatabaseDidChange, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let change = notification.userInfo?[KnownPeopleIdentityChange.userInfoKey]
+                as? KnownPeopleIdentityChange else { return }
+            MainActor.assumeIsolated { self?.handleKnownPeopleIdentityChange(change) }
+        }
     }
 
     deinit {
+        if let knownPeopleObserver { NotificationCenter.default.removeObserver(knownPeopleObserver) }
         activeScanTask?.cancel()
         activeScanWorkerTask?.cancel()
         metadataWriteTask?.cancel()
@@ -765,6 +802,23 @@ final class FaceRecognitionViewModel {
 
     // MARK: - Load Existing Data
 
+    /// The active browser pane has no folder: stop presenting the previous folder's faces.
+    /// A background scan keeps running (its folder is tracked by `scanningFolderURL`).
+    func clearDisplayedFolder() {
+        guard displayedFolderURL != nil || faceData != nil else { return }
+        matchRosterLoadTask?.cancel()
+        matchRosterLoadRequestID = UUID()
+        matchRoster = nil
+        lensPrewarmTask?.cancel()
+        faceDataLoadTask?.cancel()
+        faceDataLoadRequestID = UUID()
+        displayedFolderURL = nil
+        faceData = nil
+        scanComplete = false
+        thumbnailCache.removeAllObjects()
+        thumbnailDataByFaceID.removeAll()
+    }
+
     func loadFaceData(for folderURL: URL, cleanupPolicy: FaceCleanupPolicy) {
         let isSameFolder = displayedFolderURL == folderURL.standardizedFileURL
         if !isSameFolder {
@@ -829,7 +883,8 @@ final class FaceRecognitionViewModel {
                     self.errorMessage = "Failed to remove expired face data: \(message)"
                 }
 
-                guard evidence.faceData != nil else { return }
+                guard let loaded = evidence.faceData else { return }
+                self.reofferUnansweredPersonShownUpdate(for: loaded)
                 if self.deferredPostprocessingFolders.remove(folderURL.standardizedFileURL) != nil {
                     if self.folderHasJerseyData {
                         self.scheduleMatchRosterLoad(for: folderURL, resolveAfterLoad: true)
@@ -1187,12 +1242,14 @@ final class FaceRecognitionViewModel {
             let toScan: [URL]
             let toRemove: Set<String>
             let unchangedFiles: Set<String>
+            let refreshedSignatures: [String: FileSignature]
             let classificationWasCancelled: Bool
             switch classificationResult {
             case .complete(let classification):
                 toScan = classification.imageURLsToScan
                 toRemove = classification.removedOrModifiedPaths
                 unchangedFiles = classification.unchangedPaths
+                refreshedSignatures = classification.refreshedSignatures
                 classificationWasCancelled = false
             case .cancelled:
                 // Keep the complete prior snapshot intact. The cancelled worker below will
@@ -1200,6 +1257,7 @@ final class FaceRecognitionViewModel {
                 toScan = []
                 toRemove = []
                 unchangedFiles = Set(existingData?.scannedFiles.keys.map { $0 } ?? [])
+                refreshedSignatures = [:]
                 classificationWasCancelled = true
             }
 
@@ -1253,6 +1311,11 @@ final class FaceRecognitionViewModel {
             for path in toRemove {
                 initialScannedFiles.removeValue(forKey: path)
             }
+            // A metadata-only write (Apply, Review, another app) kept the pixels: keep the faces
+            // and adopt the new date/size so the next scan does not re-check the content.
+            for (path, signature) in refreshedSignatures where unchangedFiles.contains(path) {
+                initialScannedFiles[path] = signature
+            }
 
             await MainActor.run {
                 self.scanTotalCount = toScan.count + thumbnailRepairURLs.count
@@ -1262,7 +1325,8 @@ final class FaceRecognitionViewModel {
             do { try effectAuthority?(folderURL) }
             catch { return refuseAuthority(error, reset: resetPersistence) }
 
-            if toScan.isEmpty && thumbnailRepairURLs.isEmpty && toRemove.isEmpty && !classificationWasCancelled && existingData?.scanComplete != false {
+            if toScan.isEmpty && thumbnailRepairURLs.isEmpty && toRemove.isEmpty && refreshedSignatures.isEmpty
+                && !classificationWasCancelled && existingData?.scanComplete != false {
                 // Only a truly unchanged inventory can skip persistence. A removal-only
                 // scan must save the pruned faces, groups, numbers and signatures below.
                 reservation?.release()
@@ -1517,7 +1581,7 @@ final class FaceRecognitionViewModel {
                     }
                     if !repairFailed && !Task.isCancelled {
                         switch await fileSignatureService.signature(for: url) {
-                        case .captured(_, let signature?) where signature == scannedFiles[url.path]:
+                        case .captured(_, let signature?) where scannedFiles[url.path].map(signature.hasSameFileFacts(as:)) == true:
                             incompleteThumbnailPaths.remove(url.path)
                         default:
                             // Source drift invalidates retained detection authority on the next retry.
@@ -1694,6 +1758,7 @@ final class FaceRecognitionViewModel {
                 self.scanningFolderURL = nil
                 self.scanningGroups = []
                 self.activeScanTask = nil
+                self.replayDeferredFaceUpdates()
 
                 let succeeded = max(0, result.processedCount - result.failureCount)
                 self.activityHistory?.record(ActivityEntry(
@@ -1885,6 +1950,7 @@ final class FaceRecognitionViewModel {
                 // Move faces from source to target
                 let sourceFaceIDs = data.groups[sourceIndex].faceIDs
                 data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+                data.groups[targetIndex].inheritAppliedName(from: data.groups[sourceIndex])
 
                 // Update face groupIDs
                 for faceID in sourceFaceIDs {
@@ -1905,8 +1971,7 @@ final class FaceRecognitionViewModel {
         data.groups.removeAll { groupIDsToRemove.contains($0.id) }
 
         // Save updated data
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data, reportsScanRefusal: false)
     }
 
     /// Runs Known People matching after scan completes (async wrapper for use in scan task).
@@ -2110,7 +2175,7 @@ final class FaceRecognitionViewModel {
             embeddingSources: sourceThumbnails, representativeSource: representativeData
         )
         let upgradeSources: [UUID: Data]
-        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources) {
+        if AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources) {
             let cropInputs = zip(faces, embeddings).map { face, embedding in
                 KnownPeopleUpgradeCropSource(embeddingID: embedding.id,
                     imageURL: face.imageURL, faceRect: face.faceRect)
@@ -2288,6 +2353,7 @@ final class FaceRecognitionViewModel {
 
             let sourceFaceIDs = data.groups[sourceIndex].faceIDs
             data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+            data.groups[targetIndex].inheritAppliedName(from: data.groups[sourceIndex])
             for faceID in sourceFaceIDs {
                 if let fi = faceIdx[faceID] { data.faces[fi].groupID = suggestion.group1ID }
             }
@@ -2297,9 +2363,8 @@ final class FaceRecognitionViewModel {
         guard !removedSourceIDs.isEmpty else { return 0 }
         data.groups.removeAll { removedSourceIDs.contains($0.id) }
 
-        faceData = data
+        guard commitFaceEdit(data) else { return 0 }
         mergeSuggestions.removeAll()
-        scheduleFaceDataPersistence(data)
         return removedSourceIDs.count
     }
 
@@ -2381,10 +2446,18 @@ final class FaceRecognitionViewModel {
         let groupIdx = groupIndexMap(from: data)
         guard let index = groupIdx[groupID] else { return }
 
-        data.groups[index].name = name.isEmpty ? nil : name
-        data.groups[index].knownPersonID = knownPersonID
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        let newName: String? = name.isEmpty ? nil : name
+        let previousName = data.groups[index].name
+        data.groups[index].name = newName
+        if let knownPersonID {
+            // A Known People pick (suggestion, auto-match, roster link) asserts the identity.
+            data.groups[index].knownPersonID = knownPersonID
+        } else if newName != previousName {
+            // A typed rename is a different identity claim; an unchanged name keeps the link
+            // that roster lookups and Known People renames rely on.
+            data.groups[index].knownPersonID = nil
+        }
+        commitFaceEdit(data)
     }
 
     /// Clears the group's identification while preserving its faces and key art.
@@ -2401,8 +2474,7 @@ final class FaceRecognitionViewModel {
         guard let index = groupIdx[groupID] else { return }
 
         data.groups[index].manualNumber = number
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Reversibly exclude a referee or other non-player from Person Shown. The group stays in
@@ -2422,8 +2494,7 @@ final class FaceRecognitionViewModel {
                 }
             }
         }
-        faceData = data
-        scheduleFaceDataPersistence(data, failurePrefix: "Failed to save face exclusion")
+        commitFaceEdit(data, failurePrefix: "Failed to save face exclusion")
     }
 
     func setRepresentativeFace(_ faceID: UUID, forGroup groupID: UUID) {
@@ -2433,8 +2504,7 @@ final class FaceRecognitionViewModel {
               data.groups[index].faceIDs.contains(faceID) else { return }
 
         data.groups[index].representativeFaceID = faceID
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     // MARK: - Sports tagging: match setup & resolution
@@ -2580,9 +2650,9 @@ final class FaceRecognitionViewModel {
         )
 
         data.numberDetections = result.numbers
-        faceData = data
+        guard commitFaceEdit(data, failurePrefix: "Failed to save sports resolution",
+                             reportsScanRefusal: false) else { return }
         ambiguousNumberDetections = result.ambiguous
-        scheduleFaceDataPersistence(data, failurePrefix: "Failed to save sports resolution")
     }
 
     /// Pure core of sports resolution: turn detected numbers into resolved, confirmation-gated
@@ -2726,9 +2796,8 @@ final class FaceRecognitionViewModel {
         if case .resolved(let player, _) = playerResolver.resolve(number: data.numberDetections![i].number, side: side, match: match) {
             data.numberDetections![i].resolvedPlayerName = resolvedDisplayName(for: player)
         }
-        faceData = data
+        guard commitFaceEdit(data) else { return }
         ambiguousNumberDetections.removeAll { $0.id == detectionID }
-        scheduleFaceDataPersistence(data)
     }
 
     /// Mutate a single number claim's confirmation state and persist. Confirmed claims (and only
@@ -2737,8 +2806,7 @@ final class FaceRecognitionViewModel {
         guard var data = faceData, data.numberDetections != nil,
               let i = data.numberDetections!.firstIndex(where: { $0.id == detectionID }) else { return }
         data.numberDetections![i].claimState = state
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Accept a number → player claim: its name will be written on Apply.
@@ -2770,17 +2838,14 @@ final class FaceRecognitionViewModel {
         if let groupName, !groupName.isEmpty {
             data.numberDetections![i].resolvedPlayerName = groupName
             data.numberDetections![i].claimState = .confirmed
-            faceData = data
-            scheduleFaceDataPersistence(data)
+            commitFaceEdit(data)
         } else if let resolved = data.numberDetections![i].resolvedPlayerName?.trimmingCharacters(in: .whitespacesAndNewlines), !resolved.isEmpty {
             data.numberDetections![i].claimState = .confirmed
-            faceData = data
-            scheduleFaceDataPersistence(data)
+            commitFaceEdit(data)
             // Name the previously-unnamed group with the number's player (user-asserted identity).
             nameGroup(groupID, name: resolved)
         } else {
-            faceData = data
-            scheduleFaceDataPersistence(data)
+            commitFaceEdit(data)
         }
         ambiguousNumberDetections.removeAll { $0.id == detectionID }
     }
@@ -2799,8 +2864,7 @@ final class FaceRecognitionViewModel {
             data.faces[fi].jerseyNumberBox = nil
         }
         data.numberDetections![i].associatedFaceID = nil
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Correct a misread number (OCR read "1" but the shirt shows "21"). Updates the claim and its
@@ -2829,8 +2893,7 @@ final class FaceRecognitionViewModel {
             data.numberDetections![i].resolvedPlayerName = nil
         }
         data.numberDetections![i].claimState = .suggested
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// If a face group carries a jersey number that maps to a roster player on a
@@ -2937,22 +3000,37 @@ final class FaceRecognitionViewModel {
 
     func applyNameToMetadata(groupID: UUID) {
         guard let data = faceData,
-              !fieldMutationIsPaused(in: data.folderURL),
               let group = groupLookup[groupID], !group.isExcludedFromPersonShown,
               let name = group.name, !name.isEmpty else { return }
+        guard !refuseFaceEditDuringScan(data.folderURL) else { return }
+        guard !fieldMutationIsPaused(in: data.folderURL) else {
+            errorMessage = "Face metadata writing is paused while files in this folder are being renamed."
+            return
+        }
 
         let names = splitPersonNames(name)
-        guard !names.isEmpty else { return }
+        guard let appliedName = names.first else { return }
 
-        let imageURLs = group.faceIDs.compactMap { faceID in
-            faceLookup[faceID]?.imageURL
-        }
-        let uniqueURLs = Array(Set(imageURLs))
+        // Always write into the folder that is open now (a moved or copied folder's stored URLs
+        // are rebased on load; this keeps a stale absolute URL from reaching the old folder).
+        let uniqueURLs = Array(Set(group.faceIDs.compactMap { faceID in
+            faceLookup[faceID].map { Self.currentPhotoURL($0.imageURL, in: data.folderURL) }
+        }))
 
         guard !uniqueURLs.isEmpty else { return }
 
-        enqueuePersonMutations(namesByURL: Dictionary(uniqueKeysWithValues: uniqueURLs.map { ($0, names) }),
-            folderURL: data.folderURL, capturedC2PA: nil, onComplete: nil)
+        let perPhoto = Dictionary(uniqueURLs.map { ($0.lastPathComponent, Optional(appliedName)) },
+            uniquingKeysWith: { first, _ in first })
+        enqueuePersonMutations(
+            mutationsByURL: Dictionary(uniqueKeysWithValues: uniqueURLs.map { ($0, .addPersons(names)) }),
+            folderURL: data.folderURL, capturedC2PA: nil,
+            appliedNameUpdates: [groupID: perPhoto], onComplete: nil)
+    }
+
+    /// A face's photo inside `folderURL`, by filename when the stored URL names another folder.
+    nonisolated static func currentPhotoURL(_ url: URL, in folderURL: URL) -> URL {
+        url.deletingLastPathComponent().standardizedFileURL.path == folderURL.standardizedFileURL.path
+            ? url : folderURL.appendingPathComponent(url.lastPathComponent)
     }
 
     func applyAllNamesToMetadata(
@@ -2964,36 +3042,45 @@ final class FaceRecognitionViewModel {
             onComplete?()
             return
         }
+        guard !refuseFaceEditDuringScan(data.folderURL) else {
+            onComplete?()
+            return
+        }
         guard !fieldMutationIsPaused(in: data.folderURL) else {
             errorMessage = "Face metadata writing is paused while files in this folder are being renamed."
             onComplete?()
             return
         }
 
-        let availableURLs = Set(images.map(\.url))
+        // Match faces to the browser's photos by path inside the open folder, never by a stored
+        // absolute URL that may still name the folder this one was moved or copied from.
+        var availableByPath: [String: URL] = [:]
+        for image in images { availableByPath[image.url.standardizedFileURL.path] = image.url }
         var namesByURL: [URL: [String]] = [:]
         var seenNamesByURL: [URL: Set<String>] = [:]
+        var appliedNameUpdates: AppliedPersonShownChanges = [:]
 
         for face in data.faces {
-            guard availableURLs.contains(face.imageURL),
+            guard let photoURL = availableByPath[Self.currentPhotoURL(face.imageURL, in: data.folderURL).standardizedFileURL.path],
                   let groupID = face.groupID,
                   let group = groupLookup[groupID], !group.isExcludedFromPersonShown,
                   let rawName = group.name?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !rawName.isEmpty else { continue }
 
             let names = splitPersonNames(rawName)
-            guard !names.isEmpty else { continue }
+            guard let appliedName = names.first else { continue }
+            appliedNameUpdates[groupID, default: [:]][photoURL.lastPathComponent] = .some(appliedName)
 
-            var existing = namesByURL[face.imageURL] ?? []
-            var seen = seenNamesByURL[face.imageURL] ?? Set(existing.map { $0.lowercased() })
+            var existing = namesByURL[photoURL] ?? []
+            var seen = seenNamesByURL[photoURL] ?? Set(existing.map { $0.lowercased() })
             for name in names {
                 let key = name.lowercased()
                 if seen.insert(key).inserted {
                     existing.append(name)
                 }
             }
-            namesByURL[face.imageURL] = existing
-            seenNamesByURL[face.imageURL] = seen
+            namesByURL[photoURL] = existing
+            seenNamesByURL[photoURL] = seen
         }
 
         // Jersey-number claims (including back-turned players with no face) only write when the
@@ -3005,20 +3092,20 @@ final class FaceRecognitionViewModel {
         if activeLens == .sports {
             let excludedFaceIDs = Set(data.groups.filter(\.isExcludedFromPersonShown).flatMap(\.faceIDs))
             for det in data.numberDetections ?? [] where det.effectiveClaimState == .confirmed {
-                guard availableURLs.contains(det.imageURL),
+                guard let photoURL = availableByPath[Self.currentPhotoURL(det.imageURL, in: data.folderURL).standardizedFileURL.path],
                       det.associatedFaceID.map({ !excludedFaceIDs.contains($0) }) ?? true,
                       let rawName = det.resolvedPlayerName?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !rawName.isEmpty else { continue }
                 let names = splitPersonNames(rawName)
                 guard !names.isEmpty else { continue }
 
-                var existing = namesByURL[det.imageURL] ?? []
-                var seen = seenNamesByURL[det.imageURL] ?? Set(existing.map { $0.lowercased() })
+                var existing = namesByURL[photoURL] ?? []
+                var seen = seenNamesByURL[photoURL] ?? Set(existing.map { $0.lowercased() })
                 for name in names where seen.insert(name.lowercased()).inserted {
                     existing.append(name)
                 }
-                namesByURL[det.imageURL] = existing
-                seenNamesByURL[det.imageURL] = seen
+                namesByURL[photoURL] = existing
+                seenNamesByURL[photoURL] = seen
             }
         }
 
@@ -3033,9 +3120,9 @@ final class FaceRecognitionViewModel {
             onComplete?()
             return
         }
-        let c2paLookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0.hasC2PA) })
-        enqueuePersonMutations(namesByURL: namesByURL, folderURL: capturedFolder,
-            capturedC2PA: c2paLookup, onComplete: onComplete)
+        let c2paLookup = Dictionary(images.map { ($0.url, $0.hasC2PA) }, uniquingKeysWith: { first, _ in first })
+        enqueuePersonMutations(mutationsByURL: namesByURL.mapValues { .addPersons($0) }, folderURL: capturedFolder,
+            capturedC2PA: c2paLookup, appliedNameUpdates: appliedNameUpdates, onComplete: onComplete)
     }
 
     /// Directory identity must not depend on whether a decoded URL carries a trailing slash.
@@ -3049,24 +3136,41 @@ final class FaceRecognitionViewModel {
         return Self.fieldMutationFolderIdentity(reservation) == Self.fieldMutationFolderIdentity(folderURL)
     }
 
-    private func enqueuePersonMutations(namesByURL: [URL: [String]], folderURL: URL,
-        capturedC2PA: [URL: Bool]?, onComplete: (() -> Void)?) {
+    /// The one Person Shown write path for faces (Apply and "Update Person Shown"): every photo
+    /// goes through `MetadataFieldMutationWriteService`, which honours the write preset (RAW →
+    /// XMP sidecar only), C2PA, the metadata loss guard and preserves Develop settings.
+    /// `appliedNameUpdates` records the exact name now in the photos once any write completes.
+    private func enqueuePersonMutations(mutationsByURL: [URL: MetadataPhysicalFieldMutation], folderURL: URL,
+        capturedC2PA: [URL: Bool]?, appliedNameUpdates: AppliedPersonShownChanges = [:], onComplete: (() -> Void)?) {
         // Capture settings before any asynchronous reads or preceding accepted operations.
         let ordinaryMode = fieldMutationModeResolver(false, false)
         let c2paMode = fieldMutationModeResolver(true, false)
         let rawMode = fieldMutationModeResolver(false, true)
-        let revision = faceDataRevision
-        let urls = namesByURL.keys.sorted { $0.path < $1.path }
+        let urls = mutationsByURL.keys.sorted { $0.path < $1.path }
         let previous = metadataWriteTask
         let writer = injectedFieldMutationWriter
         let engine = writeEngine
         let reader = readService
+        let signatureService = fileSignatureService
+        let inFlightID = UUID()
+        if !appliedNameUpdates.isEmpty {
+            inFlightAppliedNameChanges.append((inFlightID, Self.fieldMutationFolderIdentity(folderURL), appliedNameUpdates))
+        }
+        activeFieldMutationWriteCount += 1
         metadataWriteTask = Task {
             // The completion closure releases FaceBar's busy state, including failures. Success
             // is represented by immutable results and change notifications, never this callback.
             defer { onComplete?() }
+            defer { activeFieldMutationWriteCount -= 1 }
             await previous?.value
-            let c2pa = if let capturedC2PA { capturedC2PA } else { await loadC2PALookup(urls: urls) }
+            // Content-credential status by path (URL spellings of one file may differ). Photos the
+            // caller could not describe are read from disk; an unreadable photo is refused below.
+            var c2pa: [String: Bool] = [:]
+            for (url, value) in capturedC2PA ?? [:] { c2pa[url.standardizedFileURL.path] = value }
+            let undescribed = urls.filter { c2pa[$0.standardizedFileURL.path] == nil }
+            if !undescribed.isEmpty {
+                for (url, value) in await loadC2PALookup(urls: undescribed) { c2pa[url.standardizedFileURL.path] = value }
+            }
             let service = MetadataFieldMutationWriteService(writeEngine: engine, readEmbedded: { url in
                 guard let value = try await reader.readBatchFullMetadata(urls: [url])[url] else {
                     throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path])
@@ -3074,22 +3178,29 @@ final class FaceRecognitionViewModel {
                 return value
             })
             var results: [MetadataFieldMutationWriteResult] = []
+            var ownWrites: [OwnPersonWrite] = []
             for url in urls {
-                let mode = SupportedImageFormats.isRaw(url: url) ? rawMode : ((c2pa[url] ?? false) ? c2paMode : ordinaryMode)
+                guard let mutation = mutationsByURL[url] else { continue }
+                let hasC2PA = c2pa[url.standardizedFileURL.path]
+                let mode = SupportedImageFormats.isRaw(url: url) ? rawMode : ((hasC2PA ?? false) ? c2paMode : ordinaryMode)
                 let request = MetadataFieldMutationWriteRequest(imageURL: url, folderURL: folderURL,
-                    requestedMode: mode, mutation: .addPersons(namesByURL[url] ?? []))
-                guard c2pa[url] != nil else {
+                    requestedMode: mode, mutation: mutation)
+                guard hasC2PA != nil else {
                     results.append(.failed(request: request,
                         message: "Could not read this photo's metadata and content-credential status. Person names were not written."))
                     continue
                 }
+                let factsBefore = await signatureService.fileFacts(for: url)
                 let result = if let writer { await writer(request) } else { await service.write(request) }
+                if result.didWriteEmbedded, let factsBefore, let factsAfter = await signatureService.fileFacts(for: url) {
+                    ownWrites.append(OwnPersonWrite(url: url, before: factsBefore, after: factsAfter))
+                }
                 results.append(result)
             }
-            guard faceData.map({ Self.fieldMutationFolderIdentity($0.folderURL) }) == Self.fieldMutationFolderIdentity(folderURL),
-                  faceDataRevision == revision else { return }
-            fieldMutationResults = results
-            if let failure = MetadataFieldMutationFeedback.failureSummary(results) { errorMessage = failure }
+            // Files changed on disk regardless of what the face bar shows now: always announce
+            // them so open editors refresh. Results and errors are scoped to the folder that is
+            // still displayed — not its face-data revision, which every naming/merge edit made
+            // during the write bumps (that hid earlier write failures).
             let changed = results.filter {
                 $0.installedSidecar != nil || $0.didWriteEmbedded || $0.didWriteXMP
                     || $0.embeddedWriteMayHaveOccurred || $0.committedButUnverifiedSidecarURL != nil
@@ -3098,16 +3209,81 @@ final class FaceRecognitionViewModel {
                 NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil,
                     userInfo: ["imageURLs": changed])
             }
+            inFlightAppliedNameChanges.removeAll { $0.id == inFlightID }
+            // Only photos whose write completed now carry the new names.
+            let completedPhotos = Set(results.filter(\.completed).map(\.imageURL.lastPathComponent))
+            if !appliedNameUpdates.isEmpty, let base = pendingProposalBase,
+               Self.fieldMutationFolderIdentity(base.folderURL) == Self.fieldMutationFolderIdentity(folderURL) {
+                var updatedBase = base
+                PersonShownCorrectionPlanner.applying(appliedNameUpdates, to: &updatedBase, onlyPhotos: completedPhotos)
+                pendingProposalBase = updatedBase
+            }
+            guard faceData.map({ Self.fieldMutationFolderIdentity($0.folderURL) }) == Self.fieldMutationFolderIdentity(folderURL) else { return }
+            fieldMutationResults = results
+            if let failure = MetadataFieldMutationFeedback.failureSummary(results) { errorMessage = failure }
+            updateFaceDataAfterOwnWrites(folderURL: folderURL, appliedNameUpdates: appliedNameUpdates,
+                completedPhotos: completedPhotos, ownWrites: ownWrites)
         }
+    }
+
+    private struct OwnPersonWrite {
+        let url: URL
+        let before: FileSignature
+        let after: FileSignature
+    }
+
+    /// After our own verified Person Shown writes: remember the exact applied names, and move each
+    /// rewritten photo's scan signature forward (only when it still described the pre-write file)
+    /// so the next incremental scan keeps the faces of a photo whose pixels did not change.
+    private func updateFaceDataAfterOwnWrites(folderURL: URL, appliedNameUpdates: AppliedPersonShownChanges,
+                                              completedPhotos: Set<String>, ownWrites: [OwnPersonWrite]) {
+        guard !appliedNameUpdates.isEmpty || !ownWrites.isEmpty else { return }
+        guard var data = faceData,
+              Self.fieldMutationFolderIdentity(data.folderURL) == Self.fieldMutationFolderIdentity(folderURL) else { return }
+        if isScanning(folderURL: data.folderURL) {
+            deferredAfterScan.append { [weak self] in
+                self?.updateFaceDataAfterOwnWrites(folderURL: folderURL, appliedNameUpdates: appliedNameUpdates,
+                    completedPhotos: completedPhotos, ownWrites: ownWrites)
+            }
+            return
+        }
+        let before = data
+        // Renames made while this write ran were already planned against these names (the
+        // in-flight overlay), so recording them never needs a second prompt.
+        PersonShownCorrectionPlanner.applying(appliedNameUpdates, to: &data, onlyPhotos: completedPhotos)
+        var changed = data.groups.map(\.appliedPersonShownNames) != before.groups.map(\.appliedPersonShownNames)
+        for write in ownWrites {
+            let key = write.url.path
+            guard let stored = data.scannedFiles[key], stored.hasSameFileFacts(as: write.before),
+                  !stored.hasSameFileFacts(as: write.after) else { continue }
+            // A Person Shown write never changes pixels or orientation: the fingerprint holds.
+            data.scannedFiles[key] = FileSignature(modificationDate: write.after.modificationDate,
+                fileSize: write.after.fileSize, contentFingerprint: stored.contentFingerprint)
+            changed = true
+        }
+        guard changed else { return }
+        faceData = data
+        scheduleFaceDataPersistence(data)
     }
 
     func waitForPendingFieldMutationWrites() async { await metadataWriteTask?.value }
 
+    /// Quit-time barrier: every admitted Person Shown write (including ones queued meanwhile) and
+    /// the face-data record of the names it applied, so a quit cannot leave photos written but
+    /// their applied names unrecorded.
+    func waitForPendingPersonShownWritesAndRecords() async {
+        while let task = metadataWriteTask {
+            await task.value
+            if metadataWriteTask == task { break }
+        }
+        await waitForCurrentFaceDataPersistence()
+    }
+
+    /// A face group (or confirmed player) is one person: its name is written as a single
+    /// Person Shown entry. Splitting on commas broke Photo Mechanic style "Last, First" names.
     private func splitPersonNames(_ rawName: String) -> [String] {
-        rawName
-            .components(separatedBy: CharacterSet(charactersIn: ",;"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? [] : [trimmed]
     }
 
     private func loadC2PALookup(urls: [URL]) async -> [URL: Bool] {
@@ -3127,6 +3303,189 @@ final class FaceRecognitionViewModel {
         }
     }
 
+    // MARK: - Edit Admission & Person Shown Corrections
+
+    /// User-facing refusal when a face edit arrives while this folder is scanning.
+    static let scanInProgressEditRefusal =
+        "Faces can't be changed while this folder is being scanned. Wait for the scan to finish, then make the change again."
+
+    /// A running scan publishes its own snapshot of this folder when it finishes, so names,
+    /// merges, moves, deletions and Apply made meanwhile would be silently lost. Face views
+    /// disable editing while this is true; the view model refuses such edits as well.
+    func faceEditingPausedForScan(folderURL: URL? = nil) -> Bool {
+        isScanning(folderURL: folderURL ?? faceData?.folderURL ?? displayedFolderURL)
+    }
+
+    private func refuseFaceEditDuringScan(_ folderURL: URL?, reports: Bool = true) -> Bool {
+        guard faceEditingPausedForScan(folderURL: folderURL) else { return false }
+        if reports { errorMessage = Self.scanInProgressEditRefusal }
+        return true
+    }
+
+    /// Every interactive face-data edit: refused during this folder's scan, otherwise published,
+    /// persisted, and checked for app-applied Person Shown names it made wrong.
+    @discardableResult
+    private func commitFaceEdit(_ data: FolderFaceData, failurePrefix: String = "Failed to save face data",
+                                reportsScanRefusal: Bool = true) -> Bool {
+        guard !refuseFaceEditDuringScan(data.folderURL, reports: reportsScanRefusal) else { return false }
+        let before = faceData
+        faceData = data
+        scheduleFaceDataPersistence(data, failurePrefix: failurePrefix)
+        if let before { offerPersonShownUpdate(before: before, after: data) }
+        return true
+    }
+
+    private func offerPersonShownUpdate(before: FolderFaceData, after: FolderFaceData,
+                                        excluding excludedURLs: Set<URL> = []) {
+        let folder = Self.fieldMutationFolderIdentity(after.folderURL)
+        guard Self.fieldMutationFolderIdentity(before.folderURL) == folder else { return }
+        // A pending proposal is re-planned from its original snapshot so consecutive edits
+        // collapse into one correction from what the photos actually carry.
+        let reusesPending = pendingPersonShownUpdate != nil
+            && pendingProposalBase.map { Self.fieldMutationFolderIdentity($0.folderURL) == folder } == true
+        let base = reusesPending ? (pendingProposalBase ?? before) : before
+        var excludedPaths = reusesPending ? pendingProposalExcludedPaths : []
+        excludedPaths.formUnion(excludedURLs.map { $0.standardizedFileURL.path })
+        var planningBase = base
+        for entry in inFlightAppliedNameChanges where entry.folder == folder {
+            PersonShownCorrectionPlanner.applying(entry.changes, to: &planningBase)
+        }
+        var proposal = PersonShownCorrectionPlanner.proposal(before: planningBase, after: after)
+        if !excludedPaths.isEmpty, var filtered = proposal {
+            filtered.replacementsByURL = filtered.replacementsByURL.filter {
+                !excludedPaths.contains($0.key.standardizedFileURL.path)
+            }
+            proposal = filtered.replacementsByURL.isEmpty ? nil : filtered
+        }
+        guard let proposal else {
+            // e.g. renamed back before answering: nothing is wrong any more.
+            if reusesPending { clearPendingPersonShownUpdate() }
+            return
+        }
+        pendingProposalBase = base
+        pendingProposalExcludedPaths = excludedPaths
+        pendingPersonShownUpdate = proposal
+    }
+
+    private func clearPendingPersonShownUpdate() {
+        pendingPersonShownUpdate = nil
+        pendingProposalBase = nil
+        pendingProposalExcludedPaths = []
+    }
+
+    /// "Update": replace/remove only the exact app-applied names, through the field-mutation
+    /// write path (presets, RAW → sidecar, loss guard), then record the new applied names.
+    /// `knownC2PA`: the browser's content-credential status per photo (avoids re-reading files).
+    func confirmPersonShownUpdate(knownC2PA: [URL: Bool]? = nil, onComplete: (() -> Void)? = nil) {
+        guard let proposal = pendingPersonShownUpdate else { onComplete?(); return }
+        let base = pendingProposalBase
+        let excluded = pendingProposalExcludedPaths
+        clearPendingPersonShownUpdate()
+        func keepPending() {
+            pendingPersonShownUpdate = proposal
+            pendingProposalBase = base
+            pendingProposalExcludedPaths = excluded
+        }
+        guard faceData.map({ Self.fieldMutationFolderIdentity($0.folderURL) })
+                == Self.fieldMutationFolderIdentity(proposal.folderURL) else {
+            errorMessage = "The face folder changed; Person Shown was not updated."
+            onComplete?()
+            return
+        }
+        guard !refuseFaceEditDuringScan(proposal.folderURL) else {
+            keepPending()
+            onComplete?()
+            return
+        }
+        guard !fieldMutationIsPaused(in: proposal.folderURL) else {
+            errorMessage = "Face metadata writing is paused while files in this folder are being renamed."
+            keepPending()
+            onComplete?()
+            return
+        }
+        enqueuePersonMutations(mutationsByURL: proposal.replacementsByURL.mapValues { .replacePersons($0) },
+            folderURL: proposal.folderURL, capturedC2PA: knownC2PA,
+            appliedNameUpdates: proposal.appliedNameUpdates, onComplete: onComplete)
+    }
+
+    /// "Leave Photos Unchanged": photos keep their names; the applied names stay as they were,
+    /// so a later correction still targets exactly what is in the photos.
+    /// The decline is persisted per group (`declinedPersonShownName` = the name it shows now),
+    /// so an unanswered offer can be re-offered after a relaunch without re-asking this one.
+    func declinePersonShownUpdate() {
+        let proposal = pendingPersonShownUpdate
+        clearPendingPersonShownUpdate()
+        guard let proposal, var data = faceData,
+              Self.fieldMutationFolderIdentity(data.folderURL) == Self.fieldMutationFolderIdentity(proposal.folderURL)
+        else { return }
+        var changed = false
+        for groupID in proposal.appliedNameUpdates.keys {
+            guard let index = data.groups.firstIndex(where: { $0.id == groupID }) else { continue }
+            let token = PersonShownCorrectionPlanner.declineToken(for: data.groups[index])
+            guard data.groups[index].declinedPersonShownName != token else { continue }
+            data.groups[index].declinedPersonShownName = token
+            changed = true
+        }
+        if changed { commitFaceEdit(data, reportsScanRefusal: false) }
+    }
+
+    /// Folder load: offer again what a previous session left unanswered (the offer lived only
+    /// in memory, and the planner's "already declined" guard would otherwise never re-raise it).
+    private func reofferUnansweredPersonShownUpdate(for data: FolderFaceData) {
+        guard pendingPersonShownUpdate == nil, !isScanning(folderURL: data.folderURL) else { return }
+        let folder = Self.fieldMutationFolderIdentity(data.folderURL)
+        // Writes still queued or running land their applied names first.
+        var planningData = data
+        for entry in inFlightAppliedNameChanges where entry.folder == folder {
+            PersonShownCorrectionPlanner.applying(entry.changes, to: &planningData)
+        }
+        guard let (base, proposal) = PersonShownCorrectionPlanner.unansweredProposal(in: planningData) else { return }
+        pendingProposalBase = base
+        pendingProposalExcludedPaths = []
+        pendingPersonShownUpdate = proposal
+    }
+
+    private func replayDeferredFaceUpdates() {
+        let deferred = deferredAfterScan
+        deferredAfterScan = []
+        for update in deferred { update() }
+    }
+
+    /// Folder groups linked to a Known Person follow its rename, merge or deletion. Applied
+    /// names then produce the usual "Update Person Shown" offer.
+    func handleKnownPeopleIdentityChange(_ change: KnownPeopleIdentityChange) {
+        guard var data = faceData else { return }
+        if isScanning(folderURL: data.folderURL) {
+            deferredAfterScan.append { [weak self] in self?.handleKnownPeopleIdentityChange(change) }
+            return
+        }
+        var changed = false
+        for index in data.groups.indices {
+            guard let linked = data.groups[index].knownPersonID else { continue }
+            switch change {
+            case .renamed(let personID, let newName) where linked == personID:
+                let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty, data.groups[index].name != name {
+                    data.groups[index].name = name
+                    changed = true
+                }
+            case .merged(let sourceID, let targetID, let targetName) where linked == sourceID:
+                data.groups[index].knownPersonID = targetID
+                let name = targetName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty { data.groups[index].name = name }
+                changed = true
+            case .deleted(let personID) where linked == personID:
+                // The folder keeps its name; only the identity link is gone.
+                data.groups[index].knownPersonID = nil
+                changed = true
+            default:
+                break
+            }
+        }
+        guard changed else { return }
+        commitFaceEdit(data, reportsScanRefusal: false)
+    }
+
     // MARK: - Merge & Ungroup
 
     /// Merge sourceGroup into targetGroup. All faces move to target; source is deleted.
@@ -3140,6 +3499,7 @@ final class FaceRecognitionViewModel {
 
         let sourceFaceIDs = data.groups[sourceIndex].faceIDs
         data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+        data.groups[targetIndex].inheritAppliedName(from: data.groups[sourceIndex])
 
         // Update face groupIDs
         for faceID in sourceFaceIDs {
@@ -3149,8 +3509,7 @@ final class FaceRecognitionViewModel {
         }
 
         data.groups.remove(at: sourceIndex)
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Remove a single face from its group and place it in a new solo group.
@@ -3166,8 +3525,7 @@ final class FaceRecognitionViewModel {
         if data.groups[groupIndex].faceIDs.count == 1 {
             guard data.groups[groupIndex].userCreated != true else { return }
             data.groups[groupIndex].userCreated = true
-            faceData = data
-            scheduleFaceDataPersistence(data)
+            commitFaceEdit(data)
             return
         }
 
@@ -3191,8 +3549,7 @@ final class FaceRecognitionViewModel {
         data.groups.append(newGroup)
         data.faces[faceIndex].groupID = newGroup.id
 
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Merge multiple groups into the first group in the set (by sort order).
@@ -3214,6 +3571,7 @@ final class FaceRecognitionViewModel {
 
             let sourceFaceIDs = data.groups[sourceIndex].faceIDs
             data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+            data.groups[targetIndex].inheritAppliedName(from: data.groups[sourceIndex])
 
             for faceID in sourceFaceIDs {
                 if let fi = faceIdx[faceID] {
@@ -3226,8 +3584,7 @@ final class FaceRecognitionViewModel {
 
         data.groups.removeAll { sourceIDs.contains($0.id) }
 
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Ungroup all selected groups — split every face into its own solo group.
@@ -3264,8 +3621,7 @@ final class FaceRecognitionViewModel {
             }
         }
 
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Move faces into the unmatched pool by splitting them into non-user-created singletons.
@@ -3303,8 +3659,7 @@ final class FaceRecognitionViewModel {
             }
         }
 
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     // MARK: - Move Faces Between Groups
@@ -3339,8 +3694,7 @@ final class FaceRecognitionViewModel {
         data.groups[newTargetIndex].faceIDs.append(faceID)
         data.faces[faceIndex].groupID = targetGroupID
 
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Move multiple faces to a target group (single mutation + single save).
@@ -3361,8 +3715,7 @@ final class FaceRecognitionViewModel {
             }
         }
 
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Remove faces from their current groups and create a new group with them (single mutation + single save).
@@ -3426,8 +3779,7 @@ final class FaceRecognitionViewModel {
             }
         }
 
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Place each given face into its own brand-new user-created group (one group per face).
@@ -3455,8 +3807,7 @@ final class FaceRecognitionViewModel {
             data.faces[fi].groupID = newGroup.id
         }
 
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Promote every unmatched (auto-generated singleton) face into its own user-created
@@ -3475,8 +3826,7 @@ final class FaceRecognitionViewModel {
         }
         guard changed else { return }
 
-        faceData = data
-        scheduleFaceDataPersistence(data)
+        commitFaceEdit(data)
     }
 
     /// Remove faces from whatever groups they belong to, cleaning up empties and representatives.
@@ -3519,8 +3869,10 @@ final class FaceRecognitionViewModel {
         scheduleReservedFaceDeletion(in: targetFolder, selection: .photos(imageURLs))
     }
 
-    private func scheduleReservedFaceDeletion(in targetFolder: URL, selection: FaceDataDeletionSelection) {
+    private func scheduleReservedFaceDeletion(in targetFolder: URL, selection: FaceDataDeletionSelection,
+                                              offersPersonShownUpdate: Bool = false) {
         let alreadyLoaded = faceData != nil
+        let beforeDeletion = offersPersonShownUpdate ? faceData : nil
         if !alreadyLoaded { faceDataLoadTask?.cancel() }
         let requestID = UUID()
         let expectedRevision = faceDataRevision
@@ -3558,6 +3910,10 @@ final class FaceRecognitionViewModel {
             if let failure = result.persistence?.failureMessage {
                 self.errorMessage = "Failed to delete face data: \(failure)"
             }
+            if case .committed = result.persistence, let beforeDeletion, let after = evidence.faceData {
+                // A deleted false positive must not leave its applied name in the photo.
+                self.offerPersonShownUpdate(before: beforeDeletion, after: after)
+            }
         }
         faceDataLoadTask = task
         // Subsequent queued writes must also wait for this transaction.
@@ -3567,7 +3923,8 @@ final class FaceRecognitionViewModel {
     /// Permanently delete faces from the data set (removes from groups, face list, thumbnail cache, and disk).
     func deleteFaces(_ faceIDs: Set<UUID>) {
         guard let data = faceData, !faceIDs.isEmpty else { return }
-        scheduleReservedFaceDeletion(in: data.folderURL, selection: .faces(faceIDs))
+        guard !refuseFaceEditDuringScan(data.folderURL) else { return }
+        scheduleReservedFaceDeletion(in: data.folderURL, selection: .faces(faceIDs), offersPersonShownUpdate: true)
     }
 
     /// Apply the confirmed face selection to the latest disk document while reserving
@@ -3577,6 +3934,11 @@ final class FaceRecognitionViewModel {
         guard let data = faceData, let group = groupLookup[groupID] else {
             return FaceGroupDeletionResult(trashedPhotoURLs: [], failures: [],
                 cancellationStoppedRemainingPhotos: false, faceDataDisposition: .groupNotFound)
+        }
+        guard !refuseFaceEditDuringScan(data.folderURL) else {
+            return FaceGroupDeletionResult(trashedPhotoURLs: [], failures: [],
+                cancellationStoppedRemainingPhotos: false,
+                faceDataDisposition: .failed(Self.scanInProgressEditRefusal))
         }
         let faceIDs = Set(group.faceIDs)
         let photosByID = Dictionary(uniqueKeysWithValues: data.faces.filter {
@@ -3647,6 +4009,11 @@ final class FaceRecognitionViewModel {
                 faceData = evidence.faceData
                 scanComplete = evidence.scanCompleteWithThumbnails
                 installThumbnails(evidence.thumbnailData)
+                if let after = evidence.faceData {
+                    // Photos that went to the Trash need no correction; the rest lose the
+                    // deleted group's applied name unless another face still shows that person.
+                    offerPersonShownUpdate(before: data, after: after, excluding: Set(trash.completedSourceURLs))
+                }
                 if let failure = deletion.persistence?.failureMessage {
                     errorMessage = "Failed to delete face data: \(failure)"
                     return result(.failed(failure))

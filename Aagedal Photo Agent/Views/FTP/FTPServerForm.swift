@@ -23,6 +23,13 @@ struct FTPServerForm: View {
                     }
             }
 
+            if let hostNormalizationNote {
+                Text(hostNormalizationNote)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             TextField("Username", text: $viewModel.editingConnection.username)
                 .textFieldStyle(.roundedBorder)
 
@@ -31,25 +38,32 @@ struct FTPServerForm: View {
 
             TextField("Remote Path", text: $viewModel.editingConnection.remotePath)
                 .textFieldStyle(.roundedBorder)
+            Text(serverCompatibilityText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if viewModel.editingConnection.hasLearnedServerCompatibility {
+                Button("Reset Server Compatibility") {
+                    viewModel.resetEditingServerCompatibility()
+                }
+                .controlSize(.small)
+                .help("Forget what uploads learned about this server's renaming support; the next uploads use a temporary name again.")
+            }
 
-            Toggle("Use SFTP", isOn: $viewModel.editingConnection.useSFTP)
-                .onChange(of: viewModel.editingConnection.useSFTP) { _, isSFTP in
-                    // Suggest the conventional port for the transport, but only when
-                    // the user is still on the other mode's default — don't clobber a
-                    // port they typed themselves.
-                    if isSFTP, viewModel.editingConnection.port == 21 {
-                        viewModel.editingConnection.port = 22
-                    } else if !isSFTP, viewModel.editingConnection.port == 22 {
+            if viewModel.editingConnection.useSFTP {
+                // Legacy profile: SFTP can't work with macOS's curl, so the only offered
+                // action is switching it off (to FTPS, on the FTP port if still on 22).
+                Label(FTPConnection.sftpUnavailableMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Switch to FTPS") {
+                    viewModel.editingConnection.useSFTP = false
+                    viewModel.editingConnection.useTLS = true
+                    if viewModel.editingConnection.port == 22 {
                         viewModel.editingConnection.port = 21
                     }
                 }
-
-            if viewModel.editingConnection.useSFTP {
-                Toggle("Allow insecure host verification", isOn: $viewModel.editingConnection.allowInsecureHostVerification)
-                    .font(.caption)
-                Text("Only enable this for legacy servers or testing.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             } else {
                 Toggle("Use TLS (FTPS)", isOn: $viewModel.editingConnection.useTLS)
 
@@ -61,13 +75,16 @@ struct FTPServerForm: View {
                         .foregroundStyle(.secondary)
                 } else {
                     Label(
-                        "Plain FTP sends your username, password, and files unencrypted. Enable TLS, or use SFTP.",
+                        "Plain FTP sends your username, password, and files unencrypted. Enable TLS.",
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 }
+                Text("SFTP isn't available with macOS's built-in curl; use FTPS.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Label(
@@ -86,6 +103,13 @@ struct FTPServerForm: View {
 
             connectionTestStatus
 
+            if let serverFormError = viewModel.serverFormError {
+                Label(serverFormError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
 
             HStack {
@@ -96,6 +120,7 @@ struct FTPServerForm: View {
                     viewModel.editingConnection.host.isEmpty ||
                     viewModel.editingConnection.username.isEmpty ||
                     viewModel.editingPassword.isEmpty ||
+                    viewModel.editingConnection.useSFTP ||
                     viewModel.connectionTest == .testing
                 )
                 Spacer()
@@ -110,7 +135,8 @@ struct FTPServerForm: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.editingConnection.name.isEmpty || viewModel.editingConnection.host.isEmpty || viewModel.editingConnection.port < 1 || viewModel.editingConnection.port > 65535)
+                .disabled(saveValidationMessage != nil)
+                .help(saveValidationMessage ?? "")
             }
         }
         .padding()
@@ -144,10 +170,11 @@ struct FTPServerForm: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        case .success:
-            Label("Connected", systemImage: "checkmark.circle.fill")
+        case .success(let note):
+            Label(note ?? "Connected", systemImage: "checkmark.circle.fill")
                 .font(.caption)
                 .foregroundStyle(.green)
+                .fixedSize(horizontal: false, vertical: true)
         case .failure(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
@@ -156,12 +183,44 @@ struct FTPServerForm: View {
         }
     }
 
+    /// Save stays disabled until the profile could actually authenticate (non-empty user name
+    /// and password, a usable host), rather than failing later for every file at upload time.
+    private var saveValidationMessage: String? {
+        viewModel.editingConnection.saveValidationMessage(password: viewModel.editingPassword)
+    }
+
+    private var serverCompatibilityText: String {
+        let connection = viewModel.editingConnection
+        let replace = "A file with the same name on the server is replaced."
+        if connection.serverRefusesRename {
+            return replace + " This server doesn't allow renaming, so uploads go straight to the final name."
+        }
+        if connection.serverRefusesTemporaryName {
+            return replace + " This server doesn't accept temporary file names, so uploads go straight to the final name."
+        }
+        return replace + " Files arrive under a hidden temporary name (“.name….part”) and are renamed when complete, so hot folders never see a partial file."
+    }
+
+    /// Explains how a pasted "ftp://host:2121/folder" will be split up on Save.
+    private var hostNormalizationNote: String? {
+        var normalized = viewModel.editingConnection
+        guard normalized.normalizeHostInput() == nil,
+              normalized != viewModel.editingConnection,
+              !normalized.host.isEmpty else { return nil }
+        var parts = ["host “\(normalized.host)”"]
+        if normalized.port != viewModel.editingConnection.port { parts.append("port \(normalized.port)") }
+        if normalized.remotePath != viewModel.editingConnection.remotePath {
+            parts.append("folder “\(normalized.remotePath)”")
+        }
+        return "Will be saved as " + parts.joined(separator: ", ") + "."
+    }
+
     private var insecureSaveMessage: String {
         switch viewModel.editingConnection.transportSecurity.protocolKind {
         case .ftp:
-            "Plain FTP exposes the username, password, and files in transit. SFTP or verified FTPS is recommended."
+            "Plain FTP exposes the username, password, and files in transit. Verified FTPS is recommended."
         case .sftp:
-            "Host verification is disabled, so the server identity is not authenticated. Verified SFTP is recommended."
+            "Host verification is disabled, so the server identity is not authenticated. SFTP isn't available with macOS's built-in curl; verified FTPS is recommended."
         case .explicitFTPS:
             "Certificate verification is disabled, so the server identity is not authenticated. Verified FTPS is recommended."
         }

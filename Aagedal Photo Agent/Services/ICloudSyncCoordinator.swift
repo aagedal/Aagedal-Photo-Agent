@@ -494,7 +494,7 @@ actor KnownPeopleICloudRoutingService: KnownPeopleICloudRouting {
         let source = enabled ? local : activeCloud
         let destination = enabled ? activeCloud : local
         try access.merge(source, destination)
-        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources),
+        if AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources),
            !enabled || KnownPeoplePrivacyLifecycle.hasConfirmedICloudTransfer()
               || KnownPeopleCropSyncConsentContext.confirmedForThisReconcile {
             let sourceCrops = KnownPeopleUpgradeSourceStore.directory(for: source)
@@ -840,7 +840,7 @@ final class ICloudSyncCoordinator {
     var templatesEnabled: Bool {
         _ = version
         return pendingTemplatesEnabled
-            ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.templatesICloudEnabled)
+            ?? AppDefaults.store.bool(forKey: UserDefaultsKeys.templatesICloudEnabled)
     }
 
     func setTemplatesEnabled(_ on: Bool) {
@@ -863,7 +863,7 @@ final class ICloudSyncCoordinator {
                 pendingTemplatesEnabled = nil
                 switch result {
                 case .committed:
-                    UserDefaults.standard.set(on, forKey: UserDefaultsKeys.templatesICloudEnabled)
+                    AppDefaults.store.set(on, forKey: UserDefaultsKeys.templatesICloudEnabled)
                     NotificationCenter.default.post(name: .templatesStorageDidChange, object: nil)
                 case .unavailable:
                     lastError = Self.unavailableMessage
@@ -887,7 +887,7 @@ final class ICloudSyncCoordinator {
     var knownPeopleEnabled: Bool {
         _ = version
         return pendingKnownPeopleEnabled
-            ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+            ?? AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
     }
 
     var isKnownPeopleRouting: Bool {
@@ -975,7 +975,7 @@ final class ICloudSyncCoordinator {
                 pendingKnownPeopleEnabled = nil
                 switch result {
                 case .committed(let commit):
-                    UserDefaults.standard.set(on, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+                    AppDefaults.store.set(on, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
                     if on { Self.cacheKnownPeopleCloudGeneration(from: commit.destinationURL) }
                     if confirmedFirstEnable {
                         KnownPeoplePrivacyLifecycle.recordICloudTransferConfirmation()
@@ -1068,7 +1068,7 @@ final class ICloudSyncCoordinator {
                     bump()
                     return
                 }
-                UserDefaults.standard.set(true, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+                AppDefaults.store.set(true, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
                 Self.cacheKnownPeopleCloudGeneration(from: destination)
                 if confirmedFirstEnable {
                     KnownPeoplePrivacyLifecycle.recordICloudTransferConfirmation()
@@ -1114,7 +1114,7 @@ final class ICloudSyncCoordinator {
     var teamsEnabled: Bool {
         _ = version
         return pendingTeamsEnabled
-            ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
+            ?? AppDefaults.store.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
     }
 
     func setTeamsEnabled(_ on: Bool) {
@@ -1141,7 +1141,7 @@ final class ICloudSyncCoordinator {
                 pendingTeamsEnabled = nil
                 switch result {
                 case .committed(let commit):
-                    UserDefaults.standard.set(on, forKey: UserDefaultsKeys.teamsICloudEnabled)
+                    AppDefaults.store.set(on, forKey: UserDefaultsKeys.teamsICloudEnabled)
                     await RosterStore.shared.reloadAfterStorageChange(
                         resolvedStorageURL: commit.destinationURL
                     )
@@ -1174,7 +1174,7 @@ final class ICloudSyncCoordinator {
     var watermarksEnabled: Bool {
         _ = version
         return pendingWatermarksEnabled
-            ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
+            ?? AppDefaults.store.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
     }
 
     func setWatermarksEnabled(_ on: Bool) {
@@ -1197,7 +1197,7 @@ final class ICloudSyncCoordinator {
                 pendingWatermarksEnabled = nil
                 switch result {
                 case .committed(let commit):
-                    UserDefaults.standard.set(on, forKey: UserDefaultsKeys.watermarksICloudEnabled)
+                    AppDefaults.store.set(on, forKey: UserDefaultsKeys.watermarksICloudEnabled)
                     await WatermarkStore.shared.reloadAfterStorageChange(
                         resolvedStorageURL: commit.destinationURL
                     )
@@ -1309,10 +1309,10 @@ final class ICloudSyncCoordinator {
         guard parent.lastPathComponent == KnownPeopleCloudGenerationPointer.generationsDirectory,
               let generationID = UUID(uuidString: destination.lastPathComponent),
               generationID.uuidString.lowercased() == destination.lastPathComponent else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.knownPeopleICloudGenerationID)
+            AppDefaults.store.removeObject(forKey: UserDefaultsKeys.knownPeopleICloudGenerationID)
             return
         }
-        UserDefaults.standard.set(destination.lastPathComponent,
+        AppDefaults.store.set(destination.lastPathComponent,
                                   forKey: UserDefaultsKeys.knownPeopleICloudGenerationID)
     }
 

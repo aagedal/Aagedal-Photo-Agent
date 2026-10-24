@@ -54,7 +54,7 @@ nonisolated struct FullScreenImagePresentationFactsAccess: Sendable {
             }
         }
         return Snapshot(
-            sidecarCameraRaw: sidecarMetadata?.cameraRaw,
+            sidecarCameraRaw: PhotoSidecarOwnership.stemSidecarCameraRaw(sidecarMetadata?.cameraRaw, for: imageURL),
             sidecarOrientation: MetadataSidecarService().loadSidecar(for: imageURL, in: imageURL.deletingLastPathComponent())?
                 .orientationDraft?.targetOrientation ?? sidecarMetadata?.exifOrientation,
             fileOrientation: fileOrientation,
@@ -126,7 +126,7 @@ actor FullScreenPrefetchPreparationService {
 
     init(read: @escaping Read = { url, suppliedSettings, requestedOrientation, isEdited in
         let settings = suppliedSettings
-            ?? (isEdited ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw : nil)
+            ?? (isEdited ? XMPSidecarService().loadDevelopSettings(for: url) : nil)
         let orientation = FullScreenImageCache.displayOrientation(for: url, fallback: requestedOrientation ?? 1)
         return Snapshot(settings: settings,
                         cacheOrientation: requestedOrientation == nil ? nil : orientation,
@@ -288,6 +288,8 @@ final class FullScreenImageCache: @unchecked Sendable {
         renderToken: String? = nil,
         isEdited: Bool = false
     ) {
+        // A grey placeholder from a failed GPU render is shown but never cached (retry next time).
+        guard !RedactionPlaceholderTracking.isPlaceholder(image) else { return }
         let c = isEdited ? editedCache : cache
         let key = Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken)
         lock.withLock {
@@ -319,6 +321,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         renderToken: String? = nil,
         isEdited: Bool = false
     ) {
+        guard !RedactionPlaceholderTracking.isPlaceholder(image) else { return }
         let c = isEdited ? editedDisplayPreviewCache : displayPreviewCache
         let key = Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken)
         lock.withLock {
@@ -468,6 +471,13 @@ final class FullScreenImageCache: @unchecked Sendable {
             .filter { $0 >= 0 && $0 < imageCount }
     }
 
+    /// Footprint estimate for one screen-fitted image. `screenMaxPx` bounds the long edge; photos
+    /// are typically 3:2, so estimating a square overstated each image by 50% and pushed 5K/6K
+    /// displays into the coordinator's halved/quartered-budget tiers.
+    nonisolated static func estimatedScreenImageSize(screenMaxPx: CGFloat) -> CGSize {
+        CGSize(width: screenMaxPx, height: (screenMaxPx * 2 / 3).rounded(.up))
+    }
+
     /// Prefetch adjacent images based on navigation direction.
     /// Loads 4 images ahead in travel direction and 2 behind, at medium priority.
     nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat, isEdited: Bool = false, settingsForURL: (@Sendable (URL) -> CameraRawSettings?)? = nil, orientationForURL: (@Sendable (URL) -> Int)? = nil) {
@@ -475,7 +485,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         // race the editor's concurrent NSXML sidecar write — see `_prefetchSuppressed`.
         if isPrefetchSuppressed { return }
 
-        let sourceSize = CGSize(width: screenMaxPx, height: screenMaxPx)
+        let sourceSize = Self.estimatedScreenImageSize(screenMaxPx: screenMaxPx)
         applyPrimaryLimit(memoryCoordinator.adaptiveLimit(
             for: .fullScreenPrimary,
             sourcePixelSize: sourceSize,
@@ -586,6 +596,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated private func storePrefetchedImage(_ image: CGImage, for key: PrefetchKey, requestID: UUID) {
+        guard !RedactionPlaceholderTracking.isPlaceholder(image) else { return }
         lock.withLock {
             guard prefetchTasks[key]?.id == requestID else { return }
             let cacheKey = Self.cacheKey(for: key.url, orientation: key.orientation, renderToken: key.renderToken)
@@ -718,13 +729,182 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     // MARK: - CameraRaw Processing
 
-    nonisolated static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int = 1) -> CGImage {
-        let ciImage = CIImage(cgImage: cgImage)
-        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
-        let extent = processed.extent
-        guard extent.width > 0, extent.height > 0 else { return cgImage }
+    /// The orientation the develop edits are applied in for pixels decoded with
+    /// `fileOrientation` baked in and displayed at `displayOrientation` (sidecar-first).
+    ///
+    /// Every develop render (Develop, export, full screen, loupe, edited thumbnails, Clean
+    /// Feed) edits in the DISPLAY frame, exactly like Develop
+    /// (`DevelopSourceDecodeService.orientedToTarget` + upload with the target orientation):
+    /// crops and masks land in the same place either way, but display-frame elements —
+    /// watermark artwork, its width/height-relative size and margins — are only upright when
+    /// the pixels are rotated before the edit. `ImageFile.orientationCorrection` models only
+    /// the four rotations, so a mirrored orientation on either side keeps the file frame.
+    nonisolated static func editFrameOrientation(fileOrientation: Int, displayOrientation: Int) -> Int {
+        let rotationOnly: Set<Int> = [1, 3, 6, 8]
+        guard rotationOnly.contains(fileOrientation),
+              rotationOnly.contains(displayOrientation) else { return fileOrientation }
+        return displayOrientation
+    }
 
-        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
+    /// Rotates file-oriented pixels into `editFrameOrientation` and reports the frame the
+    /// returned pixels are in (the `exifOrientation` to hand `applyWithCrop`). A no-op that
+    /// reports `fileOrientation` when no rotation applies, so same-orientation renders are
+    /// unchanged.
+    nonisolated static func orientedForEditing(
+        _ image: CIImage,
+        fileOrientation: Int,
+        displayOrientation: Int
+    ) -> (image: CIImage, pixelOrientation: Int) {
+        let target = editFrameOrientation(
+            fileOrientation: fileOrientation,
+            displayOrientation: displayOrientation
+        )
+        let correction = ImageFile.orientationCorrection(from: fileOrientation, to: target)
+        guard correction != .up else { return (image, fileOrientation) }
+        return (image.oriented(correction), target)
+    }
+
+    /// Applies `settings` to pixels decoded with `fileOrientation` baked in and returns them in
+    /// `displayOrientation`, editing in the display frame (see `editFrameOrientation`). Any
+    /// rotation that could not happen before the edit (mirrored orientations) is applied after.
+    nonisolated static func applyEditsInDisplayFrame(
+        to image: CIImage,
+        settings: CameraRawSettings?,
+        fileOrientation: Int,
+        displayOrientation: Int
+    ) -> CIImage {
+        let framed = orientedForEditing(
+            image, fileOrientation: fileOrientation, displayOrientation: displayOrientation
+        )
+        var processed = framed.image
+        if let settings {
+            processed = CameraRawApproximation.applyWithCrop(
+                to: processed, settings: settings, exifOrientation: framed.pixelOrientation
+            )
+        }
+        return orientedAfterEditing(
+            processed, pixelOrientation: framed.pixelOrientation, displayOrientation: displayOrientation
+        )
+    }
+
+    /// Async sibling of `applyEditsInDisplayFrame`; suspends on the render queue for the edit.
+    nonisolated static func applyEditsInDisplayFrameAsync(
+        to image: CIImage,
+        settings: CameraRawSettings?,
+        fileOrientation: Int,
+        displayOrientation: Int
+    ) async -> CIImage {
+        let framed = orientedForEditing(
+            image, fileOrientation: fileOrientation, displayOrientation: displayOrientation
+        )
+        var processed = framed.image
+        if let settings {
+            processed = await CameraRawApproximation.applyWithCropAsync(
+                to: processed, settings: settings, exifOrientation: framed.pixelOrientation
+            )
+        }
+        return orientedAfterEditing(
+            processed, pixelOrientation: framed.pixelOrientation, displayOrientation: displayOrientation
+        )
+    }
+
+    nonisolated private static func orientedAfterEditing(
+        _ image: CIImage,
+        pixelOrientation: Int,
+        displayOrientation: Int
+    ) -> CIImage {
+        let residual = ImageFile.orientationCorrection(from: pixelOrientation, to: displayOrientation)
+        return residual == .up ? image : image.oriented(residual)
+    }
+
+    /// CGImage form of `applyEditsInDisplayFrame`. When the orientations agree this is a
+    /// plain `applyWithCrop` in the file frame, materialized for display.
+    nonisolated static func applyCameraRaw(
+        to cgImage: CGImage,
+        settings: CameraRawSettings,
+        fileOrientation: Int,
+        displayOrientation: Int
+    ) -> CGImage {
+        // A placeholder anywhere in this render registers the result, keeping it out of caches.
+        let outer = RedactionPlaceholderTracking.flag
+        let flag = RedactionPlaceholderFlag()
+        let image: CGImage = RedactionPlaceholderTracking.$flag.withValue(flag) {
+            let processed = applyEditsInDisplayFrame(
+                to: CIImage(cgImage: cgImage),
+                settings: settings,
+                fileOrientation: fileOrientation,
+                displayOrientation: displayOrientation
+            )
+            // Never fall back to the unedited source when it would show what the edit hides
+            // (redactions, masks, watermarks): a preview can be screen-shared.
+            func unedited() -> CGImage {
+                CameraRawApproximation.fallbackCanReproduce(settings)
+                    ? cgImage
+                    : CameraRawApproximation.redactionSafePlaceholderCGImage(
+                        width: cgImage.width, height: cgImage.height) ?? cgImage
+            }
+            let extent = processed.extent
+            guard extent.width > 0, extent.height > 0 else { return unedited() }
+            return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? unedited()
+        }
+        if flag.isSet {
+            RedactionPlaceholderTracking.register(image)
+            outer?.set()
+        }
+        return image
+    }
+
+    /// Browse-mode scope source for `url`: a small decode, edited (with crop) when `settings`
+    /// is non-nil, in `displayOrientation` — the same frame and region full screen shows.
+    /// Both loaders bake the FILE orientation into their pixels, so edited and unedited
+    /// sources go through `applyEditsInDisplayFrame` (sidecar-only rotations included).
+    /// `isNativeHDR` keeps float values above 1.0 for the nits waveform. Returns nil when the
+    /// decode fails or the calling task is cancelled between stages.
+    nonisolated static func browseScopeSource(
+        for url: URL,
+        isNativeHDR: Bool,
+        settings: CameraRawSettings?,
+        displayOrientation: Int,
+        maxPixelSize: CGFloat = 720
+    ) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        if isNativeHDR,
+           let decoded = loadHDRPreviewWithOrientation(from: url, maxPixelSize: maxPixelSize) {
+            guard !Task.isCancelled else { return nil }
+            let processed = applyEditsInDisplayFrame(
+                to: decoded.image,
+                settings: settings,
+                fileOrientation: decoded.orientation,
+                displayOrientation: displayOrientation
+            )
+            return CameraRawApproximation.ciContext.createCGImage(
+                processed, from: processed.extent,
+                format: .RGBAh,
+                colorSpace: CameraRawApproximation.workingColorSpace
+            )
+        }
+        guard !Task.isCancelled,
+              let base = loadDownsampledWithOrientation(from: url, maxPixelSize: maxPixelSize) else {
+            return nil
+        }
+        guard !Task.isCancelled else { return nil }
+        if let settings {
+            return applyCameraRaw(
+                to: base.image,
+                settings: settings,
+                fileOrientation: base.orientation,
+                displayOrientation: displayOrientation
+            )
+        }
+        let correction = ImageFile.orientationCorrection(from: base.orientation, to: displayOrientation)
+        guard correction != .up else { return base.image }
+        // Keep the decode's own RGB space so the scope's gamut readout is unchanged.
+        let rotated = CIImage(cgImage: base.image).oriented(correction)
+        let colorSpace = base.image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil }
+            ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        return CameraRawApproximation.ciContext.createCGImage(
+            rotated, from: rotated.extent, format: .RGBA8, colorSpace: colorSpace
+        ) ?? base.image
     }
 
     /// Decode `url` at screen resolution, applying `settings` if present, and return a
@@ -745,6 +925,22 @@ final class FullScreenImageCache: @unchecked Sendable {
         sourceMaxPixelSize: CGFloat? = nil,
         isolation: isolated EditedPreviewRenderWorker = .shared
     ) async -> CGImage? {
+        // A redaction-safe placeholder (failed GPU render) is registered so no cache keeps it.
+        await RedactionPlaceholderTracking.track(isolation: isolation) {
+            await decodedEditedPreviewRender(
+                for: url, settings: settings, orientation: orientation, screenMaxPx: screenMaxPx,
+                sourceMaxPixelSize: sourceMaxPixelSize, isolation: isolation)
+        }
+    }
+
+    private static func decodedEditedPreviewRender(
+        for url: URL,
+        settings: CameraRawSettings?,
+        orientation: Int,
+        screenMaxPx: CGFloat,
+        sourceMaxPixelSize: CGFloat?,
+        isolation: isolated EditedPreviewRenderWorker
+    ) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
         var settings = settings
         var image: CGImage?
@@ -755,12 +951,12 @@ final class FullScreenImageCache: @unchecked Sendable {
         // apply the embedded tag). The requested `orientation` (the in-memory/sidecar
         // display orientation) can differ — RAW/C2PA rotations never touch the file.
         // `applyWithCrop`'s exifOrientation parameter means "the frame the PIXELS are in"
-        // (it transforms sensor-frame crop/mask geometry, it does not rotate pixels), so
-        // crop/masks must be applied in the FILE frame and the pixels then rotated
-        // file → target as a separate step — exactly the loupe's two-step approach.
-        // Passing the target orientation to applyWithCrop instead mis-framed the crop and
-        // left the pixels unrotated: cropped-RAW grid thumbnails rendered 180° off from
-        // the edit view for sidecar-rotated files.
+        // (it transforms sensor-frame crop/mask/watermark geometry, it does not rotate
+        // pixels). The pixels are therefore rotated file → target FIRST and edited with the
+        // target as their frame (`applyEditsInDisplayFrame`), exactly like Develop and the
+        // export renderer. Editing in the file frame and rotating afterwards frames the
+        // same crop but draws watermark artwork sideways; passing the target orientation
+        // without rotating mis-frames the crop and leaves the pixels unrotated.
         let rawFileOrientation = isolation.fileOrientation(at: url)
         guard !Task.isCancelled else { return nil }
         let sourceMaxPx: CGFloat
@@ -793,18 +989,14 @@ final class FullScreenImageCache: @unchecked Sendable {
                 guard !Task.isCancelled else { return nil }
             }
             if let ciImage {
-                var processed: CIImage
-                if let settings {
-                    // Suspend while the dedicated Metal queue waits for the GPU so this
-                    // preview executor can accept the next request.
-                    processed = await CameraRawApproximation.applyWithCropAsync(to: ciImage, settings: settings, exifOrientation: rawFileOrientation)
-                } else {
-                    processed = ciImage
-                }
-                let correction = ImageFile.orientationCorrection(from: rawFileOrientation, to: orientation)
-                if correction != .up {
-                    processed = processed.oriented(correction)
-                }
+                // Suspend while the dedicated Metal queue waits for the GPU so this
+                // preview executor can accept the next request.
+                var processed = await applyEditsInDisplayFrameAsync(
+                    to: ciImage,
+                    settings: settings,
+                    fileOrientation: rawFileOrientation,
+                    displayOrientation: orientation
+                )
                 guard !Task.isCancelled else { return nil }
                 // Crop-aware sensor decoding may deliberately retain a larger source.
                 // Bound the final bitmap to the display target so oversized HDR crops
@@ -823,11 +1015,15 @@ final class FullScreenImageCache: @unchecked Sendable {
             var loaded = loadedResult.image
             let loadedOrientation = loadedResult.orientation
             guard !Task.isCancelled else { return nil }
-            if let settings {
-                loaded = applyCameraRaw(to: loaded, settings: settings, exifOrientation: loadedOrientation)
-            }
             let correction = ImageFile.orientationCorrection(from: loadedOrientation, to: orientation)
-            if correction != .up {
+            if let settings {
+                loaded = applyCameraRaw(
+                    to: loaded,
+                    settings: settings,
+                    fileOrientation: loadedOrientation,
+                    displayOrientation: orientation
+                )
+            } else if correction != .up {
                 let rotated = CIImage(cgImage: loaded).oriented(correction)
                 if let cg = CameraRawApproximation.createDisplayCGImage(rotated, from: rotated.extent) {
                     loaded = cg
@@ -1096,9 +1292,9 @@ final class FullScreenImageCache: @unchecked Sendable {
             return nil
         }
         let decoderPreference = RAWDecoderVersionPreference(rawValue:
-            UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference) ?? "") ?? .auto
+            AppDefaults.store.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference) ?? "") ?? .auto
         let profile = decodeProfile ?? RAWDecodeProfile(storedRawValue:
-            UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile) ?? "") ?? .camera
+            AppDefaults.store.string(forKey: UserDefaultsKeys.rawDecodeProfile) ?? "") ?? .camera
         guard let result = RAWSourceDecoder.decode(rawFilter, draftMode: draftMode,
             maxPixelSize: maxPixelSize, nativeLongestSide: nativeLongestSide(of: url),
             profile: profile, decoderPreference: decoderPreference) else {

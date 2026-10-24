@@ -152,20 +152,15 @@ actor CleanFeedBrowseRenderService {
             effectiveSettings = settings
         }
 
-        var processed = base
-        if let effectiveSettings {
-            processed = CameraRawApproximation.applyWithCrop(
-                to: base,
-                settings: effectiveSettings,
-                exifOrientation: fileOrientation
-            )
-        }
-        guard !Task.isCancelled else { return nil }
-
-        let correction = ImageFile.orientationCorrection(
-            from: fileOrientation,
-            to: request.displayOrientation
+        // Edit in the display frame like Develop, export and full screen, so watermarks
+        // stay upright on sidecar-rotated files.
+        let processed = FullScreenImageCache.applyEditsInDisplayFrame(
+            to: base,
+            settings: effectiveSettings,
+            fileOrientation: fileOrientation,
+            displayOrientation: request.displayOrientation
         )
-        return correction == .up ? processed : processed.oriented(correction)
+        guard !Task.isCancelled else { return nil }
+        return processed
     }
 }

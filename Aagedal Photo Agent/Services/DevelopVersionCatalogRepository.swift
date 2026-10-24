@@ -138,9 +138,11 @@ actor DevelopVersionCatalogRepository {
         )
     }
 
-    /// Persists a safely reassociated copy. A changed source gets a new hash-named catalog; the old
-    /// file is never deleted or overwritten. Exact-byte moves only refresh the stored path and
-    /// resource-identifier hints in the existing source identity.
+    /// Persists a safely reassociated copy. A changed source gets a new hash-named catalog; this
+    /// method never deletes or overwrites the old file (the only removal path is
+    /// `removeSupersededCatalog`, used after this app's own metadata-only rewrite of that source).
+    /// Exact-byte moves only refresh the stored path and resource-identifier hints in the existing
+    /// source identity.
     @discardableResult
     func reassociate(
         _ catalog: DevelopVersionCatalog,
@@ -162,6 +164,8 @@ actor DevelopVersionCatalogRepository {
         )
     }
 
+    /// Writes `catalog` under its source hash (folder-local, or the Application Support fallback
+    /// when the folder is read-only). Never removes other catalogs; see `removeSupersededCatalog`.
     @discardableResult
     func save(_ catalog: DevelopVersionCatalog) async throws -> DevelopVersionCatalogStorage {
         if !folderIsKnownReadOnly {
@@ -192,6 +196,27 @@ actor DevelopVersionCatalogRepository {
         try await fallbackStore.save(catalog)
         try await saveFallbackIndex(fallbackIndex)
         return .applicationSupport
+    }
+
+    /// Removes the folder-local and fallback catalogs stored under `sha256` when their recorded
+    /// source is `sourceURL` (a hash this app superseded with its own metadata-only rewrite).
+    func removeSupersededCatalog(forSHA256 sha256: String, sourceURL: URL) async {
+        let source = sourceURL.standardizedFileURL.resolvingSymlinksInPath().path
+        for directory in [catalogsDirectoryURL, fallbackCatalogsDirectoryURL] {
+            let url = catalogURL(forSHA256: sha256, in: directory)
+            let store = AtomicJSONDocumentStore<DevelopVersionCatalog>(documentURL: url)
+            guard case .document(let catalog, _)? = try? await store.load(),
+                  catalog.source.sha256 == sha256,
+                  catalog.source.canonicalURL.standardizedFileURL.resolvingSymlinksInPath().path == source else { continue }
+            try? FileManager.default.removeItem(at: url)
+            if directory == fallbackCatalogsDirectoryURL, var index = try? await loadFallbackIndex() {
+                index.entries.removeAll {
+                    $0.source.sha256 == sha256
+                        && $0.source.canonicalURL.standardizedFileURL.resolvingSymlinksInPath().path == source
+                }
+                try? await saveFallbackIndex(index)
+            }
+        }
     }
 
     func loadAllCatalogs() async -> [DevelopVersionCatalog] {

@@ -30,18 +30,56 @@ nonisolated struct AnalysisFolderMapLoad: Sendable {
     let storage: AnalysisCaseStorage?
 }
 
+/// Everything the workspace needs when a photo opens, derived from one pass over the
+/// repository's in-memory case index.
+nonisolated struct AnalysisWorkspaceSnapshot: Sendable {
+    let caseLoad: AnalysisCaseLoad
+    let folderCases: [AnalysisCase]
+    let folderMap: AnalysisFolderMapLoad
+    /// Where a not-yet-saved case is expected to land, for the portability warning.
+    let newDocumentStorage: AnalysisCaseStorage
+}
+
+/// Cheap change evidence for a file or directory. It only decides whether a cached decode may
+/// be reused; it is never source identity.
+nonisolated struct AnalysisFileStamp: Equatable, Sendable {
+    let modificationDate: Date
+    let byteCount: Int64
+    let resourceIdentifier: SourceImageRevision.FileResourceIdentifier?
+
+    static let resourceKeys: [URLResourceKey] = [
+        .contentModificationDateKey, .fileSizeKey, .fileResourceIdentifierKey
+    ]
+
+    /// Reads the stamp from `url`'s resource values. URLs returned by a directory listing that
+    /// prefetched `resourceKeys` answer from that listing without another round trip.
+    static func read(_ url: URL) -> AnalysisFileStamp? {
+        guard let values = try? url.resourceValues(forKeys: Set(resourceKeys)),
+              let modificationDate = values.contentModificationDate else { return nil }
+        return AnalysisFileStamp(
+            modificationDate: modificationDate,
+            byteCount: Int64(values.fileSize ?? 0),
+            resourceIdentifier: SourceImageRevision.FileResourceIdentifier(
+                foundationValue: values.fileResourceIdentifier
+            )
+        )
+    }
+}
+
 /// Synchronous provider access kept inside the repository's retained filesystem executor.
 nonisolated struct AnalysisCaseRepositoryFileIO: Sendable {
     let directoryContents: @Sendable (URL) throws -> [URL]
     let isKnownReadOnly: @Sendable (URL) -> Bool
     let canonicalSourceFolder: @Sendable (URL) -> URL
     let defaultApplicationSupportURL: @Sendable () -> URL
+    let fileStamp: @Sendable (URL) -> AnalysisFileStamp?
+    let now: @Sendable () -> Date
 
     init(
         directoryContents: @escaping @Sendable (URL) throws -> [URL] = {
             try FileManager.default.contentsOfDirectory(
                 at: $0,
-                includingPropertiesForKeys: nil,
+                includingPropertiesForKeys: AnalysisFileStamp.resourceKeys,
                 options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
             )
         },
@@ -62,12 +100,16 @@ nonisolated struct AnalysisCaseRepositoryFileIO: Sendable {
                 )
             }
             return AppPaths.applicationSupport
-        }
+        },
+        fileStamp: @escaping @Sendable (URL) -> AnalysisFileStamp? = AnalysisFileStamp.read,
+        now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.directoryContents = directoryContents
         self.isKnownReadOnly = isKnownReadOnly
         self.canonicalSourceFolder = canonicalSourceFolder
         self.defaultApplicationSupportURL = defaultApplicationSupportURL
+        self.fileStamp = fileStamp
+        self.now = now
     }
 
     static let system = AnalysisCaseRepositoryFileIO()
@@ -96,6 +138,29 @@ actor AnalysisCaseRepository {
     private let fallbackIndexURL: URL
     private let sourceFolderIsWritableOverride: Bool?
     private let didLoadFallbackIndexForWriting: @Sendable () async throws -> Void
+
+    // MARK: In-memory index
+    //
+    // Opening a photo used to decode every case file in the folder (and every Application
+    // Support fallback case) twice. The repository now keeps the decoded cases and reuses a
+    // decode while the file's stamp is unchanged; the cases directory is re-listed only when its
+    // own stamp changes. This repository's saves update the index in place. A stamp observed
+    // within `stampSettleInterval` of its modification time is not trusted on the next pass,
+    // because coarse-timestamp volumes (HFS+, SMB, FAT) can hide a same-tick rewrite.
+    private static let stampSettleInterval: TimeInterval = 2.5
+    private var localCaseFiles: [String: IndexedCaseFile] = [:]
+    private var localDirectoryObservation: StampObservation?
+    private var fallbackIndexObservation: StampObservation?
+    private var cachedFallbackIndex: AnalysisCaseFallbackIndex?
+    private var fallbackCaseFiles: [String: IndexedCaseFile] = [:]
+    private var localFolderMapCache: CachedFolderMap?
+    private var fallbackFolderMapCache: CachedFolderMap?
+    private var cachedLookup: CaseLookup?
+    /// Bumped by every change to the indexed records, so the lookup tables and a refresh that
+    /// raced one of this repository's own saves can tell their snapshot is stale.
+    private var indexMutationSequence = 0
+    /// Number of case documents decoded from disk. Tests use it to prove navigation stays O(N).
+    private(set) var caseDecodeCount = 0
 
     /// Capture the source root before publishing the repository. The captured URL stays stable
     /// if a presented symlink is later retargeted, while provider access never blocks the caller.
@@ -164,11 +229,45 @@ actor AnalysisCaseRepository {
     func loadMostRelevantCaseWithStorage(
         for revision: SourceImageRevision
     ) async -> AnalysisCaseLoad {
-        let records = await loadAllCaseRecords(includeFallbackOutsideCurrentFolder: true)
+        let lookup = await currentLookup()
+        return bestMatch(for: revision, in: lookup)
+    }
+
+    func loadAllCases() async -> [AnalysisCase] {
+        folderCases(in: await currentLookup())
+    }
+
+    /// The best case for `revision`, every case of this folder and the folder map, from one pass
+    /// over the index. Unchanged case files are not decoded again.
+    func loadWorkspaceSnapshot(for revision: SourceImageRevision) async -> AnalysisWorkspaceSnapshot {
+        let lookup = await currentLookup()
+        let caseLoad = bestMatch(for: revision, in: lookup)
+        let cases = folderCases(in: lookup)
+        let folderMap = await loadFolderMapDocumentWithStorage()
+        return AnalysisWorkspaceSnapshot(
+            caseLoad: caseLoad,
+            folderCases: cases,
+            folderMap: folderMap,
+            newDocumentStorage: folderIsKnownReadOnly ? .applicationSupport : .folderLocal
+        )
+    }
+
+    private func bestMatch(
+        for revision: SourceImageRevision,
+        in lookup: CaseLookup
+    ) -> AnalysisCaseLoad {
+        // Only records sharing the hash, the file identity or the path can relate to the
+        // revision; visiting them in index order keeps the original tie-breaking.
+        var candidateIndices = Set(lookup.bySHA256[revision.sha256] ?? [])
+        if let fileID = revision.fileResourceIdentifier {
+            candidateIndices.formUnion(lookup.byFileID[fileID] ?? [])
+        }
+        candidateIndices.formUnion(lookup.byPath[revision.canonicalURL] ?? [])
+
         var exactMatches: [CaseRecord] = []
         var changedMatches: [CaseRecord] = []
-
-        for record in records {
+        for index in candidateIndices.sorted() {
+            let record = lookup.records[index]
             switch record.analysisCase.source.relationship(to: revision) {
             case .exactRevision:
                 exactMatches.append(record)
@@ -194,10 +293,10 @@ actor AnalysisCaseRepository {
         return AnalysisCaseLoad(match: .none, storage: nil)
     }
 
-    func loadAllCases() async -> [AnalysisCase] {
-        let records = await loadAllCaseRecords(includeFallbackOutsideCurrentFolder: false)
+    private func folderCases(in lookup: CaseLookup) -> [AnalysisCase] {
         var bestByID: [UUID: CaseRecord] = [:]
-        for record in records {
+        for index in lookup.folderRecordIndices {
+            let record = lookup.records[index]
             guard let existing = bestByID[record.analysisCase.id] else {
                 bestByID[record.analysisCase.id] = record
                 continue
@@ -217,11 +316,11 @@ actor AnalysisCaseRepository {
     @discardableResult
     func save(_ analysisCase: AnalysisCase) async throws -> AnalysisCaseStorage {
         if !folderIsKnownReadOnly {
-            let store = AtomicJSONDocumentStore<AnalysisCase>(
-                documentURL: caseURL(for: analysisCase.id, in: casesDirectoryURL)
-            )
+            let documentURL = caseURL(for: analysisCase.id, in: casesDirectoryURL)
+            let store = AtomicJSONDocumentStore<AnalysisCase>(documentURL: documentURL)
             do {
                 try await store.save(analysisCase)
+                recordOwnCaseWrite(analysisCase, at: documentURL, storage: .folderLocal)
                 return .folderLocal
             } catch {
                 guard Self.shouldUseFallback(for: error) else { throw error }
@@ -237,14 +336,19 @@ actor AnalysisCaseRepository {
     }
 
     private func saveCaseInFallback(_ analysisCase: AnalysisCase) async throws -> AnalysisCaseStorage {
+        let priorIndexWasCurrent = fallbackIndexIsCurrent
         var fallbackIndex = try await loadFallbackIndex()
         try await didLoadFallbackIndexForWriting()
         fallbackIndex.record(analysisCase)
-        let fallbackStore = AtomicJSONDocumentStore<AnalysisCase>(
-            documentURL: caseURL(for: analysisCase.id, in: fallbackCasesDirectoryURL)
-        )
+        let documentURL = caseURL(for: analysisCase.id, in: fallbackCasesDirectoryURL)
+        let fallbackStore = AtomicJSONDocumentStore<AnalysisCase>(documentURL: documentURL)
         try await fallbackStore.save(analysisCase)
+        recordOwnCaseWrite(analysisCase, at: documentURL, storage: .applicationSupport)
         try await saveFallbackIndex(fallbackIndex)
+        recordOwnFallbackIndexWrite(
+            fallbackIndex,
+            priorIndexWasCurrent: priorIndexWasCurrent
+        )
         return .applicationSupport
     }
 
@@ -254,26 +358,19 @@ actor AnalysisCaseRepository {
 
     func loadFolderMapDocumentWithStorage() async -> AnalysisFolderMapLoad {
         var candidates: [(AnalysisFolderMapDocument, AnalysisCaseStorage)] = []
-        let localStore = AtomicJSONDocumentStore<AnalysisFolderMapDocument>(
-            documentURL: folderMapDocumentURL
-        )
-        if let loaded = try? await localStore.load(),
-           case .document(let document, _) = loaded {
+        if let document = await cachedFolderMap(at: folderMapDocumentURL, storage: .folderLocal) {
             candidates.append((document, .folderLocal))
         }
 
-        if let index = try? await loadFallbackIndex(),
+        if let index = await currentFallbackIndex(),
            let entry = index.folderMaps.first(where: {
                $0.folderURL.standardizedFileURL.resolvingSymlinksInPath() == sourceFolderURL
-           }) {
-            let store = AtomicJSONDocumentStore<AnalysisFolderMapDocument>(
-                documentURL: fallbackFolderMapsDirectoryURL
-                    .appendingPathComponent(entry.documentFilename)
-            )
-            if let loaded = try? await store.load(),
-               case .document(let document, _) = loaded {
-                candidates.append((document, .applicationSupport))
-            }
+           }),
+           let document = await cachedFolderMap(
+               at: fallbackFolderMapsDirectoryURL.appendingPathComponent(entry.documentFilename),
+               storage: .applicationSupport
+           ) {
+            candidates.append((document, .applicationSupport))
         }
 
         guard let best = candidates.max(by: { lhs, rhs in
@@ -295,6 +392,7 @@ actor AnalysisCaseRepository {
             )
             do {
                 try await store.save(document)
+                recordOwnFolderMapWrite(document, at: folderMapDocumentURL, storage: .folderLocal)
                 return .folderLocal
             } catch {
                 guard Self.shouldUseFallback(for: error) else { throw error }
@@ -310,14 +408,21 @@ actor AnalysisCaseRepository {
     private func saveFolderMapInFallback(
         _ document: AnalysisFolderMapDocument
     ) async throws -> AnalysisCaseStorage {
+        let priorIndexWasCurrent = fallbackIndexIsCurrent
         var fallbackIndex = try await loadFallbackIndex()
         try await didLoadFallbackIndexForWriting()
         let filename = fallbackIndex.recordFolderMap(for: sourceFolderURL)
+        let documentURL = fallbackFolderMapsDirectoryURL.appendingPathComponent(filename)
         let fallbackStore = AtomicJSONDocumentStore<AnalysisFolderMapDocument>(
-            documentURL: fallbackFolderMapsDirectoryURL.appendingPathComponent(filename)
+            documentURL: documentURL
         )
         try await fallbackStore.save(document)
+        recordOwnFolderMapWrite(document, at: documentURL, storage: .applicationSupport)
         try await saveFallbackIndex(fallbackIndex)
+        recordOwnFallbackIndexWrite(
+            fallbackIndex,
+            priorIndexWasCurrent: priorIndexWasCurrent
+        )
         return .applicationSupport
     }
 
@@ -345,43 +450,303 @@ actor AnalysisCaseRepository {
         return relocatedCount
     }
 
-    private func loadAllCaseRecords(
-        includeFallbackOutsideCurrentFolder: Bool
-    ) async -> [CaseRecord] {
-        var records = await caseRecords(in: casesDirectoryURL, storage: .folderLocal)
+    // MARK: Index maintenance
 
-        guard let fallbackIndex = try? await loadFallbackIndex() else { return records }
-        for entry in fallbackIndex.cases {
-            let recordedFolder = entry.source.canonicalURL.deletingLastPathComponent()
-                .standardizedFileURL.resolvingSymlinksInPath()
-            guard includeFallbackOutsideCurrentFolder || recordedFolder == sourceFolderURL else {
-                continue
-            }
-            let url = fallbackCasesDirectoryURL.appendingPathComponent(entry.caseFilename)
-            if let record = await loadCaseRecord(at: url, storage: .applicationSupport) {
-                records.append(record)
-            }
+    /// Lookup tables over every indexed record, rebuilt only after the records change.
+    private func currentLookup() async -> CaseLookup {
+        await refreshLocalCaseFiles()
+        _ = await currentFallbackIndex()
+        if let cachedLookup, cachedLookup.sequence == indexMutationSequence {
+            return cachedLookup
         }
-        return records
+
+        var records: [CaseRecord] = []
+        var folderRecordIndices: [Int] = []
+        for name in localCaseFiles.keys.sorted() {
+            guard let record = localCaseFiles[name]?.record else { continue }
+            folderRecordIndices.append(records.count)
+            records.append(record)
+        }
+        for entry in cachedFallbackIndex?.cases ?? [] {
+            guard let file = fallbackCaseFiles[entry.caseFilename],
+                  let record = file.record else { continue }
+            if file.recordedFolderURL == sourceFolderURL {
+                folderRecordIndices.append(records.count)
+            }
+            records.append(record)
+        }
+
+        var bySHA256: [String: [Int]] = [:]
+        var byFileID: [SourceImageRevision.FileResourceIdentifier: [Int]] = [:]
+        var byPath: [URL: [Int]] = [:]
+        for (index, record) in records.enumerated() {
+            let source = record.analysisCase.source
+            bySHA256[source.sha256, default: []].append(index)
+            if let fileID = source.fileResourceIdentifier {
+                byFileID[fileID, default: []].append(index)
+            }
+            byPath[source.canonicalURL, default: []].append(index)
+        }
+        let lookup = CaseLookup(
+            sequence: indexMutationSequence,
+            records: records,
+            folderRecordIndices: folderRecordIndices,
+            bySHA256: bySHA256,
+            byFileID: byFileID,
+            byPath: byPath
+        )
+        cachedLookup = lookup
+        return lookup
     }
 
-    private func caseRecords(
-        in directory: URL,
-        storage: AnalysisCaseStorage
-    ) async -> [CaseRecord] {
-        var records: [CaseRecord] = []
-        for url in caseURLs(in: directory) {
-            if let record = await loadCaseRecord(at: url, storage: storage) {
-                records.append(record)
+    private func isTrustworthy(
+        _ observation: StampObservation?,
+        for stamp: AnalysisFileStamp?
+    ) -> Bool {
+        guard let observation, let stamp, observation.stamp == stamp else { return false }
+        return observation.isOwnWrite
+            || stamp.modificationDate
+                <= observation.observedAt.addingTimeInterval(-Self.stampSettleInterval)
+    }
+
+    private func freshStamp(_ url: URL) -> AnalysisFileStamp? {
+        // A new URL instance never answers from Foundation's per-instance resource cache.
+        fileIO.fileStamp(URL(fileURLWithPath: url.path))
+    }
+
+    private func refreshLocalCaseFiles() async {
+        let directoryStamp = freshStamp(casesDirectoryURL)
+        if isTrustworthy(localDirectoryObservation, for: directoryStamp) { return }
+
+        let startSequence = indexMutationSequence
+        let observedAt = fileIO.now()
+        var next: [String: IndexedCaseFile] = [:]
+        var changed = false
+        for url in caseURLs(in: casesDirectoryURL) {
+            let name = url.lastPathComponent
+            let stamp = fileIO.fileStamp(url)
+            if let existing = localCaseFiles[name],
+               isTrustworthy(existing.observation, for: stamp) {
+                next[name] = existing
+                continue
+            }
+            changed = true
+            let record = await loadCaseRecord(at: url, storage: .folderLocal)
+            next[name] = IndexedCaseFile(
+                observation: stamp.map { StampObservation(stamp: $0, observedAt: observedAt) },
+                record: record,
+                recordedFolderURL: sourceFolderURL,
+                sequence: startSequence
+            )
+        }
+        if Set(next.keys) != Set(localCaseFiles.keys) { changed = true }
+        if indexMutationSequence != startSequence {
+            // This repository saved a case while the listing was decoded. Keep that record;
+            // the save also changed the directory after `directoryStamp` was read, so leave
+            // the directory unobserved and re-list on the next pass.
+            for (name, entry) in localCaseFiles where entry.sequence > startSequence {
+                next[name] = entry
+            }
+            localCaseFiles = next
+            localDirectoryObservation = nil
+            indexMutationSequence += 1
+            return
+        }
+        localCaseFiles = next
+        localDirectoryObservation = directoryStamp.map {
+            StampObservation(stamp: $0, observedAt: observedAt)
+        }
+        if changed { indexMutationSequence += 1 }
+    }
+
+    /// The fallback index, reloaded only when its stamp changes. Every fallback case save
+    /// rewrites the index, so an unchanged index also means unchanged fallback cases.
+    private func currentFallbackIndex() async -> AnalysisCaseFallbackIndex? {
+        let indexStamp = freshStamp(fallbackIndexURL)
+        let indexIsCurrent = cachedFallbackIndex != nil
+            && isTrustworthy(fallbackIndexObservation, for: indexStamp)
+
+        let startSequence = indexMutationSequence
+        let observedAt = fileIO.now()
+        let previousIndex = cachedFallbackIndex
+        let index: AnalysisCaseFallbackIndex
+        if indexIsCurrent, let previousIndex {
+            index = previousIndex
+        } else {
+            guard let loaded = try? await loadFallbackIndex() else {
+                // An unreadable or newer-schema index contributes no records, as before.
+                if indexMutationSequence == startSequence {
+                    if cachedFallbackIndex != nil || !fallbackCaseFiles.isEmpty {
+                        cachedFallbackIndex = nil
+                        fallbackCaseFiles = [:]
+                        indexMutationSequence += 1
+                    }
+                    fallbackIndexObservation = nil
+                }
+                return nil
+            }
+            index = loaded
+        }
+
+        var next: [String: IndexedCaseFile] = [:]
+        var changed = previousIndex?.cases.map(\.caseFilename) != index.cases.map(\.caseFilename)
+        for entry in index.cases {
+            let name = entry.caseFilename
+            if indexIsCurrent, let existing = fallbackCaseFiles[name] {
+                next[name] = existing
+                continue
+            }
+            let url = fallbackCasesDirectoryURL.appendingPathComponent(name)
+            let stamp = freshStamp(url)
+            if let existing = fallbackCaseFiles[name],
+               isTrustworthy(existing.observation, for: stamp) {
+                next[name] = existing
+                continue
+            }
+            changed = true
+            let record = await loadCaseRecord(at: url, storage: .applicationSupport)
+            next[name] = IndexedCaseFile(
+                observation: stamp.map { StampObservation(stamp: $0, observedAt: observedAt) },
+                record: record,
+                recordedFolderURL: entry.source.canonicalURL.deletingLastPathComponent()
+                    .standardizedFileURL.resolvingSymlinksInPath(),
+                sequence: startSequence
+            )
+        }
+        if indexMutationSequence != startSequence {
+            // One of this repository's fallback saves landed while entries were decoded. Its
+            // records and index are newer than this pass; the next pass reconciles the rest.
+            for (name, entry) in fallbackCaseFiles where entry.sequence > startSequence {
+                next[name] = entry
+            }
+            fallbackCaseFiles = next
+            indexMutationSequence += 1
+            return cachedFallbackIndex ?? index
+        }
+        if Set(next.keys) != Set(fallbackCaseFiles.keys) { changed = true }
+        fallbackCaseFiles = next
+        if !indexIsCurrent {
+            cachedFallbackIndex = index
+            fallbackIndexObservation = indexStamp.map {
+                StampObservation(stamp: $0, observedAt: observedAt)
             }
         }
-        return records
+        if changed { indexMutationSequence += 1 }
+        return index
+    }
+
+    /// Whether the fallback index on disk is still the one the last pass decoded. Read before
+    /// a fallback write so the write can tell whether other writers changed fallback cases.
+    private var fallbackIndexIsCurrent: Bool {
+        cachedFallbackIndex != nil
+            && isTrustworthy(fallbackIndexObservation, for: freshStamp(fallbackIndexURL))
+    }
+
+    private func recordOwnCaseWrite(
+        _ analysisCase: AnalysisCase,
+        at documentURL: URL,
+        storage: AnalysisCaseStorage
+    ) {
+        indexMutationSequence += 1
+        let observation = freshStamp(documentURL).map {
+            StampObservation(stamp: $0, observedAt: fileIO.now(), isOwnWrite: true)
+        }
+        // Index what a reader would decode: the store writes ISO-8601 dates without fractions.
+        let record = CaseRecord(analysisCase: Self.asPersisted(analysisCase), storage: storage)
+        let name = documentURL.lastPathComponent
+        switch storage {
+        case .folderLocal:
+            localCaseFiles[name] = IndexedCaseFile(
+                observation: observation,
+                record: record,
+                recordedFolderURL: sourceFolderURL,
+                sequence: indexMutationSequence
+            )
+        case .applicationSupport:
+            fallbackCaseFiles[name] = IndexedCaseFile(
+                observation: observation,
+                record: record,
+                recordedFolderURL: analysisCase.source.canonicalURL.deletingLastPathComponent()
+                    .standardizedFileURL.resolvingSymlinksInPath(),
+                sequence: indexMutationSequence
+            )
+        }
+    }
+
+    /// `priorIndexWasCurrent` is false when another writer changed the index since the last
+    /// pass; their case files are then re-stamped on the next pass instead of being trusted.
+    private func recordOwnFallbackIndexWrite(
+        _ index: AnalysisCaseFallbackIndex,
+        priorIndexWasCurrent: Bool
+    ) {
+        indexMutationSequence += 1
+        cachedFallbackIndex = index
+        fallbackIndexObservation = priorIndexWasCurrent
+            ? freshStamp(fallbackIndexURL).map {
+                StampObservation(stamp: $0, observedAt: fileIO.now(), isOwnWrite: true)
+            }
+            : nil
+    }
+
+    private func cachedFolderMap(
+        at url: URL,
+        storage: AnalysisCaseStorage
+    ) async -> AnalysisFolderMapDocument? {
+        let cache = storage == .folderLocal ? localFolderMapCache : fallbackFolderMapCache
+        let stamp = freshStamp(url)
+        if let cache, cache.url == url, isTrustworthy(cache.observation, for: stamp) {
+            return cache.document
+        }
+        let observedAt = fileIO.now()
+        let store = AtomicJSONDocumentStore<AnalysisFolderMapDocument>(documentURL: url)
+        var document: AnalysisFolderMapDocument?
+        if let loaded = try? await store.load(), case .document(let loadedDocument, _) = loaded {
+            document = loadedDocument
+        }
+        let current = storage == .folderLocal ? localFolderMapCache : fallbackFolderMapCache
+        if let current, current.url == url, current.token != cache?.token {
+            // This repository saved the map while it was being read; the save is newer.
+            return current.document
+        }
+        let updated = stamp.map {
+            CachedFolderMap(
+                url: url,
+                observation: StampObservation(stamp: $0, observedAt: observedAt),
+                document: document
+            )
+        }
+        if storage == .folderLocal {
+            localFolderMapCache = updated
+        } else {
+            fallbackFolderMapCache = updated
+        }
+        return document
+    }
+
+    private func recordOwnFolderMapWrite(
+        _ document: AnalysisFolderMapDocument,
+        at url: URL,
+        storage: AnalysisCaseStorage
+    ) {
+        let cache = CachedFolderMap(
+            url: url,
+            observation: freshStamp(url).map {
+                StampObservation(stamp: $0, observedAt: fileIO.now(), isOwnWrite: true)
+            },
+            document: Self.asPersisted(document)
+        )
+        if storage == .folderLocal {
+            localFolderMapCache = cache
+        } else {
+            fallbackFolderMapCache = cache
+        }
     }
 
     private func loadCaseRecord(
         at url: URL,
         storage: AnalysisCaseStorage
     ) async -> CaseRecord? {
+        caseDecodeCount += 1
         let store = AtomicJSONDocumentStore<AnalysisCase>(documentURL: url)
         guard let loaded = try? await store.load(),
               case .document(let analysisCase, _) = loaded else {
@@ -439,6 +804,19 @@ actor AnalysisCaseRepository {
             documentURL: fallbackIndexURL
         )
         try await store.save(index)
+    }
+
+    /// The document as a later load decodes it. `AtomicJSONDocumentStore` encodes dates as
+    /// ISO-8601 without fractional seconds, so an indexed copy of a just-saved document must be
+    /// round-tripped the same way to compare and sort exactly like one read from disk.
+    private static func asPersisted<Document: Codable>(_ document: Document) -> Document {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let data = try? encoder.encode(document),
+              let decoded = try? decoder.decode(Document.self, from: data) else { return document }
+        return decoded
     }
 
     private static func shouldUseFallback(for error: Error) -> Bool {
@@ -532,6 +910,41 @@ private actor AnalysisCaseRepositoryPreparation {
 private nonisolated struct CaseRecord: Sendable {
     let analysisCase: AnalysisCase
     let storage: AnalysisCaseStorage
+}
+
+/// A file or directory stamp and when it was read. An observation made by this repository's
+/// own write is trusted at once; others only once the stamp has settled.
+private nonisolated struct StampObservation: Sendable {
+    let stamp: AnalysisFileStamp
+    let observedAt: Date
+    var isOwnWrite = false
+}
+
+private nonisolated struct IndexedCaseFile: Sendable {
+    let observation: StampObservation?
+    /// Nil when the file could not be decoded; it is retried once its stamp changes.
+    let record: CaseRecord?
+    /// Canonical folder of the case's source, resolved once when the entry is indexed.
+    let recordedFolderURL: URL
+    /// Index mutation sequence when the entry was produced.
+    let sequence: Int
+}
+
+private nonisolated struct CachedFolderMap: Sendable {
+    let url: URL
+    let observation: StampObservation?
+    let document: AnalysisFolderMapDocument?
+    let token = UUID()
+}
+
+private nonisolated struct CaseLookup: Sendable {
+    let sequence: Int
+    let records: [CaseRecord]
+    /// Local cases plus fallback cases recorded for this folder, in index order.
+    let folderRecordIndices: [Int]
+    let bySHA256: [String: [Int]]
+    let byFileID: [SourceImageRevision.FileResourceIdentifier: [Int]]
+    let byPath: [URL: [Int]]
 }
 
 private nonisolated struct AnalysisCaseFallbackIndex: VersionedJSONDocument, Sendable {
