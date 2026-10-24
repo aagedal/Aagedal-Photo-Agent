@@ -365,6 +365,8 @@ final class MetadataViewModel {
         }
     }
     @ObservationIgnored private var writeTaskGeneration = 0
+    /// The single-photo save that currently owns `writeTask`, if any (see `priorWriteForSingleSave`).
+    @ObservationIgnored private var supersedableSingleSave: (generation: Int, imageURL: URL, loadID: UUID?)?
     /// Failures of embedded writes keyed by their write generation, so a caller chained behind
     /// other writes reads its own outcome instead of the shared, overwritable `saveError`.
     @ObservationIgnored private var embeddedWriteFailures: [Int: String] = [:]
@@ -653,6 +655,12 @@ final class MetadataViewModel {
             batchLocationsShownMutation = .untouched
             batchImageSupplierMutation = .untouched
             batchMetadataByURL = [:]
+        } else if !preservesUnsavedEdits {
+            // This reload replaces the editor with the files' values, so explicit list changes
+            // it no longer shows must not ride along into the next save.
+            batchFieldMutations = [:]
+            batchLocationsShownMutation = .untouched
+            batchImageSupplierMutation = .untouched
         }
 
         if let folderURL {
@@ -2017,17 +2025,20 @@ final class MetadataViewModel {
                     }
                 }
 
+                var installedRawRecords: [URL: IPTCMetadata] = [:]
                 for url in rawURLs {
-                    if let draftMutation, var record = resolvedBatchSnapshot[url] {
-                        draftMutation.mutation(&record)
-                        _ = try await self.descriptiveWriteBoundary.write(
-                            metadata: record, for: url, requestedMode: .writeToFile, semantics: .replace)
-                    } else if isBatch {
-                        // Without the loaded per-photo record only populated values are safe to apply.
-                        var record = try await self.readService.readFullMetadata(url: url)
-                        draftMutation?.mutation(&record)
-                        _ = try await self.descriptiveWriteBoundary.write(
-                            metadata: record, for: url, requestedMode: .writeToFile, semantics: .merge)
+                    if let draftMutation {
+                        // Apply the batch change to the sidecar's current record inside its
+                        // transaction. Replacing it from the load-time snapshot would revert
+                        // ratings, labels or face names written to the sidecar since then.
+                        let fallback: IPTCMetadata
+                        if let resolved = resolvedBatchSnapshot[url] {
+                            fallback = resolved
+                        } else {
+                            fallback = try await self.readService.readFullMetadata(url: url)
+                        }
+                        installedRawRecords[url] = try await self.xmpSidecarService.updateSidecarSerialized(
+                            for: url, fallback: fallback, mutation: draftMutation.mutation)
                     } else {
                         _ = try await self.descriptiveWriteBoundary.write(
                             metadata: edited, for: url, requestedMode: .writeToFile, semantics: .replace)
@@ -2059,7 +2070,7 @@ final class MetadataViewModel {
                             for (url, record) in resolvedBatchSnapshot {
                                 var written = record
                                 draftMutation.mutation(&written)
-                                self.batchMetadataByURL[url] = written
+                                self.batchMetadataByURL[url] = installedRawRecords[url] ?? written
                             }
                         }
                         self.previousEditingMetadata = edited
@@ -2342,22 +2353,22 @@ final class MetadataViewModel {
                 onComplete(.failed(message: saveError ?? "The XMP sidecar could not be written."))
                 return
             }
-            // Wait for an earlier write instead of cancelling it partway through its selection.
+            // Wait for an earlier write instead of cancelling it partway through its selection,
+            // and keep this one out of reach of a later `writeTask?.cancel()` the same way.
             let priorWrite = writeTask
             let generation = writeTaskGeneration + 1
             isSaving = true
-            writeTask = Task {
+            let write = Task {
                 defer { if writeTaskGeneration == generation { isSaving = false } }
                 await priorWrite?.value
                 // Judge this write by its own result: `saveError` may belong to the earlier one.
                 if let failure = await writeXMPSidecar(capture) {
                     onComplete(.failed(message: failure))
-                } else if Task.isCancelled {
-                    onComplete(.cancelled(message: "Metadata save was cancelled."))
                 } else {
                     onComplete(.succeeded)
                 }
             }
+            writeTask = Task { await write.value }
             return
         }
 
@@ -2370,7 +2381,9 @@ final class MetadataViewModel {
             let priorWrite = writeTask
             let generation = writeTaskGeneration + 1
             isSaving = true
-            writeTask = Task {
+            // The batch runs in its own task so a later `writeTask?.cancel()` cannot stop it
+            // partway through the selection.
+            let write = Task {
                 defer { if writeTaskGeneration == generation { isSaving = false } }
                 await priorWrite?.value
                 // Judge each phase by its own result: `saveError` may belong to the earlier write.
@@ -2378,21 +2391,16 @@ final class MetadataViewModel {
                     onComplete(.failed(message: failure))
                     return
                 }
-                guard !Task.isCancelled else {
-                    onComplete(.cancelled(message: "Metadata save was cancelled."))
-                    return
-                }
                 let historyFailure = await saveBatchSidecars(folderURL: folderURL, pendingChanges: false,
                     updateState: true, capture: historyCapture)
                 if let historyFailure {
                     onComplete(.failed(message: historyFailure))
-                } else if Task.isCancelled {
-                    onComplete(.cancelled(message: "Metadata save was cancelled."))
                 } else {
                     if selectedURLs == historyCapture.selectedAtStart { hasChanges = false }
                     onComplete(.succeeded)
                 }
             }
+            writeTask = Task { await write.value }
             return
         }
 
@@ -2412,9 +2420,10 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
-        writeTask?.cancel()
+        let priorWrite = priorWriteForSingleSave(imageURL: imageURL, loadID: loadID)
         writeTask = Task {
             defer { if writeTaskGeneration == generation { isSaving = false } }
+            await priorWrite?.value
             let matchesSelection = {
                 self.writeTaskGeneration == generation && self.metadataLoadRequestID == loadID
                     && self.selectedURLs == [imageURL] && self.currentFolderURL == folderURL
@@ -2461,6 +2470,7 @@ final class MetadataViewModel {
                 onComplete(error is CancellationError ? .cancelled(message: message) : .failed(message: message))
             }
         }
+        registerSingleSave(imageURL: imageURL, loadID: loadID)
     }
 
     private nonisolated static func writeCompletionFailure(
@@ -2545,16 +2555,14 @@ final class MetadataViewModel {
             // Replacing `writeTask` advances the generation, so the inner write no longer owns
             // `isSaving`; this wrapper must clear it when it is still the latest write.
             let wrapperGeneration = writeTaskGeneration + 1
-            writeTask = Task {
+            // Like the embedded write, the XMP phase runs in its own task so a later
+            // `writeTask?.cancel()` cannot stop it partway through the selection.
+            let write = Task {
                 defer { if self.writeTaskGeneration == wrapperGeneration { self.isSaving = false } }
-                await withTaskCancellationHandler {
-                    await embedWrite?.value
-                } onCancel: {
-                    embedWrite?.cancel()
-                }
+                await embedWrite?.value
                 // Judge each phase by its own result: `saveError` may belong to another write.
                 if let embedFailure = self.embeddedWriteFailures.removeValue(forKey: embedGeneration) {
-                    onComplete(Task.isCancelled ? .cancelled(message: embedFailure) : .failed(message: embedFailure))
+                    onComplete(.failed(message: embedFailure))
                     return
                 }
                 if let xmpCapture {
@@ -2563,8 +2571,9 @@ final class MetadataViewModel {
                         return
                     }
                 }
-                onComplete(Task.isCancelled ? .cancelled(message: "Metadata save was cancelled.") : .succeeded)
+                onComplete(.succeeded)
             }
+            writeTask = Task { await write.value }
             return
         }
 
@@ -2580,9 +2589,10 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
-        writeTask?.cancel()
+        let priorWrite = priorWriteForSingleSave(imageURL: imageURL, loadID: loadID)
         writeTask = Task {
             defer { if writeTaskGeneration == generation { isSaving = false } }
+            await priorWrite?.value
             let matchesSelection = {
                 self.writeTaskGeneration == generation && self.metadataLoadRequestID == loadID
                     && self.selectedURLs == [imageURL] && self.currentFolderURL == folderURL
@@ -2650,6 +2660,7 @@ final class MetadataViewModel {
                 onComplete(error is CancellationError ? .cancelled(message: message) : .failed(message: message))
             }
         }
+        registerSingleSave(imageURL: imageURL, loadID: loadID)
     }
 
     func applyTemplateFields(_ template: [String: String], append: Bool = false) {
@@ -3114,6 +3125,24 @@ final class MetadataViewModel {
             detail: names,
             severity: .warning
         )
+    }
+
+    /// The write a new single-photo save must wait for. Saves queue instead of cancelling the
+    /// running write: a cancelled batch or other-photo save stops partway and loses its edits.
+    /// Only a still-running save of this same photo and load is superseded, as before — the new
+    /// request carries its newer edits and was captured against the same baseline. Call
+    /// `registerSingleSave` right after installing the new `writeTask`.
+    private func priorWriteForSingleSave(imageURL: URL, loadID: UUID?) -> Task<Void, Never>? {
+        let prior = writeTask
+        if let owner = supersedableSingleSave, owner.generation == writeTaskGeneration,
+           owner.imageURL == imageURL, owner.loadID == loadID {
+            prior?.cancel()
+        }
+        return prior
+    }
+
+    private func registerSingleSave(imageURL: URL, loadID: UUID?) {
+        supersedableSingleSave = (writeTaskGeneration, imageURL, loadID)
     }
 
     /// Waits until the current write chain (including writes queued while waiting) finishes.
@@ -4117,9 +4146,10 @@ final class MetadataViewModel {
                 history: buildHistory(previous: previous, edited: edited, timestamp: now, existing: sidecarHistory))
             isSaving = true
             saveError = nil
-            writeTask?.cancel()
+            let priorWrite = priorWriteForSingleSave(imageURL: imageURL, loadID: loadID)
             writeTask = Task {
                 defer { if writeTaskGeneration == generation { isSaving = false } }
+                await priorWrite?.value
                 let matchesSelection = {
                     self.writeTaskGeneration == generation && self.metadataLoadRequestID == loadID
                         && self.selectedURLs == [imageURL] && self.currentFolderURL == folderURL
@@ -4153,18 +4183,21 @@ final class MetadataViewModel {
                     if matchesSelection() { saveError = "Failed to save sidecar: \(error.localizedDescription)" }
                 }
             }
+            registerSingleSave(imageURL: imageURL, loadID: loadID)
         } else if selectedCount > 1 {
             // Capture now and wait for an earlier write instead of cancelling it partway through
             // its selection; this save still applies to the photos selected when it was requested.
+            // Its own task keeps it out of reach of a later `writeTask?.cancel()`.
             let capture = captureBatchSidecars()
             let priorWrite = writeTask
             isSaving = true
-            writeTask = Task {
+            let write = Task {
                 await priorWrite?.value
                 await saveBatchSidecars(folderURL: folderURL, pendingChanges: true,
                     updateState: true, capture: capture)
                 if writeTaskGeneration == generation { isSaving = false }
             }
+            writeTask = Task { await write.value }
         }
     }
 
@@ -4597,9 +4630,10 @@ final class MetadataViewModel {
         let captureKey = imageURL.resolvingSymlinksInPath().path.lowercased()
         let cleanupKey = MetadataIOKey.key(for: imageURL)
         let capturedGeneration = captionCaptureGenerations[captureKey, default: 0]
-        writeTask?.cancel()
+        let priorWrite = priorWriteForSingleSave(imageURL: imageURL, loadID: loadID)
         writeTask = Task {
             defer { if writeTaskGeneration == generation { isSaving = false } }
+            await priorWrite?.value
             var metadataWasWritten = false
             do {
                 let cleanup = try await sidecarService.captureWriteCleanupSnapshot(
@@ -4700,6 +4734,7 @@ final class MetadataViewModel {
                 }
             }
         }
+        registerSingleSave(imageURL: imageURL, loadID: loadID)
     }
 
     /// Paste IPTC writes the file (or its XMP), but a pending draft stays the photo's record until
@@ -5077,8 +5112,10 @@ final class MetadataViewModel {
             imageMetadataSnapshot: pendingDraftImageMetadataSnapshot,
             history: []
         )
-        writeTask?.cancel()
+        // Queue behind any running write instead of cancelling it partway through.
+        let priorWrite = writeTask
         writeTask = Task {
+            await priorWrite?.value
             do {
                 let installed = try await sidecarService.saveSidecarReplacingHistorySerialized(
                     sidecar,

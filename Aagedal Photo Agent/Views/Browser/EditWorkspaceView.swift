@@ -1061,8 +1061,8 @@ struct EditWorkspaceView: View {
                 // Refresh gamut clip pipeline so HDR flag is immediately applied/cleared
                 updateGamutClipMode()
             case .applyDevelopTemplate(let template):
-                guard canMutateSingleImageDevelop else { return }
-                applyDevelopTemplate(template)
+                guard canMutateSingleImageDevelop || browserViewModel.selectedImageIDs.count == 1 else { return }
+                performWhenSelectedImageReady("Template") { applyDevelopTemplate(template) }
             case .openFolder, .openRecentFolder, .setRating, .setLabel,
                  .renderSelected, .advancedExportSelected, .renderAll,
                  .saveAsJPEG, .saveAsPNG, .archiveRAW,
@@ -7763,13 +7763,41 @@ struct EditWorkspaceView: View {
     /// case uses the existing multi-image writer.
     private func pasteCopiedSettings(to urls: Set<URL>) {
         guard let settings = browserViewModel.copiedCameraRawSettings, !urls.isEmpty else { return }
+        let feedback = "Pasted to \(urls.count) image\(urls.count == 1 ? "" : "s")"
         if urls.count == 1, urls.first == selectedImageURL {
-            guard isSelectedImageMetadataReady else { return }
-            pasteCameraRawSettings(settings, includeCrop: false)
+            performWhenSelectedImageReady("Paste") {
+                pasteCameraRawSettings(settings, includeCrop: false)
+                showCopyPasteFeedback(feedback)
+            }
         } else {
             pasteToMultipleImages(settings, urls: urls, includeCrop: false)
+            showCopyPasteFeedback(feedback)
         }
-        showCopyPasteFeedback("Pasted to \(urls.count) image\(urls.count == 1 ? "" : "s")")
+    }
+
+    /// Single-photo paste and template apply merge into the selected photo's saved settings, so
+    /// they need its metadata loaded. Until then the action is queued for that photo (loading it
+    /// now instead of after the browser's selection debounce) and runs once the load finishes;
+    /// it is dropped, with feedback, if the selection moves on first. Slider and tool edits keep
+    /// the plain load gate.
+    private func performWhenSelectedImageReady(_ actionName: String, _ action: @escaping @MainActor () -> Void) {
+        if canMutateSingleImageDevelop {
+            action()
+            return
+        }
+        guard let image = selectedImage else { return }
+        let metadataViewModel = metadataViewModel
+        if metadataViewModel.selectedURLs != [image.url] {
+            metadataViewModel.loadSelectionMetadataNow(for: [image], folderURL: browserViewModel.currentFolderURL)
+        }
+        Task { @MainActor in
+            await metadataViewModel.waitForMetadataLoad()
+            guard selectedImageURL == image.url, canMutateSingleImageDevelop else {
+                showCopyPasteFeedback("\(actionName) not applied: the selection changed")
+                return
+            }
+            action()
+        }
     }
 
     /// Resolve-style direct copy: the clicked thumbnail is the source and the selection remains
@@ -8484,9 +8512,10 @@ struct EditWorkspaceView: View {
 
             if selectedURLs.count == 1 {
                 // The selected photo's saved settings must be loaded before they are merged.
-                guard isSelectedImageMetadataReady else { return nil }
-                pasteCameraRawSettings(copied, includeCrop: withCrop)
-                showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
+                performWhenSelectedImageReady("Paste") {
+                    pasteCameraRawSettings(copied, includeCrop: withCrop)
+                    showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
+                }
             } else {
                 pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: withCrop)
                 showCopyPasteFeedback("Pasted to \(selectedURLs.count) images")
@@ -8503,9 +8532,10 @@ struct EditWorkspaceView: View {
             guard !selectedURLs.isEmpty else { return event }
 
             if selectedURLs.count == 1 {
-                guard isSelectedImageMetadataReady else { return nil }
-                pasteCameraRawSettings(copied, includeCrop: true)
-                showCopyPasteFeedback("Pasted (with crop)")
+                performWhenSelectedImageReady("Paste") {
+                    pasteCameraRawSettings(copied, includeCrop: true)
+                    showCopyPasteFeedback("Pasted (with crop)")
+                }
             } else {
                 pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: true)
                 showCopyPasteFeedback("Pasted to \(selectedURLs.count) images (with crop)")

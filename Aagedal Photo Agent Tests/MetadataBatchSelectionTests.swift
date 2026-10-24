@@ -4,6 +4,35 @@ import Testing
 import SwiftMediaMetadata
 @testable import Aagedal_Photo_Agent
 
+/// Holds embedded writes until `open()` so later saves queue behind them.
+private nonisolated final class BatchQueueGatedWriteEngine: MetadataWriteEngine, @unchecked Sendable {
+    private let inner = SwiftExifWriteEngine()
+    private let lock = NSLock()
+    private var isOpen = false
+    func open() { lock.withLock { isOpen = true } }
+    private func waitUntilOpen() async {
+        while !lock.withLock({ isOpen }) { try? await Task.sleep(for: .milliseconds(5)) }
+    }
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        await waitUntilOpen()
+        try await inner.writeFields(fields, to: urls, structuredData: structuredData)
+    }
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        try await inner.writeFieldsToRenderedFiles(fields, to: urls, structuredData: structuredData)
+    }
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {
+        await waitUntilOpen()
+        try await inner.addRemoveListValues(add: add, remove: remove, to: urls)
+    }
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws { try await inner.writeRating(rating, to: urls) }
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws { try await inner.writeLabel(label, to: urls) }
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws { try await inner.writeOrientation(orientation, to: urls) }
+    func stripIPTCAndXMP(from urls: [URL]) async throws { try await inner.stripIPTCAndXMP(from: urls) }
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {
+        try await inner.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
+    }
+}
+
 @Suite("Metadata batch list selection", .serialized)
 @MainActor
 struct MetadataBatchSelectionTests {
@@ -509,6 +538,105 @@ struct MetadataBatchSelectionTests {
         try await write(IPTCMetadata(title: "Changed externally"), to: url)
         try await loadSingle(model, url, in: folder, preservingUnsavedEdits: true)
         #expect(model.editingMetadata.title == "Changed externally")
+    }
+
+    @Test("a single-photo save right after a batch save waits for the batch instead of cancelling it")
+    func singleSaveAfterBatchSaveKeepsEveryBatchPhoto() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var urls: [URL] = []
+        for index in 0..<4 { urls.append(try makeJPEG(in: folder, name: "batch\(index).jpg")) }
+        let single = try makeJPEG(in: folder, name: "single.jpg")
+        let engine = BatchQueueGatedWriteEngine()
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: engine)
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+
+        // A held embedded batch write keeps the following batch XMP save queued.
+        model.editingMetadata.city = "Oslo"
+        model.markChanged()
+        model.writeMetadata()
+        model.editingMetadata.event = "Cup final"
+        model.markChanged()
+        var batchResult: MetadataCommitResult?
+        model.commitEditsReportingResult(mode: .writeToXMPSidecar) { batchResult = $0 }
+
+        try await loadSingle(model, single, in: folder)
+        model.editingMetadata.title = "Single headline"
+        model.markChanged()
+        var singleResult: MetadataCommitResult?
+        model.commitEditsReportingResult(mode: .writeToXMPSidecar) { singleResult = $0 }
+        engine.open()
+
+        let deadline = ContinuousClock.now + .seconds(10)
+        while batchResult == nil || singleResult == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(batchResult == .succeeded)
+        #expect(singleResult == .succeeded)
+        for url in urls {
+            #expect(XMPSidecarService().loadSidecar(for: url)?.event == "Cup final")
+        }
+        #expect(XMPSidecarService().loadSidecar(for: single)?.title == "Single headline")
+    }
+
+    @Test("a mixed RAW+JPEG batch save keeps a rating and face name written to the RAW sidecar after load")
+    func mixedBatchSaveKeepsRawSidecarRating() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let jpeg = try makeJPEG(in: folder, name: "a.jpg")
+        let raw = try makeJPEG(in: folder, name: "b.nef")
+        try #require(SupportedImageFormats.isRaw(url: raw))
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(title: "Raw headline"), for: raw)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: [ImageFile(url: jpeg), ImageFile(url: raw)], folderURL: folder)
+        try await waitForBatchLoad(model)
+
+        // Rated and face-named (e.g. from the grid / face review) after the batch editor loaded.
+        _ = try await XMPSidecarService().updateSidecarSerialized(for: raw, fallback: IPTCMetadata()) {
+            $0.rating = 4
+            $0.personShown = ["Ola Nordmann"]
+        }
+        let rated = XMPSidecarService().loadSidecar(for: raw)
+        try #require(rated?.rating == 4)
+        try #require(rated?.personShown == ["Ola Nordmann"])
+        model.editingMetadata.description = "Batch caption"
+        model.markChanged()
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        let sidecar = try #require(XMPSidecarService().loadSidecar(for: raw))
+        #expect(sidecar.description == "Batch caption")
+        #expect(sidecar.title == "Raw headline")
+        #expect(sidecar.rating == 4)
+        #expect(sidecar.personShown == ["Ola Nordmann"])
+        #expect(try await SwiftExifReadService().readFullMetadata(url: jpeg).description == "Batch caption")
+    }
+
+    @Test("a same-batch reload that replaces the editor drops list changes it no longer shows")
+    func sameBatchReloadWithoutPreservingDropsBatchMutations() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg")]
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        try model.setBatchMutation(.overwrite(.repeatable(["Dropped"])), for: .keywords)
+
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        #expect(!model.hasUnpersistedEditorChanges)
+        model.editingMetadata.city = "Oslo"
+        model.markChanged()
+        let result = await withCheckedContinuation { continuation in
+            model.commitEditsReportingResult(mode: .writeToXMPSidecar) { continuation.resume(returning: $0) }
+        }
+        #expect(result == .succeeded)
+        for url in urls {
+            let sidecar = XMPSidecarService().loadSidecar(for: url)
+            #expect(sidecar?.city == "Oslo")
+            #expect(sidecar?.keywords.isEmpty == true)
+        }
     }
 
     @Test("Copy IPTC record carries every descriptive field but never the per-image GUID")
