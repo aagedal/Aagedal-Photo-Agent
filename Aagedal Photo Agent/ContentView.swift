@@ -3744,30 +3744,13 @@ struct ContentView: View {
             // Detached to keep the decode at utility priority off MainActor, but forward the
             // selection change's cancellation to it so a superseded decode stops at the next
             // stage boundary instead of reading the rest of the file.
+            // The source lands in the display orientation (sidecar-first), like full screen.
             let decode = Task.detached(priority: .utility) { () -> CGImage? in
-                guard !Task.isCancelled else { return nil }
-                if isNativeHDR {
-                    // HDR-preserving path: keeps float values >1.0 for correct nits waveform
-                    if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 720) {
-                        guard !Task.isCancelled else { return nil }
-                        let processed = editSettings.map {
-                            CameraRawApproximation.applyWithCrop(to: ciImage, settings: $0, exifOrientation: exifOrientation)
-                        } ?? ciImage
-                        return CameraRawApproximation.ciContext.createCGImage(
-                            processed, from: processed.extent,
-                            format: .RGBAh,
-                            colorSpace: CameraRawApproximation.workingColorSpace
-                        )
-                    }
-                }
-                guard !Task.isCancelled,
-                      let base = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 720) else {
-                    return nil
-                }
-                guard let editSettings else { return base }
-                guard !Task.isCancelled else { return nil }
-                return FullScreenImageCache.applyCameraRaw(
-                    to: base, settings: editSettings, exifOrientation: exifOrientation
+                FullScreenImageCache.browseScopeSource(
+                    for: url,
+                    isNativeHDR: isNativeHDR,
+                    settings: editSettings,
+                    displayOrientation: exifOrientation
                 )
             }
             let cgImage = await withTaskCancellationHandler {

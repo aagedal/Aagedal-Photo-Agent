@@ -2785,6 +2785,60 @@ struct ExportRenderFidelityTests {
         expectColor(quadrantPixels, 8, 28, Self.red, "bottom")
     }
 
+    /// The browse-mode scope source must read the same frame and region full screen shows.
+    /// Its loaders bake the FILE orientation; it used to pass the sidecar orientation as the
+    /// pixels' frame without rotating, so a sidecar-rotated crop selected the wrong region
+    /// and the waveform's x axis followed the file instead of the display.
+    @Test("The browse scope source matches full screen for a sidecar-rotated photo",
+          arguments: [false, true], [false, true])
+    func browseScopeSourceMatchesFullScreen(isNativeHDR: Bool, cropped: Bool) async throws {
+        let directory = try makeDirectory("scope-sidecar-rotation")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        try writeQuadrantJPEG(to: source, orientation: 1)
+        try writeSidecarOrientation(6, for: source)
+        let displayOrientation = FullScreenImageCache.displayOrientation(for: source, fallback: 1)
+        #expect(displayOrientation == 6)
+
+        // Sensor-frame crop keeping the left half (red over blue) — see sidecarRotationWithCrop.
+        var settings: CameraRawSettings?
+        if cropped {
+            var edited = editedSettings()
+            edited.crop = CameraRawCrop(top: 0, left: 0, bottom: 1, right: 0.5, angle: 0, hasCrop: true)
+            settings = edited
+        }
+
+        let scope = try pixels(of: try #require(FullScreenImageCache.browseScopeSource(
+            for: source, isNativeHDR: isNativeHDR, settings: settings,
+            displayOrientation: displayOrientation
+        )))
+        let fullScreen = try pixels(of: try #require(await FullScreenImageCache.decodedEditedPreview(
+            for: source, settings: settings, orientation: displayOrientation, screenMaxPx: 720
+        )))
+
+        for (name, image) in [("scope", scope), ("full screen", fullScreen)] {
+            if cropped {
+                #expect(image.width == 32 && image.height == 32,
+                        "\(name): expected the 32x32 displayed crop, got \(image.width)x\(image.height)")
+                guard image.width == 32, image.height == 32 else { continue }
+                // Rotated 90° CW for display: blue on the left, red on the right.
+                expectColor(image, 6, 6, Self.blue, "\(name) top-left")
+                expectColor(image, 6, 26, Self.blue, "\(name) bottom-left")
+                expectColor(image, 26, 6, Self.red, "\(name) top-right")
+                expectColor(image, 26, 26, Self.red, "\(name) bottom-right")
+            } else {
+                #expect(image.width == 32 && image.height == 64,
+                        "\(name): expected the 32x64 display frame, got \(image.width)x\(image.height)")
+                guard image.width == 32, image.height == 64 else { continue }
+                expectColor(image, 8, 16, Self.blue, "\(name) top-left")
+                expectColor(image, 24, 16, Self.red, "\(name) top-right")
+                expectColor(image, 8, 48, Self.white, "\(name) bottom-left")
+                expectColor(image, 24, 48, Self.green, "\(name) bottom-right")
+            }
+        }
+        #expect(scope.width == fullScreen.width && scope.height == fullScreen.height)
+    }
+
     @Test("Embedded and sidecar rotations both reach Save As JPEG upright with orientation 1")
     func embeddedOrientationAndSaveAsJPEG() async throws {
         let directory = try makeDirectory("embedded-rotation")

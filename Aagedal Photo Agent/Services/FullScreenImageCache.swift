@@ -806,8 +806,8 @@ final class FullScreenImageCache: @unchecked Sendable {
         return residual == .up ? image : image.oriented(residual)
     }
 
-    /// CGImage form of `applyEditsInDisplayFrame`. Identical to
-    /// `applyCameraRaw(to:settings:exifOrientation:)` when the orientations agree.
+    /// CGImage form of `applyEditsInDisplayFrame`. When the orientations agree this is a
+    /// plain `applyWithCrop` in the file frame, materialized for display.
     nonisolated static func applyCameraRaw(
         to cgImage: CGImage,
         settings: CameraRawSettings,
@@ -825,13 +825,57 @@ final class FullScreenImageCache: @unchecked Sendable {
         return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
     }
 
-    nonisolated static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int = 1) -> CGImage {
-        let ciImage = CIImage(cgImage: cgImage)
-        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
-        let extent = processed.extent
-        guard extent.width > 0, extent.height > 0 else { return cgImage }
-
-        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
+    /// Browse-mode scope source for `url`: a small decode, edited (with crop) when `settings`
+    /// is non-nil, in `displayOrientation` — the same frame and region full screen shows.
+    /// Both loaders bake the FILE orientation into their pixels, so edited and unedited
+    /// sources go through `applyEditsInDisplayFrame` (sidecar-only rotations included).
+    /// `isNativeHDR` keeps float values above 1.0 for the nits waveform. Returns nil when the
+    /// decode fails or the calling task is cancelled between stages.
+    nonisolated static func browseScopeSource(
+        for url: URL,
+        isNativeHDR: Bool,
+        settings: CameraRawSettings?,
+        displayOrientation: Int,
+        maxPixelSize: CGFloat = 720
+    ) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        if isNativeHDR,
+           let decoded = loadHDRPreviewWithOrientation(from: url, maxPixelSize: maxPixelSize) {
+            guard !Task.isCancelled else { return nil }
+            let processed = applyEditsInDisplayFrame(
+                to: decoded.image,
+                settings: settings,
+                fileOrientation: decoded.orientation,
+                displayOrientation: displayOrientation
+            )
+            return CameraRawApproximation.ciContext.createCGImage(
+                processed, from: processed.extent,
+                format: .RGBAh,
+                colorSpace: CameraRawApproximation.workingColorSpace
+            )
+        }
+        guard !Task.isCancelled,
+              let base = loadDownsampledWithOrientation(from: url, maxPixelSize: maxPixelSize) else {
+            return nil
+        }
+        guard !Task.isCancelled else { return nil }
+        if let settings {
+            return applyCameraRaw(
+                to: base.image,
+                settings: settings,
+                fileOrientation: base.orientation,
+                displayOrientation: displayOrientation
+            )
+        }
+        let correction = ImageFile.orientationCorrection(from: base.orientation, to: displayOrientation)
+        guard correction != .up else { return base.image }
+        // Keep the decode's own RGB space so the scope's gamut readout is unchanged.
+        let rotated = CIImage(cgImage: base.image).oriented(correction)
+        let colorSpace = base.image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil }
+            ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        return CameraRawApproximation.ciContext.createCGImage(
+            rotated, from: rotated.extent, format: .RGBA8, colorSpace: colorSpace
+        ) ?? base.image
     }
 
     /// Decode `url` at screen resolution, applying `settings` if present, and return a
