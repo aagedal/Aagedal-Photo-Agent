@@ -33,7 +33,9 @@ final class AnalysisRunner {
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var runIDs: [String: UUID] = [:]
     @ObservationIgnored private var generation = 0
-    @ObservationIgnored var onPersistableRunChanged: ((AnalysisAnalyzerRun) -> Void)?
+    /// Called for every run state change worth recording. `isUserEdit` is true for user changes
+    /// to a run (finding inclusion), false for analyzer progress and results.
+    @ObservationIgnored var onPersistableRunChanged: ((AnalysisAnalyzerRun, _ isUserEdit: Bool) -> Void)?
 
     var isRunning: Bool {
         runs.contains { $0.status == .queued || $0.status == .running }
@@ -162,7 +164,7 @@ final class AnalysisRunner {
 
         output.findings[findingIndex].includeInReport = included
         runs[runIndex].output = output
-        onPersistableRunChanged?(runs[runIndex])
+        onPersistableRunChanged?(runs[runIndex], true)
     }
 
     private func updateProgress(analyzerID: String, cacheKey: String, progress: Double) {
@@ -179,7 +181,7 @@ final class AnalysisRunner {
             runs.append(run)
         }
         if persist {
-            onPersistableRunChanged?(run)
+            onPersistableRunChanged?(run, false)
         }
     }
 }
