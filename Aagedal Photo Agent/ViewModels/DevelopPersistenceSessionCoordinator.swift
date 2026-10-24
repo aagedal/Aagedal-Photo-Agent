@@ -34,30 +34,79 @@ nonisolated enum DevelopPrimaryPersistenceCompletion: Equatable, Sendable {
 
 /// Decides when a completed metadata load ends the Develop undo history.
 ///
-/// History belongs to one photo *and* to the settings Develop itself produced. A load of another
-/// photo, or a same-photo load that replaced the settings from outside (Reset All Edits, a
-/// multi-photo paste that included it, an external sidecar edit), makes every entry describe
-/// state that is gone; Undo would bring discarded edits back and write them. A same-photo
-/// reload that leaves the settings as Develop last published them (descriptive-only reloads,
-/// self-initiated saves) keeps the history.
+/// History belongs to one photo *and* to the settings Develop itself produced. It ends when
+/// another photo loads, or when the app explicitly replaced the settings from outside (Reset
+/// All Edits; a multi-photo paste reload clears it directly) — Undo would otherwise bring
+/// discarded edits back and write them. Ordinary same-photo reloads (Paste IPTC, face scans,
+/// automation drafts, self-initiated saves) keep it. As a fallback for replacements the app
+/// isn't told about (an external sidecar edit), a same-photo reload whose develop settings no
+/// longer match what Develop published also ends it; that comparison is on a normalized form
+/// that survives an XMP write/read round trip (layer identities, names and order positions,
+/// number precision, tone-curve quantization, decode facts and version markers).
 nonisolated enum DevelopUndoHistoryPolicy {
     static func shouldClearHistory(
         historyImageURL: URL?,
         loadedImageURL: URL?,
         settingsDevelopPublished: CameraRawSettings?,
-        loadedSettings: CameraRawSettings?
+        loadedSettings: CameraRawSettings?,
+        settingsReplacedExternally: Bool = false
     ) -> Bool {
-        guard historyImageURL == loadedImageURL else { return true }
-        return comparable(settingsDevelopPublished) != comparable(loadedSettings)
+        guard historyImageURL == loadedImageURL, !settingsReplacedExternally else { return true }
+        return normalizedFingerprint(settingsDevelopPublished) != normalizedFingerprint(loadedSettings)
     }
 
-    /// Per-image decode facts are attached by the loader, not edits; an empty record equals none.
-    private static func comparable(_ settings: CameraRawSettings?) -> CameraRawSettings? {
+    /// Develop settings content, insensitive to what an XMP round trip changes.
+    static func normalizedFingerprint(_ settings: CameraRawSettings?) -> String? {
         guard var settings else { return nil }
         settings.asShotNeutralTemperature = nil
         settings.asShotNeutralTint = nil
         settings.sourceHasHDRHeadroom = nil
-        return settings.isEmpty ? nil : settings
+        settings.hasSettings = nil
+        settings.version = nil
+        settings.processVersion = nil
+        if settings.crop?.isEmpty == true { settings.crop = nil }
+        if settings.hslAdjustments?.isEmpty == true { settings.hslAdjustments = nil }
+        if settings.anonymizer?.isEmpty == true { settings.anonymizer = nil }
+        if settings.filmEmulation?.isEmpty == true { settings.filmEmulation = nil }
+        if var curve = settings.toneCurve {
+            // XMP stores curve points on ACR's 0–255 grid.
+            func quantized(_ points: [ToneCurvePoint]?) -> [ToneCurvePoint]? {
+                guard let points else { return nil }
+                let grid = points.map { ToneCurvePoint(x: ($0.x * 255).rounded() / 255, y: ($0.y * 255).rounded() / 255) }
+                return grid.isIdentityToneCurve ? nil : grid
+            }
+            curve.master = quantized(curve.master)
+            curve.red = quantized(curve.red)
+            curve.green = quantized(curve.green)
+            curve.blue = quantized(curve.blue)
+            settings.toneCurve = curve.isEmpty ? nil : curve
+        }
+        // Layer order as positions, so regenerated identities compare equal.
+        let masks = settings.localAdjustments ?? []
+        let watermarks = settings.watermarkLayers ?? []
+        let order = settings.resolvedLayerOrder().map { ref -> String in
+            switch ref {
+            case .global: return "g"
+            case .mask(let id): return "m\(masks.firstIndex { $0.id == id } ?? -1)"
+            case .watermark(let id): return "w\(watermarks.firstIndex { $0.id == id } ?? -1)"
+            }
+        }
+        settings.layerOrder = nil
+        settings.localAdjustments = masks.isEmpty ? nil : masks.map { mask in
+            var copy = mask
+            copy.id = CameraRawSettings.zeroIdentity
+            copy.name = ""
+            return copy
+        }
+        settings.watermarkLayers = watermarks.isEmpty ? nil : watermarks.map { layer in
+            var copy = layer
+            copy.id = CameraRawSettings.zeroIdentity
+            copy.name = ""
+            return copy
+        }
+        guard !settings.isEmpty else { return nil }
+        let content = CameraRawSettings.canonicalJSONFingerprint(settings, scale: 1_000) ?? ""
+        return content + "|" + order.joined(separator: ",")
     }
 }
 
@@ -521,28 +570,56 @@ final class DevelopUndoMenuRouter {
     struct Registration {
         let ownerID: UUID
         let session: DevelopPersistenceSessionCoordinator
+        /// The window hosting this Develop workspace (nil until it is attached).
+        let window: @MainActor () -> NSWindow?
         /// True when the Develop workspace may take the menu action now (its window is key, no
         /// text field or overlay owns input).
         let canRoute: @MainActor () -> Bool
         let perform: @MainActor (_ redo: Bool) -> Void
     }
 
-    private(set) var registration: Registration?
+    /// One registration per Develop workspace (window); the key window's one is used.
+    private var registrations: [UUID: Registration] = [:]
+    /// Bumped when the key window changes or a menu starts tracking, so the Edit menu titles
+    /// re-read state SwiftUI can't observe (key window, first responder).
+    private(set) var focusRevision = 0
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+
+    init() {
+        let center = NotificationCenter.default
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSMenu.didBeginTrackingNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.focusRevision &+= 1 }
+            })
+        }
+    }
 
     func register(_ registration: Registration) {
-        self.registration = registration
+        registrations[registration.ownerID] = registration
     }
 
+    /// Call when that workspace leaves Develop or its window closes.
     func unregister(ownerID: UUID) {
-        if registration?.ownerID == ownerID { registration = nil }
+        registrations[ownerID] = nil
     }
 
-    /// The Develop session the menu reflects, if Develop is up.
+    /// The registration of the Develop workspace in the key window, if any.
+    private var keyRegistration: Registration? {
+        _ = focusRevision
+        guard let keyWindow = NSApp.keyWindow else { return nil }
+        return registrations.values.first { $0.session.isWorkspaceActive && $0.window() === keyWindow }
+    }
+
+    /// The Develop session the menu routes to right now (key window's Develop, with no text
+    /// field editing), if any.
     var activeSession: DevelopPersistenceSessionCoordinator? {
-        guard let session = registration?.session, session.isWorkspaceActive else { return nil }
-        return session
+        guard let registration = keyRegistration, registration.canRoute() else { return nil }
+        return registration.session
     }
 
+    /// "Undo Exposure" while the menu drives Develop; plain "Undo" otherwise (e.g. a focused
+    /// text field, whose own undo the menu performs).
     var undoTitle: String { activeSession?.undoMenuTitle ?? "Undo" }
     var redoTitle: String { activeSession?.redoMenuTitle ?? "Redo" }
 
@@ -550,7 +627,7 @@ final class DevelopUndoMenuRouter {
     func redo() { route(redo: true) }
 
     private func route(redo: Bool) {
-        if let registration, registration.session.isWorkspaceActive, registration.canRoute() {
+        if let registration = keyRegistration, registration.canRoute() {
             registration.perform(redo)
             return
         }

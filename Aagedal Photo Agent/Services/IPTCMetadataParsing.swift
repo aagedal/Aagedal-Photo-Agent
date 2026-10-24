@@ -551,6 +551,12 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> ParsedMaskCorr
         parsingLog.warning("Preserving MaskGroupBasedCorrections[\(index)] (\(name, privacy: .private(mask: .hash))) verbatim: unmodeled mask type \(what ?? "unknown", privacy: .private)")
         result.preserved.append(PreservedMaskCorrection(fields: preservedFields(from: corr)))
     }
+    // A mask identity must be unique within the chain (copied ACR corrections can repeat a
+    // CorrectionSyncID); later repeats get fresh IDs.
+    var seenIDs = Set<UUID>()
+    for index in result.masks.indices where !seenIDs.insert(result.masks[index].id).inserted {
+        result.masks[index].id = UUID()
+    }
     return result
 }
 
@@ -769,7 +775,7 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
         )
     }()
 
-    return MaskAdjustment(
+    var parsed = MaskAdjustment(
         name: name,
         enabled: active,
         inverted: inverted,
@@ -790,6 +796,24 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
         tint: tint.flatMap { abs($0) < 0.01 ? nil : $0 },
         anonymizer: anonymizer
     )
+    // Stable identity across reloads: the writer stores the mask's UUID (dashes stripped) as
+    // ACR's CorrectionSyncID. Without it every reload would mint new IDs, orphaning the
+    // explicit layer order and the Develop undo history. Duplicates are resolved by the caller.
+    if let syncID = crsMaskField(corr, "CorrectionSyncID") as? String, let id = maskUUID(fromSyncID: syncID) {
+        parsed.id = id
+    }
+    return parsed
+}
+
+/// `CorrectionSyncID` → UUID: 32 hex digits (our writer and ACR) or a dashed UUID string.
+nonisolated func maskUUID(fromSyncID raw: String) -> UUID? {
+    let trimmed = raw.trimmingCharacters(in: .whitespaces)
+    if let uuid = UUID(uuidString: trimmed) { return uuid }
+    let hex = trimmed.replacingOccurrences(of: "-", with: "")
+    guard hex.count == 32, hex.allSatisfy(\.isHexDigit) else { return nil }
+    let chars = Array(hex)
+    let dashed = [0..<8, 8..<12, 12..<16, 16..<20, 20..<32].map { String(chars[$0]) }.joined(separator: "-")
+    return UUID(uuidString: dashed)
 }
 
 /// Recursively convert an unwrapped XMP correction dictionary (namespace-prefixed keys,

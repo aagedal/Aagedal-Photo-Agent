@@ -432,6 +432,11 @@ struct DevelopPersistenceSessionCoordinatorTests {
         var edited = CameraRawSettings(exposure2012: 1.2)
         edited.localAdjustments = [MaskAdjustment(name: "Sky", exposure: -0.5)]
 
+        // An explicit outside replacement (Reset All Edits) ends it even when settings match.
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: edited, loadedSettings: edited,
+            settingsReplacedExternally: true))
         // Another photo always starts a fresh history.
         #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
             historyImageURL: photo, loadedImageURL: other,
@@ -457,6 +462,63 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
             historyImageURL: photo, loadedImageURL: photo,
             settingsDevelopPublished: CameraRawSettings(), loadedSettings: nil))
+    }
+
+    @Test("history survives a real XMP write/read round trip of a masked photo")
+    func undoHistorySurvivesXMPRoundTrip() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DevelopHistoryRoundTrip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let photo = directory.appendingPathComponent("capture.arw")
+        try Data([0x52, 0x41, 0x57, 0x00]).write(to: photo)
+
+        var sky = MaskAdjustment(name: "Sky", exposure: -0.37)
+        sky.contrast = 12
+        sky.geometry.centerX = 0.3333333
+        sky.geometry.radiusX = 0.21
+        sky.geometry.feather = 62
+        var face = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 65, blackOut: nil))
+        face.geometry.centerY = 0.27
+        var brush = MaskAdjustment(name: "Brush", exposure: 0.4)
+        brush.brush = BrushMaskGeometry(strokes: [BrushStroke(dabs: [
+            BrushDab(x: 0.111111, y: 0.222222, flow: 0.8, hardness: 0.5),
+            BrushDab(x: 0.123457, y: 0.234568, flow: 0.8, hardness: 0.5),
+        ], radius: 0.05)])
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        var published = CameraRawSettings(exposure2012: 0.37)
+        published.contrast2012 = 18
+        published.whiteBalance = "Custom"
+        published.temperature = 5600
+        published.crop = CameraRawCrop(top: 0.1234567, left: 0.05, bottom: 0.9, right: 0.95, angle: 0, hasCrop: true)
+        published.toneCurve = ToneCurve(
+            master: [ToneCurvePoint(x: 0, y: 0.03), ToneCurvePoint(x: 0.5, y: 0.55), ToneCurvePoint(x: 1, y: 1)],
+            red: nil, green: nil, blue: nil
+        )
+        published.hslAdjustments = HSLAdjustments(blue: HSLColorAdjustment(saturation: -25))
+        published.localAdjustments = [sky, face, brush]
+        published.watermarkLayers = [watermark]
+        published.layerOrder = [.mask(sky.id), .global, .mask(face.id), .mask(brush.id), .watermark(watermark.id)]
+
+        let service = XMPSidecarService()
+        try service.saveCameraRawOnly(published, orientation: nil, for: photo)
+        let reloaded = try #require(service.loadSidecar(for: photo)?.cameraRaw)
+
+        #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: published, loadedSettings: reloaded))
+        // Mask identities now survive the reload (CorrectionSyncID), keeping the explicit order.
+        #expect(reloaded.localAdjustments?.map(\.id) == published.localAdjustments?.map(\.id))
+        #expect(reloaded.resolvedLayerOrder() == published.resolvedLayerOrder())
+
+        // A different develop state on disk (an outside edit) ends the history.
+        var external = published
+        external.exposure2012 = 1.2
+        try service.saveCameraRawOnly(external, orientation: nil, for: photo)
+        let changed = try #require(service.loadSidecar(for: photo)?.cameraRaw)
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: published, loadedSettings: changed))
     }
 
     @Test("edit workspace delegates undo and dirty URL ownership")

@@ -95,7 +95,10 @@ struct MetadataEditorXMPBaselineTests {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.folder) }
         try await load(f.model, image: f.image, folder: f.folder)
         let reparsed = try #require(XMPSidecarService().loadSidecar(for: f.image))
-        #expect(f.model.xmpMetadata?.cameraRaw != reparsed.cameraRaw)
+        // Mask identities are restored from CorrectionSyncID, so a reparse is now stable; the
+        // save routes below must still work from the loaded bytes, not parsed equality.
+        #expect(f.model.xmpMetadata?.cameraRaw?.localAdjustments?.map(\.id)
+            == reparsed.cameraRaw?.localAdjustments?.map(\.id))
         try #require(f.model.editingMetadata.cameraRaw?.localAdjustments?.count == 1)
         f.model.editingMetadata.cameraRaw?.exposure2012 = 0.75
         f.model.markChanged()
