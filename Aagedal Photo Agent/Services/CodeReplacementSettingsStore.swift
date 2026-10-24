@@ -26,6 +26,7 @@ nonisolated struct CodeReplacementSourceAccess: Sendable {
     var resolveBookmark: @Sendable (Data) throws -> CodeReplacementBookmarkResolution
     var readData: @Sendable (URL) throws -> Data
     var modificationDate: @Sendable (URL) throws -> Date?
+    var byteCount: @Sendable (URL) throws -> Int64?
 
     init(
         createBookmark: @escaping @Sendable (URL) throws -> Data,
@@ -33,12 +34,16 @@ nonisolated struct CodeReplacementSourceAccess: Sendable {
         readData: @escaping @Sendable (URL) throws -> Data,
         modificationDate: @escaping @Sendable (URL) throws -> Date? = { url in
             try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        }
+        },
+        byteCount: (@Sendable (URL) throws -> Int64?)? = nil
     ) {
         self.createBookmark = createBookmark
         self.resolveBookmark = resolveBookmark
         self.readData = readData
         self.modificationDate = modificationDate
+        self.byteCount = byteCount ?? { url in
+            try url.resourceValues(forKeys: [.fileSizeKey]).fileSize.map(Int64.init)
+        }
     }
 
     static let live = Self(
@@ -68,6 +73,11 @@ nonisolated struct CodeReplacementSourceAccess: Sendable {
         },
         modificationDate: { url in
             try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        },
+        byteCount: { url in
+            let didStart = url.startAccessingSecurityScopedResource()
+            defer { if didStart { url.stopAccessingSecurityScopedResource() } }
+            return try url.resourceValues(forKeys: [.fileSizeKey]).fileSize.map(Int64.init)
         }
     )
 }
@@ -268,6 +278,15 @@ actor CodeReplacementSourceService {
         ))
     }
 
+    /// The source file's current size and modification date, without reading its contents.
+    func currentFingerprint(bookmarkData: Data) throws -> CodeReplacementSourceFingerprint {
+        let resolution = try access.resolveBookmark(bookmarkData)
+        return CodeReplacementSourceFingerprint(
+            byteCount: try access.byteCount(resolution.url),
+            modificationDate: try? access.modificationDate(resolution.url)
+        )
+    }
+
     private func cancelled(
         requestID: UUID,
         operation: CodeReplacementSourceOperation,
@@ -381,6 +400,30 @@ final class CodeReplacementSettingsStore {
     func reloadSource() async {
         guard let operation = prepareReloadSource() else { return }
         await completeReloadSource(operation)
+    }
+
+    /// The list is otherwise read only at launch and on an explicit reload, so an edited file
+    /// kept expanding stale codes. Call before planning a replacement: when the file's size or
+    /// modification date no longer matches what was loaded, it is read again first.
+    func reloadSourceIfChanged() async {
+        if sourceOperationTask != nil {
+            await waitForPendingSourceOperation()
+            return
+        }
+        guard !isConfigurationReadOnly, let source = configuration.source,
+              let bookmarkData = defaults.data(forKey: bookmarkKey) else { return }
+        let service = sourceService
+        guard let current = try? await service.currentFingerprint(bookmarkData: bookmarkData) else {
+            // The file can no longer be resolved; a reload reports that to the user.
+            await reloadSource()
+            return
+        }
+        // The store may have moved on (removed or replaced source) while the actor ran.
+        guard configuration.source == source else { return }
+        let loaded = source.fingerprint
+        if loaded?.byteCount != current.byteCount || loaded?.modificationDate != current.modificationDate {
+            await reloadSource()
+        }
     }
 
     /// Lets integration callers synchronize with the nonblocking launch reload without starting

@@ -66,6 +66,17 @@ enum StructuredKeywordParser {
 
             // {synonym} at file-depth D belongs to the owner at file-depth D - 1, which
             // — by the invariant above — lives at stack[D]. Skip orphan top-level synonyms.
+            // `\#MeToo` (also `\{`, `\[`, `\\`) is a keyword whose name starts with a marker.
+            if trimmed.count >= 2, trimmed.hasPrefix("\\"),
+               let marker = trimmed.dropFirst().first, escapableLeadingCharacters.contains(marker) {
+                while stack.count > depth + 1 { stack.removeLast() }
+                let parent = stack.last ?? root
+                let builder = Builder(name: String(trimmed.dropFirst()), kind: .keyword)
+                parent.children.append(builder)
+                stack.append(builder)
+                return
+            }
+
             if let synonym = extractBraced(trimmed) {
                 if depth >= 1, depth < stack.count {
                     stack[depth].synonyms.append(synonym)
@@ -144,6 +155,10 @@ enum StructuredKeywordParser {
         let inner = s.dropFirst().dropLast().trimmingCharacters(in: .whitespacesAndNewlines)
         return inner.isEmpty ? nil : inner
     }
+
+    /// Leading characters that mark a non-keyword line; a keyword starting with one is escaped
+    /// with a backslash by `StructuredKeywordSerializer`.
+    static let escapableLeadingCharacters: Set<Character> = ["#", "{", "[", "\\"]
 
     private static func extractRelatedKeyword(_ s: String) -> String? {
         guard s.hasPrefix("#"), s.count >= 2 else { return nil }

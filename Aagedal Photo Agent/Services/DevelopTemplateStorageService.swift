@@ -11,10 +11,14 @@ nonisolated private let developTemplateStorageLog = Logger(
 nonisolated struct DevelopTemplateStorageService: Sendable {
     private let directoryOverride: URL?
     private let trashAccess: TemplateTrashAccess
+    /// Set on a transaction scope captured while Templates sync is on but iCloud is unreachable:
+    /// the scope reads the local fallback, but must never write to it.
+    private let refusesWrites: Bool
 
-    init(directoryURL: URL? = nil, trashAccess: TemplateTrashAccess = .system) {
+    init(directoryURL: URL? = nil, trashAccess: TemplateTrashAccess = .system, refusesWrites: Bool = false) {
         directoryOverride = directoryURL
         self.trashAccess = trashAccess
+        self.refusesWrites = refusesWrites
     }
 
     func loadAll() throws -> [DevelopTemplate] {
@@ -38,7 +42,7 @@ nonisolated struct DevelopTemplateStorageService: Sendable {
     }
 
     func save(_ template: DevelopTemplate) throws {
-        let (directory, release) = resolvedDirectory()
+        let (directory, release) = try writableDirectory()
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
         var data = try JSONEncoder().encode(template)
@@ -59,20 +63,40 @@ nonisolated struct DevelopTemplateStorageService: Sendable {
     }
 
     func delete(_ template: DevelopTemplate) throws {
-        let (directory, release) = resolvedDirectory()
+        let (directory, release) = try writableDirectory()
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
         try trashAccess.moveToTrash(at: url)
     }
 
     func resolvedForTransaction() -> TemplateStorageScope<Self> {
-        let (directory, release) = resolvedDirectory()
+        let (directory, release, unavailable) = resolvedDirectoryReportingAvailability()
         let canonical = SafePathComponent.resolvingExistingSymlinks(in: directory)
         return TemplateStorageScope(
-            access: Self(directoryURL: canonical, trashAccess: trashAccess),
+            access: Self(directoryURL: canonical, trashAccess: trashAccess,
+                         refusesWrites: refusesWrites || unavailable),
             directoryURL: canonical,
             release: release
         )
+    }
+
+    /// The directory for a write, refusing while Templates sync is on but iCloud is unreachable.
+    private func writableDirectory() throws -> (url: URL, release: @Sendable () -> Void) {
+        let (directory, release, unavailable) = resolvedDirectoryReportingAvailability()
+        guard !refusesWrites, !unavailable else {
+            release()
+            throw ICloudStorageUnavailableError()
+        }
+        return (directory, release)
+    }
+
+    private func resolvedDirectoryReportingAvailability() -> (
+        url: URL, release: @Sendable () -> Void, cloudUnavailable: Bool
+    ) {
+        if let directoryOverride {
+            return (directoryOverride, {}, false)
+        }
+        return AppPaths.developTemplatesDirectoryResolution()
     }
 
     private func resolvedDirectory() -> (url: URL, release: @Sendable () -> Void) {

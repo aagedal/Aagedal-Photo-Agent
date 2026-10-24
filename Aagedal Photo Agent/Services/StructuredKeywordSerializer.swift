@@ -20,7 +20,7 @@ enum StructuredKeywordSerializer {
         let header: String
         switch node.kind {
         case .keyword:
-            header = node.name
+            header = escapedKeywordName(node.name)
         case .container:
             header = "[\(node.name)]"
         }
@@ -36,5 +36,15 @@ enum StructuredKeywordSerializer {
         for child in node.children {
             emit(child, depth: depth + 1, into: &lines)
         }
+    }
+
+    /// A keyword whose name starts with a line marker (`#` related keyword, `{` synonym,
+    /// `[` container) or the escape itself is written with a leading backslash, so a node
+    /// such as `#MeToo` reloads as a keyword instead of becoming its parent's related keyword.
+    static func escapedKeywordName(_ name: String) -> String {
+        guard let first = name.first, StructuredKeywordParser.escapableLeadingCharacters.contains(first) else {
+            return name
+        }
+        return "\\" + name
     }
 }

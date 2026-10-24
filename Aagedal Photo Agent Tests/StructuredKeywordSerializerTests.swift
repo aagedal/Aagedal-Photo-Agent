@@ -80,3 +80,27 @@ struct StructuredKeywordSerializerTests {
         #expect(describe(parsedOnce) == describe(parsedTwice))
     }
 }
+
+@Suite("Structured keyword names that start with a line marker")
+struct StructuredKeywordMarkerNameTests {
+    @MainActor
+    @Test("a #hashtag keyword node survives the app's own export and re-import; #keyword lines stay related keywords")
+    func hashtagKeywordRoundTrip() {
+        let tree = [
+            StructuredKeyword(name: "samfunn", kind: .keyword, relatedKeywords: ["likestilling"], children: [
+                StructuredKeyword(name: "#MeToo", kind: .keyword, synonyms: ["metoo"]),
+                StructuredKeyword(name: "[ikke kategori]", kind: .keyword),
+            ]),
+        ]
+        let text = StructuredKeywordSerializer.serialize(tree)
+        #expect(text == "samfunn\n\t#likestilling\n\t\\#MeToo\n\t\t{metoo}\n\t\\[ikke kategori]\n")
+
+        let parsed = StructuredKeywordParser.parseString(text)
+        let samfunn = parsed[0]
+        #expect(samfunn.relatedKeywords == ["likestilling"])
+        #expect(samfunn.children.map(\.name) == ["#MeToo", "[ikke kategori]"])
+        #expect(samfunn.children.allSatisfy { $0.isKeyword })
+        #expect(samfunn.children[0].synonyms == ["metoo"])
+        #expect(StructuredKeywordSerializer.serialize(parsed) == text)
+    }
+}

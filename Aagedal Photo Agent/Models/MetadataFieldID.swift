@@ -816,7 +816,20 @@ nonisolated enum MetadataFieldMutation: Sendable, Equatable {
     case untouched
     case overwrite(MetadataFieldMutationValue)
     case append([String])
+    /// Appends text to a scalar field's own value, per record, exactly like single-photo template
+    /// append (`MetadataTemplateText.appending`). Batch template application records this so a
+    /// mixed selection keeps each photo's text instead of receiving the common-value preview.
+    case appendText(String)
     case clear
+}
+
+/// Shared text-append rule for templates: one space between the existing and appended text.
+nonisolated enum MetadataTemplateText {
+    static func appending(_ existing: String?, _ new: String) -> String {
+        guard let existing, !existing.isEmpty else { return new }
+        guard !new.isEmpty else { return existing }
+        return existing + " " + new
+    }
 }
 
 nonisolated enum MetadataFieldMutationError: Error, Sendable, Equatable {
@@ -916,6 +929,20 @@ extension IPTCMetadata {
             var candidate = self
             field.setRepeatableValues(
                 field.repeatableValues(in: self) + appended,
+                in: &candidate
+            )
+            self = candidate
+
+        case .appendText(let text):
+            guard !field.isRepeatable else {
+                throw MetadataFieldMutationError.repeatableValueRequired(field)
+            }
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw MetadataFieldMutationError.emptyAppendRequiresUntouched(field)
+            }
+            var candidate = self
+            field.setTextValue(
+                MetadataTemplateText.appending(field.textValue(in: self), text),
                 in: &candidate
             )
             self = candidate

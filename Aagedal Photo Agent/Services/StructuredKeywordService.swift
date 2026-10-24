@@ -48,6 +48,9 @@ final class StructuredKeywordService {
     @ObservationIgnored private let textImportService: TextFileImportService
     @ObservationIgnored private let storageURL: (KeywordListKey) -> URL
     @ObservationIgnored private let resolveStorageURL: (KeywordListKey) async throws -> URL
+    /// False while list sync is on but iCloud is unreachable and the resolved URL is only the
+    /// unsettled local fallback; writes there would split the list from its iCloud copy.
+    @ObservationIgnored private let isSettledRoute: (URL) -> Bool
     @ObservationIgnored private let persistenceService: KeywordListEditorPersistenceService
     @ObservationIgnored private var importRequestID: UUID?
     @ObservationIgnored private let sourceID = UUID()
@@ -76,6 +79,11 @@ final class StructuredKeywordService {
         var nodeNames: [String] = []
         var searchableNames: [String] = []
         var keywordNames: [String] = []
+        /// Searchable names where a name shared by several paths ("Brann" the club and "brann"
+        /// the fire) is listed once per path as "name — parent path".
+        var disambiguatedSearchableNames: [String] = []
+        /// Normalized disambiguation label → entry, so accepting a label expands that path.
+        var entryByLabel: [String: Int] = [:]
     }
 
     /// Surfaced to Settings if the loaded file failed to parse. nil = no error.
@@ -84,6 +92,9 @@ final class StructuredKeywordService {
     private(set) var hasReadFailure = false
 
     private var storedRoots: [StructuredKeyword] = []
+    /// The managed file's text as last loaded or committed ("" when the file is missing; nil
+    /// after a failed read). Editors pass it back to `saveTree` as their save baseline.
+    private(set) var loadedText: String?
     var roots: [StructuredKeyword] { library?.roots(including: storedRoots) ?? storedRoots }
     private(set) var sourcePath: String?
 
@@ -96,7 +107,8 @@ final class StructuredKeywordService {
         textImportService: TextFileImportService = .shared,
         persistenceService: KeywordListEditorPersistenceService = .shared,
         storageURL: ((KeywordListKey) -> URL)? = nil,
-        resolveStorageURL: ((KeywordListKey) async throws -> URL)? = nil
+        resolveStorageURL: ((KeywordListKey) async throws -> URL)? = nil,
+        isSettledRoute: ((URL) -> Bool)? = nil
     ) {
         self.library = library
         self.key = key
@@ -110,6 +122,14 @@ final class StructuredKeywordService {
             self.resolveStorageURL = { storageURL($0) }
         } else {
             self.resolveStorageURL = { try await KeywordListsStore.shared.resolveURL(for: $0) }
+        }
+        if let isSettledRoute {
+            self.isSettledRoute = isSettledRoute
+        } else if storageURL != nil || resolveStorageURL != nil {
+            // Injected storage is a fixed destination, never an iCloud fallback.
+            self.isSettledRoute = { _ in true }
+        } else {
+            self.isSettledRoute = { KeywordListsStore.shared.isSettledRoute($0) }
         }
         loadFromStore()
         changeObserver = NotificationCenter.default.addObserver(
@@ -151,6 +171,13 @@ final class StructuredKeywordService {
         return roots.count
     }
 
+    /// List sync is on but iCloud is unreachable: the shown tree is the local fallback and saves
+    /// are refused. Uses the last resolved route (no blocking lookup).
+    var isCloudStorageUnavailable: Bool {
+        _ = version
+        return KeywordListsStore.shared.iCloudEnabled && !isSettledRoute(storageURL(key))
+    }
+
     /// Total number of keyword (non-container) nodes in the tree.
     var keywordCount: Int {
         lookupIndex().entries.count
@@ -186,6 +213,7 @@ final class StructuredKeywordService {
         // destination only after that work so a routing change cannot strand the import.
         let destinationURL = try await resolveStorageURL(key)
         guard importRequestID == requestID, !Task.isCancelled else { return }
+        guard isSettledRoute(destinationURL) else { throw ICloudStorageUnavailableError() }
         let saveResult = try await persistenceService.saveText(
             text,
             to: destinationURL,
@@ -208,8 +236,10 @@ final class StructuredKeywordService {
 
     /// Saves an edited tree back to the managed store. Re-serialises through
     /// `StructuredKeywordSerializer` so the on-disk format remains PhotoMechanic-compatible.
+    /// `expectedText` (from `loadedText` when the editor opened) refuses the save with
+    /// `KeywordListBaselineConflictError` if the file changed since; `nil` overwrites.
     @discardableResult
-    func saveTree(_ tree: [StructuredKeyword]) async throws -> Bool {
+    func saveTree(_ tree: [StructuredKeyword], expectedText: String? = nil) async throws -> Bool {
         cancelImport()
         invalidateLoad()
         let requestID = UUID()
@@ -217,8 +247,10 @@ final class StructuredKeywordService {
         defer { if importRequestID == requestID { importRequestID = nil } }
         let destination = try await resolveStorageURL(key)
         guard importRequestID == requestID, !Task.isCancelled else { return false }
+        guard isSettledRoute(destination) else { throw ICloudStorageUnavailableError() }
         let result = try await persistenceService.saveText(
-            StructuredKeywordSerializer.serialize(tree), to: destination, requestID: requestID
+            StructuredKeywordSerializer.serialize(tree), to: destination,
+            expectedText: expectedText, requestID: requestID
         )
         guard case .committed(let commit) = result else { return false }
         publish(commit)
@@ -309,7 +341,7 @@ final class StructuredKeywordService {
         let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return nil }
         let index = lookupIndex()
-        guard let entry = index.firstEntryByName[needle] else { return nil }
+        guard let entry = index.entryByLabel[needle] ?? index.firstEntryByName[needle] else { return nil }
         return activation(index.entries[entry].path)
     }
 
@@ -353,6 +385,17 @@ final class StructuredKeywordService {
         lookupIndex().searchableNames
     }
 
+    /// Typeahead candidates for the keyword field. Like `allSearchableNames()`, except a name
+    /// that occurs under several paths is offered once per path, labelled with its parent path
+    /// ("tennis — sport"), and `activation(forName:)` expands exactly the chosen path. Only for
+    /// callers that resolve the accepted suggestion through `activation(forName:)`.
+    func allDisambiguatedSearchableNames() -> [String] {
+        lookupIndex().disambiguatedSearchableNames
+    }
+
+    /// Separator between a keyword and its parent path in a disambiguated suggestion.
+    nonisolated static let disambiguationSeparator = " — "
+
     /// Flattens the tree into a list of (node, ancestors) pairs whose nodes are
     /// keyword-kind only. Used by the bypass-toggle flow to enumerate every
     /// keyword the user could pick via the structured tree.
@@ -371,7 +414,13 @@ final class StructuredKeywordService {
         var index = LookupIndex(snapshotVersion: currentSnapshot, libraryVersion: currentLibrary)
         var seenNodes = Set<String>()
         var seenSearchable = Set<String>()
+        // Library roots are per-list group containers; the IPTC Media Topics group is a shared
+        // reference vocabulary, so a user's own entry for the same name always wins.
+        let rootsAreGroups = library != nil
+        var isIPTCEntry: [Bool] = []
+        var entriesByName: [String: [Int]] = [:]
         for root in roots {
+            let isIPTC = rootsAreGroups && root.id == StructuredKeywordLibrary.iptcGroupID
             walk(root, ancestors: []) { node, ancestors in
                 guard node.isKeyword else { return true }
                 let names = [node.name] + node.synonyms
@@ -379,8 +428,16 @@ final class StructuredKeywordService {
                 let position = index.entries.count
                 index.entries.append(.init(path: .init(ancestors: ancestors, node: node),
                                            normalizedNames: normalized))
-                for name in normalized where index.firstEntryByName[name] == nil {
-                    index.firstEntryByName[name] = position
+                isIPTCEntry.append(isIPTC)
+                for name in normalized {
+                    if let existing = index.firstEntryByName[name] {
+                        if isIPTCEntry[existing], !isIPTC { index.firstEntryByName[name] = position }
+                    } else {
+                        index.firstEntryByName[name] = position
+                    }
+                    if entriesByName[name]?.last != position {
+                        entriesByName[name, default: []].append(position)
+                    }
                 }
                 if !node.name.isEmpty, seenNodes.insert(node.name.lowercased()).inserted {
                     index.nodeNames.append(node.name)
@@ -395,8 +452,66 @@ final class StructuredKeywordService {
                 return true
             }
         }
+        buildDisambiguation(into: &index, entriesByName: entriesByName,
+                            isIPTCEntry: isIPTCEntry, rootsAreGroups: rootsAreGroups)
         cachedLookup = index
         return index
+    }
+
+    private func buildDisambiguation(
+        into index: inout LookupIndex,
+        entriesByName: [String: [Int]],
+        isIPTCEntry: [Bool],
+        rootsAreGroups: Bool
+    ) {
+        // Labels per ambiguous name, computed once per name.
+        var labelsByName: [String: [Int: String]] = [:]
+        func labels(for key: String, positions: [Int]) -> [Int: String] {
+            if let cached = labelsByName[key] { return cached }
+            func context(_ position: Int, includeGroup: Bool) -> String {
+                let path = index.entries[position].path
+                let ancestors = rootsAreGroups ? Array(path.ancestors.dropFirst()) : path.ancestors
+                var parts = ancestors.map(\.name)
+                // A synonym match names its node too, since the node is what gets applied.
+                if path.node.name.lowercased() != key { parts.append(path.node.name) }
+                let group = rootsAreGroups ? path.ancestors.first?.name : nil
+                if includeGroup || parts.isEmpty, let group { parts.insert(group, at: 0) }
+                return parts.joined(separator: " > ")
+            }
+            var contexts = Dictionary(uniqueKeysWithValues: positions.map { ($0, context($0, includeGroup: false)) })
+            if Set(contexts.values).count < contexts.count {
+                contexts = Dictionary(uniqueKeysWithValues: positions.map { ($0, context($0, includeGroup: true)) })
+            }
+            labelsByName[key] = contexts
+            return contexts
+        }
+
+        // User trees first, then IPTC, each in tree order.
+        let order = index.entries.indices.filter { !isIPTCEntry[$0] } + index.entries.indices.filter { isIPTCEntry[$0] }
+        var seen = Set<String>()
+        for position in order {
+            let path = index.entries[position].path
+            for name in [path.node.name] + path.node.synonyms {
+                let display = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !display.isEmpty else { continue }
+                let key = name.lowercased()
+                let positions = entriesByName[key] ?? [position]
+                guard positions.count > 1, let context = labels(for: key, positions: positions)[position],
+                      !context.isEmpty else {
+                    if seen.insert(display.lowercased()).inserted {
+                        index.disambiguatedSearchableNames.append(display)
+                    }
+                    continue
+                }
+                let label = display + Self.disambiguationSeparator + context
+                let normalizedLabel = label.lowercased()
+                guard index.entryByLabel[normalizedLabel] == nil else { continue }
+                index.entryByLabel[normalizedLabel] = position
+                if seen.insert(normalizedLabel).inserted {
+                    index.disambiguatedSearchableNames.append(label)
+                }
+            }
+        }
     }
 
     private func bumpVersion() {
@@ -414,6 +529,7 @@ final class StructuredKeywordService {
         invalidateLoad()
         storedRoots = []
         sourcePath = nil
+        loadedText = ""
         loadError = nil
         hasReadFailure = false
         bumpVersion()
@@ -446,6 +562,7 @@ final class StructuredKeywordService {
                 self.clearSnapshot()
                 self.loadError = "Could not resolve structured keywords storage."
                 self.hasReadFailure = true
+                self.loadedText = nil
                 return
             }
             guard !Task.isCancelled, self.loadRequestID == requestID else { return }
@@ -470,6 +587,7 @@ final class StructuredKeywordService {
                 self.clearSnapshot()
                 self.loadError = "Could not read structured keywords file."
                 self.hasReadFailure = true
+                self.loadedText = nil
             }
         }
     }
@@ -478,6 +596,7 @@ final class StructuredKeywordService {
         let parsed = StructuredKeywordParser.parseString(text)
         hasReadFailure = false
         storedRoots = parsed
+        loadedText = text
         sourcePath = storageURL(key).path
         loadError = parsed.isEmpty ? "File contained no keywords." : nil
         bumpVersion()

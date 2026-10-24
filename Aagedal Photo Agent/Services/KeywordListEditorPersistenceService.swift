@@ -150,6 +150,15 @@ nonisolated enum QuickListDeletionResult: Equatable, Sendable {
     case cancelledBeforeCommit(requestID: UUID, destinationURL: URL)
 }
 
+/// An editor saved against a baseline the list file no longer matches: it changed elsewhere
+/// (another window, MCP, or another Mac via iCloud) after the editor loaded it. Nothing was
+/// written; the editor offers Reload, or Overwrite to save its version deliberately.
+nonisolated struct KeywordListBaselineConflictError: LocalizedError, Equatable, Sendable {
+    var errorDescription: String? {
+        "This list was changed elsewhere after you opened it (for example on another Mac)."
+    }
+}
+
 nonisolated struct KeywordListEditorFileAccess: Sendable {
     let itemExists: @Sendable (URL) -> Bool
     let readData: @Sendable (URL) throws -> Data
@@ -374,9 +383,13 @@ final class KeywordListEditorPersistenceService {
                        text: try KeywordListsStore.decodeManagedText(data))
     }
 
+    /// `expectedEntries` is the list as the editor loaded (or last saved) it; when given, the
+    /// save is refused with `KeywordListBaselineConflictError` if the file no longer matches.
+    /// A missing file matches an empty baseline. `nil` saves unconditionally (Overwrite).
     func saveEntries(
         _ entries: [String],
         to destinationURL: URL,
+        expectedEntries: [String]? = nil,
         requestID: UUID
     ) throws -> KeywordListEditorSaveResult {
         let normalized = Self.normalizedEntries(entries)
@@ -395,6 +408,13 @@ final class KeywordListEditorPersistenceService {
         let reservation = try MCPKeywordListReservation.acquire(for: [destinationURL])
         defer { reservation.release() }
         try reservation.validate(for: destinationURL)
+        if let expectedEntries {
+            let current = try currentText(at: destinationURL)
+                .map { ApprovedListParser.parseString($0, csv: false) } ?? []
+            guard Self.normalizedEntries(current) == Self.normalizedEntries(expectedEntries) else {
+                throw KeywordListBaselineConflictError()
+            }
+        }
         try access.writeData(data, destinationURL)
         return .committed(KeywordListEditorSaveCommit(
             requestID: requestID,
@@ -408,9 +428,12 @@ final class KeywordListEditorPersistenceService {
     /// Persists structured-list source text without flattening its tab-indented hierarchy.
     /// The immutable commit result distinguishes cancellation before the coordinated write from
     /// cancellation observed after the destination is already durable.
+    /// `expectedText` is the file text the editor loaded; when given, the save is refused with
+    /// `KeywordListBaselineConflictError` if the file changed since. A missing file matches "".
     func saveText(
         _ text: String,
         to destinationURL: URL,
+        expectedText: String? = nil,
         requestID: UUID
     ) throws -> KeywordListTextSaveResult {
         let data = Data(text.utf8)
@@ -425,6 +448,9 @@ final class KeywordListEditorPersistenceService {
         let reservation = try MCPKeywordListReservation.acquire(for: [destinationURL])
         defer { reservation.release() }
         try reservation.validate(for: destinationURL)
+        if let expectedText, (try currentText(at: destinationURL) ?? "") != expectedText {
+            throw KeywordListBaselineConflictError()
+        }
         try access.writeData(data, destinationURL)
         return .committed(KeywordListTextSaveCommit(
             requestID: requestID,
@@ -583,6 +609,11 @@ final class KeywordListEditorPersistenceService {
             destinationURL: destinationURL,
             cancellationRequestedAfterCommit: Task.isCancelled
         )
+    }
+
+    private func currentText(at url: URL) throws -> String? {
+        guard access.itemExists(url) else { return nil }
+        return try KeywordListsStore.decodeManagedText(access.readData(url))
     }
 
     private static func normalizedEntries(_ entries: [String]) -> [String] {

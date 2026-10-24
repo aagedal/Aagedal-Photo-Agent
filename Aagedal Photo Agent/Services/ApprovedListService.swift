@@ -456,18 +456,22 @@ final class ApprovedListService {
         let p = normalize(prefix)
         guard !p.isEmpty else { return [] }
 
+        // Prefix matches always rank first, so only they may end the scan early. Substring hits
+        // are capped on their own: counting them toward the exit let a large vocabulary with many
+        // early substring hits stop before reaching its prefix matches.
+        let candidateCap = limit * 4
         var prefixMatches: [String] = []
         var substringMatches: [String] = []
         for entry in entries {
             let n = normalize(entry)
             if n.hasPrefix(p) {
                 prefixMatches.append(entry)
-            } else if n.contains(p) {
+                if prefixMatches.count >= candidateCap {
+                    // Soft early-exit for very large lists once enough prefix candidates are collected.
+                    break
+                }
+            } else if substringMatches.count < candidateCap, n.contains(p) {
                 substringMatches.append(entry)
-            }
-            if prefixMatches.count + substringMatches.count >= limit * 4 {
-                // Soft early-exit for very large lists once we've collected enough candidates to sort.
-                break
             }
         }
 

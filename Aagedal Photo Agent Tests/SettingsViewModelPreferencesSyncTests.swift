@@ -88,3 +88,66 @@ struct SettingsViewModelPreferencesSyncTests {
         #expect(store.stringArray(forKey: key) == [DevelopSlider.clarity.rawValue, DevelopSlider.contrast.rawValue])
     }
 }
+
+/// In-memory stand-in for `NSUbiquitousKeyValueStore`; tests never touch real iCloud.
+@MainActor
+private final class InMemoryCloudKeyValueStore: PreferencesCloudKeyValueStore {
+    var values: [String: Any] = [:]
+    private(set) var removedKeys: [String] = []
+    func object(forKey key: String) -> Any? { values[key] }
+    func set(_ value: Any?, forKey key: String) { values[key] = value }
+    func removeObject(forKey key: String) {
+        removedKeys.append(key)
+        values.removeValue(forKey: key)
+    }
+    @discardableResult func synchronize() -> Bool { true }
+}
+
+@MainActor
+@Suite("Preferences sync enabling", .serialized)
+struct PreferencesSyncEnablingTests {
+    private func isolatedDefaults() throws -> (UserDefaults, String) {
+        let suiteName = "PreferencesSyncEnablingTests.\(UUID().uuidString)"
+        return (try #require(UserDefaults(suiteName: suiteName)), suiteName)
+    }
+
+    @Test("enabling on a second Mac adopts the cloud settings and only seeds keys the cloud lacks")
+    func enablingAdoptsExistingCloudValues() throws {
+        let (defaults, suiteName) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let cloud = InMemoryCloudKeyValueStore()
+        cloud.values[UserDefaultsKeys.exportQualitySDR] = 0.5
+        cloud.values[UserDefaultsKeys.thumbnailSortOrder] = "name"
+        defaults.set(0.9, forKey: UserDefaultsKeys.exportQualitySDR)
+        defaults.set("jpeg", forKey: UserDefaultsKeys.exportFormatSDR)
+
+        let service = PreferencesSyncService(kvs: cloud, defaults: defaults)
+        service.setEnabled(true)
+        defer { service.setEnabled(false) }
+
+        // The first Mac's settings win on this Mac…
+        #expect(defaults.double(forKey: UserDefaultsKeys.exportQualitySDR) == 0.5)
+        #expect(defaults.string(forKey: UserDefaultsKeys.thumbnailSortOrder) == "name")
+        // …the cloud keeps them, gains only what it lacked, and loses nothing.
+        #expect(cloud.values[UserDefaultsKeys.exportQualitySDR] as? Double == 0.5)
+        #expect(cloud.values[UserDefaultsKeys.exportFormatSDR] as? String == "jpeg")
+        #expect(cloud.values[UserDefaultsKeys.thumbnailSortOrder] as? String == "name")
+        #expect(cloud.removedKeys.isEmpty)
+    }
+
+    @Test("enabling on the first Mac seeds the empty cloud with local values")
+    func enablingSeedsEmptyCloud() throws {
+        let (defaults, suiteName) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let cloud = InMemoryCloudKeyValueStore()
+        defaults.set(0.8, forKey: UserDefaultsKeys.exportQualitySDR)
+
+        let service = PreferencesSyncService(kvs: cloud, defaults: defaults)
+        service.setEnabled(true)
+        defer { service.setEnabled(false) }
+
+        #expect(cloud.values[UserDefaultsKeys.exportQualitySDR] as? Double == 0.8)
+        #expect(cloud.removedKeys.isEmpty)
+        #expect(defaults.bool(forKey: UserDefaultsKeys.preferencesICloudEnabled))
+    }
+}

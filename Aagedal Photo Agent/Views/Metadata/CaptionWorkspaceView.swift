@@ -1182,6 +1182,9 @@ struct CaptionWorkspaceView: View {
             guard !flushCoordinator.isTransitioning, let target = session.currentURL,
                   await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
+                // Pick up edits to the list file since it was loaded.
+                await codeReplacementStore.reloadSourceIfChanged()
+                guard !flushCoordinator.isTransitioning, session.currentURL == target else { return }
                 guard codeReplacementStore.sourceLoadError == nil else {
                     errorMessage = codeReplacementStore.sourceLoadError
                     return

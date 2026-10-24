@@ -374,6 +374,9 @@ final class MetadataViewModel {
     var batchPartialPersonShown: [String] = []
     var batchListSelectionSummary = BatchMetadataListSelectionSummary.empty
     private(set) var batchFieldMutations: [MetadataFieldID: MetadataFieldMutation] = [:]
+    /// The editor value each scalar text intent in `batchFieldMutations` was recorded against.
+    /// Typing into the field afterwards replaces the template's intent with the typed value.
+    @ObservationIgnored private var batchTextIntentEditorValues: [MetadataFieldID: String?] = [:]
     private(set) var batchLocationsShownMutation: BatchLocationsShownMutation = .untouched
     private(set) var batchImageSupplierMutation: EditorialImageSupplierMutation = .untouched
     var isLoadingBatchMetadata = false
@@ -1435,6 +1438,19 @@ final class MetadataViewModel {
         return result
     }
 
+    /// Applies the explicit scalar text intents a batch template recorded, per photo.
+    nonisolated static func applyingBatchTextMutations(
+        _ mutations: [MetadataFieldID: MetadataFieldMutation],
+        to metadata: IPTCMetadata
+    ) throws -> IPTCMetadata {
+        var result = metadata
+        for field in MetadataFieldID.allCases where !field.isRepeatable {
+            guard let mutation = mutations[field] else { continue }
+            try result.apply(mutation, to: field)
+        }
+        return result
+    }
+
     private func copyBatchLists(from source: IPTCMetadata, into target: inout IPTCMetadata) {
         target.keywords = source.keywords
         target.personShown = source.personShown
@@ -1481,6 +1497,14 @@ final class MetadataViewModel {
 
     /// Returns the placeholder text for a batch field that has differing values
     func batchPlaceholder(for field: String) -> String {
+        switch batchTextIntent(for: field) {
+        case .appendText(let text)?:
+            return "Will append “\(text)” to each of \(selectedCount) photos"
+        case .clear?:
+            return "Will be cleared on all \(selectedCount) photos"
+        default:
+            break
+        }
         if batchDifferingFields.contains(field) {
             return "Multiple values"
         }
@@ -2156,6 +2180,7 @@ final class MetadataViewModel {
         catch { saveError = error.localizedDescription; return }
         let urls = selectedURLs
         guard !urls.isEmpty else { return }
+        pruneStaleBatchTextIntents()
         let selectionSnapshot = Set(urls)
         let writeFolderURL = currentFolderURL
         let edited = editingMetadata
@@ -2379,6 +2404,29 @@ final class MetadataViewModel {
                     }
                 }
 
+                if isBatch, explicitBatchMutations.contains(where: { entry in
+                    if case .appendText = entry.value { return true }
+                    return false
+                }) {
+                    // Template text appends are per photo: each file gets its own value plus the
+                    // appended text, never the editor's common-value preview.
+                    for url in writableEmbedURLs() {
+                        let base: IPTCMetadata
+                        if let resolved = resolvedBatchSnapshot[url] {
+                            base = resolved
+                        } else {
+                            base = try await self.readService.readFullMetadata(url: url)
+                        }
+                        let photoFields = Self.perPhotoBatchTextFields(explicitBatchMutations, base: base)
+                        guard !photoFields.isEmpty else { continue }
+                        do {
+                            try await writeEngine.writeFields(photoFields, to: [url])
+                        } catch let batch as EmbeddedMetadataBatchRefusal {
+                            lossRefusals += batch.refusals
+                        }
+                    }
+                }
+
                 if isBatch, explicitLocationsShownMutation != .untouched {
                     for url in writableEmbedURLs() {
                         let base: IPTCMetadata
@@ -2587,10 +2635,25 @@ final class MetadataViewModel {
         _ mutations: [MetadataFieldID: MetadataFieldMutation],
         into fields: inout [MetadataFieldKey: String]
     ) {
+        for field in MetadataFieldID.allCases where !field.isRepeatable {
+            guard let mutation = mutations[field] else { continue }
+            switch mutation {
+            case .untouched, .append, .appendText:
+                // A per-photo append is written file by file (see `perPhotoBatchTextFields`);
+                // never also write the common-value preview to every file.
+                fields.removeValue(forKey: field.metadataWriteKey)
+            case .clear:
+                fields[field.metadataWriteKey] = ""
+            case .overwrite:
+                guard let updated = try? applyingBatchTextMutations([field: mutation], to: IPTCMetadata()),
+                      let value = field.textValue(in: updated) else { continue }
+                fields[field.metadataWriteKey] = value
+            }
+        }
         for field in MetadataFieldID.allCases where field.isRepeatable {
             guard let mutation = mutations[field] else { continue }
             switch mutation {
-            case .untouched:
+            case .untouched, .appendText:
                 fields.removeValue(forKey: field.metadataWriteKey)
             case .append:
                 // Appends use the typed add/remove writer path below; never also overwrite the
@@ -2611,6 +2674,24 @@ final class MetadataViewModel {
                 }
             }
         }
+    }
+
+    /// The embedded-write fields for one photo's per-photo text appends, computed from that
+    /// photo's own record. Empty when the batch carries no text append intent.
+    nonisolated static func perPhotoBatchTextFields(
+        _ mutations: [MetadataFieldID: MetadataFieldMutation],
+        base: IPTCMetadata
+    ) -> [MetadataFieldKey: String] {
+        let appends = mutations.filter { entry in
+            guard case .appendText = entry.value else { return false }
+            return !entry.key.isRepeatable
+        }
+        guard !appends.isEmpty, let updated = try? applyingBatchTextMutations(appends, to: base) else { return [:] }
+        var fields: [MetadataFieldKey: String] = [:]
+        for field in appends.keys {
+            fields[field.metadataWriteKey] = field.textValue(in: updated) ?? ""
+        }
+        return fields
     }
 
     /// Compute add/remove diffs for list fields in add mode, relative to previousEditingMetadata.
@@ -3125,6 +3206,7 @@ final class MetadataViewModel {
     }
 
     func applyTemplateFields(_ template: [String: String], append: Bool = false) {
+        let editorBeforeTemplate = editingMetadata
         for (key, value) in template {
             switch key {
             case "title":
@@ -3247,7 +3329,7 @@ final class MetadataViewModel {
             case "imageSupplierImageID":
                 editingMetadata.imageSupplierImageID = value
             case "imageSupplier":
-                guard let values = EditorialImageSupplier.values(fromCanonicalJSONString: value) else {
+                guard let values = EditorialImageSupplier.values(fromTemplateValue: value) else {
                     continue
                 }
                 editingMetadata.imageSuppliers = append
@@ -3297,21 +3379,133 @@ final class MetadataViewModel {
                         // A prior removal/clear is represented as replacement intent. Appending
                         // a template must extend that replacement, not resurrect original values.
                         batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
-                    case .untouched, .append:
+                    case .untouched, .append, .appendText:
                         if !values.isEmpty { batchFieldMutations[field] = .append(values) }
                     }
                 } else {
                     batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
                 }
             }
+            recordBatchTextTemplateIntents(template, append: append, before: editorBeforeTemplate)
         }
         hasChanges = true
     }
 
     private func appendString(_ existing: String?, _ new: String) -> String {
-        guard let existing, !existing.isEmpty else { return new }
-        guard !new.isEmpty else { return existing }
-        return existing + " " + new
+        MetadataTemplateText.appending(existing, new)
+    }
+
+    /// How a template text field acts on a multi-selection. Appendable text concatenates per
+    /// photo in append mode; atomic values are always replaced (or cleared when empty).
+    private enum BatchTemplateTextKind { case appendable, atomic }
+
+    private static let batchTemplateTextFields: [(key: String, field: MetadataFieldID, kind: BatchTemplateTextKind)] = [
+        ("title", .headline, .appendable), ("description", .description, .appendable),
+        ("extendedDescription", .extendedDescription, .appendable),
+        ("creatorJobTitle", .creatorJobTitle, .appendable), ("descriptionWriter", .descriptionWriter, .appendable),
+        ("credit", .credit, .appendable), ("copyright", .copyright, .appendable),
+        ("rightsUsageTerms", .rightsUsageTerms, .appendable), ("webStatementOfRights", .webStatementOfRights, .appendable),
+        ("jobId", .jobId, .appendable), ("city", .city, .appendable), ("sublocation", .sublocation, .appendable),
+        ("provinceState", .provinceState, .appendable), ("country", .country, .appendable),
+        ("event", .event, .appendable), ("instructions", .instructions, .appendable), ("source", .source, .appendable),
+        ("digitalImageGUID", .digitalImageGUID, .atomic), ("imageSupplierImageID", .imageSupplierImageID, .atomic),
+        ("countryCode", .countryCode, .atomic),
+    ]
+
+    /// Records explicit per-photo text intent for a template applied to a multi-selection.
+    /// Without it the batch save only sees the common-value preview: an append on a mixed field
+    /// would write the bare template text over every photo's own value, and an empty ("clear")
+    /// template field would leave mixed values untouched.
+    private func recordBatchTextTemplateIntents(
+        _ template: [String: String],
+        append: Bool,
+        before: IPTCMetadata
+    ) {
+        for (key, field, kind) in Self.batchTemplateTextFields {
+            guard let value = template[key],
+                  let path = MetadataEditorFieldPaths.scalarText(for: key) else { continue }
+            let beforeValue = before[keyPath: path]
+            let after = editingMetadata[keyPath: path]
+            // An intent recorded by an earlier template is current only while the editor still
+            // shows the value it was recorded against; a typed value supersedes it.
+            var prior = batchFieldMutations[field]
+            if prior != nil, (batchTextIntentEditorValues[field] ?? nil) != beforeValue {
+                prior = nil
+            }
+            let afterIsEmpty = (after ?? "").isEmpty
+            if append, kind == .appendable {
+                guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    continue // Appending nothing leaves the field and its intent as they were.
+                }
+                switch prior {
+                case .appendText(let earlier)?:
+                    setBatchTextIntent(.appendText(MetadataTemplateText.appending(earlier, value)), for: field,
+                                       restoring: beforeValue, path: path)
+                case .overwrite?, .clear?:
+                    setBatchTextIntent(.overwrite(.scalar(after ?? value)), for: field, editorValue: after)
+                default:
+                    let commonValue = previousEditingMetadata?[keyPath: path]
+                    if (beforeValue ?? "") != (commonValue ?? "") {
+                        // The user typed a value for every photo; the template extends it.
+                        setBatchTextIntent(.overwrite(.scalar(after ?? value)), for: field, editorValue: after)
+                    } else if batchDifferingFields.contains(key) {
+                        // Mixed values: there is no common text to preview. Keep the field
+                        // showing its mixed state; each photo gets its own text plus the template.
+                        setBatchTextIntent(.appendText(value), for: field, restoring: beforeValue, path: path)
+                    } else {
+                        setBatchTextIntent(.appendText(value), for: field, editorValue: after)
+                    }
+                }
+            } else if afterIsEmpty {
+                setBatchTextIntent(.clear, for: field, editorValue: after)
+            } else if let after {
+                setBatchTextIntent(.overwrite(.scalar(after)), for: field, editorValue: after)
+            }
+        }
+    }
+
+    private func setBatchTextIntent(
+        _ mutation: MetadataFieldMutation,
+        for field: MetadataFieldID,
+        editorValue: String?
+    ) {
+        batchFieldMutations[field] = mutation
+        batchTextIntentEditorValues[field] = .some(editorValue)
+    }
+
+    /// Records an append on a mixed field and puts the editor back to its mixed (empty) state.
+    private func setBatchTextIntent(
+        _ mutation: MetadataFieldMutation,
+        for field: MetadataFieldID,
+        restoring editorValue: String?,
+        path: WritableKeyPath<IPTCMetadata, String?>
+    ) {
+        editingMetadata[keyPath: path] = editorValue
+        setBatchTextIntent(mutation, for: field, editorValue: editorValue)
+    }
+
+    /// Drops scalar text intents whose field the user has since edited, so the typed value is
+    /// saved with ordinary batch semantics instead of the superseded template intent.
+    private func pruneStaleBatchTextIntents() {
+        for (field, mutation) in batchFieldMutations where !field.isRepeatable {
+            guard mutation != .untouched else { continue }
+            let path = MetadataEditorFieldPaths.scalarText(for: field.rawValue)
+            let current = path.map { editingMetadata[keyPath: $0] } ?? nil
+            if (batchTextIntentEditorValues[field] ?? nil) != current {
+                batchFieldMutations.removeValue(forKey: field)
+                batchTextIntentEditorValues.removeValue(forKey: field)
+            }
+        }
+    }
+
+    /// The pending template text intent for an editor field key, if any (batch editor only).
+    func batchTextIntent(for key: String) -> MetadataFieldMutation? {
+        guard isBatchEdit, let field = MetadataFieldID(rawValue: key), !field.isRepeatable,
+              let mutation = batchFieldMutations[field] else { return nil }
+        let path = MetadataEditorFieldPaths.scalarText(for: key)
+        let current = path.map { editingMetadata[keyPath: $0] } ?? nil
+        guard (batchTextIntentEditorValues[field] ?? nil) == current else { return nil }
+        return mutation
     }
 
     /// Applies template fields to the editing buffer and then immediately resolves
@@ -3342,24 +3536,19 @@ final class MetadataViewModel {
 
     /// Checks whether any text field, keyword, or person in editingMetadata contains variable placeholders.
     var hasVariables: Bool {
-        let fields: [String?] = [
-            editingMetadata.title,
-            editingMetadata.description,
-            editingMetadata.extendedDescription,
-            editingMetadata.creatorJobTitle,
-            editingMetadata.descriptionWriter,
-            editingMetadata.credit,
-            editingMetadata.copyright,
-            editingMetadata.rightsUsageTerms,
-            editingMetadata.webStatementOfRights,
-            editingMetadata.digitalImageGUID,
-            editingMetadata.imageSupplierImageID,
-            editingMetadata.jobId,
-            editingMetadata.dateCreated,
-            editingMetadata.city,
-            editingMetadata.country,
-            editingMetadata.event,
-        ]
+        if Self.containsVariables(editingMetadata) { return true }
+        // A batch template append on a mixed field keeps its text in the explicit intent, not
+        // in the editor buffer.
+        return batchFieldMutations.values.contains { mutation in
+            guard case .appendText(let text) = mutation else { return false }
+            return text.contains(Self.variablePattern)
+        }
+    }
+
+    /// Whether any field variable resolution expands contains a placeholder. The scalar field
+    /// list is the resolver's own (`VariableMetadataResolver.scalarVariableFields`).
+    static func containsVariables(_ editingMetadata: IPTCMetadata) -> Bool {
+        let fields = VariableMetadataResolver.scalarVariableFields.map { editingMetadata[keyPath: $0] }
         let localizedTitleValues = editingMetadata.localizedTitles?.map(\.value) ?? []
         if fields.contains(where: { field in
             guard let field else { return false }
@@ -3798,6 +3987,7 @@ final class MetadataViewModel {
             case .untouched: return ["operation": "untouched"]
             case .clear: return ["operation": "clear"]
             case .append(let values): return ["operation": "append", "values": values]
+            case .appendText(let value): return ["operation": "appendText", "value": value]
             case .overwrite(.scalar(let value)): return ["operation": "overwriteScalar", "value": value]
             case .overwrite(.repeatable(let values)): return ["operation": "overwriteRepeatable", "values": values]
             }
@@ -4068,6 +4258,7 @@ final class MetadataViewModel {
         let selectedSource = metadataReferenceSource
         let hasEditorInput = hasChanges && !Set(selected).isDisjoint(with: Set(urls))
         let hasUnsavedEditorInput = hasEditorInput && hasUnpersistedEditorChanges
+        if selectedCount > 1 { pruneStaleBatchTextIntents() }
         let batchInput: VariableCapturedBatchInput? = selectedCount > 1 && hasEditorInput
             ? .init(metadata: edited, previousCommon: previous, fields: batchFieldMutations,
                 locations: batchLocationsShownMutation, suppliers: batchImageSupplierMutation,
@@ -4796,7 +4987,8 @@ final class MetadataViewModel {
         targetURLs: [URL]? = nil,
         capturedMutation: (mutation: @Sendable (inout IPTCMetadata) -> Void, overridesSuppliers: Bool)? = nil
     ) -> BatchSidecarCapture {
-        BatchSidecarCapture(
+        pruneStaleBatchTextIntents()
+        return BatchSidecarCapture(
             urls: targetURLs ?? selectedURLs,
             selectedAtStart: selectedURLs,
             baselines: batchMetadataByURL,
@@ -4902,6 +5094,7 @@ final class MetadataViewModel {
     }
 
     private func capturedBatchMutation() -> @Sendable (inout IPTCMetadata) -> Void {
+        pruneStaleBatchTextIntents()
         let batchMeta = editingMetadata
         let previousCommon = previousEditingMetadata
         let fields = batchFieldMutations
@@ -4956,10 +5149,17 @@ final class MetadataViewModel {
             ) else { return }
             metadata = explicitlyMutated
         }
+        // Explicit template text intent (append/replace/clear) applies to each photo's own value.
+        guard let textMutated = try? Self.applyingBatchTextMutations(batchFieldMutations, to: metadata) else { return }
+        metadata = textMutated
+        func scalar(_ field: MetadataFieldID, _ path: WritableKeyPath<IPTCMetadata, String?>) {
+            guard batchFieldMutations[field] == nil else { return }
+            applyBatchScalar(batchMeta[keyPath: path], previous: previousCommon?[keyPath: path], to: &metadata[keyPath: path])
+        }
 
-        applyBatchScalar(batchMeta.title, previous: previousCommon?.title, to: &metadata.title)
-        applyBatchScalar(batchMeta.description, previous: previousCommon?.description, to: &metadata.description)
-        applyBatchScalar(batchMeta.extendedDescription, previous: previousCommon?.extendedDescription, to: &metadata.extendedDescription)
+        scalar(.headline, \.title)
+        scalar(.description, \.description)
+        scalar(.extendedDescription, \.extendedDescription)
 
         // Keywords — add vs overwrite
         if batchFieldMutations[.keywords] == nil {
@@ -5036,12 +5236,12 @@ final class MetadataViewModel {
             }
         }
 
-        applyBatchScalar(batchMeta.copyright, previous: previousCommon?.copyright, to: &metadata.copyright)
-        applyBatchScalar(batchMeta.rightsUsageTerms, previous: previousCommon?.rightsUsageTerms, to: &metadata.rightsUsageTerms)
-        applyBatchScalar(batchMeta.webStatementOfRights, previous: previousCommon?.webStatementOfRights, to: &metadata.webStatementOfRights)
-        applyBatchScalar(batchMeta.digitalImageGUID, previous: previousCommon?.digitalImageGUID, to: &metadata.digitalImageGUID)
-        applyBatchScalar(batchMeta.imageSupplierImageID, previous: previousCommon?.imageSupplierImageID, to: &metadata.imageSupplierImageID)
-        applyBatchScalar(batchMeta.jobId, previous: previousCommon?.jobId, to: &metadata.jobId)
+        scalar(.copyright, \.copyright)
+        scalar(.rightsUsageTerms, \.rightsUsageTerms)
+        scalar(.webStatementOfRights, \.webStatementOfRights)
+        scalar(.digitalImageGUID, \.digitalImageGUID)
+        scalar(.imageSupplierImageID, \.imageSupplierImageID)
+        scalar(.jobId, \.jobId)
         if let dateCreated = batchMeta.dateCreated, !dateCreated.isEmpty {
             if (try? EditorialDateCreated(parsing: dateCreated)) != nil {
                 metadata.dateCreated = dateCreated
@@ -5053,17 +5253,17 @@ final class MetadataViewModel {
         if batchFieldMutations[.creator] == nil, !batchMeta.creators.isEmpty {
             metadata.creators = batchMeta.creators
         }
-        applyBatchScalar(batchMeta.creatorJobTitle, previous: previousCommon?.creatorJobTitle, to: &metadata.creatorJobTitle)
-        applyBatchScalar(batchMeta.descriptionWriter, previous: previousCommon?.descriptionWriter, to: &metadata.descriptionWriter)
-        applyBatchScalar(batchMeta.credit, previous: previousCommon?.credit, to: &metadata.credit)
-        applyBatchScalar(batchMeta.city, previous: previousCommon?.city, to: &metadata.city)
-        applyBatchScalar(batchMeta.sublocation, previous: previousCommon?.sublocation, to: &metadata.sublocation)
-        applyBatchScalar(batchMeta.provinceState, previous: previousCommon?.provinceState, to: &metadata.provinceState)
-        applyBatchScalar(batchMeta.country, previous: previousCommon?.country, to: &metadata.country)
-        applyBatchScalar(batchMeta.countryCode, previous: previousCommon?.countryCode, to: &metadata.countryCode)
-        applyBatchScalar(batchMeta.event, previous: previousCommon?.event, to: &metadata.event)
-        applyBatchScalar(batchMeta.instructions, previous: previousCommon?.instructions, to: &metadata.instructions)
-        applyBatchScalar(batchMeta.source, previous: previousCommon?.source, to: &metadata.source)
+        scalar(.creatorJobTitle, \.creatorJobTitle)
+        scalar(.descriptionWriter, \.descriptionWriter)
+        scalar(.credit, \.credit)
+        scalar(.city, \.city)
+        scalar(.sublocation, \.sublocation)
+        scalar(.provinceState, \.provinceState)
+        scalar(.country, \.country)
+        scalar(.countryCode, \.countryCode)
+        scalar(.event, \.event)
+        scalar(.instructions, \.instructions)
+        scalar(.source, \.source)
         // Clearing a value common to the selection clears it everywhere; a value that was
         // already empty or mixed leaves each photo's own value untouched.
         if batchMeta.digitalSourceType != nil {
