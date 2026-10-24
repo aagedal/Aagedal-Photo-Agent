@@ -163,8 +163,11 @@ protocol MetadataWriteEngine: AnyObject, Sendable {
 nonisolated struct DevelopEmbedReport: Sendable, Equatable {
     var refusedForContentCredentials: [URL] = []
     var refusedForMetadataSize: [URL] = []
+    var refusedForRoundTripMismatch: [URL] = []
 
-    var isEmpty: Bool { refusedForContentCredentials.isEmpty && refusedForMetadataSize.isEmpty }
+    var isEmpty: Bool {
+        refusedForContentCredentials.isEmpty && refusedForMetadataSize.isEmpty && refusedForRoundTripMismatch.isEmpty
+    }
 
     var message: String? {
         var parts: [String] = []
@@ -175,6 +178,10 @@ nonisolated struct DevelopEmbedReport: Sendable, Equatable {
         if !refusedForMetadataSize.isEmpty {
             parts.append("Not written to \(refusedForMetadataSize.map(\.lastPathComponent).joined(separator: ", ")): "
                 + "the Develop settings are too large for the file's metadata block.")
+        }
+        if !refusedForRoundTripMismatch.isEmpty {
+            parts.append("Not written to \(refusedForRoundTripMismatch.map(\.lastPathComponent).joined(separator: ", ")): "
+                + "the metadata did not read back exactly as written, so the save was refused and nothing was lost.")
         }
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }

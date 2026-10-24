@@ -8036,6 +8036,7 @@ struct EditWorkspaceView: View {
                     )
                     report.refusedForContentCredentials += groupReport.refusedForContentCredentials
                     report.refusedForMetadataSize += groupReport.refusedForMetadataSize
+                    report.refusedForRoundTripMismatch += groupReport.refusedForRoundTripMismatch
                 }
             } else {
                 report = try await writeEngine.writeDevelopFields(

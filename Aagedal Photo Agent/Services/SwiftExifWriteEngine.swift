@@ -398,12 +398,13 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                         source: current, synchronizesIPTC: false, verifyPrimaryTechnical: true,
                         lossContext: .develop, beforePublication: {})
                     return 0
-                } catch is EmbeddedMetadataLossRefusal {
-                    return 2
+                } catch let refusal as EmbeddedMetadataLossRefusal {
+                    return refusal.isRoundTripMismatch ? 3 : 2
                 }
             }
             if outcome == 1 { report.refusedForContentCredentials.append(url) }
             if outcome == 2 { report.refusedForMetadataSize.append(url) }
+            if outcome == 3 { report.refusedForRoundTripMismatch.append(url) }
         }
         return report
     }
@@ -656,7 +657,22 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             do {
                 // A segment the JPEG can't hold is a refused copy for this file (reported as an
                 // export problem by the caller), never a silently degraded file.
-                let warnings = try self.guardedWrite(destMetadata, to: destination, context: .export)
+                let warnings: [String]
+                do {
+                    warnings = try self.guardedWrite(destMetadata, to: destination, context: .export)
+                } catch let refusal as EmbeddedMetadataLossRefusal
+                            where refusal.segmentKind == "XMP" && !refusal.isRoundTripMismatch
+                                && bakedCameraRaw?.isEmpty == false {
+                    // The baked develop record (full layer chain, brush masks) is optional: the
+                    // edits are already in the pixels. Drop it rather than the descriptive copy;
+                    // refuse only if the descriptive XMP still doesn't fit.
+                    var slim = destMetadata
+                    Self.removeDevelopRecord(from: &slim)
+                    warnings = try self.guardedWrite(slim, to: destination, context: .export)
+                    swiftExifLog.warning(
+                        "copyMetadataToRenderedFile: \(destination.lastPathComponent, privacy: .private(mask: .hash)): baked develop record omitted to fit the JPEG XMP segment"
+                    )
+                }
                 for warning in warnings {
                     swiftExifLog.warning(
                         "copyMetadataToRenderedFile: \(destination.lastPathComponent, privacy: .private(mask: .hash)): \(warning, privacy: .public)"
@@ -668,6 +684,17 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 )
                 throw error
             }
+        }
+    }
+
+    /// Removes the Camera Raw namespace and the app-private develop keys (layer chain,
+    /// watermarks, anonymizer, film emulation) from a packet.
+    nonisolated static func removeDevelopRecord(from metadata: inout ImageMetadata) {
+        metadata.xmp?.removeAll(namespace: crsNamespace)
+        for property in ["GlobalLayerIndex", "LayerOrder", "WatermarkLayers", "AnonymizerAmount",
+                         "AnonymizerBlackOut", "GlobalDensity", "FilmGrain", "FilmGrainCoarseness",
+                         "FilmHalation", "FilmBloom", "FilmVignette", "FilmEdgeBlur"] {
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: property)
         }
     }
 

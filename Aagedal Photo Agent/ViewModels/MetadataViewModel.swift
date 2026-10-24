@@ -2195,6 +2195,8 @@ final class MetadataViewModel {
                 }
 
                 let refusedURLs = Set(lossRefusals.map(\.imageURL))
+                // Refused files whose change actually landed in a pending draft.
+                var draftedRefusedURLs: Set<URL> = []
                 await self.mirrorEmbeddedStateToExistingSidecars(for: writableEmbedURLs())
 
                 // A pending draft is the photo's record until it is written. Apply the same batch
@@ -2204,8 +2206,10 @@ final class MetadataViewModel {
                         .map(\.lastPathComponent))
                     let draftURLs = urls.filter { pendingNames.contains($0.lastPathComponent) }
                     if !draftURLs.isEmpty {
-                        await self.saveBatchSidecars(folderURL: writeFolderURL, targetURLs: draftURLs,
-                            updateState: false, capturedMutation: draftMutation)
+                        let failure = await self.saveBatchSidecars(folderURL: writeFolderURL, pendingChanges: true,
+                            updateState: false,
+                            capture: self.captureBatchSidecars(targetURLs: draftURLs, capturedMutation: draftMutation))
+                        if failure == nil { draftedRefusedURLs.formUnion(refusedURLs.intersection(draftURLs)) }
                     }
                     // A refused file keeps this change as a pending draft (not written, not lost),
                     // so it can be written later or moved to a sidecar destination.
@@ -2217,13 +2221,21 @@ final class MetadataViewModel {
                             fallback = (try? await self.readService.readFullMetadata(url: url)) ?? IPTCMetadata()
                         }
                         fallback.cameraRaw = nil
-                        _ = try? await self.sidecarService.updateMetadataSerialized(
+                        if (try? await self.sidecarService.updateMetadataSerialized(
                             for: url, in: writeFolderURL, fallback: fallback, pendingChanges: true,
-                            timestamp: Date(), mutation: draftMutation.mutation)
+                            timestamp: Date(), mutation: draftMutation.mutation)) != nil {
+                            draftedRefusedURLs.insert(url)
+                        }
                     }
                 }
 
-                if Set(self.selectedURLs) == selectionSnapshot {
+                // A refused file with no pending draft holds this change only in the editor: keep
+                // it dirty and leave the baselines where they were, so it isn't mistaken for saved.
+                let undraftedRefusedURLs = refusedURLs.subtracting(draftedRefusedURLs)
+                if Set(self.selectedURLs) == selectionSnapshot, !undraftedRefusedURLs.isEmpty {
+                    self.hasChanges = true
+                    if !draftedRefusedURLs.isEmpty { self.selectedHavePendingSidecars = true }
+                } else if Set(self.selectedURLs) == selectionSnapshot {
                     self.metadata = edited
                     if isBatch {
                         // The saved state is the new baseline: later add/remove diffs and
@@ -2247,7 +2259,7 @@ final class MetadataViewModel {
                         self.batchCommonMetadata = edited
                     }
                     self.hasChanges = self.editingMetadata != edited
-                    if !refusedURLs.isEmpty { self.selectedHavePendingSidecars = true }
+                    if !draftedRefusedURLs.isEmpty { self.selectedHavePendingSidecars = true }
                 }
                 if !lossRefusals.isEmpty {
                     let message = EmbeddedMetadataBatchRefusal(refusals: lossRefusals).localizedDescription

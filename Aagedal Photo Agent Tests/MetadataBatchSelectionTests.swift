@@ -452,6 +452,31 @@ struct MetadataBatchSelectionTests {
         #expect(MetadataSidecarService().loadSidecar(for: first, in: folder)?.pendingChanges != true)
     }
 
+    @Test("A refused single-photo save without a draft keeps the editor dirty and claims no pending draft")
+    func refusedSingleSaveStaysDirty() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let full = folder.appendingPathComponent("single-full.jpg")
+        try NearLimitJPEGFixture.make(at: full)
+        let before = try Data(contentsOf: full)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        // Folderless selection: the `currentFolderURL == nil` fallback that writes without drafts.
+        model.loadMetadata(for: [ImageFile(url: full)], folderURL: nil)
+        let loadDeadline = ContinuousClock.now + .seconds(5)
+        while model.isLoading, ContinuousClock.now < loadDeadline { try await Task.sleep(for: .milliseconds(10)) }
+        model.editingMetadata.description = "Refused caption"
+        model.markChanged()
+        model.writeMetadata()
+        let deadline = ContinuousClock.now + .seconds(10)
+        while model.isSaving, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!model.isSaving)
+        #expect(try Data(contentsOf: full) == before)
+        #expect(model.saveError?.contains("single-full.jpg") == true)
+        #expect(model.hasChanges)
+        #expect(!model.selectedHavePendingSidecars)
+        #expect(model.metadata?.description != "Refused caption")
+    }
+
     @Test("batch commit through the Browser write path finishes saving")
     func batchCommitClearsSaving() async throws {
         let folder = try makeFolder()

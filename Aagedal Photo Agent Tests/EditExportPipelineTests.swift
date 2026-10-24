@@ -6042,3 +6042,95 @@ struct EmbeddedMetadataLossRefusalTests {
         #expect(try SwiftMediaMetadata.readMetadata(from: output).format == .jpeg)
     }
 }
+
+@Suite("Round 6 export and RAW-sibling follow-ups")
+struct ExportRoundSixTests {
+    private func makeFolder() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-r6-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func plainJPEG(at url: URL) throws {
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let data = rep.representation(using: .jpeg, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+    }
+
+    private func setFolderModification(_ folder: URL, _ time: timespec) {
+        var times = [time, time]
+        _ = utimensat(AT_FDCWD, folder.path, &times, 0)
+    }
+
+    @Test("A write-path lookup never trusts an unsettled listing carried across our own sidecar write")
+    func unsettledListingIsNotCarriedForWrites() throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let jpeg = dir.appendingPathComponent("IMG_5.jpg")
+        try plainJPEG(at: jpeg)
+        let index = PhotoRawStemIndex()
+        // Listing taken right after the folder changed: unsettled.
+        #expect(index.rawFile(forStem: "IMG_5", in: dir, allowsUnsettledReuse: false) == nil)
+        let before = PhotoRawStemIndex.folderModification(dir)
+        try Data("<x/>".utf8).write(to: dir.appendingPathComponent("IMG_5.xmp"))
+        index.noteOwnWrite(in: dir, previousModification: before)
+        let afterOwnWrite = try #require(PhotoRawStemIndex.folderModification(dir))
+        // A RAW lands within the same timestamp tick (coarse-mtime volume simulation).
+        try Data("raw".utf8).write(to: dir.appendingPathComponent("IMG_5.ARW"))
+        setFolderModification(dir, afterOwnWrite)
+        #expect(index.rawFile(forStem: "IMG_5", in: dir, allowsUnsettledReuse: false)?.lastPathComponent == "IMG_5.ARW")
+    }
+
+    @Test("A settled listing carried across our own write serves reads but not write-path decisions")
+    func settledCarryIsReadOnly() throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try plainJPEG(at: dir.appendingPathComponent("IMG_6.jpg"))
+        let later = Date().addingTimeInterval(10)
+        let index = PhotoRawStemIndex(now: { later })
+        #expect(index.rawFile(forStem: "IMG_6", in: dir, allowsUnsettledReuse: false) == nil)  // settled listing
+        let before = PhotoRawStemIndex.folderModification(dir)
+        try Data("<x/>".utf8).write(to: dir.appendingPathComponent("IMG_6.xmp"))
+        index.noteOwnWrite(in: dir, previousModification: before)
+        let afterOwnWrite = try #require(PhotoRawStemIndex.folderModification(dir))
+        try Data("raw".utf8).write(to: dir.appendingPathComponent("IMG_6.NEF"))
+        setFolderModification(dir, afterOwnWrite)
+        // Reads may reuse the carried listing; a write-path decision relists and sees the RAW.
+        #expect(index.rawFile(forStem: "IMG_6", in: dir, allowsUnsettledReuse: true) == nil)
+        #expect(index.rawFile(forStem: "IMG_6", in: dir, allowsUnsettledReuse: false)?.lastPathComponent == "IMG_6.NEF")
+    }
+
+    @Test("An export of a heavily brush-masked edit keeps EXIF, IPTC and caption and omits only the baked develop record")
+    func exportDropsBakedDevelopBeforeDescriptive() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("source.jpg")
+        try plainJPEG(at: source)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.description: "Kept caption", .credit: "Kept credit",
+            .gpsLatitude: "59.9", .gpsLatitudeRef: "N", .gpsLongitude: "10.7", .gpsLongitudeRef: "E"], to: [source])
+        let output = dir.appendingPathComponent("render.jpg")
+        try plainJPEG(at: output)
+        var baked = CameraRawSettings()
+        baked.exposure2012 = 0.5
+        baked.localAdjustments = [MaskAdjustment(name: "Heavy brush",
+            brush: BrushMaskGeometry(strokes: [BrushStroke(dabs: (0..<6_000).map {
+                BrushDab(x: Double($0 % 97) / 97 + 0.000123, y: Double($0 % 89) / 89, flow: 0.7, hardness: 0.4) },
+                radius: 0.02, density: 1, erase: false)]),
+            exposure: 0.2)]
+        try await engine.copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: baked)
+        let written = try SwiftMediaMetadata.readMetadata(from: output)
+        let xmp = try #require(written.xmp)
+        #expect(xmp.properties(in: XMPNamespace.crs).isEmpty)
+        #expect(written.iptc.caption == "Kept caption")
+        let meta = try await SwiftExifReadService().readFullMetadata(url: output)
+        #expect(meta.description == "Kept caption")
+        #expect(meta.credit == "Kept credit")
+        #expect(meta.latitude != nil)
+    }
+}

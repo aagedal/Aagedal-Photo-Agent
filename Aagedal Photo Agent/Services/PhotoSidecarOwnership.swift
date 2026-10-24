@@ -140,14 +140,18 @@ nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
         return status.st_mtimespec
     }
 
-    /// After this process wrote a sidecar into `folder`: if the cached listing was current just
-    /// before that write, it is still correct (a sidecar is never a RAW), so carry it forward to
-    /// the folder's new modification time instead of forcing a relist.
+    /// After this process wrote a sidecar into `folder`: if the cached listing was settled and
+    /// current just before that write, it is still correct (a sidecar is never a RAW), so carry it
+    /// forward to the folder's new modification time. An unsettled listing (taken within the
+    /// volume's timestamp granularity of a change) is never carried: a RAW that arrived in the
+    /// same tick would stay hidden. Only read paths accept a carried listing.
     func noteOwnWrite(in folder: URL, previousModification: timespec?) {
-        guard let previousModification, let current = Self.folderModification(folder) else { return }
+        guard let previousModification, let current = Self.folderModification(folder),
+              current.tv_sec != previousModification.tv_sec || current.tv_nsec != previousModification.tv_nsec
+        else { return }
         let key = Self.folderKey(folder)
         lock.withLock {
-            guard var entry = entries[key],
+            guard var entry = entries[key], entry.settled,
                   entry.modification.tv_sec == previousModification.tv_sec,
                   entry.modification.tv_nsec == previousModification.tv_nsec else { return }
             entry.modification = current
@@ -176,8 +180,9 @@ nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
         if let cached = lock.withLock({ entries[key] }),
            cached.modification.tv_sec == modification.tv_sec,
            cached.modification.tv_nsec == modification.tv_nsec,
-           cached.settled || cached.rolledForwardByOwnWrite
-            || (allowsUnsettledReuse && currentTime.timeIntervalSince(cached.listedAt) <= freshReuseInterval) {
+           (cached.settled && !cached.rolledForwardByOwnWrite)
+            || (allowsUnsettledReuse && (cached.rolledForwardByOwnWrite
+                || currentTime.timeIntervalSince(cached.listedAt) <= freshReuseInterval)) {
             return cached.rawByStem[stem.lowercased()]
         }
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: key) else { return nil }
