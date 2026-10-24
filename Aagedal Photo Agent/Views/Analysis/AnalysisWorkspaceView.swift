@@ -199,7 +199,7 @@ struct AnalysisWorkspaceView: View {
             Button("Discard Changes", role: .destructive) {
                 completeUnsavedChangesExit(exit, retryingSave: false)
             }
-            Button("Cancel", role: .cancel) { model.dismissUnsavedChangesPrompt() }
+            Button("Cancel", role: .cancel) { model.cancelUnsavedChangesExit() }
         } message: { _ in
             Text("The latest case or map edits could not be saved. Retry the save before leaving this photo, or discard the unsaved edits.")
         }
