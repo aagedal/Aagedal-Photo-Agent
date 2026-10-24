@@ -5494,6 +5494,56 @@ struct BrushRasterizationTests {
         #expect(at(56, 32) < 0.1)
     }
 
+    /// Every committed brush stroke rebuilds the shared raster alpha. The AI mattes in it must
+    /// come from a texture cache keyed by PNG bytes + refinement, not be re-decoded each time.
+    @Test("AI matte textures are decoded once per matte and refinement across rebuilds")
+    func aiMaskTextureCacheHit() throws {
+        guard let pipeline = makePipeline() else { return }
+        let png = try #require(grayscalePNG([255, 0, 255, 0], width: 2, height: 2))
+        let ai = AIMaskGeometry(width: 2, height: 2, pngData: png)
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        let stroke = BrushStroke(
+            dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.5)],
+            radius: 0.1, density: 1.0, erase: false
+        )
+        let oneStroke = BrushMaskGeometry(strokes: [stroke])
+        let twoStrokes = BrushMaskGeometry(strokes: [
+            stroke,
+            BrushStroke(dabs: [BrushDab(x: 0.2, y: 0.8, flow: 1.0, hardness: 0.5)],
+                        radius: 0.1, density: 1.0, erase: false),
+        ])
+
+        let first = readSlice(
+            try #require(pipeline.rebuildMaskAlpha([.ai(ai), .brush(oneStroke)], size: size)),
+            slice: 0
+        )
+        #expect(pipeline.aiMaskTextureDecodeCount == 1)
+
+        // A second stroke commit: brush slice changes, the AI matte is served from the cache.
+        let second = readSlice(
+            try #require(pipeline.rebuildMaskAlpha([.ai(ai), .brush(twoStrokes)], size: size)),
+            slice: 0
+        )
+        #expect(pipeline.aiMaskTextureDecodeCount == 1)
+        #expect(second == first)
+
+        // A refinement change is a different texture and decodes once.
+        var refined = ai
+        refined.blackPoint = 0.25
+        _ = pipeline.rebuildMaskAlpha([.ai(refined), .brush(twoStrokes)], size: size)
+        #expect(pipeline.aiMaskTextureDecodeCount == 2)
+        _ = pipeline.rebuildMaskAlpha([.ai(refined), .brush(oneStroke)], size: size)
+        #expect(pipeline.aiMaskTextureDecodeCount == 2)
+
+        // Mattes no longer referenced are pruned, so the original decodes again when it returns.
+        let restored = readSlice(
+            try #require(pipeline.rebuildMaskAlpha([.ai(ai), .brush(oneStroke)], size: size)),
+            slice: 0
+        )
+        #expect(pipeline.aiMaskTextureDecodeCount == 3)
+        #expect(restored == first)
+    }
+
     @Test("AI matte black and white points remap confidence values")
     func aiMaskLevelsRefineConfidence() throws {
         guard let pipeline = makePipeline() else { return }

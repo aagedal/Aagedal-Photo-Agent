@@ -732,3 +732,41 @@ private nonisolated extension CameraRawSettings {
 private nonisolated extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
+
+/// Memoizes named-version dependency diagnostics for the Develop version selector.
+///
+/// Resolving a watermark dependency SHA-256-hashes the library PNG, and the selector asks for
+/// every version's diagnostics several times per SwiftUI body evaluation — which happens on
+/// every pointer drag. Results are reused until the version's manifest, the watermark library
+/// revision, or the set/size of resolved watermark bytes changes. Not observable on purpose:
+/// filling the memo during body evaluation must not invalidate the view.
+final class DevelopVersionDiagnosticsMemo {
+    private var libraryRevision: Int?
+    private var watermarkByteCounts: [UUID: Int] = [:]
+    private var entries: [UUID: (
+        manifest: [DevelopVersionDependency],
+        diagnostics: [DevelopVersionDependencyDiagnostic]
+    )] = [:]
+    private(set) var computationCount = 0
+
+    func diagnostics(
+        for version: DevelopNamedVersion,
+        libraryRevision: Int,
+        watermarkData: [UUID: Data]
+    ) -> [DevelopVersionDependencyDiagnostic] {
+        let byteCounts = watermarkData.mapValues(\.count)
+        if libraryRevision != self.libraryRevision || byteCounts != watermarkByteCounts {
+            entries.removeAll()
+            self.libraryRevision = libraryRevision
+            watermarkByteCounts = byteCounts
+        }
+        let manifest = version.snapshot.dependencyManifest
+        if let entry = entries[version.id], entry.manifest == manifest {
+            return entry.diagnostics
+        }
+        let diagnostics = version.snapshot.dependencyDiagnostics { watermarkData[$0] }
+        computationCount += 1
+        entries[version.id] = (manifest, diagnostics)
+        return diagnostics
+    }
+}

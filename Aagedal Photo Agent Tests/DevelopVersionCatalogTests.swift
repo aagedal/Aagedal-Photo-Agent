@@ -109,6 +109,57 @@ struct DevelopVersionCatalogTests {
         #expect(updated.dependencyDiagnostics { _ in replacementData }.map(\.status) == [.changed])
     }
 
+    /// The Develop version selector asks for diagnostics on every body evaluation; the SHA-256
+    /// of each watermark must be computed once per library state, not per evaluation.
+    @Test("version diagnostics memo reuses results until the manifest or library changes")
+    @MainActor
+    func diagnosticsMemoReusesResults() async throws {
+        let fixture = try VersionCatalogFixture(contents: "memo source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let assetID = UUID()
+        let originalData = Data("original watermark".utf8)
+        let changedData = Data("changed watermark bytes".utf8)
+        var settings = CameraRawSettings()
+        settings.watermarkLayers = [WatermarkLayer(libraryAssetID: assetID)]
+        var catalog = DevelopVersionCatalog.create(for: revision)
+        let versionID = try catalog.createVersion(
+            name: "Watermarked",
+            settings: settings,
+            watermarkDataProvider: { _ in originalData }
+        )
+        let version = try #require(catalog.versions.first)
+        let memo = DevelopVersionDiagnosticsMemo()
+
+        for _ in 0..<5 {
+            let diagnostics = memo.diagnostics(
+                for: version, libraryRevision: 1, watermarkData: [assetID: originalData]
+            )
+            #expect(diagnostics.map(\.status) == [.resolved])
+        }
+        #expect(memo.computationCount == 1)
+
+        // Library revision bump (asset replaced): recomputed, and the new bytes are detected.
+        #expect(memo.diagnostics(
+            for: version, libraryRevision: 2, watermarkData: [assetID: changedData]
+        ).map(\.status) == [.changed])
+        #expect(memo.computationCount == 2)
+        // Asset gone: different resolved set, recomputed even at the same revision.
+        #expect(memo.diagnostics(
+            for: version, libraryRevision: 2, watermarkData: [:]
+        ).map(\.status) == [.missing])
+        #expect(memo.computationCount == 3)
+
+        // A changed manifest for the same version id is recomputed too.
+        settings.watermarkLayers = []
+        try catalog.updateVersion(id: versionID, settings: settings, watermarkDataProvider: { _ in nil })
+        let updated = try #require(catalog.versions.first)
+        #expect(memo.diagnostics(
+            for: updated, libraryRevision: 2, watermarkData: [:]
+        ).isEmpty)
+        #expect(memo.computationCount == 4)
+    }
+
     @Test("catalog CRUD maintains active and default invariants")
     func catalogMutations() async throws {
         let fixture = try VersionCatalogFixture(contents: "source")

@@ -21,7 +21,8 @@ nonisolated enum DevelopRenderWorkPath: Equatable, Sendable {
     case interactiveCPUScope
     /// Keep the full-resolution Metal preview live without materializing a competing CG image.
     case cropInteraction
-    /// Materialize the current Core Image result for the fallback preview and scope publication.
+    /// Settled edit: refresh the Metal pipeline and, only when the CPU scope fallback is what
+    /// the scope panel shows, materialize a downsampled scope source.
     case materializePreview
 }
 
@@ -31,6 +32,10 @@ nonisolated struct DevelopRenderPolicyDecision: Equatable, Sendable {
     var shouldScheduleComparison: Bool
     var shouldUpdateScopeCrop: Bool
     var shouldUpdateMetalPipeline: Bool
+    /// The settled refresh needs a CPU-rendered scope source. False whenever the Metal scope
+    /// (scope pipeline + uploaded source texture) presents the edit live, because then nothing
+    /// in Develop reads the materialized image and the offscreen render would be wasted work.
+    var shouldMaterializeScopeSource: Bool = false
 
     var shouldRequestMetalScopeRedraw: Bool { shouldUpdateMetalPipeline }
 }
@@ -67,7 +72,9 @@ nonisolated struct DevelopRenderPolicyCoordinator: Sendable {
             shouldScheduleComparison: input.isComparisonActive,
             shouldUpdateScopeCrop: true,
             shouldUpdateMetalPipeline: !input.isSliderInteractionActive
-                && input.hasMetalSourceTexture
+                && input.hasMetalSourceTexture,
+            shouldMaterializeScopeSource: workPath == .materializePreview
+                && !(input.hasMetalScopePipeline && input.hasMetalSourceTexture)
         )
     }
 
