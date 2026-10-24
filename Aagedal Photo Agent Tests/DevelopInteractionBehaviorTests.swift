@@ -2620,7 +2620,7 @@ struct DevelopCleanFeedPublicationCoordinatorTests {
 @Suite("Develop preview render coordinator")
 @MainActor
 struct DevelopPreviewRenderCoordinatorTests {
-    @Test("edit workspace has one materialized preview publication owner")
+    @Test("edit workspace has one scope-source publication owner and no dead preview image")
     func sourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -2633,7 +2633,9 @@ struct DevelopPreviewRenderCoordinatorTests {
         )
 
         #expect(source.contains("@State private var previewRender = DevelopPreviewRenderCoordinator()"))
-        #expect(source.contains("isShowingBefore ? sourceImage : previewRender.previewImage"))
+        #expect(source.contains("guard decision.shouldMaterializeScopeSource else {"))
+        #expect(!source.contains("previewRender.previewImage"))
+        #expect(!source.contains("private var displayImage: NSImage?"))
         #expect(!source.contains("@State private var previewCIImage"))
         #expect(!source.contains("previewCIImage ="))
     }
@@ -2641,67 +2643,100 @@ struct DevelopPreviewRenderCoordinatorTests {
     @Test("a replacement request rejects a cancelled renderer's late publication")
     func replacementRejectsLatePublication() async throws {
         let coordinator = DevelopPreviewRenderCoordinator()
-        let staleImage = NSImage(size: NSSize(width: 10, height: 10))
-        let currentImage = NSImage(size: NSSize(width: 20, height: 20))
         var publishedWidths: [Int] = []
 
         coordinator.beginImageSession()
         coordinator.requestRender(
-            fallback: nil,
             isHDR: false,
             operation: {
                 try? await Task.sleep(for: .milliseconds(80))
-                return Self.output(image: staleImage, width: 10)
+                return Self.output(width: 10)
             },
             scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
         )
         await Task.yield()
         coordinator.requestRender(
-            fallback: nil,
             isHDR: false,
-            operation: { Self.output(image: currentImage, width: 20) },
+            operation: { Self.output(width: 20) },
             scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
         )
 
-        try await eventually { coordinator.previewImage === currentImage }
+        try await eventually { publishedWidths == [20] }
         try await Task.sleep(for: .milliseconds(100))
 
-        #expect(coordinator.previewImage === currentImage)
         #expect(publishedWidths == [20])
         #expect(!coordinator.isRendering)
     }
 
-    @Test("ending an image session clears output and rejects an uncooperative late render")
+    @Test("requests made in the same main-actor turn coalesce to the last operation")
+    func sameTurnRequestsCoalesce() async throws {
+        let coordinator = DevelopPreviewRenderCoordinator()
+        var operationRuns: [Int] = []
+        var publishedWidths: [Int] = []
+
+        for width in [10, 20, 30] {
+            coordinator.requestRender(
+                isHDR: false,
+                operation: {
+                    operationRuns.append(width)
+                    return Self.output(width: width)
+                },
+                scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
+            )
+        }
+
+        try await eventually { !coordinator.isRendering }
+        #expect(operationRuns == [30])
+        #expect(publishedWidths == [30])
+    }
+
+    @Test("replacing a request cancels the running operation")
+    func replacementCancelsRunningOperation() async throws {
+        let coordinator = DevelopPreviewRenderCoordinator()
+        var observedCancellation = false
+
+        coordinator.requestRender(
+            isHDR: false,
+            operation: {
+                try? await Task.sleep(for: .seconds(5))
+                observedCancellation = Task.isCancelled
+                return nil
+            },
+            scopePublisher: { _, _ in }
+        )
+        try await Task.sleep(for: .milliseconds(30))
+        coordinator.cancelRender()
+
+        try await eventually { observedCancellation }
+        #expect(!coordinator.isRendering)
+    }
+
+    @Test("ending an image session rejects an uncooperative late render")
     func endingSessionRejectsLateRender() async throws {
         let coordinator = DevelopPreviewRenderCoordinator()
-        let image = NSImage(size: NSSize(width: 10, height: 10))
         var publicationCount = 0
 
         coordinator.requestRender(
-            fallback: nil,
             isHDR: true,
             operation: {
                 try? await Task.sleep(for: .milliseconds(50))
-                return Self.output(image: image, width: 10)
+                return Self.output(width: 10)
             },
             scopePublisher: { _, _ in publicationCount += 1 }
         )
         coordinator.endImageSession()
         try await Task.sleep(for: .milliseconds(80))
 
-        #expect(coordinator.previewImage == nil)
         #expect(publicationCount == 0)
         #expect(!coordinator.isRendering)
     }
 
-    @Test("a failed materialization preserves the source fallback and scope HDR state")
-    func failedMaterializationUsesFallback() async throws {
+    @Test("a failed materialization still publishes the scope HDR state")
+    func failedMaterializationPublishesHDRState() async throws {
         let coordinator = DevelopPreviewRenderCoordinator()
-        let fallback = NSImage(size: NSSize(width: 30, height: 30))
         var published: (hasImage: Bool, isHDR: Bool)?
 
         coordinator.requestRender(
-            fallback: fallback,
             isHDR: true,
             operation: { nil },
             scopePublisher: { image, isHDR in
@@ -2710,41 +2745,36 @@ struct DevelopPreviewRenderCoordinatorTests {
         )
         try await eventually { !coordinator.isRendering }
 
-        #expect(coordinator.previewImage === fallback)
         #expect(published?.hasImage == false)
         #expect(published?.isHDR == true)
     }
 
-    @Test("explicit cancellation retains the last preview and rejects late publication")
-    func cancellationRetainsLastPreview() async throws {
+    @Test("publishing without an image cancels pending work and reports the HDR mode")
+    func publishWithoutImageCancelsPendingWork() async throws {
         let coordinator = DevelopPreviewRenderCoordinator()
-        let retained = NSImage(size: NSSize(width: 15, height: 15))
-        let late = NSImage(size: NSSize(width: 40, height: 40))
-        var publishedWidths: [Int] = []
+        var publications: [(width: Int, isHDR: Bool)] = []
 
-        coordinator.publishFallback(
-            retained,
-            isHDR: false,
-            scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
-        )
         coordinator.requestRender(
-            fallback: retained,
             isHDR: false,
             operation: {
                 try? await Task.sleep(for: .milliseconds(50))
-                return Self.output(image: late, width: 40)
+                return Self.output(width: 40)
             },
-            scopePublisher: { image, _ in publishedWidths.append(image?.width ?? 0) }
+            scopePublisher: { image, isHDR in publications.append((image?.width ?? 0, isHDR)) }
         )
-        coordinator.cancelRender()
+        coordinator.publishWithoutImage(
+            isHDR: true,
+            scopePublisher: { image, isHDR in publications.append((image?.width ?? 0, isHDR)) }
+        )
         try await Task.sleep(for: .milliseconds(80))
 
-        #expect(coordinator.previewImage === retained)
-        #expect(publishedWidths == [0])
+        #expect(publications.count == 1)
+        #expect(publications.first?.width == 0)
+        #expect(publications.first?.isHDR == true)
         #expect(!coordinator.isRendering)
     }
 
-    private static func output(image: NSImage, width: Int) -> DevelopPreviewRenderCoordinator.Output {
+    private static func output(width: Int) -> DevelopPreviewRenderCoordinator.Output {
         let context = CGContext(
             data: nil,
             width: width,
@@ -2754,10 +2784,7 @@ struct DevelopPreviewRenderCoordinatorTests {
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )!
-        return DevelopPreviewRenderCoordinator.Output(
-            previewImage: image,
-            scopeImage: context.makeImage()!
-        )
+        return DevelopPreviewRenderCoordinator.Output(scopeImage: context.makeImage()!)
     }
 
     private func eventually(
@@ -2948,6 +2975,27 @@ struct DevelopRenderPolicyCoordinatorTests {
         #expect(settled.workPath == .materializePreview)
         #expect(settled.shouldScheduleComparison)
         #expect(!settled.shouldUpdateMetalPipeline)
+    }
+
+    @Test("settled edits materialize a CPU scope source only when the Metal scope is unavailable")
+    func scopeMaterializationPolicy() {
+        func decision(scopePipeline: Bool, texture: Bool, dragging: Bool = false, crop: Bool = false)
+            -> DevelopRenderPolicyDecision {
+            coordinator.decision(for: DevelopRenderPolicyInput(
+                hasSourceImage: true,
+                isSliderInteractionActive: dragging,
+                hasMetalScopePipeline: scopePipeline,
+                hasMetalSourceTexture: texture,
+                isCropInteractionActive: crop,
+                isComparisonActive: false
+            ))
+        }
+
+        #expect(!decision(scopePipeline: true, texture: true).shouldMaterializeScopeSource)
+        #expect(decision(scopePipeline: false, texture: true).shouldMaterializeScopeSource)
+        #expect(decision(scopePipeline: true, texture: false).shouldMaterializeScopeSource)
+        #expect(!decision(scopePipeline: false, texture: true, dragging: true).shouldMaterializeScopeSource)
+        #expect(!decision(scopePipeline: false, texture: true, crop: true).shouldMaterializeScopeSource)
     }
 
     @Test("display and clipping gamut mappings remain exact")

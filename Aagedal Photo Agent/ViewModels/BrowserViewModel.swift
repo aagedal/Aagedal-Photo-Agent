@@ -747,6 +747,14 @@ final class BrowserViewModel {
         preCacheSelectedRetinaImage()
     }
 
+    /// The loaded photo at `url`: O(1) through `urlToImageIndex`, falling back to the linear
+    /// scan only while that index is stale, so the result always equals
+    /// `images.first(where: { $0.url == url })`. Cheap enough for SwiftUI body evaluation.
+    func image(at url: URL) -> ImageFile? {
+        if let index = validImageIndex(for: url) { return images[index] }
+        return images.first(where: { $0.url == url })
+    }
+
     /// `urlToImageIndex[url]`, but only while it still points at that photo. The index is
     /// not rebuilt while `suppressImagesCascade` is held, so never trust it blindly.
     private func validImageIndex(for url: URL) -> Int? {

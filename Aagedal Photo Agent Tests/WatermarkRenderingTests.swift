@@ -3,6 +3,7 @@ import Foundation
 import CoreImage
 import ImageIO
 import AppKit
+import Metal
 import Synchronization
 @testable import Aagedal_Photo_Agent
 
@@ -678,6 +679,88 @@ struct AnonymizerMultiPassRenderingTests {
             difference > 0.005,
             "Expected the global Anonymizer to sample the upstream local-color composite; mean difference was \(difference)"
         )
+    }
+
+    /// The live preview keeps one ping/pong pair per engine instead of allocating two full-size
+    /// mipmapped intermediates per drawn frame. A reused pair must produce exactly the pixels of
+    /// a first frame on a fresh engine (every pass overwrites its output; mips are regenerated).
+    @Test("live multi-pass frames reuse intermediates and match a fresh engine's pixels")
+    @MainActor
+    func liveRenderGraphReusesIntermediates() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let reused = MetalLivePreviewPipeline(device: device, commandQueue: queue),
+              let fresh = MetalLivePreviewPipeline(device: device, commandQueue: queue)
+        else { return }
+
+        var colorMask = MaskAdjustment()
+        colorMask.geometry.centerX = 0.5
+        colorMask.geometry.centerY = 0.5
+        colorMask.geometry.radiusX = 1.0
+        colorMask.geometry.radiusY = 1.0
+        colorMask.geometry.feather = 0
+        colorMask.contrast = 80
+        var anonymizerMask = MaskAdjustment()
+        anonymizerMask.geometry.centerX = 0.3
+        anonymizerMask.geometry.centerY = 0.3
+        anonymizerMask.geometry.radiusX = 0.25
+        anonymizerMask.geometry.radiusY = 0.25
+        anonymizerMask.anonymizer = AnonymizerSettings(amount: 72, blackOut: nil)
+        var settings = CameraRawSettings()
+        settings.anonymizer = AnonymizerSettings(amount: 40, blackOut: nil)
+        settings.exposure2012 = 0.3
+        settings.localAdjustments = [colorMask, anonymizerMask]
+        // Color → spatial Global → spatial mask: three passes, so both ping and pong are used.
+        settings.layerOrder = [.mask(colorMask.id), .global, .mask(anonymizerMask.id)]
+
+        let source = try checkerboard()
+        let containerSize = CGSize(width: extent.width, height: extent.height)
+        for pipeline in [reused, fresh] {
+            pipeline.uploadSourceImage(source)
+            pipeline.updateParams(settings)
+            pipeline.updateViewport(
+                zoomScale: 1,
+                offset: .zero,
+                containerSize: containerSize,
+                imageSize: containerSize
+            )
+        }
+
+        func renderFrame(_ pipeline: MetalLivePreviewPipeline) throws -> [UInt16] {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba16Float,
+                width: Int(extent.width),
+                height: Int(extent.height),
+                mipmapped: false
+            )
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            descriptor.storageMode = .shared
+            let target = try #require(device.makeTexture(descriptor: descriptor))
+            #expect(pipeline.renderLiveFrameForTesting(into: target))
+            var pixels = [UInt16](repeating: 0, count: target.width * target.height * 4)
+            pixels.withUnsafeMutableBytes { buffer in
+                target.getBytes(
+                    buffer.baseAddress!,
+                    bytesPerRow: target.width * 8,
+                    from: MTLRegionMake2D(0, 0, target.width, target.height),
+                    mipmapLevel: 0
+                )
+            }
+            return pixels
+        }
+
+        let first = try renderFrame(reused)
+        let allocationsAfterFirstFrame = reused.renderGraphIntermediateAllocationCount
+        #expect(allocationsAfterFirstFrame == 2)
+        let second = try renderFrame(reused)
+        let third = try renderFrame(reused)
+        #expect(reused.renderGraphIntermediateAllocationCount == allocationsAfterFirstFrame)
+        let baseline = try renderFrame(fresh)
+
+        #expect(Set(first).count > 16, "The frame must contain real image content")
+        #expect(second == first)
+        #expect(third == first)
+        #expect(baseline == first)
     }
 
     @Test("global Black Out remains terminal when the global tone curve lifts black")

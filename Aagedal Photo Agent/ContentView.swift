@@ -475,10 +475,15 @@ struct ContentView: View {
             // `mainViewMode`). While editing, suppress speculative full-screen prefetch — its
             // ImageIO XMP parsing races the editor's concurrent sidecar write — and tighten the
             // edited-image cache to relieve the IOSurface memory pressure that amplifies the fault.
-            .onChange(of: mainViewMode) { _, mode in
+            .onChange(of: mainViewMode) { oldMode, mode in
                 let editing = (mode == .editing)
                 browserViewModel.fullScreenImageCache.setPrefetchSuppressed(editing)
                 browserViewModel.fullScreenImageCache.setEditingMemoryProfile(editing)
+                // Develop shows the live Metal scope and no longer publishes a CPU scope image,
+                // so the browse scope must load its own source again when the editor closes.
+                if oldMode == .editing, !editing {
+                    reloadBrowseScopeImage()
+                }
             }
             .onChange(of: mainViewMode) { oldMode, newMode in
                 let oldUsesFocusedWorkspace = oldMode == .caption || oldMode == .imageAnalysis || oldMode == .comparison

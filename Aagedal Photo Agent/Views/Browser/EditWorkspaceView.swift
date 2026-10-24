@@ -296,6 +296,8 @@ struct EditWorkspaceView: View {
     /// only the most recent request is applied once the transition ends.
     @State private var pendingDevelopNavigation: PendingDevelopNavigation?
     @State private var watermarkStore = WatermarkStore.shared
+    /// SHA-256 watermark diagnostics for the version selector, reused across body evaluations.
+    @State private var versionDiagnosticsMemo = DevelopVersionDiagnosticsMemo()
     /// Owns the live Metal pipeline, AppKit render coordinator, source-generation reset, warmup,
     /// continuous rendering, and workspace teardown.
     @State private var metalSession = DevelopMetalPreviewSessionCoordinator()
@@ -345,7 +347,7 @@ struct EditWorkspaceView: View {
     private var selectedImage: ImageFile? {
         if let anchor = browserViewModel.lastClickedImageURL,
            browserViewModel.selectedImageIDs.contains(anchor),
-           let anchored = browserViewModel.images.first(where: { $0.url == anchor }) {
+           let anchored = browserViewModel.image(at: anchor) {
             return anchored
         }
         if let selected = browserViewModel.selectedImages.first {
@@ -499,13 +501,8 @@ struct EditWorkspaceView: View {
         nonmutating set { workspaceInput.filmstripKeyboardScrollTarget = newValue }
     }
 
-    private var displayImage: NSImage? {
-        isShowingBefore ? sourceImage : previewRender.previewImage
-    }
-
     /// The SwiftUI fallback always receives the retained source. Interactive adjustments are
-    /// published by the Metal pipeline, while materialized AppKit preview output has the single
-    /// `previewRender` owner above.
+    /// published by the Metal pipeline; `previewRender` only materializes the CPU scope source.
     private var displayCIImage: CIImage? {
         sourceCIImage
     }
@@ -2111,7 +2108,11 @@ struct EditWorkspaceView: View {
         for version: DevelopNamedVersion,
         watermarkData: [UUID: Data]
     ) -> [DevelopVersionDependencyDiagnostic] {
-        version.snapshot.dependencyDiagnostics { watermarkData[$0] }
+        versionDiagnosticsMemo.diagnostics(
+            for: version,
+            libraryRevision: WatermarkStore.currentLibraryRevision,
+            watermarkData: watermarkData
+        )
     }
 
     private func developVersionMenuLabel(
@@ -3234,11 +3235,31 @@ struct EditWorkspaceView: View {
                 // instead of stretching the preview to fill the drawable.
                 syncViewportToMetal()
 
-                // Upload Phase 1 preview to Metal for immediate interactive editing
-                // (mirrors non-RAW path so WB/tonal adjustments render as soon as
-                // metadata loads, even before the full RAW decode completes).
-                // sourceCIImage is already target-oriented — no correction here.
-                if let ci = sourceCIImage, let pipeline = metalPipeline {
+                // An adjacent-image precache already produced exactly the texture Phase 2
+                // would upload (same flat CIRAWFilter decode, size, orientation and decode
+                // settings — anything else is a miss). Promote it instead of uploading the
+                // embedded preview and decoding the RAW again.
+                let cachedWB = metalPipeline?.applyCachedTexture(
+                    for: selectedImageURL,
+                    exifOrientation: targetOrientation,
+                    decodeMaxPixelSize: previewMaxPixelSize
+                )
+                if let cachedWB, let pipeline = metalPipeline {
+                    // As-shot WB from the precache decode, so the promoted flat texture
+                    // renders with the correct white balance and tone.
+                    if whiteBalanceSession.publishAsShotNeutral(
+                        temperature: cachedWB.neutralTemperature,
+                        tint: cachedWB.neutralTint,
+                        for: selectedImageURL
+                    ) {
+                        pipeline.asShotTemperature = Double(cachedWB.neutralTemperature)
+                        pipeline.asShotTint = Double(cachedWB.neutralTint)
+                    }
+                } else if let ci = sourceCIImage, let pipeline = metalPipeline {
+                    // Upload Phase 1 preview to Metal for immediate interactive editing
+                    // (mirrors non-RAW path so WB/tonal adjustments render as soon as
+                    // metadata loads, even before the full RAW decode completes).
+                    // sourceCIImage is already target-oriented — no correction here.
                     let didPublishTexture = await Task.detached(priority: .medium) {
                         pipeline.uploadSourceImage(
                             ci,
@@ -3254,6 +3275,26 @@ struct EditWorkspaceView: View {
                 syncViewportToMetal()
                 renderPreview()
                 isLoadingPreview = false
+
+                if cachedWB != nil, let pipeline = metalPipeline {
+                    // Precache hit: no Phase 2 decode, so the inspector is never disabled.
+                    editLog.info("[\(filename)] Phase 2: skipped (precached screen-res texture promoted)")
+                    precacheAdjacentRAWTextures(currentURL: selectedImageURL, pipeline: pipeline)
+                    // Replace the embedded-preview CI source with the flat decode the WB
+                    // eyedropper, AI masks, comparison and CPU scope expect.
+                    guard await publishSourceReadback(
+                        from: pipeline,
+                        fallback: nil,
+                        for: selectedImageURL,
+                        sessionGeneration: previewSessionGeneration,
+                        maxPixelSize: previewMaxPixelSize
+                    ) else { return }
+                    syncViewportToMetal()
+                    renderPreview()
+                    loadFullResEditTextureIfNeeded()
+                    return
+                }
+
                 isDecodingFullResolution = true
                 // A failed or abandoned upload must not leave the inspector disabled.
                 defer {
@@ -3261,26 +3302,10 @@ struct EditWorkspaceView: View {
                 }
 
                 // Phase 2: CIRAWFilter decode at screen resolution → Metal texture.
-                // After upload, materialize sourceCIImage at screen resolution to release
-                // the heavyweight CIRAWFilter pipeline (~260MB per instance).
+                // After upload, the retained CI source is read back from that texture, which
+                // releases the heavyweight CIRAWFilter pipeline (~260MB per instance).
                 if let pipeline = metalPipeline {
-                    let cachedWB = pipeline.applyCachedTexture(for: selectedImageURL, exifOrientation: targetOrientation)
-                    let cacheHit = cachedWB != nil
-                    if let cachedWB {
-                        // Apply cached as-shot WB from the flat RAW pre-decode so the
-                        // precached texture renders with correct white balance and tone.
-                        if whiteBalanceSession.publishAsShotNeutral(
-                            temperature: cachedWB.neutralTemperature,
-                            tint: cachedWB.neutralTint,
-                            for: selectedImageURL
-                        ) {
-                            pipeline.asShotTemperature = Double(cachedWB.neutralTemperature)
-                            pipeline.asShotTint = Double(cachedWB.neutralTint)
-                            syncViewportToMetal()
-                            renderPreview()
-                        }
-                    }
-                    editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
+                    editLog.info("[\(filename)] Phase 2: starting")
 
                     let phase2Start = ContinuousClock.now
                     let rawResult = await DevelopSourceDecodeService.shared.loadRAW(
@@ -3311,9 +3336,6 @@ struct EditWorkspaceView: View {
                     editLog.info("[\(filename)] Phase 2: decoded in \(decodeElapsed) (result=\(rawCIImage != nil))")
 
                     if let rawCIImage {
-                        if cacheHit {
-                            editLog.info("[\(filename)] Phase 2: upgrading cached texture to full resolution")
-                        }
                         let uploadStart = ContinuousClock.now
                         // Already target-oriented from the decode task.
                         let didPublishTexture = await Task.detached(priority: .medium) {
@@ -3337,18 +3359,24 @@ struct EditWorkspaceView: View {
                     }
                     isDecodingFullResolution = false
 
-                    // Materialize sourceCIImage at screen resolution to release the heavy
-                    // CIRAWFilter decode graph. The Metal texture holds full-res data for
-                    // interactive editing; sourceCIImage is only used for scope/preview CGImage.
+                    // Pre-cache adjacent RAW images at screen resolution for instant navigation.
+                    // Started as soon as this image's decode is done, not after materialization.
+                    precacheAdjacentRAWTextures(
+                        currentURL: selectedImageURL,
+                        pipeline: pipeline
+                    )
+
+                    // Replace the retained CI source with a CPU readback of the texture just
+                    // uploaded — the same flat screen-res pixels — instead of rendering the
+                    // CIRAWFilter graph a second time. sourceCIImage feeds the WB eyedropper,
+                    // AI masks, comparison and the CPU scope fallback.
                     if let rawCIImage {
-                        let materialized = await DevelopSourceDecodeService.shared.materialize(
-                            rawCIImage,
-                            maxPixelSize: previewMaxPixelSize
-                        )
-                        guard previewSession.publishMaterializedSource(
-                            materialized ?? rawCIImage,
+                        guard await publishSourceReadback(
+                            from: pipeline,
+                            fallback: rawCIImage,
                             for: selectedImageURL,
-                            sessionGeneration: previewSessionGeneration
+                            sessionGeneration: previewSessionGeneration,
+                            maxPixelSize: previewMaxPixelSize
                         ) else { return }
                     }
                     let totalPhase2 = ContinuousClock.now - phase2Start
@@ -3356,20 +3384,15 @@ struct EditWorkspaceView: View {
                     syncViewportToMetal()
                     renderPreview()
 
-                    // Pre-cache adjacent RAW images at screen resolution for instant navigation.
-                    precacheAdjacentRAWTextures(
-                        currentURL: selectedImageURL,
-                        pipeline: pipeline
-                    )
-
                     // If the user already zoomed in while Phase 2 was decoding, upgrade
                     // the now-current screen-res texture to full resolution.
                     loadFullResEditTextureIfNeeded()
                 }
             } else {
-                // Non-RAW two-phase load (mirrors RAW strategy):
-                // Phase 1: Quick preview at screen resolution for immediate display.
-                // Phase 2: Full-resolution CIImage → Metal texture for sharp editing.
+                // Non-RAW load (mirrors RAW strategy):
+                // Phase 1: Decode at screen resolution → Metal texture for display and editing.
+                // Full resolution is decoded lazily on zoom (loadFullResEditTextureIfNeeded),
+                // so a 45 MP JPEG no longer pins a ~480 MB mipmapped rgba16F texture.
 
                 // Phase 1: HDR-preserving path (keeps float values >1.0 for HEIC-HLG, AVIF, JXL).
                 // Falls back to SDR CGImageSource path for formats CIImage can't decode.
@@ -3422,64 +3445,59 @@ struct EditWorkspaceView: View {
 
                 renderPreview()
                 isLoadingPreview = false
-                isDecodingFullResolution = true
-                // A failed or abandoned upload must not leave the inspector disabled.
-                defer {
-                    previewSession.finishFullResolutionDecode(sessionGeneration: previewSessionGeneration)
-                }
 
-                // Phase 2: Load full-resolution CIImage → Metal texture.
-                // After upload, materialize sourceCIImage at screen resolution to release
-                // the full-resolution CIImage graph (same strategy as RAW path).
-                if let pipeline = metalPipeline {
+                guard let pipeline = metalPipeline else { return }
+
+                // Like RAW, the editing texture stays at screen resolution; zooming past fit
+                // upgrades it via loadFullResEditTextureIfNeeded(). The Phase 1 decode above
+                // is already that screen-res source (the same CIImage graph the old full-res
+                // Phase 2 downsampled for its materialized copy). Only a thumbnail fallback
+                // needs a real decode — and that one is uploaded at screen resolution too.
+                if previewSource?.image == nil {
+                    isDecodingFullResolution = true
+                    // A failed or abandoned upload must not leave the inspector disabled.
+                    defer {
+                        previewSession.finishFullResolutionDecode(sessionGeneration: previewSessionGeneration)
+                    }
                     let phase2Start = ContinuousClock.now
                     // Oriented to the in-memory target inside the task — see orientedToTarget.
                     let fullRes = await DevelopSourceDecodeService.shared.loadNonRAWFullResolution(
                         from: selectedImageURL,
                         targetOrientation: targetOrientation
                     )
-
                     guard !Task.isCancelled else { return }
-
                     if let fullRes {
-                        let fullResCIImage = fullRes
-                        let extent = fullResCIImage.extent
-                        editLog.info("[\(filename)] Phase 2: full-res decoded in \(ContinuousClock.now - phase2Start) (\(Int(extent.width))x\(Int(extent.height)))")
-
-                        let uploadStart = ContinuousClock.now
-                        // Already target-oriented from the decode task.
+                        let screenRes = FullScreenImageCache.downsample(
+                            fullRes,
+                            maxPixelSize: previewMaxPixelSize
+                        )
                         let didPublishTexture = await Task.detached(priority: .medium) {
                             pipeline.uploadSourceImage(
-                                fullResCIImage,
+                                screenRes,
                                 exifOrientation: targetOrientation,
                                 sessionGeneration: previewSessionGeneration
                             )
                         }.value
                         guard didPublishTexture, !Task.isCancelled else { return }
-                        editLog.info("[\(filename)] Phase 2: texture uploaded in \(ContinuousClock.now - uploadStart)")
-
-                        // Materialize sourceCIImage at screen resolution to release the
-                        // full-res CIImage graph. Metal texture holds full-res for editing.
-                        let materialized = await DevelopSourceDecodeService.shared.materialize(
-                            fullResCIImage,
-                            maxPixelSize: previewMaxPixelSize
-                        )
-                        guard previewSession.publishMaterializedSource(
-                            materialized ?? fullResCIImage,
-                            for: selectedImageURL,
-                            sessionGeneration: previewSessionGeneration
-                        ) else { return }
-
-                        let totalPhase2 = ContinuousClock.now - phase2Start
-                        editLog.info("[\(filename)] Phase 2: complete in \(totalPhase2)")
+                        editLog.info("[\(filename)] Phase 2: decoded + uploaded after thumbnail fallback in \(ContinuousClock.now - phase2Start)")
                     }
-
-                    isDecodingFullResolution = false
-                    syncViewportToMetal()
-                    renderPreview()
-                } else {
                     isDecodingFullResolution = false
                 }
+
+                // Replace the lazy file-backed CI graph with a CPU readback of the uploaded
+                // texture, so scope/eyedropper/AI-mask reads don't re-decode the file.
+                guard await publishSourceReadback(
+                    from: pipeline,
+                    fallback: nil,
+                    for: selectedImageURL,
+                    sessionGeneration: previewSessionGeneration,
+                    maxPixelSize: previewMaxPixelSize
+                ) else { return }
+                syncViewportToMetal()
+                renderPreview()
+
+                // If the user already zoomed in while the source loaded, upgrade now.
+                loadFullResEditTextureIfNeeded()
             }
         }
     }
@@ -3522,35 +3540,51 @@ struct EditWorkspaceView: View {
                     return
                 }
                 let start = ContinuousClock.now
-                // Use the same flat CIRAWFilter decode as Phase 2 so the precached
-                // texture matches the final render (no auto-boost / tone mismatch).
-                // Decode straight to screen resolution (don't decode full sensor then
-                // shrink). Read the tag adjacent to the decode (see Phase 2).
-                guard let rawResult = await DevelopSourceDecodeService.shared.loadRAW(
-                    from: url,
+                // Same flat screen-res CIRAWFilter decode as Phase 2, tagged with its
+                // orientation and size so navigation promotes it only when it is
+                // interchangeable with the foreground decode.
+                let stored = await DevelopSourceDecodeService.shared.precacheRAWTexture(
+                    for: url,
+                    targetOrientation: neighborOrientation,
                     maxPixelSize: screenMaxPx,
-                    targetOrientation: neighborOrientation
-                ) else {
-                    editLog.info("[\(url.lastPathComponent)] precache: decode failed")
-                    continue
-                }
-                guard !Task.isCancelled else {
-                    editLog.info("[\(url.lastPathComponent)] precache: cancelled after decode")
-                    return
-                }
-                let ciImage = FullScreenImageCache.downsample(
-                    rawResult.image,
-                    maxPixelSize: screenMaxPx
-                )
-                pipeline.precacheTexture(
-                    for: url, ciImage: ciImage,
-                    neutralTemperature: rawResult.neutralTemperature,
-                    neutralTint: rawResult.neutralTint
+                    into: pipeline
                 )
                 let elapsed = ContinuousClock.now - start
-                editLog.info("[\(url.lastPathComponent)] precache: done in \(elapsed)")
+                editLog.info("[\(url.lastPathComponent)] precache: \(stored ? "done" : "skipped") in \(elapsed)")
             }
         }
+    }
+
+    /// Replaces the retained Core Image source with a CPU readback of the texture that was just
+    /// published (see `MetalLivePreviewPipeline.readBackSourceTexture`). Returns false only when
+    /// the image session is no longer current; a failed readback keeps `fallback` (or the
+    /// current source when nil).
+    private func publishSourceReadback(
+        from pipeline: MetalLivePreviewPipeline,
+        fallback: CIImage?,
+        for imageURL: URL,
+        sessionGeneration: UInt64,
+        maxPixelSize: CGFloat
+    ) async -> Bool {
+        let handle = pipeline.sourceTextureHandle()
+        let cgImage: CGImage?
+        if let handle {
+            cgImage = await Task.detached(priority: .medium) {
+                pipeline.readBackSourceTexture(handle, maxPixelSize: maxPixelSize)
+            }.value
+        } else {
+            cgImage = nil
+        }
+        guard !Task.isCancelled else { return false }
+        guard let materialized = cgImage.map({ CIImage(cgImage: $0) }) ?? fallback else {
+            editLog.info("[\(imageURL.lastPathComponent)] source readback unavailable; keeping current source")
+            return previewSession.sessionGeneration == sessionGeneration
+        }
+        return previewSession.publishMaterializedSource(
+            materialized,
+            for: imageURL,
+            sessionGeneration: sessionGeneration
+        )
     }
 
     /// Rotate the already-loaded source in place by the `from → to` orientation delta and
@@ -3602,7 +3636,7 @@ struct EditWorkspaceView: View {
     /// soft when the user zooms in to pixel-peep. When zoomed past 100%, lazily re-decode
     /// the current image at full sensor resolution and swap the Metal source texture.
     /// Mirrors FullScreenImageView.loadFullResIfNeeded(). One-shot per image (reset on
-    /// navigation); non-RAW images already load full-res in Phase 2 and short-circuit here.
+    /// navigation). Non-RAW images take the same path: their source texture is screen-res too.
     private func loadFullResEditTextureIfNeeded() {
         guard editZoomScale > 1.0 else { return }
         guard !isEditFullResLoaded, editFullResTask == nil else { return }
@@ -3759,8 +3793,7 @@ struct EditWorkspaceView: View {
         ))
 
         guard decision.workPath != .sourceFallback, let sourceCIImage else {
-            previewRender.publishFallback(
-                sourceImage,
+            previewRender.publishWithoutImage(
                 isHDR: isHDREnabled,
                 scopePublisher: publishDevelopPreviewToScope
             )
@@ -3825,59 +3858,56 @@ struct EditWorkspaceView: View {
             return
         }
 
-        editLog.debug("renderPreview: full path (CGImage generation)")
-
-        // On release / initial load: produce CGImage for scope display and export
-        let fullSource = sourceCIImage
-        let fallback = sourceImage
-        let orientation = selectedImageOrientation
-
         let hdr = isHDREnabled
+        guard decision.shouldMaterializeScopeSource else {
+            // The Metal scope renders the live pipeline output itself and nothing else in
+            // Develop reads a materialized image, so skip the offscreen render + readback.
+            // Still publish the HDR mode so the scope's waveform scale and gamut follow it.
+            previewRender.publishWithoutImage(isHDR: hdr, scopePublisher: publishDevelopPreviewToScope)
+            return
+        }
+
+        editLog.debug("renderPreview: CPU scope path (downsampled CGImage generation)")
+
+        // CPU scope fallback only (no Metal scope): render a ≤1024 px scope source. The scope
+        // rasterizes into a few hundred pixels, so a full-resolution render bought nothing.
+        let scopeSource = sourceCIImage
+        let orientation = selectedImageOrientation
         previewRender.requestRender(
-            fallback: fallback,
             isHDR: hdr,
             operation: {
-                await Task.detached(priority: .userInitiated) { () -> DevelopPreviewRenderCoordinator.Output? in
-                    let output = CameraRawApproximation.apply(
-                        to: fullSource,
+                let render = Task.detached(priority: .userInitiated) { () -> DevelopPreviewRenderCoordinator.Output? in
+                    let maxDimension: CGFloat = 1024
+                    let extent = scopeSource.extent
+                    guard extent.width > 0, extent.height > 0 else { return nil }
+                    let scale = min(maxDimension / extent.width, maxDimension / extent.height, 1.0)
+                    let small = scale < 1.0
+                        ? scopeSource.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                        : scopeSource
+                    let filtered = await CameraRawApproximation.applyAsync(
+                        to: small,
                         settings: settings,
                         exifOrientation: orientation
                     )
-                    let ctx = CameraRawApproximation.ciContext
-                    guard let cgImage = ctx.createCGImage(
-                        output,
-                        from: output.extent,
-                        format: .RGBAh,
-                        colorSpace: CameraRawApproximation.workingColorSpace
-                    ) else {
-                        return nil
-                    }
-                    let nsImage = NSImage(
-                        cgImage: cgImage,
-                        size: NSSize(width: cgImage.width, height: cgImage.height)
-                    )
-
-                    // Generate cropped CGImage for scope display
+                    guard !Task.isCancelled else { return nil }
                     let cropped = CameraRawApproximation.applyCrop(
-                        to: output, originalExtent: fullSource.extent,
+                        to: filtered, originalExtent: small.extent,
                         settings: settings, exifOrientation: orientation
                     )
-                    let scopeCGImage: CGImage?
-                    if cropped !== output {
-                        scopeCGImage = ctx.createCGImage(
-                            cropped, from: cropped.extent,
-                            format: .RGBAh,
-                            colorSpace: CameraRawApproximation.workingColorSpace
-                        )
-                    } else {
-                        scopeCGImage = nil
-                    }
-
-                    return DevelopPreviewRenderCoordinator.Output(
-                        previewImage: nsImage,
-                        scopeImage: scopeCGImage ?? cgImage
-                    )
-                }.value
+                    guard let cgImage = CameraRawApproximation.ciContext.createCGImage(
+                        cropped, from: cropped.extent,
+                        format: .RGBAh,
+                        colorSpace: CameraRawApproximation.workingColorSpace
+                    ), !Task.isCancelled else { return nil }
+                    return DevelopPreviewRenderCoordinator.Output(scopeImage: cgImage)
+                }
+                // Replacing the request cancels this task; forward that into the detached render
+                // so a superseded job short-circuits on the shared offscreen render queue.
+                return await withTaskCancellationHandler {
+                    await render.value
+                } onCancel: {
+                    render.cancel()
+                }
             },
             scopePublisher: publishDevelopPreviewToScope
         )

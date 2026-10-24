@@ -575,6 +575,12 @@ final class WatermarkStore {
     /// the loader also runs on the offscreen export queue.
     nonisolated static let libraryRevision = Atomic<Int>(0)
 
+    /// Snapshot of `libraryRevision` for callers that memoize on it without importing
+    /// Synchronization.
+    nonisolated static var currentLibraryRevision: Int {
+        libraryRevision.load(ordering: .relaxed)
+    }
+
     nonisolated private static func bumpLibraryRevision() {
         libraryRevision.add(1, ordering: .relaxed)
     }
