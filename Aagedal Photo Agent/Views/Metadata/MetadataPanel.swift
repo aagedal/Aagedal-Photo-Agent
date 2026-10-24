@@ -838,7 +838,7 @@ struct MetadataPanel: View {
             set: { newValue in
                 let current = viewModel.editingMetadata[keyPath: keyPath]
                 let added = newValue.filter { !current.contains($0) }
-                guard viewModel.isEditorLoading, !added.isEmpty else {
+                guard viewModel.isShowingLoadPlaceholder, !added.isEmpty else {
                     viewModel.editingMetadata[keyPath: keyPath] = newValue
                     return
                 }

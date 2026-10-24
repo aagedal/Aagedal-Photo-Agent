@@ -1367,7 +1367,9 @@ final class MetadataViewModel {
         commit: @escaping @MainActor () -> Void,
         _ action: @escaping @MainActor () -> Bool
     ) {
-        guard isEditorLoading, let selection = loadingSelection else {
+        // Only the empty placeholder of an in-flight load defers: a same-selection reload or a
+        // load waiting on caption cleanup still shows a real, saveable editor for its photos.
+        guard isShowingLoadPlaceholder, let selection = loadingSelection else {
             if action() { commit() }
             return
         }
@@ -3845,6 +3847,16 @@ final class MetadataViewModel {
 
     /// Re-read metadata from file for the currently displayed image after variable processing,
     /// so the UI reflects the resolved values instead of stale template strings.
+    /// Replacing `metadataLoadRequestID` strands an in-flight load: its completion guard no
+    /// longer matches, so it would never clear the loading flags (leaving the editor "loading").
+    private func supersedeInFlightMetadataLoad() {
+        guard let task = metadataLoadTask else { return }
+        task.cancel()
+        metadataLoadTask = nil
+        isLoading = false
+        isLoadingBatchMetadata = false
+    }
+
     private func refreshMetadataAfterProcessing(updatedURLs: Set<URL>, processedImages: [ImageFile]) async {
         if selectedCount > 1 {
             let selectionSnapshot = Set(selectedURLs)
@@ -3852,6 +3864,7 @@ final class MetadataViewModel {
             let selectedProcessedImages = processedImages.filter { selectionSnapshot.contains($0.url) }
             guard Set(selectedProcessedImages.map(\.url)) == selectionSnapshot else { return }
 
+            supersedeInFlightMetadataLoad()
             let requestID = UUID()
             let folderSnapshot = currentFolderURL
             metadataLoadRequestID = requestID
@@ -3873,6 +3886,7 @@ final class MetadataViewModel {
               let url = selectedURLs.first,
               updatedURLs.contains(url) else { return }
 
+        supersedeInFlightMetadataLoad()
         do {
             let requestID = UUID()
             let folderSnapshot = currentFolderURL

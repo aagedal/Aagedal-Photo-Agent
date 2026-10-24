@@ -687,9 +687,10 @@ actor FileSystemService {
                     )
                     if xmpAlreadyTransferred {
                         // The partner already copied this sidecar here. Once no sibling is left
-                        // behind, retire the source by moving it over that copy.
+                        // behind, retire the source: the destination is this batch's copy of it,
+                        // and a delete (unlike a replace) works across volumes.
                         if !survivingSibling {
-                            _ = try fileManager.replaceItemAt(xmpDestination, withItemAt: xmpSource)
+                            try fileManager.removeItem(at: xmpSource)
                         }
                     } else if survivingSibling {
                         try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)

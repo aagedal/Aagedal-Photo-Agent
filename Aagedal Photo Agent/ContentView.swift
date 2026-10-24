@@ -4602,12 +4602,18 @@ struct ContentViewModifiers: ViewModifier {
                 metadataViewModel.loadMetadata(for: browserViewModel.selectedImages,
                     folderURL: browserViewModel.currentFolderURL)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { notification in
                 browserViewModel.refreshPendingStatus()
                 // A loaded pending draft sets `hasChanges` but is not an unsaved edit; the face
                 // write lands in that draft, so the editor must reload to show the names.
                 guard !metadataViewModel.hasUnpersistedEditorChanges else { return }
                 let selected = browserViewModel.selectedImages
+                // Only reload when the written photos are selected: a reload invalidates the
+                // focused field's buffer, so an unrelated photo must not be disturbed.
+                if let changed = notification.userInfo?["imageURLs"] as? [URL] {
+                    let changedPaths = Set(changed.map(\.standardizedFileURL))
+                    guard selected.contains(where: { changedPaths.contains($0.url.standardizedFileURL) }) else { return }
+                }
                 metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL,
                     preservingUnsavedEdits: true)
             }
