@@ -408,6 +408,93 @@ struct DevelopTemplateTests {
         #expect(decoded.includesCrop)
     }
 
+    @Test("A tone-only template keeps the target's Anonymizer mask, watermark and other layers")
+    func toneOnlyTemplateKeepsTargetLayers() {
+        var source = CameraRawSettings()
+        source.exposure2012 = 0.8
+        source.contrast2012 = 15
+        let template = DevelopTemplate(name: "Tone", settings: source)
+
+        var faceBlur = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 80, blackOut: nil))
+        faceBlur.geometry.centerX = 0.3
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        let preserved = PreservedMaskCorrection(fields: ["crs:Unknown": .string("acr-only")])
+        var target = CameraRawSettings(exposure2012: -1)
+        target.localAdjustments = [faceBlur]
+        target.watermarkLayers = [watermark]
+        target.layerOrder = [.global, .mask(faceBlur.id), .watermark(watermark.id)]
+        target.anonymizer = AnonymizerSettings(amount: 40, blackOut: nil)
+        target.hslAdjustments = HSLAdjustments(red: HSLColorAdjustment(saturation: 20))
+        target.unparsedMaskCorrections = [preserved]
+
+        let result = template.applicationResult(preserving: target)
+
+        #expect(result.settings.exposure2012 == 0.8)
+        #expect(result.settings.contrast2012 == 15)
+        #expect(result.settings.localAdjustments == [faceBlur])
+        #expect(result.settings.watermarkLayers == [watermark])
+        #expect(result.settings.layerOrder == target.layerOrder)
+        #expect(result.settings.anonymizer == target.anonymizer)
+        #expect(result.settings.hslAdjustments == target.hslAdjustments)
+        #expect(result.settings.unparsedMaskCorrections == [preserved])
+        #expect(result.skippedLayerCount == 0)
+    }
+
+    @Test("A template's masks are appended after the target's, keeping the target's chain")
+    func templateMasksAppendToTargetMasks() throws {
+        var templateMask = MaskAdjustment(name: "Vignette", exposure: -0.4)
+        templateMask.geometry.radiusX = 0.4
+        var source = CameraRawSettings()
+        source.localAdjustments = [templateMask]
+        source.layerOrder = [.mask(templateMask.id), .global]
+        let template = DevelopTemplate(name: "Look", settings: source)
+
+        var faceBlur = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: nil, blackOut: true))
+        faceBlur.geometry.centerY = 0.2
+        var target = CameraRawSettings()
+        target.localAdjustments = [faceBlur]
+        target.layerOrder = [.mask(faceBlur.id), .global]
+
+        let applied = template.settingsForApplication(preserving: target)
+        let masks = try #require(applied.localAdjustments)
+        #expect(masks.count == 2)
+        #expect(masks[0] == faceBlur)
+        #expect(masks[1].id != templateMask.id)
+        #expect(masks[1].exposure == -0.4)
+        // The target's Global position stays; the template's mask is appended after it.
+        #expect(applied.layerOrder == [.mask(faceBlur.id), .global, .mask(masks[1].id)])
+
+        // Applying the same template again doesn't stack a duplicate.
+        let reapplied = template.settingsForApplication(preserving: applied)
+        #expect(reapplied.localAdjustments?.count == 2)
+    }
+
+    @Test("Template layers stop at the layer limit without dropping the target's masks")
+    func templateRespectsLayerLimit() {
+        var targetMasks: [MaskAdjustment] = []
+        for index in 0..<(DevelopLayerLimits.maxEnabledMasks - 1) {
+            var mask = MaskAdjustment(name: "Own \(index)", exposure: 0.1)
+            mask.geometry.centerX = 0.1 + Double(index) * 0.05
+            targetMasks.append(mask)
+        }
+        var target = CameraRawSettings()
+        target.localAdjustments = targetMasks
+
+        var first = MaskAdjustment(name: "A", exposure: 0.5)
+        first.geometry.centerY = 0.9
+        var second = MaskAdjustment(name: "B", exposure: 0.6)
+        second.geometry.centerY = 0.8
+        var source = CameraRawSettings()
+        source.localAdjustments = [first, second]
+        let template = DevelopTemplate(name: "Two masks", settings: source)
+
+        let result = template.applicationResult(preserving: target)
+        #expect(result.settings.localAdjustments?.count == DevelopLayerLimits.maxEnabledMasks)
+        #expect(Array(result.settings.localAdjustments?.prefix(targetMasks.count) ?? []) == targetMasks)
+        #expect(result.skippedMasks == 1)
+        #expect(result.skippedLayersMessage != nil)
+    }
+
     @Test("failed editor saves keep the develop draft open and allow saving a new copy")
     @MainActor
     func failedEditorSaveKeepsDevelopDraftAndSavesCopy() async throws {

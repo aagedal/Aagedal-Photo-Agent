@@ -30,9 +30,10 @@ struct EditSliderRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .accessibilityHidden(true)
                 if let onReset, shouldShowReset {
                     Button {
-                        onReset()
+                        DevelopUndoActionName.perform(label, onReset)
                     } label: {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 9))
@@ -40,12 +41,15 @@ struct EditSliderRow: View {
                     }
                     .buttonStyle(.plain)
                     .help(resetHelp)
+                    .accessibilityLabel("Reset \(label)")
                 }
                 Spacer()
                 Text(formattedDisplayValue)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    // The slider element below speaks the label and value.
+                    .accessibilityHidden(true)
             }
             EditSlider(
                 value: $value,
@@ -62,7 +66,9 @@ struct EditSliderRow: View {
                     dragDisplayValue = dragValue
                     onDragValueChanged?(dragValue)
                 },
-                onReset: onReset
+                onReset: onReset,
+                label: label,
+                valueText: { formatter(displayValueTransform?($0) ?? $0) }
             )
             .frame(height: 16)
         }

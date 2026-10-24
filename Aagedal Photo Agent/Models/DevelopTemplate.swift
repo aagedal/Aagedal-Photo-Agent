@@ -78,55 +78,26 @@ nonisolated struct DevelopTemplate: Codable, Identifiable, Sendable, Equatable {
         return parts.isEmpty ? "No adjustments" : parts.joined(separator: " • ")
     }
 
-    /// Returns a copy suitable for a different image. Layer identifiers are
-    /// regenerated so every application owns independent masks/watermarks, while
-    /// decoder state and unknown ACR corrections remain attached to the target.
+    /// Returns a copy suitable for a different image (see `applicationResult(preserving:)`).
     func settingsForApplication(preserving target: CameraRawSettings?) -> CameraRawSettings {
-        var applied = settings.settingsForDevelopTemplate
+        applicationResult(preserving: target).settings
+    }
 
-        var maskIDMap: [UUID: UUID] = [:]
-        if let masks = applied.localAdjustments {
-            applied.localAdjustments = masks.map { mask in
-                var copy = mask
-                let newID = UUID()
-                maskIDMap[mask.id] = newID
-                copy.id = newID
-                return copy
-            }
-        }
-
-        var watermarkIDMap: [UUID: UUID] = [:]
-        if let watermarks = applied.watermarkLayers {
-            applied.watermarkLayers = watermarks.map { watermark in
-                var copy = watermark
-                let newID = UUID()
-                watermarkIDMap[watermark.id] = newID
-                copy.id = newID
-                return copy
-            }
-        }
-
-        if let order = applied.layerOrder {
-            applied.layerOrder = order.compactMap { ref in
-                switch ref {
-                case .global:
-                    return .global
-                case .mask(let id):
-                    return maskIDMap[id].map(LayerRef.mask)
-                case .watermark(let id):
-                    return watermarkIDMap[id].map(LayerRef.watermark)
-                }
-            }
-        }
-
-        applied.asShotNeutralTemperature = target?.asShotNeutralTemperature
-        applied.asShotNeutralTint = target?.asShotNeutralTint
-        applied.sourceHasHDRHeadroom = target?.sourceHasHDRHeadroom
-        applied.unparsedMaskCorrections = target?.unparsedMaskCorrections
-        if !includesCrop {
-            applied.crop = target?.crop
-        }
-        return applied
+    /// Applies the template to `target` the way an Adobe preset does: it never removes what it
+    /// doesn't contain. Scalar Global settings come from the template; collections it doesn't
+    /// carry (tone curve, HSL, Anonymizer, the crop when excluded or absent) stay with the
+    /// target; the template's masks and watermark layers are appended to the target's own with
+    /// fresh identities, so the target's masks (incl. Anonymizer face masks) and watermarks
+    /// always survive. Decoder state and unknown ACR corrections remain attached to the target.
+    func applicationResult(preserving target: CameraRawSettings?) -> DevelopLayerAppendResult {
+        let template = settings.settingsForDevelopTemplate
+        var result = CameraRawSettings.pastedResult(
+            template, onto: target, includeCrop: includesCrop,
+            maskIdentity: .fresh, watermarkIdentity: .fresh
+        )
+        // A template carries no paste marker: keep its stored value (or the target's).
+        result.settings.hasSettings = template.hasSettings ?? target?.hasSettings
+        return result
     }
 }
 

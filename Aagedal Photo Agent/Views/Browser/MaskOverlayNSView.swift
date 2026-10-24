@@ -324,7 +324,7 @@ final class MaskOverlayNSView: NSView {
 
         // Rotation readout while rotating
         if coordinator?.isDragging == true, coordinator?.dragType == .rotate {
-            let text = String(format: "%.1f°", maskGeometry.rotation) as NSString
+            let text = (maskGeometry.rotation.formatted(.number.precision(.fractionLength(1)).grouping(.never)) + "°") as NSString
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
                 .foregroundColor: NSColor.white,

@@ -843,6 +843,101 @@ struct DevelopInteractionBehaviorTests {
         #expect(single.asShotNeutralTemperature == 6500)
     }
 
+    @Test("Pasting a blur onto a photo with its own blur keeps both, and pasting twice adds nothing")
+    func pasteAppendsMasksWithoutDuplicates() throws {
+        var sourceBlur = MaskAdjustment(name: "Face A", anonymizer: AnonymizerSettings(amount: 70, blackOut: nil))
+        sourceBlur.geometry.centerX = 0.25
+        var source = CameraRawSettings(exposure2012: 0.5)
+        source.localAdjustments = [sourceBlur]
+
+        var targetBlur = MaskAdjustment(name: "Face B", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        targetBlur.geometry.centerX = 0.75
+        let targetWatermark = WatermarkLayer(libraryAssetID: UUID())
+        var target = CameraRawSettings(exposure2012: -0.2)
+        target.localAdjustments = [targetBlur]
+        target.watermarkLayers = [targetWatermark]
+
+        for paste in [CameraRawSettings.pasted, CameraRawSettings.pastedIntoEditor] {
+            let once = paste(source, target, false)
+            let masks = try #require(once.localAdjustments)
+            #expect(masks.count == 2)
+            #expect(masks[0] == targetBlur)
+            #expect(masks[1].anonymizer == sourceBlur.anonymizer)
+            #expect(masks[1].geometry == sourceBlur.geometry)
+            #expect(once.watermarkLayers == [targetWatermark])
+            #expect(once.exposure2012 == 0.5)
+
+            let twice = paste(source, once, false)
+            #expect(twice.localAdjustments == once.localAdjustments)
+        }
+    }
+
+    @Test("Paste duplicate detection survives an XMP round trip's zeros and rounding")
+    func pasteDuplicateDetectionToleratesRoundTrip() {
+        var mask = MaskAdjustment(name: "Sky", exposure: -0.5)
+        mask.geometry.centerX = 0.333333333
+        var reread = mask
+        reread.id = UUID()
+        reread.name = "Mask 1"
+        reread.geometry.centerX = 0.333333
+        reread.contrast = 0
+        reread.fullFrame = false
+
+        #expect(CameraRawSettings.layerFingerprint(mask, clearing: \.id, \.name)
+            == CameraRawSettings.layerFingerprint(reread, clearing: \.id, \.name))
+        var different = reread
+        different.exposure = -0.4
+        #expect(CameraRawSettings.layerFingerprint(mask, clearing: \.id, \.name)
+            != CameraRawSettings.layerFingerprint(different, clearing: \.id, \.name))
+    }
+
+    @Test("Paste respects the layer limit, prefers Anonymizer masks and keeps the target's chain")
+    func pasteRespectsLayerLimit() throws {
+        var targetMasks: [MaskAdjustment] = []
+        for index in 0..<(DevelopLayerLimits.maxEnabledMasks - 1) {
+            var mask = MaskAdjustment(name: "Own \(index)", exposure: 0.2)
+            mask.geometry.centerX = 0.1 + Double(index) * 0.05
+            targetMasks.append(mask)
+        }
+        var target = CameraRawSettings()
+        target.localAdjustments = targetMasks
+        target.layerOrder = targetMasks.map { LayerRef.mask($0.id) } + [.global]
+
+        var plain = MaskAdjustment(name: "Plain", exposure: 1)
+        plain.geometry.centerY = 0.9
+        var redaction = MaskAdjustment(name: "Redact", anonymizer: AnonymizerSettings(amount: nil, blackOut: true))
+        redaction.geometry.centerY = 0.1
+        var disabled = MaskAdjustment(name: "Off", exposure: 2)
+        disabled.enabled = false
+        var source = CameraRawSettings()
+        source.localAdjustments = [plain, redaction, disabled]
+
+        let result = CameraRawSettings.pastedResult(
+            source, onto: target, includeCrop: false,
+            maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
+        )
+        let masks = try #require(result.settings.localAdjustments)
+        #expect(Array(masks.prefix(targetMasks.count)) == targetMasks)
+        // One free enabled slot goes to the redaction; the disabled mask costs no slot.
+        #expect(masks.dropFirst(targetMasks.count).map(\.name) == ["Redact", "Off"])
+        #expect(DevelopLayerLimits.enabledMaskCount(in: result.settings) == DevelopLayerLimits.maxEnabledMasks)
+        #expect(result.skippedMasks == 1)
+        // The target's order (Global last) is kept; new layers follow it.
+        #expect(result.settings.layerOrder == target.layerOrder! + [.mask(redaction.id), .mask(disabled.id)])
+    }
+
+    @Test("Arrow-key slider stepping uses at least 1/200 of the range and Shift for 10x")
+    func sliderKeyboardStepping() {
+        #expect(EditSliderStepping.steppedValue(from: 0, range: -100...100, step: 1, direction: 1, large: false) == 1)
+        #expect(EditSliderStepping.steppedValue(from: 0, range: -100...100, step: 1, direction: -1, large: true) == -10)
+        let exposure = EditSliderStepping.steppedValue(from: 0, range: -5...5, step: 0.01, direction: 1, large: false)
+        #expect(abs(exposure - 0.05) < 1e-9)
+        #expect(EditSliderStepping.steppedValue(from: 99, range: -100...100, step: 1, direction: 1, large: true) == 100)
+        #expect(EditSliderStepping.direction(forKeyCode: 126) == 1)
+        #expect(EditSliderStepping.direction(forKeyCode: 125) == -1)
+        #expect(EditSliderStepping.direction(forKeyCode: 0) == nil)
+    }
+
     @Test("Reset develop adjustments clears every adjustment except crop and HDR mode")
     func developResetKeepsOnlyFraming() {
         let crop = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: 2, hasCrop: true)

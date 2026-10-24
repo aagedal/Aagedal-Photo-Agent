@@ -12,6 +12,7 @@
 		D13100000000000000000102 /* DevelopTemplateBatchExecutionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */; };
 		C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13000000000000000000101 /* RAWSourceDecoder.swift */; };
 		C12700000000000000000102 /* DevelopTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12700000000000000000101 /* DevelopTemplate.swift */; };
+		C12700000000000000000202 /* DevelopLayerMerge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12700000000000000000201 /* DevelopLayerMerge.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
@@ -322,6 +323,7 @@
 		D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateBatchExecutionServiceTests.swift; sourceTree = "<group>"; };
 		C13000000000000000000101 /* RAWSourceDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/RAWSourceDecoder.swift"; sourceTree = SOURCE_ROOT; };
 		C12700000000000000000101 /* DevelopTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DevelopTemplate.swift; path = "Aagedal Photo Agent/Models/DevelopTemplate.swift"; sourceTree = SOURCE_ROOT; };
+		C12700000000000000000201 /* DevelopLayerMerge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DevelopLayerMerge.swift; path = "Aagedal Photo Agent/Models/DevelopLayerMerge.swift"; sourceTree = SOURCE_ROOT; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -918,6 +920,7 @@
 				CA1600000000000000000003 /* MCPFaceScanReviewRequestStore.swift */,
 				C13000000000000000000101 /* RAWSourceDecoder.swift */,
 				C12700000000000000000101 /* DevelopTemplate.swift */,
+				C12700000000000000000201 /* DevelopLayerMerge.swift */,
 				C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */,
 				C91000000000000000000401 /* MCPMetadataTemplatePreview.swift */,
 				C80000000000000000000101 /* MetadataPreservationSnapshot.swift */,
@@ -1398,6 +1401,7 @@
 				CA1600000000000000000004 /* MCPFaceScanReviewRequestStore.swift in Sources */,
 				C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */,
 				C12700000000000000000102 /* DevelopTemplate.swift in Sources */,
+				C12700000000000000000202 /* DevelopLayerMerge.swift in Sources */,
 				C92000000000000000000402 /* MCPMetadataTemplateBatchPreview.swift in Sources */,
 				C91000000000000000000402 /* MCPMetadataTemplatePreview.swift in Sources */,
 				C80000000000000000000102 /* MetadataPreservationSnapshot.swift in Sources */,
