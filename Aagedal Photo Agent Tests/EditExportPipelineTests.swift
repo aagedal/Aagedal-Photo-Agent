@@ -5640,6 +5640,66 @@ struct ExportSavingReleaseFixTests {
     }
 }
 
+@Suite("FTP as-is overlay never touches Content Credentials")
+@MainActor
+struct FTPCredentialedOverlayTests {
+    @Test("Credentialed files are excluded from the overlay and their staged copy stays byte-identical")
+    func credentialedFilesUploadSignedOriginal() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("apa-ftp-c2pa-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let signed = dir.appendingPathComponent("signed.jpg")
+        let plain = dir.appendingPathComponent("plain.jpg")
+        let rep = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let jpeg = try #require(rep.representation(using: .jpeg, properties: [:]))
+        try jpeg.write(to: signed); try jpeg.write(to: plain)
+        for url in [signed, plain] {
+            try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(title: "Sidecar headline"), for: url)
+        }
+
+        let kept = await FTPUploadView.excludingCredentialed([signed, plain]) { $0 == signed }
+        #expect(kept == [plain])
+
+        // Backstop at the write: a credentialed source's staged copy is never rewritten.
+        let staged = dir.appendingPathComponent("staged.jpg")
+        try FileManager.default.copyItem(at: signed, to: staged)
+        let before = try Data(contentsOf: staged)
+        let refused = await FTPUploadExecutionAccess.applyAsIsOverlay(source: signed, staged: staged,
+            engine: SwiftExifWriteEngine(), isCredentialed: { _ in true })
+        #expect(refused == .noPendingEdits)
+        #expect(try Data(contentsOf: staged) == before)
+
+        let plainStaged = dir.appendingPathComponent("plain-staged.jpg")
+        try FileManager.default.copyItem(at: plain, to: plainStaged)
+        let applied = await FTPUploadExecutionAccess.applyAsIsOverlay(source: plain, staged: plainStaged,
+            engine: SwiftExifWriteEngine(), isCredentialed: { _ in false })
+        #expect(applied == .applied)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: plainStaged).title == "Sidecar headline")
+
+        // An ordinary file reads as uncredentialed; an unreadable one is treated as credentialed.
+        #expect(await !FTPUploadView.mayCarryC2PA(plain, readService: SwiftExifReadService()))
+        #expect(await FTPUploadView.mayCarryC2PA(dir.appendingPathComponent("missing.jpg"), readService: SwiftExifReadService()))
+    }
+
+    @Test("Template reviews skip a RAW+JPEG pair's JPEG with a readable reason")
+    func templateReviewSkipsPairedJPEG() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("apa-template-pair-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let raw = dir.appendingPathComponent("IMG_2.Arw")
+        let jpeg = dir.appendingPathComponent("IMG_2.jpg")
+        let lone = dir.appendingPathComponent("IMG_3.jpg")
+        for url in [raw, jpeg, lone] { try Data("x".utf8).write(to: url) }
+        #expect(DevelopTemplateBatchCaptureService.pairedNonRawPhotos(in: [jpeg, lone, raw]) == [jpeg])
+        let failure: any Error = DevelopTemplateBatchCaptureService.Failure.sharedRawSidecar
+        #expect(failure.localizedDescription.contains("RAW+JPEG pair"))
+        // Mixed-case RAW extensions are found too (case-sensitive volumes).
+        #expect(PhotoSidecarOwnership.developOwningRawSibling(of: jpeg)?.lastPathComponent == "IMG_2.Arw")
+    }
+}
+
 private actor FTPOverlayUploadProbe {
     struct Upload: Sendable { let url: URL; let title: String?; let description: String? }
     private(set) var uploads: [Upload] = []

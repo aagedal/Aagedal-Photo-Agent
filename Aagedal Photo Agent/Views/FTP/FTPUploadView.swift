@@ -509,8 +509,11 @@ struct FTPUploadView: View {
               sidecarSnapshot.requestedImageURLs == urls else { return }
         let sidecars = sidecarSnapshot.metadataByImageURL
         for url in urls {
+            // Only compare against an orientation actually read from the file; a failed
+            // embedded read must not turn into a rotation render.
             if let sidecarOrientation = sidecars[url]?.exifOrientation,
-               sidecarOrientation != (metadataMap[url]?.exifOrientation ?? 1) {
+               let embeddedOrientation = metadataMap[url]?.exifOrientation,
+               sidecarOrientation != embeddedOrientation {
                 info[url]?.hasSidecarRotation = true
             }
         }
@@ -545,6 +548,10 @@ struct FTPUploadView: View {
                 overlay.insert(url)
             }
         }
+        // Files with Content Credentials upload as their signed original: rewriting a copy's
+        // metadata would break the credential (they're the sidecar-mode files by design).
+        let reader = readService
+        overlay = await Self.excludingCredentialed(overlay) { await Self.mayCarryC2PA($0, readService: reader) }
         guard !Task.isCancelled,
               inspectionRequestID == requestID,
               inspectionRequestKey == requestKey else { return }
@@ -553,6 +560,20 @@ struct FTPUploadView: View {
         sidecarMergeableURLs = mergeable
         sidecarOverlayURLs = overlay
         isInspectingFiles = false
+    }
+
+    static func excludingCredentialed(_ urls: Set<URL>, isCredentialed: (URL) async -> Bool) async -> Set<URL> {
+        var result = urls
+        for url in urls {
+            if await isCredentialed(url) { result.remove(url) }
+        }
+        return result
+    }
+
+    /// Conservative: an unreadable file counts as possibly credentialed.
+    static func mayCarryC2PA(_ url: URL, readService: SwiftExifReadService) async -> Bool {
+        guard FileManager.default.isReadableFile(atPath: url.path) else { return true }
+        return (try? await readService.readTechnicalMetadata(url: url, includeNativeImageInfo: false))?.hasC2PA ?? true
     }
 
     /// True when applying the sidecar overlay (descriptive record, rating, label, GPS) to the

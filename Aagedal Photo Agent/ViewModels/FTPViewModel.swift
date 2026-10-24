@@ -19,7 +19,18 @@ nonisolated struct FTPUploadExecutionAccess: Sendable {
     /// Applies the source's sidecar metadata (the export overlay) onto a staged private copy
     /// of an as-is upload. Never called with the user's original as the destination.
     var overlay: @MainActor @Sendable (URL, URL, any MetadataWriteEngine) async -> SidecarIPTCOverlay.Outcome = { source, staged, engine in
-        await SidecarIPTCOverlay.apply(sourceURL: source, renderedURL: staged,
+        await FTPUploadExecutionAccess.applyAsIsOverlay(source: source, staged: staged, engine: engine) {
+            await FTPUploadView.mayCarryC2PA($0, readService: SwiftExifReadService())
+        }
+    }
+
+    /// Never rewrites a credentialed file's metadata (that would break its C2PA signature):
+    /// the staged copy then uploads byte-identical to the signed original.
+    @MainActor
+    static func applyAsIsOverlay(source: URL, staged: URL, engine: any MetadataWriteEngine,
+                                 isCredentialed: (URL) async -> Bool) async -> SidecarIPTCOverlay.Outcome {
+        guard await !isCredentialed(source) else { return .noPendingEdits }
+        return await SidecarIPTCOverlay.apply(sourceURL: source, renderedURL: staged,
             folderURL: source.deletingLastPathComponent(), writeEngine: engine)
     }
 }

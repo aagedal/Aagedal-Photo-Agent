@@ -1559,8 +1559,35 @@ final class MetadataViewModel {
         }
     }
 
+    /// The JPEG (any non-RAW) half of a RAW+JPEG pair shares the stem `.xmp` whose Camera Raw
+    /// block belongs to the RAW, so its Develop settings live in its own embedded XMP (Adobe
+    /// convention; an atomic metadata-only rewrite, no pixel recompression). Requests aimed at
+    /// the sidecar are routed to the embedded destination; everything else is unchanged.
+    nonisolated static func primaryDevelopMode(_ mode: MetadataWriteMode, for image: URL) -> MetadataWriteMode {
+        switch mode {
+        case .writeToXMPSidecar, .writeToFileAndXMPSidecar:
+            return PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: image) ? .writeToFile : mode
+        case .writeToFile, .historyOnly:
+            return mode
+        }
+    }
+
+    /// Why the selected photo's Primary Develop edit has no destination, or nil. A paired JPEG
+    /// carrying Content Credentials can't be embedded into without breaking them, and its
+    /// stem sidecar's develop block belongs to the RAW.
+    func primaryDevelopRefusal(for image: URL) -> String? {
+        guard selectedHasC2PA, let raw = PhotoSidecarOwnership.developOwningRawSibling(of: image) else { return nil }
+        return "\(image.lastPathComponent) has Content Credentials and shares its XMP sidecar with \(raw.lastPathComponent). "
+            + "Develop edits can't be saved into the JPEG without breaking its credentials, and the shared sidecar's "
+            + "develop settings belong to the RAW. Edit \(raw.lastPathComponent) instead."
+    }
+
+    /// The last persisted Primary Develop settings of the selected photo (what a refused edit
+    /// reverts to).
+    var persistedPrimaryDevelopSettings: CameraRawSettings? { previousEditingMetadata?.cameraRaw }
+
     /// Develop uses its own retained queue: generic metadata writes cannot cancel its only copy.
-    func commitPrimaryDevelopEdits(mode: MetadataWriteMode, onComplete: @escaping (MetadataCommitResult) -> Void) {
+    func commitPrimaryDevelopEdits(mode requestedMode: MetadataWriteMode, onComplete: @escaping (MetadataCommitResult) -> Void) {
         guard primaryDevelopReviewOwner == nil else {
             let message = "Finish the Primary Develop recovery review before accepting another edit."
             saveError = message; onComplete(.failed(message: message)); return
@@ -1570,6 +1597,16 @@ final class MetadataViewModel {
             let message = "Wait for one photo to finish loading before saving its Primary Develop edit."
             saveError = message; onComplete(.failed(message: message)); return
         }
+        // Refuse before anything is retained, so a refusal never blocks later edits.
+        if let refusal = primaryDevelopRefusal(for: image) {
+            if let previous = previousEditingMetadata {
+                editingMetadata.cameraRaw = previous.cameraRaw
+                editingMetadata.exifOrientation = previous.exifOrientation
+                if editingMetadata == previous { hasChanges = false }
+            }
+            saveError = refusal; onComplete(.failed(message: refusal)); return
+        }
+        let mode = Self.primaryDevelopMode(requestedMode, for: image)
         let edited = editingMetadata
         if let existing = retainedPrimaryDevelopWrites.last(where: {
             $0.imageURL == image && $0.folderURL == folder && $0.loadID == loadID

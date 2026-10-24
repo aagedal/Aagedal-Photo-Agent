@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Stem-named carriers may be used by more than one image, independently of voice memos.
@@ -33,20 +34,14 @@ nonisolated enum PhotoSidecarOwnership {
     }
 
     /// The same-stem RAW file that owns `imageURL`'s stem sidecar develop settings, if any.
+    /// Answered from a per-folder stem→RAW index (one directory listing per folder, reused
+    /// while the folder's modification time is unchanged), so folder loads, saves and NAS
+    /// volumes don't pay ~24 probes per photo. Extensions match case-insensitively.
     static func developOwningRawSibling(of imageURL: URL) -> URL? {
         guard !SupportedImageFormats.isRaw(url: imageURL) else { return nil }
-        let base = imageURL.deletingPathExtension()
-        let fm = FileManager.default
-        for ext in SupportedImageFormats.rawExtensions.sorted() {
-            for variant in [ext, ext.uppercased()] {
-                let candidate = base.appendingPathExtension(variant)
-                var isDirectory: ObjCBool = false
-                if fm.fileExists(atPath: candidate.path, isDirectory: &isDirectory), !isDirectory.boolValue {
-                    return candidate
-                }
-            }
-        }
-        return nil
+        return PhotoRawStemIndex.shared.rawFile(
+            forStem: imageURL.deletingPathExtension().lastPathComponent,
+            in: imageURL.deletingLastPathComponent())
     }
 
     /// The stem sidecar's develop settings as they apply to `imageURL` — nil for a non-RAW file
@@ -110,5 +105,51 @@ nonisolated struct StemSidecarDevelopOwnedByRawError: LocalizedError, Sendable {
         "\(imageURL.lastPathComponent) shares \(imageURL.deletingPathExtension().lastPathComponent).xmp with its RAW file \(rawURL.lastPathComponent). "
             + "Develop settings in that sidecar belong to the RAW, so edits to \(imageURL.lastPathComponent) can't be saved there. "
             + "Choose a metadata write preset that writes into the image file (Simple or Professional), or edit the RAW file instead."
+    }
+}
+
+/// Per-folder index of RAW files by lowercased stem. A cached listing is reused only while the
+/// folder's modification time (which changes whenever an entry is added, removed or renamed)
+/// is unchanged, and a listing taken within two seconds of that time is not cached, so coarse
+/// network-volume timestamps can't hide a RAW that arrived in the same tick.
+nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
+    static let shared = PhotoRawStemIndex()
+
+    private struct Entry {
+        let modification: timespec
+        let rawByStem: [String: URL]
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+    private let maximumFolders = 64
+
+    func rawFile(forStem stem: String, in folder: URL) -> URL? {
+        let key = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        var status = stat()
+        guard Darwin.lstat(key, &status) == 0 else { return nil }
+        let modification = status.st_mtimespec
+        if let cached = lock.withLock({ entries[key] }),
+           cached.modification.tv_sec == modification.tv_sec,
+           cached.modification.tv_nsec == modification.tv_nsec {
+            return cached.rawByStem[stem.lowercased()]
+        }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: key) else { return nil }
+        var rawByStem: [String: URL] = [:]
+        for name in names where !name.hasPrefix(".") {
+            let url = folder.appendingPathComponent(name)
+            guard SupportedImageFormats.rawExtensions.contains(url.pathExtension.lowercased()) else { continue }
+            let rawStem = url.deletingPathExtension().lastPathComponent.lowercased()
+            // Deterministic when several RAW formats share a stem.
+            if let existing = rawByStem[rawStem], existing.lastPathComponent < name { continue }
+            rawByStem[rawStem] = url
+        }
+        if Date().timeIntervalSince1970 - Double(modification.tv_sec) > 2 {
+            lock.withLock {
+                if entries.count >= maximumFolders { entries.removeAll() }
+                entries[key] = Entry(modification: modification, rawByStem: rawByStem)
+            }
+        }
+        return rawByStem[stem.lowercased()]
     }
 }

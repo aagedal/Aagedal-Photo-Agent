@@ -56,7 +56,13 @@ final class DevelopTemplateBatchReviewPresentation {
         guard !inputsLocked, let service, let model,
               let template = templates.first(where: { $0.id == selectedTemplateID }),
               !photos.isEmpty, photos.count <= DevelopTemplateBatchIntent.maximumPhotos else { return }
-        let selected = photos
+        // Skip (and report) RAW+JPEG pairs' JPEGs instead of failing the whole batch.
+        let paired = DevelopTemplateBatchCaptureService.pairedNonRawPhotos(in: photos)
+        let selected = photos.filter { !paired.contains($0) }
+        message = paired.isEmpty ? nil : "Skipped "
+            + paired.map(\.lastPathComponent).joined(separator: ", ") + ". "
+            + DevelopTemplateBatchCaptureService.sharedRawSidecarMessage
+        guard !selected.isEmpty else { return }
         await model.prepare { try await service.prepare(template: template, photos: selected) }
     }
 

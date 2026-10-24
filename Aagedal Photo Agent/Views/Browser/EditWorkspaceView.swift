@@ -4159,10 +4159,24 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// A RAW+JPEG pair's JPEG with Content Credentials has no Primary Develop destination
+    /// (embedding would break the credentials; the shared sidecar's crs is the RAW's). Revert
+    /// the edit and say why before it's published to the grid or retained for saving.
+    private func refusePrimaryDevelopIfNeeded() -> Bool {
+        guard developVersionCatalog?.activeVersionID == nil, metadataViewModel.hasChanges,
+              let url = selectedImageURL,
+              let refusal = metadataViewModel.primaryDevelopRefusal(for: url) else { return false }
+        installDevelopSettings(metadataViewModel.persistedPrimaryDevelopSettings)
+        metadataViewModel.saveError = refusal
+        workspaceSession.showNotice(refusal)
+        return true
+    }
+
     private func commitEditAdjustments() {
         // The placeholder buffer of a still-loading photo must never reach its sidecar or a
         // named version (see `updateCameraRaw`).
         guard isSelectedImageMetadataReady else { return }
+        guard !refusePrimaryDevelopIfNeeded() else { return }
         persistenceSession.performPersistence(
             hasChanges: metadataViewModel.hasChanges,
             editsNamedVersion: developVersionCatalog?.activeVersionID != nil,
@@ -4172,7 +4186,9 @@ struct EditWorkspaceView: View {
                 // NEVER rewritten in place by the editor. Embedding XMP into the source on every
                 // tweak races with the full-res mmap decode (CGImageSourceCreateWithURL) and
                 // crashes; edits bake into a file only on Export. Sidecar wins over embedded crs
-                // on reload for RAW and non-RAW sources.
+                // on reload for RAW and non-RAW sources. Exception: the JPEG of a RAW+JPEG pair
+                // keeps its develop embedded (atomic metadata-only replace) — MetadataViewModel
+                // routes its commits there because the shared sidecar's crs is the RAW's.
                 schedulePrimaryMetadataCommit(mode: .writeToXMPSidecar)
             },
             commitNamedVersion: scheduleActiveDevelopVersionSave
@@ -4188,6 +4204,7 @@ struct EditWorkspaceView: View {
     /// never written to the file.
     private func commitDevelopReset() {
         guard isSelectedImageMetadataReady else { return }
+        guard !refusePrimaryDevelopIfNeeded() else { return }
         persistenceSession.performPersistence(
             hasChanges: metadataViewModel.hasChanges,
             editsNamedVersion: developVersionCatalog?.activeVersionID != nil,

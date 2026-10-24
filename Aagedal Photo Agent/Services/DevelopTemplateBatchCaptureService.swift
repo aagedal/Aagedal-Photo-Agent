@@ -25,10 +25,28 @@ nonisolated struct DevelopTemplateBatchCapture: Sendable {
 /// caller must separately retain this exact intent and authenticate consent before execution.
 /// Synchronous parsing/decoding should run off the main actor.
 nonisolated struct DevelopTemplateBatchCaptureService: Sendable {
-    enum Failure: Error, Equatable, Sendable {
+    enum Failure: LocalizedError, Equatable, Sendable {
         case invalidSelection, invalidTemplateRevision, metadataConflict, pendingOrientation, byteLimit
         /// The non-RAW half of a RAW+JPEG pair: its stem `.xmp` develop block belongs to the RAW.
         case sharedRawSidecar
+
+        var errorDescription: String? {
+            switch self {
+            case .sharedRawSidecar:
+                return DevelopTemplateBatchCaptureService.sharedRawSidecarMessage
+            case .invalidSelection, .invalidTemplateRevision, .metadataConflict, .pendingOrientation, .byteLimit:
+                return nil
+            }
+        }
+    }
+
+    static let sharedRawSidecarMessage = "The JPEG of a RAW+JPEG pair keeps its Develop settings in the file itself, "
+        + "while template reviews write the shared XMP sidecar, whose develop settings belong to the RAW. "
+        + "Apply the template to the RAW, or edit the JPEG in Develop."
+
+    /// The paired JPEGs among `photos`; the native review skips and reports them.
+    static func pairedNonRawPhotos(in photos: [URL]) -> [URL] {
+        photos.filter { PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: $0) }
     }
     typealias Decoder = @Sendable (Data, URL) throws -> MCPDevelopTemplatePreview.DecoderState
     let facade: MCPAutomationFacade
