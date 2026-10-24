@@ -275,7 +275,6 @@ struct AnalysisAnnotationToolbar: View {
                     .labelStyle(.iconOnly)
             }
             .buttonStyle(.borderless)
-            .keyboardShortcut("z", modifiers: .command)
             .disabled(isReadOnly || !canUndo)
             .help(undoActionName.map { "Undo \($0) (⌘Z)" } ?? "Undo (⌘Z)")
 
@@ -284,7 +283,6 @@ struct AnalysisAnnotationToolbar: View {
                     .labelStyle(.iconOnly)
             }
             .buttonStyle(.borderless)
-            .keyboardShortcut("z", modifiers: [.command, .shift])
             .disabled(isReadOnly || !canRedo)
             .help(redoActionName.map { "Redo \($0) (⇧⌘Z)" } ?? "Redo (⇧⌘Z)")
 
@@ -335,6 +333,14 @@ struct AnalysisAnnotationToolbar: View {
                 style.color = .palette(color)
             }
         }
+        .background {
+            AnalysisUndoShortcutView(
+                canUndo: !isReadOnly && canUndo,
+                canRedo: !isReadOnly && canRedo,
+                onUndo: onUndo,
+                onRedo: onRedo
+            )
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(contextLabel) markup tools")
     }
@@ -375,6 +381,74 @@ struct AnalysisAnnotationToolbar: View {
         .labelsHidden()
         .fixedSize()
         .disabled(isReadOnly)
+    }
+}
+
+/// Markup ⌘Z / ⇧⌘Z without a button key equivalent, which would take undo away from a focused
+/// text field. While a text editor is first responder the event goes on to the standard Edit menu
+/// Undo, so the field undoes its own typing.
+private struct AnalysisUndoShortcutView: NSViewRepresentable {
+    let canUndo: Bool
+    let canRedo: Bool
+    let onUndo: () -> Void
+    let onRedo: () -> Void
+
+    func makeNSView(context: Context) -> ShortcutView {
+        ShortcutView()
+    }
+
+    func updateNSView(_ view: ShortcutView, context: Context) {
+        view.canUndo = canUndo
+        view.canRedo = canRedo
+        view.onUndo = onUndo
+        view.onRedo = onRedo
+    }
+
+    static func dismantleNSView(_ view: ShortcutView, coordinator: ()) {
+        view.removeMonitor()
+    }
+
+    final class ShortcutView: NSView {
+        var canUndo = false
+        var canRedo = false
+        var onUndo: (() -> Void)?
+        var onRedo: (() -> Void)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            removeMonitor()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                guard let self,
+                      let window = self.window,
+                      event.window === window, window.isKeyWindow,
+                      window.attachedSheet == nil, NSApp.modalWindow == nil,
+                      !self.isHiddenOrHasHiddenAncestor,
+                      !(window.firstResponder is NSText),
+                      !(window.firstResponder is NSTextField),
+                      event.charactersIgnoringModifiers?.lowercased() == "z",
+                      modifiers.contains(.command),
+                      modifiers.isDisjoint(with: [.control, .option]) else {
+                    return event
+                }
+                let isRedo = modifiers.contains(.shift)
+                guard isRedo ? self.canRedo : self.canUndo else { return event }
+                if isRedo {
+                    self.onRedo?()
+                } else {
+                    self.onUndo?()
+                }
+                return nil
+            }
+        }
+
+        func removeMonitor() {
+            guard let monitor else { return }
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
     }
 }
 

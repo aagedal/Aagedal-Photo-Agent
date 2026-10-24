@@ -540,6 +540,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // The Browser metadata panel has no Caption FIFO; save its typed/unsaved edits too.
                 try await MetadataEditorTerminationFlush.shared.flush()
             },
+            analysisFlush: {
+                try await AnalysisWorkspaceTerminationFlush.shared.flush()
+            },
             developFlush: {
                 await DevelopVersionFlushCoordinator.shared.flush(.applicationTermination)
             }
@@ -571,6 +574,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .caption:
             alert.messageText = "Caption Save Failed"
             alert.informativeText = "Caption sidecar changes could not be saved: \(failure.message)\n\nRetry the retained drafts, keep the app open, or explicitly quit without saving them."
+        case .analysis:
+            alert.messageText = "Analysis Save Failed"
+            alert.informativeText = "The latest Image Analysis case or map edits could not be saved: \(failure.message)\n\nRetry saving, keep the app open, or explicitly quit without saving these changes."
         case .develop:
             alert.messageText = "Named Version Save Failed"
             alert.informativeText = "The active Develop version could not be saved: \(failure.message)\n\nRetry saving, keep the app open, or explicitly quit without saving these changes."

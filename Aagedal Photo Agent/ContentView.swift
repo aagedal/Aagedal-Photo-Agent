@@ -79,6 +79,26 @@ extension MainViewMode {
     var templateCommandTarget: TemplateCommandTarget {
         self == .editing ? .develop : .metadata
     }
+
+    /// Image Analysis hides the Browser selection behind a source-bound evidence case. Commands
+    /// that would trash, move, rename, rotate, or rewrite the files of that hidden selection (and
+    /// so remove the evidence or change its source bytes) are ignored while Analysis is shown.
+    func suppressesHiddenSelectionCommand(_ command: AppCommand) -> Bool {
+        guard self == .imageAnalysis else { return false }
+        switch command {
+        case .deleteSelected, .moveRejectedToFolder,
+             .rotateClockwise, .rotateCounterclockwise,
+             .renameSelected, .duplicateSelected,
+             .resetAllEdits, .removeAllIPTC,
+             .setRating, .setLabel,
+             .processVariablesSelected, .processVariablesAll,
+             .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
+             .pasteIPTCMetadata, .addNewMask, .removeOrResetSelectedEditLayer:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 struct FTPUploadItem: Identifiable {
@@ -105,13 +125,15 @@ private struct C2PADetailPresentation: Identifiable {
 private struct SafetyAndCullingHandlers: ViewModifier {
     let browserViewModel: BrowserViewModel
     let commandRouter: AppCommandRouter
+    let mainViewMode: MainViewMode
     let performAfterMetadataFlush: (@escaping @MainActor () -> Void) -> Void
     @Binding var backupEditedFolderItem: BackupEditedItem?
 
     func body(content: Content) -> some View {
         content
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
-                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { return }
+                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning,
+                      !mainViewMode.suppressesHiddenSelectionCommand(delivery.command) else { return }
                 switch delivery.command {
                 case .backupEditedFiles:
                     if let folder = browserViewModel.currentFolderURL {
@@ -436,6 +458,7 @@ struct ContentView: View {
                 commandRouter: commandRouter,
                 loadTechnicalMetadata: loadTechnicalMetadata,
                 performAfterMetadataFlush: performAfterCaptionFlush,
+                selectAdjacentAnalysisImage: selectAdjacentAnalysisImage(offset:),
                 technicalMetadataCache: $technicalMetadataCache,
                 technicalMetadata: $technicalMetadata
             ))
@@ -897,7 +920,8 @@ struct ContentView: View {
     private var contentWithFileOperationHandlers: some View {
         contentWithOverlay
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
-                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { return }
+                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning,
+                      !mainViewMode.suppressesHiddenSelectionCommand(delivery.command) else { return }
                 switch delivery.command {
                 case .renderSelected:
                     let urls = browserViewModel.selectedImages.map(\.url)
@@ -967,6 +991,7 @@ struct ContentView: View {
             .modifier(SafetyAndCullingHandlers(
                 browserViewModel: browserViewModel,
                 commandRouter: commandRouter,
+                mainViewMode: mainViewMode,
                 performAfterMetadataFlush: performAfterCaptionFlush,
                 backupEditedFolderItem: $backupEditedFolderItem
             ))
@@ -981,7 +1006,8 @@ struct ContentView: View {
                 developTemplateViewModel.loadTemplates()
             }
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
-                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { return }
+                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning,
+                      !mainViewMode.suppressesHiddenSelectionCommand(delivery.command) else { return }
                 switch delivery.command {
                 case .processVariablesSelected:
                     if metadataViewModel.hasRetainedVariableWrites {
@@ -1055,7 +1081,7 @@ struct ContentView: View {
                 case .showStructuredKeywords:
                     openWindow(id: "structuredKeywords")
                 case .showKnownPeopleDatabase:
-                    openPeopleDatabase()
+                    performAfterAnalysisClose { openPeopleDatabase() }
                 case .registerOpenFolderForSidebar(let url):
                     panes.panes[0].registerOpenFolderForSidebar(url)
                 default:
@@ -1117,6 +1143,7 @@ struct ContentView: View {
                 BackgroundOperationMonitor.shared.isUploading = ftpViewModel.isUploading
                 BackgroundOperationMonitor.shared.isRenderingForUpload = ftpViewModel.isRendering
                 MetadataEditorTerminationFlush.shared.register { try await commitBrowserMetadataEditor() }
+                AnalysisWorkspaceTerminationFlush.shared.register(analysisWorkspaceModel)
             }
     }
 
@@ -1358,8 +1385,17 @@ struct ContentView: View {
     /// editor visible when persistence fails.
     private func leaveEditWorkspaceIfNeeded(_ transition: @escaping @MainActor () -> Void) {
         performAfterCaptionFlush {
-            performAfterDevelopFlush(reason: .workspaceExit, transition)
+            performAfterAnalysisClose {
+                performAfterDevelopFlush(reason: .workspaceExit, transition)
+            }
         }
+    }
+
+    /// Analysis keeps its case editable after a failed save; leaving it from outside the
+    /// workspace raises the same Retry Save / Discard / Cancel prompt as its Close button.
+    private func performAfterAnalysisClose(_ transition: @escaping @MainActor () -> Void) {
+        guard mainViewMode == .imageAnalysis else { transition(); return }
+        analysisWorkspaceModel.requestClose(thenPerform: transition)
     }
 
     private func requestWriteAllPendingMetadata() {
@@ -1499,7 +1535,7 @@ struct ContentView: View {
     }
 
     private func openEditWorkspace() {
-        if mainViewMode == .caption || mainViewMode == .metadataReview {
+        if mainViewMode == .caption || mainViewMode == .metadataReview || mainViewMode == .imageAnalysis {
             leaveEditWorkspaceIfNeeded {
                 mainViewMode = .browser
                 openEditWorkspace()
@@ -1992,6 +2028,21 @@ struct ContentView: View {
             selectedURLs: browserViewModel.selectedImageIDs,
             lastClickedURL: browserViewModel.lastClickedImageURL
         )
+    }
+
+    /// Previous/Next Image in Analysis step through the workspace's own photo rail (the same
+    /// list and open path as clicking a rail thumbnail) instead of the hidden Browser selection.
+    private func selectAdjacentAnalysisImage(offset: Int) {
+        let images = browserViewModel.sortedImages.filter {
+            $0.isImageFile && SupportedImageFormats.isSupported(url: $0.url)
+        }
+        guard let current = analysisWorkspaceModel.sourceURL?.standardizedFileURL,
+              let index = images.firstIndex(where: { $0.url.standardizedFileURL == current }),
+              images.indices.contains(index + offset) else { return }
+        let image = images[index + offset]
+        browserViewModel.selectedImageIDs = [image.url]
+        browserViewModel.lastClickedImageURL = image.url
+        analysisWorkspaceModel.requestOpenInCurrentWorkspace(image)
     }
 
     private func openImageAnalysis() {
@@ -4495,6 +4546,8 @@ struct ContentViewModifiers: ViewModifier {
     let commandRouter: AppCommandRouter
     let loadTechnicalMetadata: () -> Void
     let performAfterMetadataFlush: (@escaping @MainActor () -> Void) -> Void
+    /// Previous/Next Image while Image Analysis is shown (offset -1 or 1).
+    let selectAdjacentAnalysisImage: (Int) -> Void
     @Binding var technicalMetadataCache: [URL: TechnicalMetadata]
     @Binding var technicalMetadata: TechnicalMetadata?
     @Environment(\.scenePhase) private var scenePhase
@@ -4502,6 +4555,85 @@ struct ContentViewModifiers: ViewModifier {
     @State private var selectionLoadTask: Task<Void, Never>?
     private let selectionDebounceNanoseconds: UInt64 = 200_000_000
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
+
+    /// Kept out of `body` so the modifier chain stays within the type-checker budget.
+    private func handleBrowserCommand(_ delivery: AppCommandDelivery?) {
+        guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning,
+              !mainViewMode.suppressesHiddenSelectionCommand(delivery.command) else { return }
+        switch delivery.command {
+        case .openFolder:
+            performAfterMetadataFlush { browserViewModel.openFolder() }
+        case .openRecentFolder(let url):
+            let targetPane = panes.active
+            performAfterMetadataFlush { targetPane.loadFolder(url: url, addToOpenFolders: true) }
+        // Full screen shows one photo of a possibly larger selection; menu key
+        // equivalents reach here instead of the full-screen window's key handler.
+        case .setRating(let rating):
+            if browserViewModel.isFullScreen {
+                browserViewModel.setRatingOnFullScreenImage(rating)
+            } else {
+                browserViewModel.setRating(rating)
+            }
+        case .setLabel(let label):
+            if browserViewModel.isFullScreen {
+                browserViewModel.setLabelOnFullScreenImage(label)
+            } else {
+                browserViewModel.setLabel(label)
+            }
+        case .selectPreviousImage:
+            if mainViewMode == .imageAnalysis {
+                selectAdjacentAnalysisImage(-1)
+            } else if mainViewMode != .caption {
+                browserViewModel.selectPrevious()
+            }
+        case .selectNextImage:
+            if mainViewMode == .imageAnalysis {
+                selectAdjacentAnalysisImage(1)
+            } else if mainViewMode != .caption {
+                browserViewModel.selectNext()
+            }
+        case .rotateClockwise:
+            if browserViewModel.isFullScreen {
+                browserViewModel.rotateFullScreenImage(clockwise: true)
+            } else {
+                browserViewModel.rotateClockwise()
+            }
+        case .rotateCounterclockwise:
+            if browserViewModel.isFullScreen {
+                browserViewModel.rotateFullScreenImage(clockwise: false)
+            } else {
+                browserViewModel.rotateCounterclockwise()
+            }
+        case .openInExternalEditor:
+            openSelectedInExternalEditor()
+        case .deleteSelected:
+            performAfterMetadataFlush {
+                if browserViewModel.isFullScreen {
+                    browserViewModel.confirmDeleteFullScreenImage()
+                } else {
+                    browserViewModel.confirmDeleteSelectedImages()
+                }
+            }
+        case .renderSelected, .advancedExportSelected, .renderAll,
+             .saveAsJPEG, .saveAsPNG, .archiveRAW,
+             .renameSelected, .duplicateSelected,
+             .resetAllEdits, .removeAllIPTC,
+             .showImport, .showWebImport, .backupEditedFiles, .backupEditedFilesForFolder,
+             .openInInternalEditor,
+             .moveRejectedToFolder,
+             .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
+             .setScopeMode, .toggleGamutClipping,
+             .uploadSelected, .uploadAll,
+             .processVariablesSelected, .processVariablesAll, .transcribeVoiceMemosSelected,
+             .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
+             .writeAllPendingMetadata, .openCaptionWorkspace,
+             .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
+             .showVariableReference, .showRawMetadata, .showStructuredKeywords,
+             .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+             .restoreCaptionEditorFocus:
+            break
+        }
+    }
 
     func body(content: Content) -> some View {
         let base = content
@@ -4563,76 +4695,7 @@ struct ContentViewModifiers: ViewModifier {
                 handleDrop(providers: providers)
             }
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
-                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { return }
-                switch delivery.command {
-                case .openFolder:
-                    performAfterMetadataFlush { browserViewModel.openFolder() }
-                case .openRecentFolder(let url):
-                    let targetPane = panes.active
-                    performAfterMetadataFlush { targetPane.loadFolder(url: url, addToOpenFolders: true) }
-                // Full screen shows one photo of a possibly larger selection; menu key
-                // equivalents reach here instead of the full-screen window's key handler.
-                case .setRating(let rating):
-                    if browserViewModel.isFullScreen {
-                        browserViewModel.setRatingOnFullScreenImage(rating)
-                    } else {
-                        browserViewModel.setRating(rating)
-                    }
-                case .setLabel(let label):
-                    if browserViewModel.isFullScreen {
-                        browserViewModel.setLabelOnFullScreenImage(label)
-                    } else {
-                        browserViewModel.setLabel(label)
-                    }
-                case .selectPreviousImage:
-                    if mainViewMode != .caption {
-                        browserViewModel.selectPrevious()
-                    }
-                case .selectNextImage:
-                    if mainViewMode != .caption {
-                        browserViewModel.selectNext()
-                    }
-                case .rotateClockwise:
-                    if browserViewModel.isFullScreen {
-                        browserViewModel.rotateFullScreenImage(clockwise: true)
-                    } else {
-                        browserViewModel.rotateClockwise()
-                    }
-                case .rotateCounterclockwise:
-                    if browserViewModel.isFullScreen {
-                        browserViewModel.rotateFullScreenImage(clockwise: false)
-                    } else {
-                        browserViewModel.rotateCounterclockwise()
-                    }
-                case .openInExternalEditor:
-                    openSelectedInExternalEditor()
-                case .deleteSelected:
-                    performAfterMetadataFlush {
-                        if browserViewModel.isFullScreen {
-                            browserViewModel.confirmDeleteFullScreenImage()
-                        } else {
-                            browserViewModel.confirmDeleteSelectedImages()
-                        }
-                    }
-                case .renderSelected, .advancedExportSelected, .renderAll,
-                     .saveAsJPEG, .saveAsPNG, .archiveRAW,
-                     .renameSelected, .duplicateSelected,
-                     .resetAllEdits, .removeAllIPTC,
-                     .showImport, .showWebImport, .backupEditedFiles, .backupEditedFilesForFolder,
-                     .openInInternalEditor,
-                     .moveRejectedToFolder,
-                     .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
-                     .setScopeMode, .toggleGamutClipping,
-                     .uploadSelected, .uploadAll,
-                     .processVariablesSelected, .processVariablesAll, .transcribeVoiceMemosSelected,
-                     .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
-                     .writeAllPendingMetadata, .openCaptionWorkspace,
-                     .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
-                     .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-                     .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
-                     .restoreCaptionEditorFocus:
-                    break
-                }
+                handleBrowserCommand(delivery)
             }
             .onReceive(NotificationCenter.default.publisher(for: .automationDraftDidChange)) { notification in
                 guard let photoURL = notification.object as? URL,

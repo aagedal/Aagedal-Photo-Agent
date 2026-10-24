@@ -20,6 +20,34 @@ struct ApplicationTerminationFlushCoordinatorTests {
         #expect(stages == [.caption, .develop])
     }
 
+    @Test("Analysis saves flush between Caption and Develop, and their failure stops Develop")
+    func analysisBetweenCaptionAndDevelop() async {
+        var stages: [ApplicationTerminationFlushStage] = []
+        var analysisFails = false
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            captionFlush: { stages.append(.caption) },
+            analysisFlush: {
+                stages.append(.analysis)
+                if analysisFails { throw InjectedTerminationFailure.analysis }
+            },
+            developFlush: {
+                stages.append(.develop)
+                return .succeeded
+            }
+        )
+
+        #expect(await coordinator.attempt() == .succeeded)
+        #expect(stages == [.caption, .analysis, .develop])
+
+        stages = []
+        analysisFails = true
+        #expect(await coordinator.attempt() == .failed(ApplicationTerminationFlushFailure(
+            stage: .analysis,
+            message: InjectedTerminationFailure.analysis.localizedDescription
+        )))
+        #expect(stages == [.caption, .analysis])
+    }
+
     @Test("Caption failure stops Develop and reports the exact stage")
     func captionFailureStopsDevelop() async {
         var developCalls = 0
@@ -167,11 +195,13 @@ struct ApplicationTerminationFlushCoordinatorTests {
 
 private enum InjectedTerminationFailure: LocalizedError {
     case caption
+    case analysis
     case sidecar
 
     var errorDescription: String? {
         switch self {
         case .caption: "Injected caption failure"
+        case .analysis: "Injected analysis failure"
         case .sidecar: "Injected sidecar failure"
         }
     }

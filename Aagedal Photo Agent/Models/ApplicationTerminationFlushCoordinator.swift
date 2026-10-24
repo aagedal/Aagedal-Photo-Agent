@@ -2,6 +2,7 @@ import Foundation
 
 nonisolated enum ApplicationTerminationFlushStage: String, Equatable, Sendable {
     case caption
+    case analysis
     case develop
 }
 
@@ -22,20 +23,24 @@ nonisolated enum ApplicationTerminationFailureChoice: Equatable, Sendable {
 }
 
 /// Testable ordering and retry boundary for application termination. Caption persistence always
-/// completes before Develop is asked to flush; a failure stops the later stage.
+/// completes first, then pending Analysis saves, then Develop; a failure stops the later stages.
 @MainActor
 final class ApplicationTerminationFlushCoordinator {
     typealias CaptionFlush = @MainActor () async throws -> Void
+    typealias AnalysisFlush = @MainActor () async throws -> Void
     typealias DevelopFlush = @MainActor () async -> DevelopVersionFlushOutcome
 
     private let captionFlush: CaptionFlush
+    private let analysisFlush: AnalysisFlush
     private let developFlush: DevelopFlush
 
     init(
         captionFlush: @escaping CaptionFlush,
+        analysisFlush: @escaping AnalysisFlush = {},
         developFlush: @escaping DevelopFlush
     ) {
         self.captionFlush = captionFlush
+        self.analysisFlush = analysisFlush
         self.developFlush = developFlush
     }
 
@@ -45,6 +50,15 @@ final class ApplicationTerminationFlushCoordinator {
         } catch {
             return .failed(ApplicationTerminationFlushFailure(
                 stage: .caption,
+                message: error.localizedDescription
+            ))
+        }
+
+        do {
+            try await analysisFlush()
+        } catch {
+            return .failed(ApplicationTerminationFlushFailure(
+                stage: .analysis,
                 message: error.localizedDescription
             ))
         }
