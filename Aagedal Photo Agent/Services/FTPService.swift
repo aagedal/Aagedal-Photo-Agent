@@ -430,16 +430,17 @@ struct FTPService: Sendable {
     }
 
     nonisolated static func netrcQuoted(_ value: String) -> String {
+        // Escape by Unicode scalar, not Character: a quote or backslash followed by a combining
+        // mark forms one Character that would otherwise slip through unescaped.
         var quoted = "\""
-        for character in value {
-            switch character {
+        for scalar in value.unicodeScalars {
+            switch scalar {
             case "\\": quoted += "\\\\"
             case "\"": quoted += "\\\""
             case "\n": quoted += "\\n"
             case "\r": quoted += "\\r"
-            case "\r\n": quoted += "\\r\\n"
             case "\t": quoted += "\\t"
-            default: quoted.append(character)
+            default: quoted.unicodeScalars.append(scalar)
             }
         }
         return quoted + "\""

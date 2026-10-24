@@ -3633,6 +3633,13 @@ final class KnownPeopleService {
         }
         let root = knownPeopleDirectory
         guard !Self.isReservedDestination(root) else { return (0, 0) }
+        // An unmigrated legacy store, or a pending embedding-version reset, only shows its real
+        // counts after the full load runs its one-time preparation; take that path once.
+        let storedVersion = AppDefaults.store.object(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion) as? Int
+        if FileManager.default.fileExists(atPath: legacyDatabaseFileURL.path)
+            || storedVersion != FaceRecognitionDefaults.embeddingVersion {
+            return getStatistics()
+        }
         let people = await Self.readPersonSummaries(in: peopleDirectory, tombstoneRetention: Self.tombstoneRetention)
         return (people.count, people.reduce(0) { $0 + $1.embeddingCount })
     }

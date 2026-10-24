@@ -572,6 +572,16 @@ final class ThumbnailService {
         cancelInFlightWork()
     }
 
+    /// Drops every edited (Develop-rendered) thumbnail and its producers, keeping originals —
+    /// for changes such as the RAW decode profile that alter every edited render.
+    func clearEditedCache() {
+        editedCache.removeAllObjects()
+        for request in editedInFlightTasks.values {
+            request.task.cancel()
+        }
+        editedInFlightTasks.removeAll()
+    }
+
     /// Cancels producers without discarding completed thumbnails. Warning pressure uses this
     /// lighter operation; critical pressure follows it with `clearCache` in eviction order.
     private func cancelInFlightWork() {

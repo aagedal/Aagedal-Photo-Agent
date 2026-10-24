@@ -1027,6 +1027,10 @@ struct EditWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             releaseHeldDevelopInput()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .rawDecodeSettingsDidChange)) { _ in
+            // Neighbours decoded ahead of navigation used the previous decode settings.
+            metalPipeline?.discardSpeculativeTextures()
+        }
         .onChange(of: isOverlayPresented, initial: true) { _, presented in
             // The key monitor closure captured this view value at install time, so the
             // flag must live in the reference-typed input session to be read live.

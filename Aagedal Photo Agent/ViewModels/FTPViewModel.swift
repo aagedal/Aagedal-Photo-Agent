@@ -462,7 +462,14 @@ final class FTPViewModel {
         let edited = editingConnection
         mutateStoredConnections { stored in
             if let index = stored.firstIndex(where: { $0.id == edited.id }) {
-                stored[index] = edited
+                var merged = edited
+                // The other window may have acknowledged this exact transport since the form
+                // opened; keep that unless the form changed the transport itself.
+                if merged.firstUploadAcknowledgedSecurity == nil,
+                   stored[index].transportSecurity == edited.transportSecurity {
+                    merged.firstUploadAcknowledgedSecurity = stored[index].firstUploadAcknowledgedSecurity
+                }
+                stored[index] = merged
             } else {
                 stored.append(edited)
             }

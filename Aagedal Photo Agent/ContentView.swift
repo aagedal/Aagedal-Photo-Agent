@@ -4666,9 +4666,10 @@ struct ContentViewModifiers: ViewModifier {
         return base
             .modifier(AutoRefreshModifier(panes: panes, metadataViewModel: metadataViewModel))
             .onChange(of: settingsViewModel.rawDecodeProfile) { _, _ in
-                // Full-screen cache keys don't include the decode profile; drop the old decodes
-                // (shared by all panes) so re-opening an image shows the new profile.
-                browserViewModel.fullScreenImageCache.clearAll()
+                discardRAWDecodeCaches(browserViewModel)
+            }
+            .onChange(of: settingsViewModel.rawDecoderVersionPreference) { _, _ in
+                discardRAWDecodeCaches(browserViewModel)
             }
             .onChange(of: ftpViewModel.uploadCompleted) { _, completed in
                 // When an upload that rendered files finishes, re-scan and expand each source
@@ -4819,4 +4820,13 @@ struct MetadataPanelDivider: View {
             )
             .zIndex(1)
     }
+}
+
+/// Full-screen decodes, edited thumbnails and Develop's adjacent textures are all keyed by URL
+/// alone (shared by every pane), so a new RAW decode profile or decoder version must drop them.
+@MainActor
+private func discardRAWDecodeCaches(_ browserViewModel: BrowserViewModel) {
+    browserViewModel.fullScreenImageCache.clearAll()
+    browserViewModel.thumbnailService.clearEditedCache()
+    NotificationCenter.default.post(name: .rawDecodeSettingsDidChange, object: nil)
 }

@@ -594,6 +594,8 @@ extension Notification.Name {
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
+    /// The RAW decode profile or decoder version changed; caches keyed by URL alone are stale.
+    static let rawDecodeSettingsDidChange = Notification.Name("rawDecodeSettingsDidChange")
 }
 
 

@@ -95,6 +95,9 @@ struct FTPCurlArgumentsTests {
             password: "p a\"s#s\\w\td\nx"
         )
         #expect(content == "machine ftp.example.com login \"photo desk\" password \"p a\\\"s#s\\\\w\\td\\nx\"\n")
+        // A quote or backslash followed by a combining mark is a single Character; it must still
+        // be escaped, and a CRLF pair becomes two escapes.
+        #expect(FTPService.netrcQuoted("a\"\u{0301}b\\\u{0301}c\r\n") == "\"a\\\"\u{0301}b\\\\\u{0301}c\\r\\n\"")
         #expect(throws: FTPService.FTPError.self) {
             try FTPService.netrcContent(host: "ftp.example.com", username: "u", password: "")
         }

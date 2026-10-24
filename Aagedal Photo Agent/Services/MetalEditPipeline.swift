@@ -3461,6 +3461,12 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // MARK: - Texture Pre-Caching
 
+    /// Drops adjacent-image textures decoded ahead of navigation (keyed by URL only), e.g. after
+    /// the RAW decode profile changes so neighbours aren't shown with the old decode.
+    nonisolated func discardSpeculativeTextures() {
+        speculativeTextureCacheState.removeAll()
+    }
+
     /// Pre-render a CIImage to a Metal texture and cache it by URL.
     /// Call from a background task for adjacent images (prev/next).
     nonisolated func precacheTexture(for url: URL, ciImage: CIImage, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
@@ -4065,6 +4071,7 @@ final class MetalLivePreviewPipeline {
             neutralTint: neutralTint
         )
     }
+    nonisolated func discardSpeculativeTextures() { engine.discardSpeculativeTextures() }
     nonisolated func warmupCIContext() { engine.warmupCIContext() }
     nonisolated func solveWhiteBalance(
         forNeutralLinearRGB rgb: SIMD3<Float>
