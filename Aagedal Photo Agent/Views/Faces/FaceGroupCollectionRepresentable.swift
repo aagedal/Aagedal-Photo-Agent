@@ -25,4 +25,8 @@ struct FaceGroupCollectionRepresentable: NSViewControllerRepresentable {
         nsViewController.callbacks = callbacks
         nsViewController.isResizing = isResizing
     }
+
+    static func dismantleNSViewController(_ nsViewController: FaceGroupCollectionController, coordinator: ()) {
+        nsViewController.tearDown()
+    }
 }

@@ -131,7 +131,7 @@ struct CleanFeedRenderView: NSViewRepresentable {
     let comparisonLayout: ComparisonLayout
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(feedPipeline: controller.feedPipeline)
+        Coordinator(feedPipeline: controller.ensureFeedPipeline())
     }
 
     func makeNSView(context: Context) -> MTKView {

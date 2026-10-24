@@ -630,6 +630,9 @@ final class AuraFaceComponentManager: ObservableObject {
                 }
                 self.publish(resolution)
                 KnownPeopleService.shared.reloadAfterStorageChange()
+                // The reload itself no longer reads synchronously; load now so the deferred
+                // embedding-space migration runs right after the verified install, as before.
+                _ = KnownPeopleService.shared.loadDatabase()
             } catch {
                 guard let self, self.requestID == id, !Task.isCancelled else { return }
                 self.lastError = error.localizedDescription

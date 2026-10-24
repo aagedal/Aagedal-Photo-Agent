@@ -89,7 +89,19 @@ final class CleanFeedController {
             if isEnabled && !hasExternalDisplay {
                 isEnabled = false  // assigning inside didSet does not re-trigger didSet
             }
+            if isEnabled { ensureFeedPipeline() }
         }
+    }
+
+    /// Builds the feed pipeline on first use (enable / display selection). Attempted once: a
+    /// device without Metal support keeps returning `nil` without retrying every call.
+    @discardableResult
+    func ensureFeedPipeline() -> MetalLivePreviewPipeline? {
+        if let feedPipeline { return feedPipeline }
+        guard !feedPipelineCreationAttempted else { return nil }
+        feedPipelineCreationAttempted = true
+        feedPipeline = makeFeedPipeline()
+        return feedPipeline
     }
 
     /// Persisted target display. `nil` → first available external screen.
@@ -157,15 +169,27 @@ final class CleanFeedController {
     /// Dedicated compute pipeline for the feed. Shares the edit pipeline's source
     /// texture by reference (wired via `MetalLivePreviewPipeline.mirror`) but keeps its own
     /// viewport so it can letterbox for the secondary display's aspect ratio.
-    let feedPipeline: MetalLivePreviewPipeline?
+    ///
+    /// Created lazily on first enable (`ensureFeedPipeline()`): `shared` is touched by the View
+    /// menu and ContentView before the first frame, and building a full Metal pipeline there
+    /// (shader library, LUT textures, Develop-prefetch registration) delayed launch for users
+    /// who never use Clean Feed. `nil` until then.
+    @ObservationIgnored private(set) var feedPipeline: MetalLivePreviewPipeline?
+    @ObservationIgnored private var feedPipelineCreationAttempted = false
+    @ObservationIgnored private let makeFeedPipeline: @MainActor () -> MetalLivePreviewPipeline?
 
     /// Redraw / continuous-render hooks, registered by the render view's coordinator.
     let hooks = CleanFeedHooks()
 
-    private init() {
-        let device = MetalPreviewView.Coordinator.device
-        let queue = MetalPreviewView.Coordinator.commandQueue
-        self.feedPipeline = MetalLivePreviewPipeline(device: device, commandQueue: queue)
+    init(
+        makeFeedPipeline: @escaping @MainActor () -> MetalLivePreviewPipeline? = {
+            MetalLivePreviewPipeline(
+                device: MetalPreviewView.Coordinator.device,
+                commandQueue: MetalPreviewView.Coordinator.commandQueue
+            )
+        }
+    ) {
+        self.makeFeedPipeline = makeFeedPipeline
         loadTargetDisplay()
         loadComparisonLayout()
         refreshDisplays()

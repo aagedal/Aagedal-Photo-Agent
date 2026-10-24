@@ -49,7 +49,7 @@ final class DevelopCleanFeedPublicationCoordinator {
         renderCurrent: () -> Void
     ) {
         guard isWorkspaceActive, let editorPipeline else { return }
-        if enabled, let feedPipeline = controller.feedPipeline {
+        if enabled, let feedPipeline = controller.ensureFeedPipeline() {
             editorPipeline.mirror = feedPipeline
             feedPipeline.asShotTemperature = editorPipeline.asShotTemperature
             feedPipeline.asShotTint = editorPipeline.asShotTint

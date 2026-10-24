@@ -9,8 +9,8 @@ import Foundation
 ///   appear as `{synonym}` lines under the parent keyword.
 /// - `relatedKeywords` are extra IPTC keywords attached to this node; these
 ///   appear as `#keyword` lines under the parent keyword.
-struct StructuredKeyword: Identifiable, Hashable {
-    enum Kind: Hashable {
+nonisolated struct StructuredKeyword: Identifiable, Hashable, Sendable {
+    enum Kind: Hashable, Sendable {
         case keyword
         case container
     }

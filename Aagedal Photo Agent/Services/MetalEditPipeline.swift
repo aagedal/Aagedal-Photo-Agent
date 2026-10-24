@@ -1172,6 +1172,48 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    /// Releases every per-render GPU resource of the process-lifetime offscreen (export) engine:
+    /// raster-mask alpha array + envelope scratch, the watermark texture array, decoded AI mattes
+    /// and render-graph intermediates. Without this the singleton kept the last export's
+    /// textures alive for the rest of the session (up to ~0.8 GB after a 45 MP render with 8
+    /// masks). Every offscreen render rebuilds these from settings anyway, so the per-render cost
+    /// is a texture allocation (and a small watermark PNG decode), negligible next to the render.
+    /// The cache keys are reset with the textures so no later render mistakes "nil" for "current".
+    nonisolated private func releaseTransientRenderResources() {
+        updateBrushRasterState { $0 = ExecutorOwnedBrushRasterState.Storage() }
+        updateWatermarkState {
+            $0.texture = nil
+            $0.lastBuiltAssetIDs = []
+            $0.lastBuiltLibraryRevision = -1
+            $0.lastBuiltAspects = [:]
+        }
+        releaseImageScopedScratch()
+    }
+
+    /// Frees Core Image's cached programs/intermediates for this engine's contexts.
+    nonisolated func clearCoreImageCaches() {
+        ciContext.clearCaches()
+        wbCIContext.clearCaches()
+    }
+
+    /// Test seam: number of per-render GPU textures (mask alpha, envelope scratch, watermark
+    /// array, AI mattes, ping/pong) this engine currently retains.
+    nonisolated var retainedTransientRenderTextureCount: Int {
+        preconditionOnStateExecutor()
+        let raster = brushRasterStateSnapshot()
+        let scratch = executorOwnedRenderScratchState.snapshot()
+        let singles: [MTLTexture?] = [
+            raster.alphaTexture, raster.envelopeScratch,
+            watermarkStateSnapshot().texture, scratch.ping, scratch.pong,
+        ]
+        return singles.compactMap { $0 }.count + scratch.aiMaskTextures.count
+    }
+
+    /// Test seam: transient textures retained by the shared offscreen (export) engine.
+    nonisolated static func offscreenRetainedTransientTextureCountForTesting() -> Int {
+        offscreenRenderer.retainedTransientTextureCount()
+    }
+
     /// Test seam: number of decoded AI mattes currently retained by this engine.
     nonisolated var cachedAIMaskTextureCount: Int {
         preconditionOnStateExecutor()
@@ -1396,6 +1438,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         private let queue: DispatchSerialQueue
         private let worker: MetalOffscreenRenderWorker
         private let pipeline: MetalEditPipeline?
+        private var pressureRegistration: ImageMemoryCoordinator.Registration?
 
         init() {
             let ownerQueue = DispatchSerialQueue(
@@ -1413,6 +1456,16 @@ final class MetalEditPipeline: @unchecked Sendable {
                 )
             } else {
                 pipeline = nil
+            }
+            // Critical pressure: drop whatever Core Image still caches (programs, any
+            // intermediates). Hop onto the owner queue so this never races a render.
+            if let pipeline {
+                pressureRegistration = ImageMemoryCoordinator.shared.registerPressureEviction(
+                    level: .critical
+                ) {
+                    // The executor (and its engine) live for the whole process.
+                    ownerQueue.async { pipeline.clearCoreImageCaches() }
+                }
             }
         }
 
@@ -1437,6 +1490,11 @@ final class MetalEditPipeline: @unchecked Sendable {
                     outputSize: outputSize
                 )
             }
+        }
+
+        func retainedTransientTextureCount() -> Int {
+            dispatchPrecondition(condition: .notOnQueue(queue))
+            return queue.sync { pipeline?.retainedTransientRenderTextureCount ?? 0 }
         }
 
         func renderAsync(
@@ -1576,10 +1634,16 @@ final class MetalEditPipeline: @unchecked Sendable {
             self.blitRasterMaskPipelineState = nil
         }
 
-        self.ciContext = CIContext(mtlDevice: device, options: [
+        var ciOptions: [CIContextOption: Any] = [
             .workingFormat: CIFormat.RGBAh,
             .workingColorSpace: Self.colorSpace,
-        ])
+        ]
+        if case .offscreenRenderQueue = stateExecutor {
+            // Export renders are one-off per image: cached intermediates are never reused by the
+            // next image and would otherwise accumulate in this process-lifetime context.
+            ciOptions[.cacheIntermediates] = false
+        }
+        self.ciContext = CIContext(mtlDevice: device, options: ciOptions)
         // Separate CIContext for WB extraction — never blocked by large texture renders
         self.wbCIContext = CIContext(mtlDevice: device, options: [
             .workingFormat: CIFormat.RGBAf,
@@ -1687,6 +1751,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         for slot in 0..<Self.maxMasks {
             uploadIdentityColorLUT(slot: slot)
         }
+        // Only live engines precache adjacent images (`precacheTexture` is exposed solely through
+        // `MetalLivePreviewPipeline`). Registering the export engine would halve the editor's
+        // speculative share for a cache it never fills.
+        if case .offscreenRenderQueue = stateExecutor { return }
         let cacheState = speculativeTextureCacheState
         let registration = imageMemoryCoordinator.register(
             kind: .developSpeculative,
@@ -2531,7 +2599,12 @@ final class MetalEditPipeline: @unchecked Sendable {
               let compositeState = compositeBrushPipelineState,
               let blitState = blitRasterMaskPipelineState,
               !sources.isEmpty, size.width > 0, size.height > 0 else {
-            brushAlphaTexture = nil
+            // Drop the full-resolution envelope scratch with the alpha array; it is lazily
+            // re-created on the next raster-mask rebuild.
+            updateBrushRasterState {
+                $0.alphaTexture = nil
+                $0.envelopeScratch = nil
+            }
             updateRenderScratchState { $0.aiMaskTextures = [] }
             return nil
         }
@@ -3924,6 +3997,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         outputSize: CGSize? = nil
     ) -> CIImage? {
         preconditionOnStateExecutor()
+        // This engine lives for the whole process. The returned CIImage only references the
+        // output texture (the compute pass has completed by then), so every mask/watermark/
+        // scratch texture can be released as soon as this render returns.
+        defer { releaseTransientRenderResources() }
         guard let source else { return nil }
         guard var settings, !Self.isIdentitySettings(settings) else { return nil }
         // `source` is display-oriented but mask geometry is sensor-frame —

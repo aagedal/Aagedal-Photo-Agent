@@ -70,6 +70,33 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         for task in observationTasks {
             task.cancel()
         }
+        for task in prefetchTasks.values {
+            task.cancel()
+        }
+    }
+
+    /// Set once SwiftUI dismantles the hosting representable. A dismantled grid stops all
+    /// observation and prefetch work immediately (rather than whenever ARC gets to it) and must
+    /// never touch shared view-model state such as the one-shot reveal request again.
+    private(set) var isTornDown = false
+    /// Number of data updates this grid has applied (diagnostics/tests).
+    private(set) var dataApplyCount = 0
+
+    /// Stops every observation loop and speculative prefetch. Called from
+    /// `dismantleNSViewController`, which SwiftUI invokes when the grid is replaced (folder
+    /// loads swap it for a progress view, workspace switches remove it).
+    func tearDown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+        for task in observationTasks {
+            task.cancel()
+        }
+        observationTasks.removeAll()
+        for task in prefetchTasks.values {
+            task.cancel()
+        }
+        prefetchTasks.removeAll()
+        NotificationCenter.default.removeObserver(self, name: .rawDecodeSettingsDidChange, object: nil)
     }
 
     // MARK: - View Lifecycle
@@ -189,27 +216,27 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     // MARK: - Observation
 
     private func startObservation() {
+        // Every loop captures the view model, never `self`, across its suspension and
+        // re-acquires a weak `self` after each change. Holding `self` while suspended kept every
+        // replaced grid alive (and re-applying snapshots) for the rest of the session.
+        let viewModel = self.viewModel
+
         // 1. Data loop — watch visibleImages and showOriginalThumbnails
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                await withCheckedContinuation { continuation in
-                    withObservationTracking {
-                        _ = self.viewModel.visibleImages
-                        _ = self.viewModel.showOriginalThumbnails
-                    } onChange: {
-                        Task { @MainActor in continuation.resume() }
-                    }
+                await awaitObservationChange {
+                    _ = viewModel.visibleImages
+                    _ = viewModel.showOriginalThumbnails
                 }
                 // Batch writes publish one row per awaited completion. Apply at most once per
                 // display frame so a 2,000-photo rating run doesn't walk the grid per photo;
                 // the latest rows are read after the wait, so nothing is dropped.
                 let frame = Duration.milliseconds(16)
-                if let last = self.lastDataApply, last.duration(to: .now) < frame {
+                if let last = self?.lastDataApply, last.duration(to: .now) < frame {
                     try? await Task.sleep(for: frame - last.duration(to: .now))
                 }
-                guard !Task.isCancelled else { return }
-                self.applyDataUpdate(images: self.viewModel.visibleImages)
+                guard !Task.isCancelled, let self, !self.isTornDown else { return }
+                self.applyDataUpdate(images: viewModel.visibleImages)
             }
         })
 
@@ -222,37 +249,24 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         // 3. Layout loop — watch thumbnailScale
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                let scale = await withCheckedContinuation { continuation in
-                    withObservationTracking {
-                        _ = self.viewModel.thumbnailScale
-                    } onChange: {
-                        Task { @MainActor [self] in
-                            continuation.resume(returning: self.viewModel.thumbnailScale)
-                        }
-                    }
+                await awaitObservationChange {
+                    _ = viewModel.thumbnailScale
                 }
-                guard !Task.isCancelled else { return }
-                self.updateLayout(scale: scale)
+                guard !Task.isCancelled, let self, !self.isTornDown else { return }
+                self.updateLayout(scale: viewModel.thumbnailScale)
             }
         })
 
         // 4. Focus loop — watch shouldRestoreGridFocus
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                let shouldRestore = await withCheckedContinuation { continuation in
-                    withObservationTracking {
-                        _ = self.viewModel.shouldRestoreGridFocus
-                    } onChange: {
-                        Task { @MainActor [self] in
-                            continuation.resume(returning: self.viewModel.shouldRestoreGridFocus)
-                        }
-                    }
+                await awaitObservationChange {
+                    _ = viewModel.shouldRestoreGridFocus
                 }
-                guard !Task.isCancelled, shouldRestore else { continue }
+                guard !Task.isCancelled, let self, !self.isTornDown else { return }
+                guard viewModel.shouldRestoreGridFocus else { continue }
                 self.view.window?.makeFirstResponder(self.collectionView)
-                self.viewModel.shouldRestoreGridFocus = false
+                viewModel.shouldRestoreGridFocus = false
             }
         })
 
@@ -291,7 +305,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
             _ = self.viewModel.lastClickedImageURL
         } onChange: { [weak self] in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, !self.isTornDown else { return }
                 self.updateVisibleSelections(
                     selectedIDs: self.viewModel.selectedImageIDs,
                     lastClicked: self.viewModel.lastClickedImageURL
@@ -304,6 +318,8 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     // MARK: - Data Updates
 
     private func applyDataUpdate(images: [ImageFile]) {
+        guard !isTornDown else { return }
+        dataApplyCount &+= 1
         lastDataApply = .now
         // Consumed by every data update, so a stale request can't make a later refresh scroll.
         let userInitiated = viewModel.consumeRevealActiveRequest()
@@ -503,6 +519,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     // MARK: - NSCollectionViewPrefetching
 
     func collectionView(_ collectionView: NSCollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        guard !isTornDown else { return }
         let service = viewModel.thumbnailService
         let showOriginals = viewModel.showOriginalThumbnails
         for indexPath in indexPaths {

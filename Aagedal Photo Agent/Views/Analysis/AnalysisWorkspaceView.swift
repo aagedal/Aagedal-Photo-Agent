@@ -220,6 +220,8 @@ struct AnalysisWorkspaceView: View {
             reportExportTask?.cancel()
             evidenceExportTask?.cancel()
             projectArchiveTask?.cancel()
+            // Up to four 2,048 px RGBAh previews (~256 MB) are only useful inside Analysis.
+            AnalysisSourcePreviewCache.shared.removeAll()
         }
     }
 
@@ -5291,6 +5293,35 @@ private final class AnalysisSourcePreviewCache {
     private var entries: [(identity: SourcePreviewIdentity, image: CGImage)] = []
     private var inFlight: [SourcePreviewIdentity: Decode] = [:]
     private var prefetchIdentity: SourcePreviewIdentity?
+    /// This fixed-size cache sits outside the proportional budget; it still yields on memory
+    /// pressure (alongside the other derived analysis rasters, at the warning tier).
+    private var pressureRegistration: ImageMemoryCoordinator.Registration?
+
+    private init() {
+        pressureRegistration = ImageMemoryCoordinator.shared.registerPressureEviction(
+            level: .warning
+        ) { [weak self] in
+            Task { @MainActor in self?.evictForMemoryPressure() }
+        }
+    }
+
+    /// Memory pressure: drop cached previews and the speculative prefetch, but keep decodes a
+    /// visible view is still waiting for.
+    private func evictForMemoryPressure() {
+        entries.removeAll()
+        if let prefetch = prefetchIdentity {
+            prefetchIdentity = nil
+            cancelIfUnwanted(prefetch)
+        }
+    }
+
+    /// Drops every cached preview and cancels outstanding decodes (workspace closed).
+    func removeAll() {
+        entries.removeAll()
+        prefetchIdentity = nil
+        for decode in inFlight.values { decode.task.cancel() }
+        inFlight.removeAll()
+    }
 
     private final class Decode {
         let task: Task<CGImage?, Never>

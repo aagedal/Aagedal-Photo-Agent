@@ -87,7 +87,12 @@ final class CaptionPreviewPipeline {
     private var isDecoding = false
     private var nextWaiterID: UInt64 = 0
 
+    /// The 320 MB preview LRU sits outside the proportional image budget, so it registers for
+    /// memory pressure directly (warning tier, like the full-screen display previews).
+    private var pressureRegistration: ImageMemoryCoordinator.Registration?
+
     init(countLimit: Int = 5, costLimit: Int = 320 * 1_024 * 1_024,
+         memoryCoordinator: ImageMemoryCoordinator = .shared,
          decoder: @escaping Decoder = { url, settings, orientation, maxPixelSize in
              await FullScreenImageCache.decodedEditedPreview(
                  for: url, settings: settings, orientation: orientation, screenMaxPx: maxPixelSize)
@@ -95,6 +100,15 @@ final class CaptionPreviewPipeline {
         self.countLimit = max(1, countLimit)
         self.costLimit = max(1, costLimit)
         self.decoder = decoder
+        pressureRegistration = memoryCoordinator.registerPressureEviction(level: .warning) { [weak self] in
+            Task { @MainActor in self?.evictCachedImagesForMemoryPressure() }
+        }
+    }
+
+    /// Memory pressure: drop cached renderings. Decodes in flight are kept, since the visible
+    /// photo may be waiting for one; they re-populate at most one entry each.
+    func evictCachedImagesForMemoryPressure() {
+        entries.removeAll()
     }
 
     /// A cached rendering of the same variant at least as large as requested.

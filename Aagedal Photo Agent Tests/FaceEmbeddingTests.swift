@@ -868,6 +868,45 @@ struct FaceEmbeddingTests {
         #expect(throws: CoreMLFaceEmbedder.EmbedError.self) { try embedder.validateNativeScanModel(capability) }
     }
 
+    @Test func idleModelUnloadsAndReloadsOnNextRequest() async throws {
+        guard let url = CoreMLFaceEmbedder.bundledModelURL() else { return }
+        let coordinator = ImageMemoryCoordinator(observesSystemPressure: false)
+        let embedder = CoreMLFaceEmbedder(
+            modelURL: url, idleUnloadDelay: 0.05, memoryCoordinator: coordinator
+        )
+        let capability = try embedder.prepareNativeScanModel()
+        // Bounded wait for the idle timer to release the model.
+        let deadline = ContinuousClock.now + .seconds(3)
+        while embedder.isModelLoaded, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!embedder.isModelLoaded)
+        // Unloading for memory does not revoke proof that this installation loads.
+        try embedder.validateNativeScanModel(capability)
+
+        let face = try #require(CGContext(
+            data: nil, width: 112, height: 112, bitsPerComponent: 8, bytesPerRow: 448,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )?.makeImage())
+        let vector = try await embedder.embed(face)
+        #expect(vector.count == embedder.dimension)
+    }
+
+    @Test func criticalPressureUnloadsAnIdleModel() throws {
+        guard let url = CoreMLFaceEmbedder.bundledModelURL() else { return }
+        let coordinator = ImageMemoryCoordinator(observesSystemPressure: false)
+        let embedder = CoreMLFaceEmbedder(
+            modelURL: url, idleUnloadDelay: 3_600, memoryCoordinator: coordinator
+        )
+        _ = try embedder.prepareNativeScanModel()
+        #expect(embedder.isModelLoaded)
+        coordinator.handleMemoryPressure(.warning)
+        #expect(embedder.isModelLoaded)
+        coordinator.handleMemoryPressure(.critical)
+        #expect(!embedder.isModelLoaded)
+    }
+
     @Test func omittedModelHasExplicitUnavailableState() async {
         let embedder = CoreMLFaceEmbedder(modelURL: nil)
 

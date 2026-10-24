@@ -5162,7 +5162,7 @@ struct BrushRasterizationTests {
             ("Aagedal Photo Agent/ViewModels/ScopeViewModel.swift",
              "var metalEditPipeline: MetalLivePreviewPipeline?"),
             ("Aagedal Photo Agent/Views/CleanFeed/CleanFeedController.swift",
-             "let feedPipeline: MetalLivePreviewPipeline?"),
+             "@ObservationIgnored private(set) var feedPipeline: MetalLivePreviewPipeline?"),
             ("Aagedal Photo Agent/Views/CleanFeed/CleanFeedView.swift",
              "let feedPipeline: MetalLivePreviewPipeline?"),
         ] {

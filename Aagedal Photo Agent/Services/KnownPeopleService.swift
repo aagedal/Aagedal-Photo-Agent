@@ -1192,8 +1192,18 @@ final class KnownPeopleService {
         return url
     }
 
-    /// Drops all in-memory state so the next access re-reads from disk. Called
-    /// after the backing directory changes (iCloud sync toggled on/off).
+    /// Drops in-memory state after the backing directory changes (iCloud sync toggled on/off,
+    /// the cloud watcher resolving the container, a model install) and re-reads the store.
+    ///
+    /// The re-read no longer runs synchronously here: coordinated reads + decode of every person
+    /// file blocked the main thread (at launch, via the cloud watcher). The snapshot is assembled
+    /// off-main and published with `.knownPeopleDatabaseDidChange` when it lands. The previous
+    /// snapshot is still dropped immediately: serving it during the read window would let a
+    /// synchronous mutation write a stale record over newer synced data. A caller that needs the
+    /// data before the background read finishes therefore falls back to the synchronous load
+    /// (exactly the old behaviour), and the background result is discarded in that case.
+    /// Stores that need repair writes (legacy migration, conflict merges, embedding migration,
+    /// tombstone GC) are left cold and repaired by that first synchronous load.
     func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) {
         storageRevision &+= 1
         cachedDirectory = resolvedStorageURL
@@ -1202,8 +1212,63 @@ final class KnownPeopleService {
         featurePrintCache.removeAllObjects()
         personThumbnailCache.removeAllObjects()
         embeddingThumbnailCache.removeAllObjects()
-        _ = loadDatabase()
+        scheduleBackgroundDatabaseReload()
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+    }
+
+    /// In-flight off-main reload started by `reloadAfterStorageChange`.
+    private var backgroundReloadTask: Task<Void, Never>?
+    /// Bumped on every `database` assignment, so a background snapshot never replaces state that
+    /// was loaded, mutated or invalidated after its read began.
+    private var databaseGeneration: UInt64 = 0
+
+    /// Awaits the in-flight background reload (tests and callers that must observe its result).
+    func waitForBackgroundDatabaseReload() async {
+        await backgroundReloadTask?.value
+    }
+
+    private func scheduleBackgroundDatabaseReload() {
+        backgroundReloadTask?.cancel()
+        let revision = storageRevision
+        // Captured while `database` is known to be nil (just dropped by the caller).
+        let generation = databaseGeneration
+        backgroundReloadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let root = try? await self.resolveDirectoryInBackground(),
+                  !Task.isCancelled, revision == self.storageRevision,
+                  generation == self.databaseGeneration else { return }
+            // Repairs (embedding-space migration included) stay on the existing lazy path.
+            let outcome: KnownPeopleDatabaseSnapshotReader.Outcome
+            if self.embeddingVersionNeedsMigration {
+                outcome = .needsRepair
+            } else {
+                outcome = await KnownPeopleDatabaseSnapshotReader.read(root: root)
+            }
+            guard !Task.isCancelled, revision == self.storageRevision,
+                  generation == self.databaseGeneration else { return }
+            let normalizedRoot = root.standardizedFileURL
+            // Mirror loadDatabase(): never cache a listing while an import, reset or migration
+            // owns this root.
+            guard !Self.isReservedDestination(root),
+                  Self.importCommitRoot != normalizedRoot else { return }
+            switch outcome {
+            case .clean(let loaded):
+                self.database = loaded
+                self.backgroundReloadTask = nil
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+            case .needsRepair:
+                // Leave the database cold. Repairs (legacy migration, conflict merges, embedding
+                // migration, GC) keep running lazily on the next synchronous access, exactly as
+                // before; running them here, at an arbitrary later moment, could race an
+                // admitted background migration of the same files.
+                self.backgroundReloadTask = nil
+            }
+        }
+    }
+
+    private var embeddingVersionNeedsMigration: Bool {
+        AppDefaults.store.object(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion) as? Int
+            != FaceRecognitionDefaults.embeddingVersion
     }
 
     // MARK: - Per-person file layout
@@ -1283,7 +1348,10 @@ final class KnownPeopleService {
     // MARK: - In-Memory Cache
 
     private var database: KnownPeopleDatabase? {
-        didSet { rebuildPeopleIndex() }
+        didSet {
+            databaseGeneration &+= 1
+            rebuildPeopleIndex()
+        }
     }
     private var peopleIndex: [UUID: Int] = [:]
     /// Boxed decoded embedding for `NSCache` (which requires class values).
