@@ -409,34 +409,38 @@ final class SettingsViewModel {
     @ObservationIgnored private var c2paOperationRequestID: UUID?
     @ObservationIgnored private var templatesFolderRequestID: UUID?
     @ObservationIgnored nonisolated(unsafe) private var templatesFolderLoadTask: Task<Void, Never>?
+    /// True while `applyStoredValues()` re-reads preferences, so the property observers don't
+    /// write the values they were just given back to UserDefaults (and on to iCloud).
+    @ObservationIgnored private var isApplyingStoredValues = false
+    @ObservationIgnored nonisolated(unsafe) private var preferencesSyncObserver: NSObjectProtocol?
     /// Ephemeral navigation request consumed by the app's Settings scene.
     var requestedDestination: SettingsDestination? = nil
     var rawRenderAsHDR: Bool {
-        didSet { AppDefaults.store.set(rawRenderAsHDR, forKey: UserDefaultsKeys.rawRenderAsHDR) }
+        didSet { persist(rawRenderAsHDR, forKey: UserDefaultsKeys.rawRenderAsHDR) }
     }
 
     var rawDecodeProfile: RAWDecodeProfile {
-        didSet { AppDefaults.store.set(rawDecodeProfile.rawValue, forKey: UserDefaultsKeys.rawDecodeProfile) }
+        didSet { persist(rawDecodeProfile.rawValue, forKey: UserDefaultsKeys.rawDecodeProfile) }
     }
 
     var rawDecoderVersionPreference: RAWDecoderVersionPreference {
-        didSet { AppDefaults.store.set(rawDecoderVersionPreference.rawValue, forKey: UserDefaultsKeys.rawDecoderVersionPreference) }
+        didSet { persist(rawDecoderVersionPreference.rawValue, forKey: UserDefaultsKeys.rawDecoderVersionPreference) }
     }
 
     var fileVisibility: BrowserFileVisibility {
         didSet {
-            AppDefaults.store.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
+            persist(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
             NotificationCenter.default.post(name: .showAllFilesChanged, object: nil)
         }
     }
 
     var showOriginalThumbnails: Bool {
-        didSet { AppDefaults.store.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails) }
+        didSet { persist(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails) }
     }
 
     var hiddenDevelopSliders: Set<DevelopSlider> {
         didSet {
-            AppDefaults.store.set(
+            persist(
                 hiddenDevelopSliders.map(\.rawValue).sorted(),
                 forKey: UserDefaultsKeys.hiddenDevelopSliders
             )
@@ -445,7 +449,7 @@ final class SettingsViewModel {
 
     var developSectionOrder: [DevelopPanelSection] {
         didSet {
-            AppDefaults.store.set(
+            persist(
                 developSectionOrder.map(\.rawValue),
                 forKey: UserDefaultsKeys.developSectionOrder
             )
@@ -457,7 +461,7 @@ final class SettingsViewModel {
             let existing = AppDefaults.store.stringArray(
                 forKey: UserDefaultsKeys.hiddenIPTCMetadataFields
             )
-            AppDefaults.store.set(
+            persist(
                 MetadataFieldID.persistedHiddenEditorFields(
                     hiddenIPTCMetadataFields,
                     preserving: existing
@@ -469,6 +473,7 @@ final class SettingsViewModel {
 
     var orderedIPTCMetadataFields: [MetadataFieldID] {
         didSet {
+            guard !isApplyingStoredValues else { return }
             MetadataFieldID.saveEditorFieldOrder(orderedIPTCMetadataFields)
         }
     }
@@ -582,11 +587,11 @@ final class SettingsViewModel {
     }
 
     var defaultExternalEditor: String {
-        didSet { AppDefaults.store.set(defaultExternalEditor.isEmpty ? nil : defaultExternalEditor, forKey: UserDefaultsKeys.defaultExternalEditor) }
+        didSet { persist(defaultExternalEditor.isEmpty ? nil : defaultExternalEditor, forKey: UserDefaultsKeys.defaultExternalEditor) }
     }
 
     var defaultEditDestination: DefaultEditDestination {
-        didSet { AppDefaults.store.set(defaultEditDestination.rawValue, forKey: UserDefaultsKeys.defaultEditDestination) }
+        didSet { persist(defaultEditDestination.rawValue, forKey: UserDefaultsKeys.defaultEditDestination) }
     }
 
     var defaultExternalEditorName: String {
@@ -595,43 +600,43 @@ final class SettingsViewModel {
     }
 
     var faceCleanupPolicy: FaceCleanupPolicy {
-        didSet { AppDefaults.store.set(faceCleanupPolicy.rawValue, forKey: UserDefaultsKeys.faceCleanupPolicy) }
+        didSet { persist(faceCleanupPolicy.rawValue, forKey: UserDefaultsKeys.faceCleanupPolicy) }
     }
 
     var metadataWritePreset: MetadataWritePreset {
-        didSet { AppDefaults.store.set(metadataWritePreset.rawValue, forKey: UserDefaultsKeys.metadataWritePreset) }
+        didSet { persist(metadataWritePreset.rawValue, forKey: UserDefaultsKeys.metadataWritePreset) }
     }
 
     var metadataWriteModeNonC2PA: MetadataWriteMode {
-        didSet { AppDefaults.store.set(metadataWriteModeNonC2PA.rawValue, forKey: UserDefaultsKeys.metadataWriteModeNonC2PA) }
+        didSet { persist(metadataWriteModeNonC2PA.rawValue, forKey: UserDefaultsKeys.metadataWriteModeNonC2PA) }
     }
 
     var metadataWriteModeC2PA: MetadataWriteMode {
-        didSet { AppDefaults.store.set(metadataWriteModeC2PA.rawValue, forKey: UserDefaultsKeys.metadataWriteModeC2PA) }
+        didSet { persist(metadataWriteModeC2PA.rawValue, forKey: UserDefaultsKeys.metadataWriteModeC2PA) }
     }
 
     var metadataWriteModeRaw: MetadataWriteMode {
-        didSet { AppDefaults.store.set(metadataWriteModeRaw.rawValue, forKey: UserDefaultsKeys.metadataWriteModeRaw) }
+        didSet { persist(metadataWriteModeRaw.rawValue, forKey: UserDefaultsKeys.metadataWriteModeRaw) }
     }
 
     var addJobIdToKeywords: Bool {
-        didSet { AppDefaults.store.set(addJobIdToKeywords, forKey: UserDefaultsKeys.addJobIdToKeywords) }
+        didSet { persist(addJobIdToKeywords, forKey: UserDefaultsKeys.addJobIdToKeywords) }
     }
 
     var multiSelectKeywordsMode: MultiSelectFieldMode {
-        didSet { AppDefaults.store.set(multiSelectKeywordsMode.rawValue, forKey: UserDefaultsKeys.multiSelectKeywordsMode) }
+        didSet { persist(multiSelectKeywordsMode.rawValue, forKey: UserDefaultsKeys.multiSelectKeywordsMode) }
     }
 
     var multiSelectPersonShownMode: MultiSelectFieldMode {
-        didSet { AppDefaults.store.set(multiSelectPersonShownMode.rawValue, forKey: UserDefaultsKeys.multiSelectPersonShownMode) }
+        didSet { persist(multiSelectPersonShownMode.rawValue, forKey: UserDefaultsKeys.multiSelectPersonShownMode) }
     }
 
     var reverseGeocodeLanguage: ReverseGeocodeLanguage {
-        didSet { AppDefaults.store.set(reverseGeocodeLanguage.storageValue, forKey: UserDefaultsKeys.reverseGeocodeLanguage) }
+        didSet { persist(reverseGeocodeLanguage.storageValue, forKey: UserDefaultsKeys.reverseGeocodeLanguage) }
     }
 
     var reverseGeocodeOffline: Bool {
-        didSet { AppDefaults.store.set(reverseGeocodeOffline, forKey: UserDefaultsKeys.reverseGeocodeOfflineEnabled) }
+        didSet { persist(reverseGeocodeOffline, forKey: UserDefaultsKeys.reverseGeocodeOfflineEnabled) }
     }
 
     var quickListVersion: Int = 0
@@ -777,25 +782,25 @@ final class SettingsViewModel {
 
     /// Minimum detection confidence (0.5 - 0.95). Default: 0.7
     var faceMinConfidence: Double {
-        didSet { AppDefaults.store.set(faceMinConfidence, forKey: UserDefaultsKeys.faceMinConfidence) }
+        didSet { persist(faceMinConfidence, forKey: UserDefaultsKeys.faceMinConfidence) }
     }
 
     /// Minimum face size in pixels (30 - 150). Default: 50
     var faceMinFaceSize: Int {
-        didSet { AppDefaults.store.set(faceMinFaceSize, forKey: UserDefaultsKeys.faceMinFaceSize) }
+        didSet { persist(faceMinFaceSize, forKey: UserDefaultsKeys.faceMinFaceSize) }
     }
 
     /// Fast (false, default) scans the full frame once. Thorough (true) adds overlapping
     /// tile passes to recover small and off-angle faces in group photos.
     var faceTiledDetection: Bool {
-        didSet { AppDefaults.store.set(faceTiledDetection, forKey: UserDefaultsKeys.faceTiledDetection) }
+        didSet { persist(faceTiledDetection, forKey: UserDefaultsKeys.faceTiledDetection) }
     }
 
     /// Sports tagging (experimental): run jersey-number OCR alongside face detection.
     /// The scan pipeline reads the key from UserDefaults directly, so this takes effect
     /// on the next scan without a restart.
     var sportsModeEnabled: Bool {
-        didSet { AppDefaults.store.set(sportsModeEnabled, forKey: UserDefaultsKeys.sportsModeEnabled) }
+        didSet { persist(sportsModeEnabled, forKey: UserDefaultsKeys.sportsModeEnabled) }
     }
 
 
@@ -803,43 +808,43 @@ final class SettingsViewModel {
 
     /// Default export format for SDR images. Default: JPEG
     var exportFormatSDR: ExportFormatSDR {
-        didSet { AppDefaults.store.set(exportFormatSDR.rawValue, forKey: UserDefaultsKeys.exportFormatSDR) }
+        didSet { persist(exportFormatSDR.rawValue, forKey: UserDefaultsKeys.exportFormatSDR) }
     }
 
     /// Default export format for HDR images. Default: HEIC 10-bit
     var exportFormatHDR: ExportFormatHDR {
-        didSet { AppDefaults.store.set(exportFormatHDR.rawValue, forKey: UserDefaultsKeys.exportFormatHDR) }
+        didSet { persist(exportFormatHDR.rawValue, forKey: UserDefaultsKeys.exportFormatHDR) }
     }
 
     /// SDR export quality (0.10 - 1.0). Default: 0.92
     var exportQualitySDR: Double {
-        didSet { AppDefaults.store.set(exportQualitySDR, forKey: UserDefaultsKeys.exportQualitySDR) }
+        didSet { persist(exportQualitySDR, forKey: UserDefaultsKeys.exportQualitySDR) }
     }
 
     /// HDR export quality (0.10 - 1.0). Default: 0.92
     var exportQualityHDR: Double {
-        didSet { AppDefaults.store.set(exportQualityHDR, forKey: UserDefaultsKeys.exportQualityHDR) }
+        didSet { persist(exportQualityHDR, forKey: UserDefaultsKeys.exportQualityHDR) }
     }
 
     /// TIFF compression method. Default: LZW
     var exportTIFFCompression: TIFFCompression {
-        didSet { AppDefaults.store.set(exportTIFFCompression.rawValue, forKey: UserDefaultsKeys.exportTIFFCompression) }
+        didSet { persist(exportTIFFCompression.rawValue, forKey: UserDefaultsKeys.exportTIFFCompression) }
     }
 
     /// SDR export color gamut. Default: sRGB
     var exportColorGamutSDR: TargetColorGamut {
-        didSet { AppDefaults.store.set(exportColorGamutSDR.rawValue, forKey: UserDefaultsKeys.exportColorGamutSDR) }
+        didSet { persist(exportColorGamutSDR.rawValue, forKey: UserDefaultsKeys.exportColorGamutSDR) }
     }
 
     /// HDR export color gamut. Default: Display P3
     var exportColorGamutHDR: TargetColorGamut {
-        didSet { AppDefaults.store.set(exportColorGamutHDR.rawValue, forKey: UserDefaultsKeys.exportColorGamutHDR) }
+        didSet { persist(exportColorGamutHDR.rawValue, forKey: UserDefaultsKeys.exportColorGamutHDR) }
     }
 
     /// Maximum exported long edge. Default: original resolution.
     var exportResolutionLimit: ExportResolutionLimit {
         didSet {
-            AppDefaults.store.set(
+            persist(
                 exportResolutionLimit.rawValue,
                 forKey: UserDefaultsKeys.exportResolutionLimit
             )
@@ -848,18 +853,18 @@ final class SettingsViewModel {
 
     /// Where exported files are written. Default: sub-folder named after the export format
     var exportLocationMode: ExportLocationMode {
-        didSet { AppDefaults.store.set(exportLocationMode.rawValue, forKey: UserDefaultsKeys.exportLocationMode) }
+        didSet { persist(exportLocationMode.rawValue, forKey: UserDefaultsKeys.exportLocationMode) }
     }
 
     /// Custom sub-folder name used when `exportLocationMode == .customSubfolder`. Default: "Exports"
     var exportCustomSubfolderName: String {
-        didSet { AppDefaults.store.set(exportCustomSubfolderName, forKey: UserDefaultsKeys.exportCustomSubfolderName) }
+        didSet { persist(exportCustomSubfolderName, forKey: UserDefaultsKeys.exportCustomSubfolderName) }
     }
 
     /// Where “Archive RAW as…” writes files. Independent of normal export settings.
     var rawArchiveLocationMode: RAWArchiveLocationMode {
         didSet {
-            AppDefaults.store.set(
+            persist(
                 rawArchiveLocationMode.rawValue,
                 forKey: UserDefaultsKeys.rawArchiveLocationMode
             )
@@ -911,34 +916,34 @@ final class SettingsViewModel {
     /// Minimum confidence required for auto-matching known people. Default: 0.60
     var knownPeopleMinConfidence: Double {
         didSet {
-            AppDefaults.store.set(knownPeopleMinConfidence, forKey: UserDefaultsKeys.knownPeopleMinConfidence)
+            persist(knownPeopleMinConfidence, forKey: UserDefaultsKeys.knownPeopleMinConfidence)
         }
     }
 
     // MARK: - C2PA Signing
 
     var c2paCertificatePath: String {
-        didSet { AppDefaults.store.set(c2paCertificatePath.isEmpty ? nil : c2paCertificatePath, forKey: UserDefaultsKeys.c2paCertificatePath) }
+        didSet { persist(c2paCertificatePath.isEmpty ? nil : c2paCertificatePath, forKey: UserDefaultsKeys.c2paCertificatePath) }
     }
 
     var c2paCertificateSubject: String {
-        didSet { AppDefaults.store.set(c2paCertificateSubject.isEmpty ? nil : c2paCertificateSubject, forKey: UserDefaultsKeys.c2paCertificateSubject) }
+        didSet { persist(c2paCertificateSubject.isEmpty ? nil : c2paCertificateSubject, forKey: UserDefaultsKeys.c2paCertificateSubject) }
     }
 
     var c2paCertificateExpiry: String {
-        didSet { AppDefaults.store.set(c2paCertificateExpiry.isEmpty ? nil : c2paCertificateExpiry, forKey: UserDefaultsKeys.c2paCertificateExpiry) }
+        didSet { persist(c2paCertificateExpiry.isEmpty ? nil : c2paCertificateExpiry, forKey: UserDefaultsKeys.c2paCertificateExpiry) }
     }
 
     private(set) var c2paCertificateExists = false
 
     var c2paDefaultAuthor: String {
-        didSet { AppDefaults.store.set(c2paDefaultAuthor.isEmpty ? nil : c2paDefaultAuthor, forKey: UserDefaultsKeys.c2paDefaultAuthor) }
+        didSet { persist(c2paDefaultAuthor.isEmpty ? nil : c2paDefaultAuthor, forKey: UserDefaultsKeys.c2paDefaultAuthor) }
     }
 
     /// Uses c2patool's built-in test credential. It creates valid signatures which are
     /// deliberately untrusted, so users can try the workflow before obtaining a credential.
     var c2paUseTestCertificate: Bool {
-        didSet { AppDefaults.store.set(c2paUseTestCertificate, forKey: UserDefaultsKeys.c2paUseTestCertificate) }
+        didSet { persist(c2paUseTestCertificate, forKey: UserDefaultsKeys.c2paUseTestCertificate) }
     }
 
     var c2paHasCertificate: Bool {
@@ -1035,123 +1040,53 @@ final class SettingsViewModel {
         self.quickListStore = quickListStore
         self.templatesFolderDefaults = templatesFolderDefaults
         self.templatesFolderBookmarkService = templatesFolderBookmarkService
-        self.rawRenderAsHDR = AppDefaults.store.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
-        let decodeProfileRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.rawDecodeProfile)
-        self.rawDecodeProfile = RAWDecodeProfile(storedRawValue: decodeProfileRaw ?? "") ?? .camera
-        let decoderVersionRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference)
-        self.rawDecoderVersionPreference = RAWDecoderVersionPreference(rawValue: decoderVersionRaw ?? "") ?? .auto
-        self.fileVisibility = BrowserFileVisibility.saved()
+        let synced = SyncedPreferences()
+        self.rawRenderAsHDR = synced.rawRenderAsHDR
+        self.rawDecodeProfile = synced.rawDecodeProfile
+        self.rawDecoderVersionPreference = synced.rawDecoderVersionPreference
+        self.fileVisibility = synced.fileVisibility
+        self.showOriginalThumbnails = synced.showOriginalThumbnails
+        self.hiddenDevelopSliders = synced.hiddenDevelopSliders
+        self.developSectionOrder = synced.developSectionOrder
+        self.hiddenIPTCMetadataFields = synced.hiddenIPTCMetadataFields
+        self.orderedIPTCMetadataFields = synced.orderedIPTCMetadataFields
+        self.defaultEditDestination = synced.defaultEditDestination
+        self.faceCleanupPolicy = synced.faceCleanupPolicy
+        self.metadataWritePreset = synced.metadataWritePreset
+        self.metadataWriteModeRaw = synced.metadataWriteModeRaw
+        self.metadataWriteModeNonC2PA = synced.metadataWriteModeNonC2PA
+        self.metadataWriteModeC2PA = synced.metadataWriteModeC2PA
+        self.addJobIdToKeywords = synced.addJobIdToKeywords
+        self.multiSelectKeywordsMode = synced.multiSelectKeywordsMode
+        self.multiSelectPersonShownMode = synced.multiSelectPersonShownMode
+        self.faceMinConfidence = synced.faceMinConfidence
+        self.faceMinFaceSize = synced.faceMinFaceSize
+        self.faceTiledDetection = synced.faceTiledDetection
+        self.knownPeopleMinConfidence = synced.knownPeopleMinConfidence
+        self.c2paDefaultAuthor = synced.c2paDefaultAuthor
+        self.exportFormatSDR = synced.exportFormatSDR
+        self.exportFormatHDR = synced.exportFormatHDR
+        self.exportQualitySDR = synced.exportQualitySDR
+        self.exportQualityHDR = synced.exportQualityHDR
+        self.exportTIFFCompression = synced.exportTIFFCompression
+        self.exportColorGamutSDR = synced.exportColorGamutSDR
+        self.exportColorGamutHDR = synced.exportColorGamutHDR
+        self.exportResolutionLimit = synced.exportResolutionLimit
 
-        self.showOriginalThumbnails = AppDefaults.store.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
-        self.hiddenDevelopSliders = DevelopSlider.decodeHidden(
-            AppDefaults.store.stringArray(forKey: UserDefaultsKeys.hiddenDevelopSliders) ?? []
-        )
-        self.developSectionOrder = DevelopPanelSection.decodeOrder(
-            AppDefaults.store.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
-        )
-        self.hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(
-            storedRawValues: AppDefaults.store.stringArray(
-                forKey: UserDefaultsKeys.hiddenIPTCMetadataFields
-            )
-        )
-        self.orderedIPTCMetadataFields = MetadataFieldID.loadEditorFieldOrder()
-
+        // Machine-local preferences below are not mirrored by PreferencesSyncService.
         self.defaultExternalEditor = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""
-        let editDestinationRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultEditDestination)
-            ?? DefaultEditDestination.internalEditor.rawValue
-        self.defaultEditDestination = DefaultEditDestination(rawValue: editDestinationRaw) ?? .internalEditor
-        let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.faceCleanupPolicy) ?? "never"
-        self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never
-
-        // Top-level preset. Absent (existing users / fresh install) → Professional.
-        let presetRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.metadataWritePreset)
-        self.metadataWritePreset = MetadataWritePreset(rawValue: presetRaw ?? "") ?? .professional
-
-        let rawModeStored = AppDefaults.store.string(forKey: UserDefaultsKeys.metadataWriteModeRaw)
-            ?? MetadataWriteMode.defaultRaw.rawValue
-        let storedRawMode = MetadataWriteMode(rawValue: rawModeStored) ?? .defaultRaw
-        self.metadataWriteModeRaw = storedRawMode.writesEmbedded ? .writeToXMPSidecar : storedRawMode
-
-        let legacyWriteModeRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.metadataWriteMode)
-        let nonC2PARaw = AppDefaults.store.string(forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
-            ?? legacyWriteModeRaw
-            ?? MetadataWriteMode.defaultNonC2PA.rawValue
-        self.metadataWriteModeNonC2PA = MetadataWriteMode(rawValue: nonC2PARaw) ?? .defaultNonC2PA
-
-        if AppDefaults.store.object(forKey: UserDefaultsKeys.metadataWriteModeC2PA) != nil {
-            let c2paRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.metadataWriteModeC2PA)
-                ?? MetadataWriteMode.defaultC2PA.rawValue
-            self.metadataWriteModeC2PA = MetadataWriteMode(rawValue: c2paRaw) ?? .defaultC2PA
-        } else {
-            let c2paRaw = legacyWriteModeRaw ?? MetadataWriteMode.defaultC2PA.rawValue
-            let c2paMode = MetadataWriteMode(rawValue: c2paRaw) ?? .defaultC2PA
-            self.metadataWriteModeC2PA = c2paMode == .writeToFile ? .writeToXMPSidecar : c2paMode
-        }
-
-        self.addJobIdToKeywords = AppDefaults.store.bool(forKey: UserDefaultsKeys.addJobIdToKeywords)
-
-        let keywordsModeRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode) ?? MultiSelectFieldMode.add.rawValue
-        self.multiSelectKeywordsMode = MultiSelectFieldMode(rawValue: keywordsModeRaw) ?? .add
-
-        let personShownModeRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode) ?? MultiSelectFieldMode.add.rawValue
-        self.multiSelectPersonShownMode = MultiSelectFieldMode(rawValue: personShownModeRaw) ?? .add
 
         let geocodeLangRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.reverseGeocodeLanguage)
         self.reverseGeocodeLanguage = ReverseGeocodeLanguage(storageValue: geocodeLangRaw ?? ReverseGeocodeLanguage.system.storageValue)
         self.reverseGeocodeOffline = AppDefaults.store.bool(forKey: UserDefaultsKeys.reverseGeocodeOfflineEnabled)
 
-        let storedConfidence = AppDefaults.store.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
-        self.faceMinConfidence = storedConfidence ?? 0.7
-
-        let storedMinSize = AppDefaults.store.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
-        self.faceMinFaceSize = storedMinSize ?? 50
-
-        self.faceTiledDetection = AppDefaults.store.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? false
-
         self.sportsModeEnabled = AppDefaults.store.bool(forKey: UserDefaultsKeys.sportsModeEnabled)
-
-        let storedKnownPeopleMinConfidence = AppDefaults.store.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
-        self.knownPeopleMinConfidence = storedKnownPeopleMinConfidence ?? Double(FaceRecognitionDefaults.knownPeopleMinConfidence)
 
         // C2PA Signing settings
         self.c2paCertificatePath = AppDefaults.store.string(forKey: UserDefaultsKeys.c2paCertificatePath) ?? ""
         self.c2paCertificateSubject = AppDefaults.store.string(forKey: UserDefaultsKeys.c2paCertificateSubject) ?? ""
         self.c2paCertificateExpiry = AppDefaults.store.string(forKey: UserDefaultsKeys.c2paCertificateExpiry) ?? ""
-        self.c2paDefaultAuthor = AppDefaults.store.string(forKey: UserDefaultsKeys.c2paDefaultAuthor) ?? ""
         self.c2paUseTestCertificate = AppDefaults.store.bool(forKey: UserDefaultsKeys.c2paUseTestCertificate)
-
-        // Format & Compression settings
-        let storedFormatSDR = AppDefaults.store.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? ExportFormatSDR.jpeg.rawValue
-        self.exportFormatSDR = ExportFormatSDR(rawValue: storedFormatSDR) ?? .jpeg
-
-        let storedFormatHDR = AppDefaults.store.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? ExportFormatHDR.jxl.rawValue
-        self.exportFormatHDR = ExportFormatHDR(rawValue: storedFormatHDR) ?? .jxl
-
-        let storedQualitySDR = AppDefaults.store.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double
-        self.exportQualitySDR = min(
-            1,
-            max(AdvancedExportConfiguration.minimumQuality, storedQualitySDR ?? 0.92)
-        )
-
-        let storedQualityHDR = AppDefaults.store.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double
-        self.exportQualityHDR = min(
-            1,
-            max(AdvancedExportConfiguration.minimumQuality, storedQualityHDR ?? 0.92)
-        )
-
-        let storedTIFFCompression = AppDefaults.store.string(forKey: UserDefaultsKeys.exportTIFFCompression) ?? TIFFCompression.lzw.rawValue
-        self.exportTIFFCompression = TIFFCompression(rawValue: storedTIFFCompression) ?? .lzw
-
-        let storedColorGamutSDR = AppDefaults.store.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? TargetColorGamut.sRGB.rawValue
-        self.exportColorGamutSDR = TargetColorGamut(rawValue: storedColorGamutSDR) ?? .sRGB
-
-        let storedColorGamutHDR = AppDefaults.store.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? TargetColorGamut.displayP3.rawValue
-        self.exportColorGamutHDR = TargetColorGamut(rawValue: storedColorGamutHDR) ?? .displayP3
-
-        let storedResolutionLimit = AppDefaults.store.string(
-            forKey: UserDefaultsKeys.exportResolutionLimit
-        ) ?? ExportResolutionLimit.original.rawValue
-        self.exportResolutionLimit = ExportResolutionLimit(rawValue: storedResolutionLimit) ?? .original
 
         let storedLocationMode = AppDefaults.store.string(forKey: UserDefaultsKeys.exportLocationMode) ?? ExportLocationMode.formatSubfolder.rawValue
         self.exportLocationMode = ExportLocationMode(rawValue: storedLocationMode) ?? .formatSubfolder
@@ -1198,6 +1133,17 @@ final class SettingsViewModel {
             }
         }
         scheduleQuickListRefresh()
+
+        // iCloud preference sync writes pulled values straight into UserDefaults (including at
+        // launch, after this model has already read them). Re-read them so Settings shows what
+        // export uses, and so a later edit doesn't push this model's stale values back out.
+        preferencesSyncObserver = NotificationCenter.default.addObserver(
+            forName: PreferencesSyncService.didChangeRemotely,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            PreferencesSyncService.deliverNotification { [weak self] in self?.applyStoredValues() }
+        }
     }
 
     nonisolated deinit {
@@ -1206,6 +1152,61 @@ final class SettingsViewModel {
         if let quickListChangeObserver {
             NotificationCenter.default.removeObserver(quickListChangeObserver)
         }
+        if let preferencesSyncObserver {
+            NotificationCenter.default.removeObserver(preferencesSyncObserver)
+        }
+    }
+
+    /// Writes a preference unless it is the value `applyStoredValues()` just read back.
+    private func persist(_ value: Any?, forKey key: String) {
+        guard !isApplyingStoredValues else { return }
+        AppDefaults.store.set(value, forKey: key)
+    }
+
+    /// Re-reads every iCloud-synced preference from UserDefaults without writing any of them
+    /// back. Observers that react to the values (browser panes, export pickers) still fire.
+    func applyStoredValues() {
+        let synced = SyncedPreferences()
+        isApplyingStoredValues = true
+        defer { isApplyingStoredValues = false }
+        update(\.rawRenderAsHDR, to: synced.rawRenderAsHDR)
+        update(\.rawDecodeProfile, to: synced.rawDecodeProfile)
+        update(\.rawDecoderVersionPreference, to: synced.rawDecoderVersionPreference)
+        update(\.fileVisibility, to: synced.fileVisibility)
+        update(\.showOriginalThumbnails, to: synced.showOriginalThumbnails)
+        update(\.hiddenDevelopSliders, to: synced.hiddenDevelopSliders)
+        update(\.developSectionOrder, to: synced.developSectionOrder)
+        update(\.hiddenIPTCMetadataFields, to: synced.hiddenIPTCMetadataFields)
+        update(\.orderedIPTCMetadataFields, to: synced.orderedIPTCMetadataFields)
+        update(\.defaultEditDestination, to: synced.defaultEditDestination)
+        update(\.faceCleanupPolicy, to: synced.faceCleanupPolicy)
+        update(\.metadataWritePreset, to: synced.metadataWritePreset)
+        update(\.metadataWriteModeRaw, to: synced.metadataWriteModeRaw)
+        update(\.metadataWriteModeNonC2PA, to: synced.metadataWriteModeNonC2PA)
+        update(\.metadataWriteModeC2PA, to: synced.metadataWriteModeC2PA)
+        update(\.addJobIdToKeywords, to: synced.addJobIdToKeywords)
+        update(\.multiSelectKeywordsMode, to: synced.multiSelectKeywordsMode)
+        update(\.multiSelectPersonShownMode, to: synced.multiSelectPersonShownMode)
+        update(\.faceMinConfidence, to: synced.faceMinConfidence)
+        update(\.faceMinFaceSize, to: synced.faceMinFaceSize)
+        update(\.faceTiledDetection, to: synced.faceTiledDetection)
+        update(\.knownPeopleMinConfidence, to: synced.knownPeopleMinConfidence)
+        update(\.c2paDefaultAuthor, to: synced.c2paDefaultAuthor)
+        update(\.exportFormatSDR, to: synced.exportFormatSDR)
+        update(\.exportFormatHDR, to: synced.exportFormatHDR)
+        update(\.exportQualitySDR, to: synced.exportQualitySDR)
+        update(\.exportQualityHDR, to: synced.exportQualityHDR)
+        update(\.exportTIFFCompression, to: synced.exportTIFFCompression)
+        update(\.exportColorGamutSDR, to: synced.exportColorGamutSDR)
+        update(\.exportColorGamutHDR, to: synced.exportColorGamutHDR)
+        update(\.exportResolutionLimit, to: synced.exportResolutionLimit)
+    }
+
+    private func update<Value: Equatable>(
+        _ keyPath: ReferenceWritableKeyPath<SettingsViewModel, Value>,
+        to value: Value
+    ) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
     func loadKeywordsList() -> [String] { entries(for: .keywords) }
@@ -1433,5 +1434,136 @@ final class SettingsViewModel {
             }
         }
         return editors
+    }
+}
+
+/// Decoded values of the preferences `PreferencesSyncService` mirrors through iCloud, read the
+/// same way at launch and after a remote change so the two paths can't drift apart.
+private struct SyncedPreferences {
+    let rawRenderAsHDR: Bool
+    let rawDecodeProfile: RAWDecodeProfile
+    let rawDecoderVersionPreference: RAWDecoderVersionPreference
+    let fileVisibility: BrowserFileVisibility
+    let showOriginalThumbnails: Bool
+    let hiddenDevelopSliders: Set<DevelopSlider>
+    let developSectionOrder: [DevelopPanelSection]
+    let hiddenIPTCMetadataFields: Set<MetadataFieldID>
+    let orderedIPTCMetadataFields: [MetadataFieldID]
+    let defaultEditDestination: DefaultEditDestination
+    let faceCleanupPolicy: FaceCleanupPolicy
+    let metadataWritePreset: MetadataWritePreset
+    let metadataWriteModeRaw: MetadataWriteMode
+    let metadataWriteModeNonC2PA: MetadataWriteMode
+    let metadataWriteModeC2PA: MetadataWriteMode
+    let addJobIdToKeywords: Bool
+    let multiSelectKeywordsMode: MultiSelectFieldMode
+    let multiSelectPersonShownMode: MultiSelectFieldMode
+    let faceMinConfidence: Double
+    let faceMinFaceSize: Int
+    let faceTiledDetection: Bool
+    let knownPeopleMinConfidence: Double
+    let c2paDefaultAuthor: String
+    let exportFormatSDR: ExportFormatSDR
+    let exportFormatHDR: ExportFormatHDR
+    let exportQualitySDR: Double
+    let exportQualityHDR: Double
+    let exportTIFFCompression: TIFFCompression
+    let exportColorGamutSDR: TargetColorGamut
+    let exportColorGamutHDR: TargetColorGamut
+    let exportResolutionLimit: ExportResolutionLimit
+
+    init() {
+        let store = AppDefaults.store
+        rawRenderAsHDR = store.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
+        rawDecodeProfile = RAWDecodeProfile(
+            storedRawValue: store.string(forKey: UserDefaultsKeys.rawDecodeProfile) ?? ""
+        ) ?? .camera
+        rawDecoderVersionPreference = RAWDecoderVersionPreference(
+            rawValue: store.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference) ?? ""
+        ) ?? .auto
+        fileVisibility = BrowserFileVisibility.saved()
+        showOriginalThumbnails = store.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
+        hiddenDevelopSliders = DevelopSlider.decodeHidden(
+            store.stringArray(forKey: UserDefaultsKeys.hiddenDevelopSliders) ?? []
+        )
+        developSectionOrder = DevelopPanelSection.decodeOrder(
+            store.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
+        )
+        hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(
+            storedRawValues: store.stringArray(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields)
+        )
+        orderedIPTCMetadataFields = MetadataFieldID.loadEditorFieldOrder()
+
+        let editDestinationRaw = store.string(forKey: UserDefaultsKeys.defaultEditDestination)
+            ?? DefaultEditDestination.internalEditor.rawValue
+        defaultEditDestination = DefaultEditDestination(rawValue: editDestinationRaw) ?? .internalEditor
+        faceCleanupPolicy = FaceCleanupPolicy(
+            rawValue: store.string(forKey: UserDefaultsKeys.faceCleanupPolicy) ?? "never"
+        ) ?? .never
+
+        // Top-level preset. Absent (existing users / fresh install) → Professional.
+        metadataWritePreset = MetadataWritePreset(
+            rawValue: store.string(forKey: UserDefaultsKeys.metadataWritePreset) ?? ""
+        ) ?? .professional
+
+        let rawModeStored = store.string(forKey: UserDefaultsKeys.metadataWriteModeRaw)
+            ?? MetadataWriteMode.defaultRaw.rawValue
+        let storedRawMode = MetadataWriteMode(rawValue: rawModeStored) ?? .defaultRaw
+        metadataWriteModeRaw = storedRawMode.writesEmbedded ? .writeToXMPSidecar : storedRawMode
+
+        let legacyWriteModeRaw = store.string(forKey: UserDefaultsKeys.metadataWriteMode)
+        let nonC2PARaw = store.string(forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
+            ?? legacyWriteModeRaw
+            ?? MetadataWriteMode.defaultNonC2PA.rawValue
+        metadataWriteModeNonC2PA = MetadataWriteMode(rawValue: nonC2PARaw) ?? .defaultNonC2PA
+
+        if store.object(forKey: UserDefaultsKeys.metadataWriteModeC2PA) != nil {
+            let c2paRaw = store.string(forKey: UserDefaultsKeys.metadataWriteModeC2PA)
+                ?? MetadataWriteMode.defaultC2PA.rawValue
+            metadataWriteModeC2PA = MetadataWriteMode(rawValue: c2paRaw) ?? .defaultC2PA
+        } else {
+            let c2paRaw = legacyWriteModeRaw ?? MetadataWriteMode.defaultC2PA.rawValue
+            let c2paMode = MetadataWriteMode(rawValue: c2paRaw) ?? .defaultC2PA
+            metadataWriteModeC2PA = c2paMode == .writeToFile ? .writeToXMPSidecar : c2paMode
+        }
+
+        addJobIdToKeywords = store.bool(forKey: UserDefaultsKeys.addJobIdToKeywords)
+        multiSelectKeywordsMode = MultiSelectFieldMode(
+            rawValue: store.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode) ?? ""
+        ) ?? .add
+        multiSelectPersonShownMode = MultiSelectFieldMode(
+            rawValue: store.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode) ?? ""
+        ) ?? .add
+
+        faceMinConfidence = store.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double ?? 0.7
+        faceMinFaceSize = store.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int ?? 50
+        faceTiledDetection = store.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? false
+        knownPeopleMinConfidence = store.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
+            ?? Double(FaceRecognitionDefaults.knownPeopleMinConfidence)
+
+        c2paDefaultAuthor = store.string(forKey: UserDefaultsKeys.c2paDefaultAuthor) ?? ""
+
+        exportFormatSDR = ExportFormatSDR(
+            rawValue: store.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? ""
+        ) ?? .jpeg
+        exportFormatHDR = ExportFormatHDR(
+            rawValue: store.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? ""
+        ) ?? .jxl
+        let storedQualitySDR = store.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double
+        exportQualitySDR = min(1, max(AdvancedExportConfiguration.minimumQuality, storedQualitySDR ?? 0.92))
+        let storedQualityHDR = store.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double
+        exportQualityHDR = min(1, max(AdvancedExportConfiguration.minimumQuality, storedQualityHDR ?? 0.92))
+        exportTIFFCompression = TIFFCompression(
+            rawValue: store.string(forKey: UserDefaultsKeys.exportTIFFCompression) ?? ""
+        ) ?? .lzw
+        exportColorGamutSDR = TargetColorGamut(
+            rawValue: store.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? ""
+        ) ?? .sRGB
+        exportColorGamutHDR = TargetColorGamut(
+            rawValue: store.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? ""
+        ) ?? .displayP3
+        exportResolutionLimit = ExportResolutionLimit(
+            rawValue: store.string(forKey: UserDefaultsKeys.exportResolutionLimit) ?? ""
+        ) ?? .original
     }
 }

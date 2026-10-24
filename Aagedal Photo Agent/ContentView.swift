@@ -2061,7 +2061,8 @@ struct ContentView: View {
                 BrowserPaneContainer(
                     panes: panes,
                     activeFaceCount: faceRecognitionViewModel.faceData?.faces.count ?? 0,
-                    activeFaceGroupCount: faceRecognitionViewModel.faceData?.groups.count ?? 0
+                    activeFaceGroupCount: faceRecognitionViewModel.faceData?.groups.count ?? 0,
+                    selectFileVisibility: { settingsViewModel.fileVisibility = $0 }
                 )
                 .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
                 .onKeyPress("m") {
@@ -2641,6 +2642,9 @@ struct ContentView: View {
             maxSheetHeight: sheetMaxHeight,
             onDismiss: { isShowingImport = false }
         )
+        // Settings edits templates through its own view model, so refresh this window's copy
+        // whenever Import opens instead of offering the list from launch.
+        .onAppear { templateViewModel.loadTemplates() }
     }
 
     private func handleImportStarted(_ notification: NotificationCenter.Publisher.Output) {
@@ -2939,7 +2943,10 @@ struct ContentView: View {
                     }
                 }
                 .onChange(of: settingsViewModel.showOriginalThumbnails) { _, newValue in
-                    browserViewModel.showOriginalThumbnails = newValue
+                    // A global preference: every split pane follows it, not just the active one.
+                    for pane in panes.panes where pane.showOriginalThumbnails != newValue {
+                        pane.showOriginalThumbnails = newValue
+                    }
                 }
             }
         }
@@ -4618,7 +4625,12 @@ struct ContentViewModifiers: ViewModifier {
                     preservingUnsavedEdits: true)
             }
             .onReceive(NotificationCenter.default.publisher(for: .showAllFilesChanged)) { _ in
-                browserViewModel.fileVisibility = BrowserFileVisibility.saved()
+                // Settings' "Show" is global; apply it to every split pane. Only panes whose
+                // value differs reload their folder.
+                let visibility = settingsViewModel.fileVisibility
+                for pane in panes.panes where pane.fileVisibility != visibility {
+                    pane.fileVisibility = visibility
+                }
             }
             .onChange(of: browserViewModel.currentFolderURL) {
                 technicalMetadataCache.removeAll()
@@ -4653,6 +4665,11 @@ struct ContentViewModifiers: ViewModifier {
             }
         return base
             .modifier(AutoRefreshModifier(panes: panes, metadataViewModel: metadataViewModel))
+            .onChange(of: settingsViewModel.rawDecodeProfile) { _, _ in
+                // Full-screen cache keys don't include the decode profile; drop the old decodes
+                // (shared by all panes) so re-opening an image shows the new profile.
+                browserViewModel.fullScreenImageCache.clearAll()
+            }
             .onChange(of: ftpViewModel.uploadCompleted) { _, completed in
                 // When an upload that rendered files finishes, re-scan and expand each source
                 // folder that got a new `Uploaded/` sub-folder so the user discovers it (the
