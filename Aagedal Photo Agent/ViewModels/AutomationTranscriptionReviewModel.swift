@@ -410,6 +410,9 @@ final class AutomationTranscriptionReviewModel {
                         catch { /* Only the retained owner wait proves teardown. */ }
                     }
                 }
+                // The retained owner throws only after its task exits, so bounded retries cover
+                // transient history reads without holding capacity on a broken archive forever.
+                var failedWaits = 0
                 while true {
                     do {
                         let terminal = try await service.waitForCompletion(record.id)
@@ -419,8 +422,14 @@ final class AutomationTranscriptionReviewModel {
                         executionMessage = "Transcription finished: \(terminal.outcome?.rawValue ?? "unknown"). Review saved transcript drafts in Caption; photo metadata requires separate approval."
                         finishExecution(); refreshRequestEvidence(); return
                     } catch {
+                        failedWaits += 1
+                        if failedWaits >= CaptionVoiceMemoBatchTranscriptionModel.maximumWaitAttempts {
+                            polling.cancel(); await polling.value
+                            executionMessage = "Transcription stopped, but its final status could not be read. Check saved transcript drafts in Caption before preparing new work. " + error.localizedDescription
+                            finishExecution(); refreshRequestEvidence(); return
+                        }
                         executionMessage = "Transcription status could not be confirmed. Waiting for the provider to stop safely. " + error.localizedDescription
-                        try? await Task.sleep(for: .milliseconds(300))
+                        try? await Task.sleep(for: .milliseconds(min(300 << min(failedWaits, 4), 5_000)))
                     }
                 }
             } catch {

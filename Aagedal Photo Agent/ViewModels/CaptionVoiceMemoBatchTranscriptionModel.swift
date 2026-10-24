@@ -53,8 +53,16 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     private(set) var isResetting = false
     private(set) var errorMessage: String?
     private(set) var completionToken: UInt64 = 0
+    /// The work stopped but its final record could not be read back.
+    private(set) var statusUnconfirmed = false
+
+    /// Consecutive failed completion waits before the batch stops waiting. The retained
+    /// coordinator only throws once its task has exited, so retries cover transient history
+    /// reads; a permanently unreadable operations file must not hold capacity forever.
+    nonisolated static let maximumWaitAttempts = 8
 
     @ObservationIgnored private let dependencies: Dependencies
+    @ObservationIgnored private let waitRetryDelay: @Sendable (Int) -> Duration
     @ObservationIgnored private let beginExecution: @MainActor () -> Bool
     @ObservationIgnored private let endExecution: @MainActor () -> Void
     @ObservationIgnored private var generation: UInt64 = 0
@@ -66,8 +74,12 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
 
     init(dependencies: Dependencies? = nil, activityHistory: ActivityHistoryStore? = nil,
          beginExecution: @escaping @MainActor () -> Bool = { FFmpegWhisperSetupModel.shared.beginTranscription() },
-         endExecution: @escaping @MainActor () -> Void = { FFmpegWhisperSetupModel.shared.finishTranscription() }) {
+         endExecution: @escaping @MainActor () -> Void = { FFmpegWhisperSetupModel.shared.finishTranscription() },
+         waitRetryDelay: @escaping @Sendable (Int) -> Duration = { attempt in
+             .milliseconds(min(300 << min(attempt, 4), 5_000))
+         }) {
         self.dependencies = dependencies ?? UITestVoiceTranscriptionBatchFixture.currentDependenciesForModel() ?? .live()
+        self.waitRetryDelay = waitRetryDelay
         self.activityHistory = activityHistory
         self.beginExecution = beginExecution
         self.endExecution = endExecution
@@ -88,6 +100,10 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         }
         if isRunning { return "Transcribing the confirmed photos. " + suffix }
         if cancelledBeforeSubmission { return "Batch cancelled before transcription started. No drafts were saved." }
+        if statusUnconfirmed {
+            return "Transcription stopped, but its final status could not be read. " + suffix
+                + " Check each photo's transcript in Caption before trying again."
+        }
         switch record?.outcome {
         case .verified: return suffix + " Open a transcript in Caption to use it in metadata."
         case .cancelled: return "Batch cancelled. " + suffix + " Saved drafts remain available; unfinished photos were not restarted."
@@ -191,7 +207,8 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     }
 
     /// The unstructured task deliberately survives SwiftUI task cancellation. Capacity
-    /// remains held until the retained executor acknowledges a drained terminal result.
+    /// remains held until the retained executor acknowledges a drained terminal result,
+    /// or its wait has failed `maximumWaitAttempts` times in a row.
     func confirm(consent: Bool, reviewOrSaveBusy: Bool, providerBusy: Bool) async {
         guard start(consent: consent, reviewOrSaveBusy: reviewOrSaveBusy, providerBusy: providerBusy),
               let executionTask else { return }
@@ -214,6 +231,7 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         errorMessage = nil
         cancellationRequested = false
         cancelledBeforeSubmission = false
+        statusUnconfirmed = false
         isRequestingCancellation = false
         isRunning = true
         activityID = UUID()
@@ -266,8 +284,10 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
                     catch { /* The owning wait remains authoritative; never infer rollback. */ }
                 }
             }
-            // A transient wait/history failure cannot prove provider teardown. Retain
-            // global capacity and retry the owner's wait instead of reporting completion.
+            // A transient wait/history failure does not claim completion: retain global
+            // capacity and retry the owner's wait. Only after repeated failures, when the
+            // retained task has exited, stop waiting without inventing an outcome.
+            var failedWaits = 0
             while true {
                 do {
                     let completed = try await dependencies.wait(id)
@@ -280,8 +300,20 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
                     finishExecution()
                     return
                 } catch {
+                    failedWaits += 1
+                    if failedWaits >= Self.maximumWaitAttempts {
+                        polling.cancel()
+                        await polling.value
+                        if let current = try? await dependencies.inspect(id) { record = current }
+                        statusUnconfirmed = record?.isTerminal != true
+                        errorMessage = statusUnconfirmed
+                            ? "Batch status could not be read: " + error.localizedDescription : nil
+                        completionToken &+= 1
+                        finishExecution()
+                        return
+                    }
                     errorMessage = "Batch status could not be confirmed. Waiting for transcription to finish safely. " + error.localizedDescription
-                    try? await Task.sleep(for: .milliseconds(300))
+                    try? await Task.sleep(for: waitRetryDelay(failedWaits))
                 }
             }
         } catch {

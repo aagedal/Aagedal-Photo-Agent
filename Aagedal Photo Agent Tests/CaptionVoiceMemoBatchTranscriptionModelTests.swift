@@ -467,6 +467,51 @@ struct CaptionVoiceMemoBatchTranscriptionModelTests {
         #expect(model.completionToken == 1)
     }
 
+    private actor Counter {
+        var value = 0
+        func increment() { value += 1 }
+    }
+
+    @Test("A permanently failing wait stops after bounded retries and releases capacity",
+          arguments: [false, true])
+    func permanentWaitFailure(historyReadable: Bool) async throws {
+        let f = try Fixture(), capacity = Capacity(), waits = Counter()
+        let base = f.dependencies, registry = f.registry, service = f.service
+        let dependencies = CaptionVoiceMemoBatchTranscriptionModel.Dependencies(
+            prepare: base.prepare, validateProvider: base.validateProvider,
+            hasExistingReview: base.hasExistingReview, submit: base.submit,
+            inspect: { id in
+                guard historyReadable else { throw Injected.wait }
+                return try registry.inspect(id)
+            },
+            wait: { id in
+                await waits.increment()
+                _ = try? await service.waitForCompletion(id)
+                throw Injected.wait
+            },
+            cancel: base.cancel)
+        let model = CaptionVoiceMemoBatchTranscriptionModel(dependencies: dependencies,
+            beginExecution: { capacity.begin() }, endExecution: { capacity.end() },
+            waitRetryDelay: { _ in .zero })
+        await prepare(model)
+        await model.confirm(consent: true, reviewOrSaveBusy: false, providerBusy: false)
+        #expect(!model.isRunning)
+        #expect(!capacity.held)
+        #expect(capacity.finishes == 1)
+        #expect(await waits.value == CaptionVoiceMemoBatchTranscriptionModel.maximumWaitAttempts)
+        #expect(model.completionToken == 1)
+        #expect(await f.io.saved == photos)
+        if historyReadable {
+            #expect(!model.statusUnconfirmed)
+            #expect(model.record?.outcome == .verified)
+            #expect(model.errorMessage == nil)
+        } else {
+            #expect(model.statusUnconfirmed)
+            #expect(model.statusMessage.contains("final status could not be read"))
+            #expect(!model.statusMessage.contains("not admitted"))
+        }
+    }
+
     @Test("A transient retained wait error does not claim completion or release capacity")
     func transientWaitFailure() async throws {
         let f = try Fixture(), capacity = Capacity(), model = model(f, capacity: capacity)
