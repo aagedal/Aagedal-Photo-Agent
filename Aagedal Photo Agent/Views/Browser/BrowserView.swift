@@ -292,7 +292,7 @@ struct BrowserView: View {
 
     private func fileOperationNoticeView(_ notice: FileOperationNotice) -> some View {
         HStack(spacing: 8) {
-            Label(notice.message, systemImage: "checkmark.circle")
+            Label(notice.message, systemImage: notice.systemImage)
                 .font(.callout)
             if let url = notice.revealURL {
                 // Open the folder itself: `.Rejected` is hidden, so selecting it in its parent

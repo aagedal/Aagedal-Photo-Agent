@@ -2882,6 +2882,211 @@ struct DevelopCleanFeedPublicationCoordinatorTests {
         #expect(frozen?.crop == committed)
         #expect(published?.crop == draft)
     }
+
+    @Test("a redacting photo keeps the feed on the redacted render through Before and mutes")
+    func redactingPhotoHoldsRedactedRender() {
+        let coordinator = DevelopCleanFeedPublicationCoordinator()
+        let controller = CleanFeedController.shared
+        coordinator.beginWorkspace(controller: controller)
+        defer { coordinator.endWorkspace(editorPipeline: nil, controller: controller) }
+
+        func decide(
+            texture: Bool = true, before: Bool = false, mute: Bool = false, layer: Bool = false,
+            redaction: RedactionKnowledge
+        ) -> DevelopCleanFeedPublicationCoordinator.PublicationDecision? {
+            coordinator.publicationDecision(
+                hasSourceTexture: texture, isShowingBefore: before, isMutingDevelop: mute,
+                isMutingLayer: layer, redaction: redaction, isCropToolActive: false, proposedCrop: nil
+            )
+        }
+
+        for (before, mute, layer) in [(true, false, false), (false, true, false), (false, false, true)] {
+            let held = decide(before: before, mute: mute, layer: layer, redaction: .redacts)
+            #expect(held?.usesEditPipeline == true, "the live pipeline keeps the redacted params")
+            #expect(held?.holdsRedactedRender == true)
+            #expect(held?.allowsFallbackImage == false, "never the unblurred source")
+        }
+
+        let live = decide(redaction: .redacts)
+        #expect(live?.usesEditPipeline == true)
+        #expect(live?.holdsRedactedRender == false)
+        #expect(live?.allowsFallbackImage == false)
+
+        let loading = decide(texture: false, before: true, redaction: .redacts)
+        #expect(loading?.usesEditPipeline == false)
+        #expect(loading?.allowsFallbackImage == false, "black until the GPU source is ready")
+        #expect(loading?.holdsRedactedRender == false)
+
+        let unknown = decide(redaction: .unknown)
+        #expect(unknown?.usesEditPipeline == false)
+        #expect(unknown?.allowsFallbackImage == false)
+
+        // Unredacted photos keep the historical Before/mute fallback.
+        let plain = decide(before: true, redaction: .none)
+        #expect(plain?.usesEditPipeline == false)
+        #expect(plain?.allowsFallbackImage == true)
+        #expect(plain?.holdsRedactedRender == false)
+    }
+
+    @Test("publishing a redacting photo never hands the unedited source to the feed")
+    func redactingPublishClearsFallbackImage() {
+        let coordinator = DevelopCleanFeedPublicationCoordinator()
+        let controller = CleanFeedController(makeFeedPipeline: { nil })
+        coordinator.beginWorkspace(controller: controller)
+        defer { coordinator.endWorkspace(editorPipeline: nil, controller: controller) }
+        let source = CIImage(color: CIColor(red: 1, green: 0, blue: 0))
+            .cropped(to: CGRect(x: 0, y: 0, width: 8, height: 8))
+
+        coordinator.publish(
+            fallbackImage: source, isHDR: false, hasSourceTexture: false, isShowingBefore: true,
+            isMutingDevelop: false, redaction: .redacts, isCropToolActive: false,
+            proposedCrop: nil, controller: controller
+        )
+        #expect(controller.feedImage == nil)
+
+        coordinator.publish(
+            fallbackImage: source, isHDR: false, hasSourceTexture: false, isShowingBefore: true,
+            isMutingDevelop: false, redaction: .none, isCropToolActive: false,
+            proposedCrop: nil, controller: controller
+        )
+        #expect(controller.feedImage != nil)
+    }
+
+    @Test("the held feed payload ignores press-and-hold comparisons but keeps redactions")
+    func transientFreeProjectionKeepsRedactions() {
+        let preview = DevelopTransientPreviewCoordinator()
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1
+        settings.anonymizer = AnonymizerSettings(amount: 80, blackOut: nil)
+        var blur = MaskAdjustment()
+        blur.anonymizer = AnonymizerSettings(amount: 100, blackOut: nil)
+        settings.localAdjustments = [blur]
+
+        preview.beginDevelopMute()
+        #expect(preview.isTransientComparisonActive)
+        let muted = preview.settingsForPipeline(settings, isRawSource: false, sectionMutes: .init())
+        #expect(muted?.localAdjustments == nil, "the editor's mute drops the masks")
+        let held = preview.settingsForPipelineIgnoringTransientComparisons(
+            settings, isRawSource: false, sectionMutes: .init()
+        )
+        #expect(held?.hasActiveRedaction == true)
+        #expect(held?.exposure2012 == 1)
+        preview.endDevelopMute()
+
+        #expect(preview.beginLayerMute(maskIndex: nil))
+        #expect(preview.settingsForPipeline(settings, isRawSource: false, sectionMutes: .init())?
+            .anonymizer == nil, "Cmd-D on Global drops the global Anonymizer in the editor")
+        #expect(preview.settingsForPipelineIgnoringTransientComparisons(
+            settings, isRawSource: false, sectionMutes: .init()
+        )?.anonymizer == settings.anonymizer)
+        preview.endLayerMute()
+        #expect(!preview.isTransientComparisonActive)
+    }
+}
+
+@Suite("Redaction privacy guard")
+@MainActor
+struct RedactionPrivacyGuardTests {
+    private func photo(_ path: String, redacts: Bool = false, loaded: Bool = true) -> ImageFile {
+        var image = ImageFile(url: URL(fileURLWithPath: path))
+        image.developSettingsLoaded = loaded
+        if redacts {
+            var settings = CameraRawSettings()
+            var blur = MaskAdjustment()
+            blur.anonymizer = AnonymizerSettings(amount: 100, blackOut: nil)
+            settings.localAdjustments = [blur]
+            image.cameraRawSettings = settings
+        }
+        return image
+    }
+
+    @Test("knowledge separates unredacted, redacting and not-yet-loaded photos")
+    func knowledge() {
+        #expect(RedactionPrivacyGuard.knowledge(for: photo("/p/a.jpg")) == .none)
+        #expect(RedactionPrivacyGuard.knowledge(for: photo("/p/a.jpg", redacts: true)) == .redacts)
+        #expect(RedactionPrivacyGuard.knowledge(for: photo("/p/a.jpg", loaded: false)) == .unknown)
+        var disabled = photo("/p/a.jpg", redacts: true)
+        disabled.cameraRawSettings?.localAdjustments?[0].enabled = false
+        #expect(RedactionPrivacyGuard.knowledge(for: disabled) == .none)
+    }
+
+    @Test("drags out of the app refuse redacting, unloaded and unredacted paired JPEG photos")
+    func outsideDrag() {
+        let plain = photo("/p/plain.jpg")
+        let blurred = photo("/p/blurred.jpg", redacts: true)
+        let raw = photo("/p/IMG_1.CR3", redacts: true)
+        let pairedJPEG = photo("/p/IMG_1.JPG")
+        let all = [plain, blurred, raw, pairedJPEG]
+
+        #expect(RedactionPrivacyGuard.outsideDragDecision(for: [plain], candidates: all) == .allow)
+        #expect(RedactionPrivacyGuard.outsideDragDecision(for: [plain, blurred], candidates: all).message
+            == RedactionPrivacyGuard.dragBlockedMessage)
+        #expect(RedactionPrivacyGuard.outsideDragDecision(
+            for: [photo("/p/new.jpg", loaded: false)], candidates: all
+        ).message == RedactionPrivacyGuard.dragPendingMessage)
+        #expect(RedactionPrivacyGuard.outsideDragDecision(for: [pairedJPEG], candidates: all).message
+            == RedactionPrivacyGuard.pairedRawDragMessage)
+    }
+
+    @Test("only the unredacted non-RAW half of a redacted RAW+JPEG pair is flagged")
+    func pairedJPEGs() {
+        let raw = photo("/p/IMG_1.NEF", redacts: true)
+        let jpeg = photo("/p/img_1.jpg")
+        let otherFolderJPEG = photo("/q/IMG_1.jpg")
+        let redactedJPEG = photo("/p/IMG_1.jpeg", redacts: true)
+        let unredactedRaw = photo("/p/IMG_2.NEF")
+        let jpeg2 = photo("/p/IMG_2.jpg")
+        let all = [raw, jpeg, otherFolderJPEG, redactedJPEG, unredactedRaw, jpeg2]
+
+        let flagged = RedactionPrivacyGuard.unredactedPairedJPEGs(
+            in: [raw, jpeg, otherFolderJPEG, redactedJPEG, jpeg2], candidates: all
+        )
+        #expect(flagged.map(\.url) == [jpeg.url])
+    }
+
+    @Test("Clean Feed only shows frames of a redacting photo that were rendered redacted")
+    func cleanFeedPanePolicy() {
+        #expect(RedactionPrivacyGuard.mayPublishToCleanFeed(rendersRedaction: false, photo: .none))
+        #expect(RedactionPrivacyGuard.mayPublishToCleanFeed(rendersRedaction: true, photo: .redacts))
+        #expect(!RedactionPrivacyGuard.mayPublishToCleanFeed(rendersRedaction: false, photo: .redacts))
+        #expect(!RedactionPrivacyGuard.mayPublishToCleanFeed(rendersRedaction: false, photo: .unknown))
+    }
+
+    @Test("a sidecar redaction the in-memory copy lacks still counts for warnings")
+    func sidecarRedaction() {
+        var redacting = CameraRawSettings()
+        redacting.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        let unloaded = photo("/p/a.jpg", loaded: false)
+        #expect(RedactionPrivacyGuard.redactsIncludingSidecar(unloaded, readSidecar: { _ in redacting }))
+        #expect(!RedactionPrivacyGuard.redactsIncludingSidecar(unloaded, readSidecar: { _ in nil }))
+        // Loaded with no sidecar on disk: nothing to read.
+        var reads = 0
+        #expect(!RedactionPrivacyGuard.redactsIncludingSidecar(photo("/p/a.jpg"), readSidecar: { _ in
+            reads += 1
+            return redacting
+        }))
+        #expect(reads == 0)
+    }
+
+    @Test("only Export, Save As and FTP commands run the paired-JPEG check in the file-operation switch")
+    func commandClassification() {
+        #expect(AppCommand.renderSelected.publishesSelectionPixels)
+        #expect(AppCommand.uploadAll.publishesSelectionPixels)
+        #expect(AppCommand.uploadAll.publishesWholeFolder)
+        #expect(!AppCommand.saveAsJPEG.publishesWholeFolder)
+        #expect(!AppCommand.renderAndSignSelected.publishesSelectionPixels)
+        #expect(!AppCommand.openInExternalEditor.publishesSelectionPixels)
+    }
+
+    @Test("the develop-settings-loaded flag is part of row equality and survives copies")
+    func loadedFlag() {
+        let url = URL(fileURLWithPath: "/p/a.jpg")
+        var loaded = ImageFile(url: url)
+        let unloaded = loaded
+        loaded.developSettingsLoaded = true
+        #expect(loaded != unloaded)
+        #expect(ImageFile(url: URL(fileURLWithPath: "/p/b.jpg"), relocating: loaded).developSettingsLoaded)
+    }
 }
 
 @Suite("Develop preview render coordinator")

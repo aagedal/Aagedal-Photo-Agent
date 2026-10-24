@@ -44,6 +44,10 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var hasCropEdits: Bool
     var cropRegion: ThumbnailCropRegion?
     var cameraRawSettings: CameraRawSettings?
+    /// True once the metadata batch has read this photo's develop settings (sidecar + embedded,
+    /// full parser). Until then `cameraRawSettings` is nil because it is unknown, not because the
+    /// photo is unedited — privacy paths (Clean Feed, drag-out) must not treat it as unredacted.
+    var developSettingsLoaded = false
     var exifOrientation: Int
     var hasPendingMetadataChanges: Bool
     var pendingFieldNames: [String] = []
@@ -166,6 +170,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.hasCropEdits = source.hasCropEdits
         self.cropRegion = source.cropRegion
         self.cameraRawSettings = source.cameraRawSettings
+        self.developSettingsLoaded = source.developSettingsLoaded
         self.exifOrientation = source.exifOrientation
         self.hasPendingMetadataChanges = source.hasPendingMetadataChanges
         self.pendingFieldNames = source.pendingFieldNames
@@ -203,6 +208,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.hasCropEdits = source.hasCropEdits
         self.cropRegion = source.cropRegion
         self.cameraRawSettings = source.cameraRawSettings
+        self.developSettingsLoaded = source.developSettingsLoaded
         self.exifOrientation = source.exifOrientation
         self.hasPendingMetadataChanges = source.hasPendingMetadataChanges
         self.pendingFieldNames = source.pendingFieldNames
@@ -308,6 +314,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
             && lhs.hasCropEdits == rhs.hasCropEdits
             && lhs.isICloudDownloadPending == rhs.isICloudDownloadPending
             && lhs.cameraRawSettings == rhs.cameraRawSettings
+            && lhs.developSettingsLoaded == rhs.developSettingsLoaded
             && lhs.exifOrientation == rhs.exifOrientation
             && lhs.isNativeHDR == rhs.isNativeHDR
             && lhs.hasPendingMetadataChanges == rhs.hasPendingMetadataChanges

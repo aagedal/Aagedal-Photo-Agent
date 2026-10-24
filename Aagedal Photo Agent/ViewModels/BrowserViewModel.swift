@@ -6,6 +6,7 @@ struct FileOperationNotice: Equatable, Identifiable {
     let id = UUID()
     let message: String
     var revealURL: URL?
+    var systemImage = "checkmark.circle"
 }
 
 nonisolated struct MetadataReviewLoadedBaseline: Sendable {
@@ -1442,6 +1443,7 @@ final class BrowserViewModel {
                     updated.hasCropEdits = existing.hasCropEdits
                     updated.cropRegion = existing.cropRegion
                     updated.cameraRawSettings = existing.cameraRawSettings
+                    updated.developSettingsLoaded = existing.developSettingsLoaded
                     updated.exifOrientation = existing.exifOrientation
                     updated.isNativeHDR = existing.isNativeHDR
                     updated.hasPendingMetadataChanges = existing.hasPendingMetadataChanges
@@ -1453,6 +1455,7 @@ final class BrowserViewModel {
                         // File changed on disk — clear stale develop/crop state so
                         // thumbnails reflect the actual file content
                         updated.cameraRawSettings = nil
+                        updated.developSettingsLoaded = false
                         updated.hasDevelopEdits = false
                         updated.hasCropEdits = false
                         updated.cropRegion = nil
@@ -1885,6 +1888,11 @@ final class BrowserViewModel {
                     nativeHDRByURL: hdrSnapshot.isHDRByImageURL,
                     tagRevisionsAtRead: tagRevisions
                 )
+                markDevelopSettingsLoadedWithoutFileMetadata(
+                    batchURLs: batchURLs,
+                    results: results,
+                    xmpMetadataMap: xmpMetadataMap
+                )
                 let sortKeyChanged = previousSortValues.contains { url, rating, label in
                     guard let index = validImageIndex(for: url) else { return false }
                     return (sortOrder == .rating && rating != images[index].starRating)
@@ -1963,6 +1971,29 @@ final class BrowserViewModel {
         }
     }
 
+    /// A file whose embedded-metadata read failed has no result dict, so the batch merge never
+    /// reaches it. Its sidecar was still read: apply the sidecar's develop settings (a redaction
+    /// may live only there) and mark the settings known, so Clean Feed and drag-out stop waiting
+    /// on a load that will not come.
+    func markDevelopSettingsLoadedWithoutFileMetadata(
+        batchURLs: [URL],
+        results: [[String: Any]],
+        xmpMetadataMap: [URL: IPTCMetadata]
+    ) {
+        let returned = Set(results.compactMap { dict -> URL? in
+            guard let path = dict[MetadataDictKey.sourceFile] as? String else { return nil }
+            return URL(fileURLWithPath: path)
+        })
+        for url in batchURLs where !returned.contains(url) {
+            guard let index = validImageIndex(for: url), !images[index].developSettingsLoaded else { continue }
+            if images[index].cameraRawSettings == nil,
+               let sidecarSettings = xmpMetadataMap[url]?.cameraRaw, !sidecarSettings.isEmpty {
+                images[index].cameraRawSettings = sidecarSettings
+            }
+            images[index].developSettingsLoaded = true
+        }
+    }
+
     /// Apply parsed batch metadata results to the local ImageFile array.
     /// Shared by full-folder reload and incremental (pending URL) reload paths.
     func applyBatchMetadataResults(
@@ -2012,6 +2043,7 @@ final class BrowserViewModel {
                 let parsedFromFile = iptcMetadataFromDict(dict)
                 let embeddedSettings = parsedFromFile.cameraRaw
                 updated[index].cameraRawSettings = embeddedSettings
+                updated[index].developSettingsLoaded = true
 
                 // XMP I/O and XML parsing completed off-main before this model merge.
                 let xmpMeta = xmpMetadataMap[sourceURL]

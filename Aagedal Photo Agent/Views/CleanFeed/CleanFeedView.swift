@@ -40,6 +40,7 @@ struct CleanFeedContentView: View {
         .onChange(of: ObjectIdentifier(browserViewModel)) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.url) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.cameraRawSettings) { _, _ in reloadFromSelection() }
+        .onChange(of: browserViewModel.firstSelectedImage?.developSettingsLoaded) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.exifOrientation) { _, _ in reloadFromSelection() }
         .onChange(of: controller.editModeActive) { _, active in
             if active {
@@ -65,6 +66,15 @@ struct CleanFeedContentView: View {
             controller.feedImage = nil
             controller.useEditPipeline = false
             controller.requestFeedRedraw()
+            return
+        }
+
+        // Privacy: until the metadata batch has read this photo's develop settings, nil settings
+        // mean "unknown", not "unedited" — rendering now would flash the unblurred original of a
+        // photo with Anonymizer masks. Keep the previous frame (already published) until they
+        // load; the `developSettingsLoaded` change re-runs this.
+        guard image.developSettingsLoaded || !image.isImageFile else {
+            loadTask = nil
             return
         }
 

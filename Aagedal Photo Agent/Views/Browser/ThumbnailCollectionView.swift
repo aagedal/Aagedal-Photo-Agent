@@ -16,6 +16,11 @@ final class ThumbnailCollectionView: NSCollectionView {
     var onImproveDescriptions: (() -> Void)?
 
     private var isDragging = false
+    /// Set at drag start when the dragged photos may not leave the app as original files
+    /// (Anonymizer redactions, settings not loaded yet, or the unredacted JPEG of a redacted
+    /// RAW). Drops onto other apps are refused; in-app moves stay allowed.
+    private var outsideDragBlockMessage: String?
+    private var outsideDragWasRefused = false
     private var mouseDownLocation: NSPoint?
     private var dropIndicatorLayer: CALayer?
     private var pendingReorderTarget: URL?
@@ -158,6 +163,11 @@ final class ThumbnailCollectionView: NSCollectionView {
         // Sort switches to Manual only when the drop actually reorders inside the grid
         // (see reorderDraggedItems); drags to Finder, Mail, or a sidebar folder keep it.
         viewModel.draggedImageURLs = Set(urls)
+        outsideDragBlockMessage = RedactionPrivacyGuard.outsideDragDecision(
+            for: urls.compactMap { viewModel.image(at: $0) },
+            candidates: viewModel.images
+        ).message
+        outsideDragWasRefused = false
 
         let items = makeDraggingItems(for: urls)
         beginDraggingSession(with: items, event: event, source: self)
@@ -602,7 +612,9 @@ final class ThumbnailCollectionView: NSCollectionView {
         guard let viewModel,
               let editorPath = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor),
               !editorPath.isEmpty else { return }
-        let urls = viewModel.selectedImages.map(\.url)
+        let images = viewModel.selectedImages
+        guard RedactionPrivacyPrompt.confirmExternalEditor(for: images) else { return }
+        let urls = images.map(\.url)
         NSWorkspace.shared.open(urls, withApplicationAt: URL(fileURLWithPath: editorPath), configuration: NSWorkspace.OpenConfiguration())
     }
 
@@ -697,7 +709,14 @@ final class ThumbnailCollectionView: NSCollectionView {
     // MARK: - NSDraggingSource
 
     override func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        context == .outsideApplication ? .copy : .move
+        guard context == .outsideApplication else { return .move }
+        // Privacy: Finder, Mail, Slack… would receive the original file, which never carries
+        // the face blurs (they are app-only Develop settings).
+        if outsideDragBlockMessage != nil {
+            outsideDragWasRefused = true
+            return []
+        }
+        return .copy
     }
 
     override func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
@@ -736,6 +755,16 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     override func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         hideDropIndicator()
+
+        // Explain a refused drop on another app (not a drop that merely ended over our own windows).
+        if operation.isEmpty, outsideDragWasRefused, let message = outsideDragBlockMessage,
+           !NSApp.windows.contains(where: { $0.isVisible && $0.frame.contains(screenPoint) }) {
+            viewModel?.fileOperationNotice = FileOperationNotice(
+                message: message, systemImage: "eye.slash"
+            )
+        }
+        outsideDragBlockMessage = nil
+        outsideDragWasRefused = false
 
         // Only reorder if the drop ended within the collection view
         if let window = self.window, let target = pendingReorderTarget {

@@ -1119,6 +1119,12 @@ struct ContentView: View {
                 if delivery.command.actsOnBrowserSelection {
                     browserViewModel.collapseSelectionToFullScreenImage()
                 }
+                // Export, Save As and FTP warn first when a JPEG would go out without the face
+                // blurs its RAW+JPEG sibling has (RedactionPrivacyGuard).
+                if delivery.command.publishesSelectionPixels,
+                   !confirmPairedJPEGRedaction(allImages: delivery.command.publishesWholeFolder) {
+                    return
+                }
                 switch delivery.command {
                 case .renderSelected:
                     let urls = browserViewModel.selectedImages.map(\.url)
@@ -3604,7 +3610,16 @@ struct ContentView: View {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
+    /// See `RedactionPrivacyPrompt.confirmPairedJPEGs`.
+    private func confirmPairedJPEGRedaction(allImages: Bool) -> Bool {
+        RedactionPrivacyPrompt.confirmPairedJPEGs(
+            in: allImages ? browserViewModel.images : browserViewModel.selectedImages,
+            candidates: browserViewModel.images
+        )
+    }
+
     private func renderAndSignSelected() {
+        guard confirmPairedJPEGRedaction(allImages: false) else { return }
         performAfterMetadataFileOperation { renderAndSignSelectedAfterMetadataFlush() }
     }
 
@@ -5251,7 +5266,8 @@ struct ContentViewModifiers: ViewModifier {
     }
 
     private func openSelectedInExternalEditor() {
-        let urls = browserViewModel.selectedImages.map(\.url)
+        let images = browserViewModel.selectedImages
+        let urls = images.map(\.url)
         guard !urls.isEmpty else { return }
         let editorPath = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""
         guard !editorPath.isEmpty else {
@@ -5264,6 +5280,7 @@ struct ContentViewModifiers: ViewModifier {
             offerExternalEditorSettings("The external editor “\(editorName)” is no longer at \(editorPath).")
             return
         }
+        guard RedactionPrivacyPrompt.confirmExternalEditor(for: images) else { return }
         Task { @MainActor in
             do {
                 _ = try await NSWorkspace.shared.open(

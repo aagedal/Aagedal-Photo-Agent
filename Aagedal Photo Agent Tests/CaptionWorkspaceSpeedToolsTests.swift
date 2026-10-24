@@ -2449,6 +2449,107 @@ struct DescriptionAssistantFaceContextTests {
         #expect(FileSignature.storedFacesAreCurrent(stored: stored, current: rewritten))
         #expect(!FileSignature.storedFacesAreCurrent(stored: stored, current: repixelled))
     }
+
+    /// Two named faces: "Left" around x 0.15, "Right" around x 0.75 (Vision, bottom-left origin,
+    /// both at y 0.4…0.6 so the top-left frame puts them at y 0.4…0.6 too).
+    private func twoFacePhoto() -> (URL, FolderFaceData, FileSignature) {
+        let photo = URL(fileURLWithPath: "/photos/blurred.jpg")
+        let signature = FileSignature(modificationDate: Date(timeIntervalSince1970: 10), fileSize: 100)
+        let left = FaceGroup(id: UUID(), name: "Left", representativeFaceID: UUID(), faceIDs: [])
+        let right = FaceGroup(id: UUID(), name: "Right", representativeFaceID: UUID(), faceIDs: [])
+        let faces = [
+            DetectedFace(id: UUID(), imageURL: photo, faceRect: CGRect(x: 0.1, y: 0.4, width: 0.1, height: 0.2),
+                         featurePrintData: Data(), groupID: left.id, detectedAt: .now),
+            DetectedFace(id: UUID(), imageURL: photo, faceRect: CGRect(x: 0.7, y: 0.4, width: 0.1, height: 0.2),
+                         featurePrintData: Data(), groupID: right.id, detectedAt: .now)
+        ]
+        let data = FolderFaceData(folderURL: photo.deletingLastPathComponent(), faces: faces,
+            groups: [left, right], lastScanDate: .now, scanComplete: true, scannedFiles: [photo.path: signature])
+        return (photo, data, signature)
+    }
+
+    private func blur(_ configure: (inout MaskAdjustment) -> Void) -> CameraRawSettings {
+        var mask = MaskAdjustment()
+        mask.anonymizer = AnonymizerSettings(amount: 100, blackOut: nil)
+        configure(&mask)
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        return settings
+    }
+
+    @Test("Faces under an Anonymizer mask are left out of the caption context")
+    func blurredFacesAreOmitted() {
+        let (photo, data, signature) = twoFacePhoto()
+        let overLeft = blur { $0.geometry = EllipseMaskGeometry(centerX: 0.15, centerY: 0.5, radiusX: 0.06, radiusY: 0.08) }
+        let context = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [overLeft], sensorAspect: 1.5)
+        #expect(context.people.map(\.name) == ["Right"])
+        #expect(context.notice == "Blurred faces are left out.")
+
+        // A disabled mask redacts nothing.
+        var disabled = overLeft
+        disabled.localAdjustments?[0].enabled = false
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [disabled], sensorAspect: 1.5).people.count == 2)
+
+        // The global Anonymizer, or an inverted mask, covers every face.
+        var global = CameraRawSettings()
+        global.anonymizer = AnonymizerSettings(amount: 50, blackOut: nil)
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [global], sensorAspect: 1.5).people.isEmpty)
+        let inverted = blur { $0.inverted = true }
+        let none = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [inverted], sensorAspect: 1.5)
+        #expect(none.people.isEmpty)
+        #expect(none.notice == "The named faces in this photo are blurred, so their names are left out.")
+    }
+
+    @Test("Mask geometry is rotated into the displayed frame before matching faces")
+    func maskAndFaceShareTheDisplayFrame() {
+        let (photo, data, signature) = twoFacePhoto()
+        // Displayed rotated 180°: the stored left face shows on the right (display x ≈ 0.85),
+        // and a sensor-frame mask at x 0.15 shows at display x 0.85 — they still meet.
+        let halfTurn = FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 3)
+        let sensorLeft = blur { $0.geometry = EllipseMaskGeometry(centerX: 0.15, centerY: 0.5, radiusX: 0.06, radiusY: 0.08) }
+        let context = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: halfTurn, redactionSettings: [sensorLeft], sensorAspect: 1.5)
+        #expect(context.people.map(\.name) == ["Right"])
+
+        // A brush stroke over the right face in the sensor frame.
+        let brushRight = blur {
+            $0.brush = BrushMaskGeometry(strokes: [BrushStroke(
+                dabs: [BrushDab(x: 0.75, y: 0.5, flow: 1, hardness: 1)], radius: 0.03)])
+        }
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [brushRight], sensorAspect: 1.5)
+            .people.map(\.name) == ["Left"])
+
+        // An AI matte authored upright over the left face, while the photo is displayed rotated
+        // 90° clockwise: the left face (Vision x 0.1…0.2) maps to display top-left y 0.1…0.2.
+        let quarter = FaceDisplayOrientation(fileOrientation: 1, displayOrientation: 6)
+        let aiLeft = blur {
+            $0.aiMask = AIMaskGeometry(width: 10, height: 10, pngData: Data([1]), sourceOrientation: 1)
+        }
+        let rotatedMatte = DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: quarter, redactionSettings: [aiLeft], sensorAspect: 1.5,
+            aiMaskBounds: { _ in CGRect(x: 0.1, y: 0.4, width: 0.1, height: 0.2) })
+        #expect(rotatedMatte.people.map(\.name) == ["Right"])
+        // An undecodable matte covers everything rather than letting a name through.
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: signature,
+            orientation: .identity, redactionSettings: [aiLeft], sensorAspect: 1.5,
+            aiMaskBounds: { _ in nil }).people.isEmpty)
+    }
+
+    @Test("Top-left rect rotation matches the display-orientation quarter turns")
+    func rectRotation() {
+        let rect = CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.1)
+        let quarter = RedactedFaceFilter.rotated(rect, from: 1, to: 6)
+        #expect(quarter.map { abs($0.minX - 0.7) < 1e-9 && abs($0.minY - 0.1) < 1e-9
+            && abs($0.width - 0.1) < 1e-9 && abs($0.height - 0.3) < 1e-9 } == true)
+        let back = RedactedFaceFilter.rotated(quarter ?? .zero, from: 6, to: 1)
+        #expect(back.map { abs($0.minX - rect.minX) < 1e-9 && abs($0.minY - rect.minY) < 1e-9 } == true)
+        #expect(RedactedFaceFilter.rotated(rect, from: 1, to: 2) == nil, "mirrors fall back to full coverage")
+    }
 }
 
 @Suite("Borealis full-release model configuration")

@@ -1734,7 +1734,8 @@ struct MetadataPanel: View {
                             imageURL: imageURL, editorLoadID: viewModel.editorBufferLoadID,
                             originalDescription: viewModel.editingMetadata.description ?? "",
                             action: .grammar, language: .bokmal,
-                            metadata: DescriptionAssistantMetadata(viewModel.editingMetadata))
+                            metadata: DescriptionAssistantMetadata(viewModel.editingMetadata),
+                            developSettings: viewModel.editingMetadata.cameraRaw)
                     } label: {
                         Image(systemName: "wand.and.stars")
                             .font(.caption)

@@ -255,6 +255,9 @@ struct DescriptionAssistantView: View {
                             .font(.caption).textSelection(.enabled)
                         Text("Order uses the upright original photo. Unnamed and excluded faces are omitted; review identities before applying.")
                             .font(.caption).foregroundStyle(.secondary)
+                        if let faceNotice {
+                            Text(faceNotice).font(.caption).foregroundStyle(.secondary)
+                        }
                     } else { Text(faceNotice ?? "No named faces are available for this photo.") .font(.caption).foregroundStyle(.secondary) }
                 }
                 if !compact || proposal == nil {
@@ -328,7 +331,9 @@ struct DescriptionAssistantView: View {
 
     private func loadPeople() async {
         defer { loadingPeople = false }
-        let context = await DescriptionAssistantFaceContext.load(for: source.imageURL)
+        let context = await DescriptionAssistantFaceContext.load(
+            for: source.imageURL, developSettings: source.developSettings
+        )
         guard !Task.isCancelled else { return }
         people = context.people
         faceNotice = context.notice

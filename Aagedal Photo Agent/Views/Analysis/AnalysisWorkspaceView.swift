@@ -764,10 +764,22 @@ struct AnalysisWorkspaceView: View {
         .accessibilityIdentifier("analysis.save-error")
     }
 
+    /// Whether the photo under analysis has Anonymizer redactions (in-memory copy, or its
+    /// sidecar defensively). Analysis exports embed the original pixels by forensic design.
+    private func sourcePhotoRedacts(_ sourceURL: URL) -> Bool {
+        if let image = folderImages.first(where: { $0.url == sourceURL }) {
+            return RedactionPrivacyGuard.redactsIncludingSidecar(image)
+        }
+        return XMPSidecarService().loadDevelopSettings(for: sourceURL)?.hasActiveRedaction == true
+    }
+
     private func chooseReportDestinationAndExport(options: AnalysisReportExportOptions) {
         guard let analysisCase = model.analysisCase,
               let sourceURL = model.sourceURL,
               reportExportTask == nil else { return }
+        guard RedactionPrivacyPrompt.confirmAnalysisExport(
+            containsRedactedPhoto: sourcePhotoRedacts(sourceURL)
+        ) else { return }
 
         let panel = NSSavePanel()
         panel.title = "Export Analysis Report"
@@ -872,6 +884,9 @@ struct AnalysisWorkspaceView: View {
         guard let analysisCase = model.analysisCase,
               let sourceURL = model.sourceURL,
               evidenceExportTask == nil else { return }
+        guard RedactionPrivacyPrompt.confirmAnalysisExport(
+            containsRedactedPhoto: sourcePhotoRedacts(sourceURL)
+        ) else { return }
         guard let outputURL = chooseJPEGDestination(
             title: "Export Annotated Image",
             suggestedName: "\(analysisCase.title) Annotated.jpg"
@@ -973,6 +988,11 @@ struct AnalysisWorkspaceView: View {
 
     private func chooseProjectDestinationAndExport() {
         guard let sourceURL = model.sourceURL, projectArchiveTask == nil else { return }
+        // The project archive carries every photo in the folder as its original file.
+        let folderRedacts = folderImages.contains { RedactionPrivacyGuard.knowledge(for: $0) == .redacts }
+        guard RedactionPrivacyPrompt.confirmAnalysisExport(
+            containsRedactedPhoto: folderRedacts || sourcePhotoRedacts(sourceURL)
+        ) else { return }
         let sourceFolder = sourceURL.deletingLastPathComponent()
         let panel = NSSavePanel()
         panel.title = "Export Image Analysis Project"
