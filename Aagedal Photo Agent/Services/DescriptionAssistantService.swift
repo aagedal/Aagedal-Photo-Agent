@@ -410,7 +410,12 @@ nonisolated enum DescriptionAssistantImageInput {
         return dimension
     }
 
-    static func load(_ url: URL) throws -> CGImage {
+    /// The thumbnail bakes in the file's embedded tag; a rotation that lives only in the
+    /// sidecar (RAW culling) is applied on top so the model sees the photo as the user does.
+    static func load(
+        _ url: URL,
+        sidecarOrientation: @Sendable (URL) -> Int? = ThumbnailSourceAccess.system.sidecarOrientation
+    ) throws -> CGImage {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -426,6 +431,14 @@ nonisolated enum DescriptionAssistantImageInput {
               ] as CFDictionary), image.width * image.height <= maximumPixels else {
             throw DescriptionAssistantError.imageUnavailable
         }
-        return image
+        let fileOrientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let orientation = FaceDisplayOrientation(
+            fileOrientation: fileOrientation,
+            displayOrientation: sidecarOrientation(url) ?? fileOrientation
+        )
+        guard let upright = orientation.orientImage(image) else {
+            throw DescriptionAssistantError.imageUnavailable
+        }
+        return upright
     }
 }

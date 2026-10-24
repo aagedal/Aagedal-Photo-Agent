@@ -50,6 +50,8 @@ nonisolated struct DescriptionAssistantRequest: Identifiable, Sendable {
     let sourceDescription: String
     let action: DescriptionAssistantAction
     let language: DescriptionAssistantLanguage
+    /// Display-oriented rects (see `CaptionConfirmedPersonOrdering`), so the re-sort below
+    /// orders names as the user sees the photo, not in the stored file-tag frame.
     let people: [CaptionConfirmedPerson]
     let editorialPrompt: String
     let metadata: DescriptionAssistantMetadata

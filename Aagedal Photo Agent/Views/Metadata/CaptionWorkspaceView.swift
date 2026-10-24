@@ -1637,7 +1637,13 @@ struct CaptionWorkspaceView: View {
         // Face rects describe the uncropped photo; the edited preview shows the Develop crop.
         // The fallback thumbnail's framing is unknown, so a cropped photo shows no boxes there.
         let crop = settings?.crop
-        let people = CaptionConfirmedPersonOrdering.people(for: token.imageURL, in: faceData)
+        // Stored rects are in the file-tag frame; map them into the displayed (sidecar-first)
+        // frame once, before ordering. `croppedVisionRect` then only applies the crop.
+        let faceOrientation = await FaceDisplayOrientation.resolved(
+            for: token.imageURL, modelDisplayOrientation: orientation)
+        guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }
+        let people = CaptionConfirmedPersonOrdering.people(
+            for: token.imageURL, in: faceData, orientation: faceOrientation)
         let overlays: [CaptionConfirmedPerson] = if crop?.isEffectiveCrop == true, cgImage == nil {
             []
         } else {

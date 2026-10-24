@@ -348,6 +348,20 @@ struct FullScreenImageView: View {
     @State private var showFaceRectangles: Bool = false
     // The face whose name popover is open (keyed by face id, carrying its group id).
     @State private var renamingFace: RenamingFace?
+    // File-tag → display frame for the shown photo's stored face boxes (resolved off-main).
+    // Boxes are hidden until it matches the current photo and display orientation.
+    @State private var faceOverlayOrientation: FaceOverlayOrientationKey.Resolved?
+
+    /// Identifies the photo + model display orientation the face overlay frame belongs to.
+    private struct FaceOverlayOrientationKey: Hashable {
+        let url: URL
+        let displayOrientation: Int
+
+        struct Resolved: Equatable {
+            let key: FaceOverlayOrientationKey
+            let orientation: FaceDisplayOrientation
+        }
+    }
 
     /// Identifies the face box whose inline rename popover is currently presented.
     private struct RenamingFace: Identifiable {
@@ -1794,7 +1808,8 @@ struct FullScreenImageView: View {
     }
 
     /// Maps a detection rect (Vision-normalized, bottom-left origin, in the full
-    /// display-oriented image frame) into display-space corners, replicating the
+    /// display-oriented image frame — stored boxes are file-tag framed, so map them with
+    /// `FaceDisplayOrientation.displayRect(forFileRect:)` first) into display-space corners, replicating the
     /// crop + straighten geometry that `CameraRawApproximation.applyCrop` bakes into
     /// the rendered image. Without an effective crop this reduces to a plain
     /// aspect-fit placement (the old `convertFaceRect` behaviour).
@@ -1898,9 +1913,18 @@ struct FullScreenImageView: View {
 
         if let faceVM = faceContext?.faceRecognitionViewModel,
            let url = currentImageFile?.url {
-            let facesInImage = faceVM.facesForImage(url)
+            // Stored boxes are in the file-tag frame; a sidecar-only rotation turns the shown
+            // photo. Map every box into the display frame first (detectionCorners then only
+            // applies the crop) and draw nothing until that frame is known for this photo.
+            let overlayKey = FaceOverlayOrientationKey(
+                url: url, displayOrientation: currentImageFile?.exifOrientation ?? 1)
+            let faceOrientation = faceOverlayOrientation?.key == overlayKey
+                ? faceOverlayOrientation?.orientation : nil
+            let shown: (CGRect) -> CGRect = { faceOrientation?.displayRect(forFileRect: $0) ?? $0 }
+            let facesInImage = faceOrientation == nil ? [] : faceVM.facesForImage(url)
             let showsSportsNumbers = faceVM.activeLens == .sports
-            let standaloneNumbers = showsSportsNumbers ? faceVM.numberDetectionsForImage(url) : []
+            let standaloneNumbers = showsSportsNumbers && faceOrientation != nil
+                ? faceVM.numberDetectionsForImage(url) : []
             // Follow the crop/straighten geometry baked into the rendered image so the
             // boxes stay glued to faces and numbers after a rotated crop.
             let displayCrop = renderEdits ? currentImageFile?.cameraRawSettings?.crop : nil
@@ -1908,7 +1932,7 @@ struct FullScreenImageView: View {
                 Canvas { context, _ in
                     for face in facesInImage {
                         let isHighlighted = face.id == highlightedFaceID
-                        let corners = detectionCorners(face.faceRect, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)
+                        let corners = detectionCorners(shown(face.faceRect), crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)
                         let groupColor = colorForGroup(face.groupID)
                         let lineWidth: CGFloat = isHighlighted ? 4 : 2
                         let opacity: CGFloat = isHighlighted ? 1.0 : 0.5
@@ -1935,7 +1959,7 @@ struct FullScreenImageView: View {
                             guard let number = face.jerseyNumber, let box = face.jerseyNumberBox else { continue }
                             drawNumberBox(
                                 context: context,
-                                corners: detectionCorners(box, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                                corners: detectionCorners(shown(box), crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
                                 number: number,
                                 confidence: face.numberConfidence,
                                 color: .orange,
@@ -1945,7 +1969,7 @@ struct FullScreenImageView: View {
                         for detection in standaloneNumbers {
                             drawNumberBox(
                                 context: context,
-                                corners: detectionCorners(detection.boundingBox, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                                corners: detectionCorners(shown(detection.boundingBox), crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
                                 number: detection.number,
                                 confidence: detection.numberConfidence,
                                 color: .red,
@@ -1960,7 +1984,7 @@ struct FullScreenImageView: View {
                 // addressable (synthetic-only faces have nothing to persist a name to).
                 ForEach(facesInImage, id: \.id) { face in
                     if let groupID = face.groupID {
-                        let box = quadPath(detectionCorners(face.faceRect, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)).boundingRect
+                        let box = quadPath(detectionCorners(shown(face.faceRect), crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)).boundingRect
                         Color.clear
                             .contentShape(Rectangle())
                             .frame(width: max(box.width, 12), height: max(box.height, 12))
@@ -1981,6 +2005,12 @@ struct FullScreenImageView: View {
                             }
                     }
                 }
+            }
+            .task(id: overlayKey) {
+                let resolved = await FaceDisplayOrientation.resolved(
+                    for: overlayKey.url, modelDisplayOrientation: overlayKey.displayOrientation)
+                guard !Task.isCancelled else { return }
+                faceOverlayOrientation = .init(key: overlayKey, orientation: resolved)
             }
             .modifier(PersonShownUpdatePromptModifier(viewModel: faceVM, images: { viewModel.images }))
         }

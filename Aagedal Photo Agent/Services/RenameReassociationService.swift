@@ -86,6 +86,10 @@ nonisolated struct RenameReassociationService: Sendable {
             ))
         }
 
+        // The import ledger keys previous imports by destination path; follow the rename so
+        // re-inserting the card does not import these photos again. Best effort (logged).
+        ImportLedger.recordRelocations(mappings.map { (from: $0.sourceURL, to: $0.destinationURL) })
+
         do {
             voiceMemoCompanionCount = try VoiceMemoCompanionRepository()
                 .reassociateRenamedRecords(using: mappings)

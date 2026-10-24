@@ -150,6 +150,54 @@ struct FieldMutationCallerTests {
         #expect(model.visibleImages.first?.metadata?.title == "Searchable caption")
     }
 
+    @Test("Quit waits for every pane's rating/label/rotate writes and lists them in both quit prompts")
+    @MainActor
+    func quitCoversBrowserFieldWrites() async throws {
+        let flush = MetadataEditorTerminationFlush()
+        let monitor = BackgroundOperationMonitor()
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let idle = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        BrowserFieldMutationTermination.register(model, flush: flush, monitor: monitor)
+        BrowserFieldMutationTermination.register(idle, flush: flush, monitor: monitor)
+        #expect(monitor.activeOperations.isEmpty)
+        #expect(flush.pendingActivityDescription == nil)
+
+        let folder = URL(fileURLWithPath: "/virtual/quit-field-writes")
+        let urls = ["a.arw", "b.arw", "c.arw"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.selectedImageIDs = Set(urls)
+        model.batchUpdate {}
+        model.setRating(.three)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await recorder.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(await recorder.isPaused)
+        // A second, queued batch: rotation of one photo.
+        model.selectedImageIDs = [urls[0]]
+        model.batchUpdate {}
+        model.rotateClockwise()
+
+        #expect(monitor.activeOperations == ["a rating/label write"])
+        #expect(flush.pendingActivityDescription == "Ratings/labels: 4 remaining")
+
+        var flushed = false
+        let quit = Task { @MainActor in
+            try await flush.flush()
+            flushed = true
+        }
+        for _ in 0..<50 { await Task.yield() }
+        #expect(!flushed)
+        await recorder.resume()
+        try await quit.value
+        #expect(flushed)
+        #expect(await recorder.captured.count == 4)
+        #expect(model.images.map(\.starRating) == [.three, .three, .three])
+        #expect(!model.hasFieldMutationWritesInFlight)
+        #expect(monitor.activeOperations.isEmpty)
+        #expect(flush.pendingActivityDescription == nil)
+    }
+
     @Test("Full screen rates and labels only the displayed photo of a multi-selection")
     @MainActor
     func fullScreenTagsOnlyDisplayedPhoto() async {
@@ -1810,6 +1858,65 @@ struct PersonShownCorrectionTests {
         model.nameGroup(data.groups[1].id, name: "Typed Again")
         #expect(model.pendingPersonShownUpdate == nil)
         await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("An unanswered rename offer is re-offered after a relaunch; a declined one only after the next rename")
+    @MainActor
+    func unansweredOfferSurvivesRelaunch() async throws {
+        let folder = try makeFolder("reoffer")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let a = folder.appendingPathComponent("a.jpg")
+        let b = folder.appendingPathComponent("b.NEF")
+        let other = folder.appendingPathComponent("c.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Store", applied: "Store", photos: [a, b]),
+                                             GroupSpec(name: "Ola", applied: "Ola", photos: [other])])
+        let groupID = data.groups[0].id
+        let recorder = FieldMutationCallerRecorder()
+
+        // Session 1: rename, then quit with the prompt still open.
+        let first = try makeModel(data, recorder: recorder)
+        first.nameGroup(groupID, name: "Støre")
+        #expect(first.pendingPersonShownUpdate?.isReoffer == false)
+        await first.waitForCurrentFaceDataPersistence()
+
+        func relaunch() async throws -> FaceRecognitionViewModel {
+            let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+                faceModelAvailability: .available, fieldMutationWriter: { await recorder.write($0) },
+                fieldMutationModeResolver: { _, isRaw in isRaw ? .writeToXMPSidecar : .writeToFileAndXMPSidecar })
+            model.loadFaceData(for: folder, cleanupPolicy: .never)
+            await model.waitForCurrentFaceDataLoad()
+            return model
+        }
+
+        // Session 2: the same correction is offered again, for exactly the photos still wrong.
+        let second = try await relaunch()
+        let reoffer = try #require(second.pendingPersonShownUpdate)
+        #expect(reoffer.isReoffer)
+        #expect(reoffer.replacementsByURL.keys.map(\.lastPathComponent).sorted() == ["a.jpg", "b.NEF"])
+        #expect(reoffer.replacementsByURL.values.allSatisfy { $0 == [.init(old: "Store", new: "Støre")] })
+        second.declinePersonShownUpdate()
+        await second.waitForCurrentFaceDataPersistence()
+        #expect(await recorder.captured.isEmpty)
+        #expect(FaceDataStorageService().loadFaceData(for: folder)?.groups.first { $0.id == groupID }?
+            .declinedPersonShownName == "Støre")
+
+        // Session 3: a real decline is not re-offered; renaming again offers from what the
+        // photos carry ("Store"), and an unanswered offer then comes back once more.
+        let third = try await relaunch()
+        #expect(third.pendingPersonShownUpdate == nil)
+        third.nameGroup(groupID, name: "Stoere")
+        let renamed = try #require(third.pendingPersonShownUpdate)
+        #expect(renamed.summary == "Replace “Store” with “Stoere”")
+        await third.waitForCurrentFaceDataPersistence()
+        let fourth = try await relaunch()
+        #expect(fourth.pendingPersonShownUpdate?.summary == "Replace “Store” with “Stoere”")
+
+        // Accepting resolves it for good.
+        fourth.confirmPersonShownUpdate(knownC2PA: [a: false, b: false])
+        await fourth.waitForPendingFieldMutationWrites()
+        await fourth.waitForCurrentFaceDataPersistence()
+        #expect(await recorder.captured.count == 2)
+        #expect(try await relaunch().pendingPersonShownUpdate == nil)
     }
 
     @Test("Moving a face removes the old name only when no face of that group remains; the target's applied name is added")

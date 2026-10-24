@@ -15,10 +15,19 @@ nonisolated struct DescriptionAssistantFaceContext: Sendable {
         guard !Task.isCancelled, case .captured(_, let current) = signature else {
             return Self(people: [], notice: "Face context could not be loaded.")
         }
-        return make(for: imageURL, data: evidence.faceData, currentSignature: current)
+        // Stored boxes are in the file-tag frame; order them as the photo is displayed
+        // (a culling rotation may live only in the sidecar).
+        let orientation = await FaceDisplayOrientation.resolved(for: imageURL)
+        guard !Task.isCancelled else { return Self(people: [], notice: "Face context could not be loaded.") }
+        return make(for: imageURL, data: evidence.faceData, currentSignature: current, orientation: orientation)
     }
 
-    static func make(for imageURL: URL, data: FolderFaceData?, currentSignature: FileSignature?) -> Self {
+    static func make(
+        for imageURL: URL,
+        data: FolderFaceData?,
+        currentSignature: FileSignature?,
+        orientation: FaceDisplayOrientation
+    ) -> Self {
         guard var data else { return Self(people: [], notice: "No face scan is available for this photo.") }
         // Geometry from a replaced or physically rotated file must not enter the prompt. A
         // metadata-only write (Apply, Review) keeps the content fingerprint and stays current:
@@ -27,7 +36,7 @@ nonisolated struct DescriptionAssistantFaceContext: Sendable {
             return Self(people: [], notice: "Face data is missing or out of date. Scan this photo again to include names.")
         }
         data.groups.removeAll { $0.isExcludedFromPersonShown }
-        let people = CaptionConfirmedPersonOrdering.people(for: imageURL, in: data)
+        let people = CaptionConfirmedPersonOrdering.people(for: imageURL, in: data, orientation: orientation)
         return Self(people: people, notice: people.isEmpty ? "No named faces are available for this photo." : nil)
     }
 }

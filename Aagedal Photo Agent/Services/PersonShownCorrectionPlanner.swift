@@ -13,6 +13,9 @@ nonisolated struct PersonShownUpdateProposal: Identifiable, Sendable, Equatable 
     var replacementsByURL: [URL: [MetadataPersonReplacement]]
     /// How each group's per-photo applied records change once the photo's write completes.
     var appliedNameUpdates: AppliedPersonShownChanges
+    /// Offered again on folder load for an edit whose offer was never answered (e.g. the app
+    /// quit with the prompt open), rather than created by an edit just now.
+    var isReoffer: Bool = false
 
     var photoCount: Int { replacementsByURL.count }
 
@@ -125,6 +128,47 @@ nonisolated enum PersonShownCorrectionPlanner {
         guard !replacementsByURL.isEmpty else { return nil }
         return PersonShownUpdateProposal(id: UUID(), folderURL: after.folderURL,
             replacementsByURL: replacementsByURL, appliedNameUpdates: appliedNameUpdates)
+    }
+
+    /// The shown name as compared with `FaceGroup.declinedPersonShownName` ("" = no name).
+    static func declineToken(for group: FaceGroup) -> String {
+        guard !group.isExcludedFromPersonShown else { return "" }
+        return group.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    /// An offer for corrections a previous session left unanswered: groups that still have a
+    /// face in a photo whose app-written name differs from the group's current shown name, and
+    /// whose current name was not explicitly declined. Returns the synthetic "before" snapshot
+    /// (those groups carrying a name the photos received) so later edits re-plan from it, and
+    /// the proposal planned from it with the regular planner. Nil when nothing is outstanding.
+    static func unansweredProposal(in data: FolderFaceData) -> (base: FolderFaceData, proposal: PersonShownUpdateProposal)? {
+        var presentPhotos: [UUID: Set<String>] = [:]
+        for face in data.faces {
+            guard let groupID = face.groupID else { continue }
+            presentPhotos[groupID, default: []].insert(face.imageURL.lastPathComponent)
+        }
+        var base = data
+        var changed = false
+        for index in base.groups.indices {
+            let group = base.groups[index]
+            let current = declineToken(for: group)
+            guard group.declinedPersonShownName != current else { continue }
+            let photos = presentPhotos[group.id] ?? []
+            // A name this app wrote into a photo the group is still in, that differs from what
+            // the group shows now. Sorted for a deterministic synthetic name.
+            let stale = (group.appliedPersonShownNames ?? [:])
+                .filter { photos.contains($0.key) }
+                .map { $0.value.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && $0 != current }
+                .sorted()
+            guard let previous = stale.first else { continue }
+            base.groups[index].name = previous
+            base.groups[index].excludedFromPersonShown = nil
+            changed = true
+        }
+        guard changed, var proposal = proposal(before: base, after: data) else { return nil }
+        proposal.isReoffer = true
+        return (base, proposal)
     }
 
     /// Applies per-photo applied-name changes to `data`, optionally only for `photos`.

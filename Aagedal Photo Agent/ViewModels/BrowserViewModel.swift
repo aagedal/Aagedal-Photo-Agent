@@ -329,6 +329,13 @@ final class BrowserViewModel {
     /// True while browser rating/label/rotation writes are still running. Their own
     /// FSEvents echoes are folded into one folder refresh after the queue drains.
     var hasFieldMutationWritesInFlight: Bool { fieldMutationBatchesInFlight > 0 }
+    /// Photos whose queued rating/label/rotation write has not finished yet.
+    @ObservationIgnored private(set) var pendingFieldMutationWriteCount = 0
+    /// "Ratings/labels: 120 remaining" for the quit "Saving Changes…" prompt, or nil when idle.
+    var fieldMutationActivityDescription: String? {
+        guard hasFieldMutationWritesInFlight else { return nil }
+        return "Ratings/labels: \(max(pendingFieldMutationWriteCount, 1)) remaining"
+    }
     @ObservationIgnored private var fieldMutationDisplayID = UUID()
     @ObservationIgnored private var tagReadRevisions: [URL: UUID] = [:]
     @ObservationIgnored private var fieldMutationRequestIDs: [URL: [String: UUID]] = [:]
@@ -2606,6 +2613,7 @@ final class BrowserViewModel {
         let engine = writeEngine
         let reader = metadataReadService
         fieldMutationBatchesInFlight += 1
+        pendingFieldMutationWriteCount += requests.count
         fieldMutationTask = Task {
             defer { fieldMutationBatchesInFlight -= 1 }
             await previous?.value
@@ -2620,6 +2628,7 @@ final class BrowserViewModel {
             for (request, original) in zip(requests, capturedImages) {
                 let result = if let writer { await writer(request) } else { await service.write(request) }
                 results.append(result)
+                pendingFieldMutationWriteCount -= 1
                 let ownsField = fieldMutationRequestIDs[request.imageURL]?[field] == request.id
                 let prior = fieldMutationFallbacks[request.imageURL]?[field]
                 var fallback = prior?.image ?? original
@@ -2766,7 +2775,14 @@ final class BrowserViewModel {
         }
     }
 
-    func waitForPendingFieldMutationWrites() async { await fieldMutationTask?.value }
+    /// Waits until every queued rating/label/rotation write has finished, including writes
+    /// queued while waiting (quit registers this per pane via `BrowserFieldMutationTermination`).
+    func waitForPendingFieldMutationWrites() async {
+        while let task = fieldMutationTask {
+            await task.value
+            if fieldMutationTask == task { return }
+        }
+    }
 
     func waitForFolderLoad() async { await loadFolderTask?.value }
 
@@ -2799,6 +2815,11 @@ final class BrowserViewModel {
                     .joined(separator: "\n")
             }
             if !result.movedFiles.isEmpty {
+                // Like rename and Move to Folder: the moved photos' faces leave this folder's
+                // face data (a later rename into a freed name must not inherit them), and the
+                // import ledger follows them into .Rejected so the card is not re-imported.
+                let movedSources = await Self.finishRejectedMove(sources: rejectedURLs, movedFiles: result.movedFiles)
+                if !movedSources.isEmpty { onImagesDeleted?(movedSources) }
                 let count = result.movedFiles.count
                 fileOperationNotice = FileOperationNotice(
                     message: "Moved \(count) rejected photo\(count == 1 ? "" : "s") to \(folderName)",
@@ -2815,6 +2836,23 @@ final class BrowserViewModel {
             guard !result.movedFiles.isEmpty || !result.failedFiles.isEmpty else { return }
             loadFolder(url: folderURL, addToOpenFolders: false)
         }
+    }
+
+    /// Off-main follow-up of Move Rejected. The sources no longer present are the moved ones
+    /// (each bundle commits or rolls back whole). The move reports destinations in source order,
+    /// so when the counts agree and every destination keeps its source's stem (a uniquified
+    /// name only adds a suffix) they are paired and the import ledger follows them.
+    @concurrent
+    nonisolated static func finishRejectedMove(sources: [URL], movedFiles: [URL]) async -> Set<URL> {
+        let gone = sources.filter { !FileManager.default.fileExists(atPath: $0.path) }
+        let pairs = zip(gone, movedFiles).map { (from: $0, to: $1) }
+        if gone.count == movedFiles.count, pairs.allSatisfy({
+            $0.to.deletingPathExtension().lastPathComponent
+                .hasPrefix($0.from.deletingPathExtension().lastPathComponent)
+        }) {
+            ImportLedger.recordRelocations(pairs)
+        }
+        return Set(gone)
     }
 
     func rotateClockwise() { rotate(selectedImages, clockwise: true) }
@@ -2847,7 +2885,8 @@ final class BrowserViewModel {
             self.applySidecarCropState(to: &image, cameraRaw: cameraRaw)
         }, affectsSortKey: false, affectsFilterKey: false)
         for image in captured {
-            thumbnailService.rotateThumbnailInCache(for: image.url, clockwise: clockwise)
+            thumbnailService.rotateThumbnailInCache(for: image.url, clockwise: clockwise,
+                editedHasDisplayFrameArtwork: image.cameraRawSettings?.watermarkLayers?.isEmpty == false)
             fullScreenImageCache.invalidateImage(for: image.url)
         }
     }
