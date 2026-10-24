@@ -1,4 +1,5 @@
 import Foundation
+import SwiftMediaMetadata
 
 nonisolated enum RAWArchiveLocationError: LocalizedError {
     case archiveRootNotConfigured
@@ -393,6 +394,32 @@ nonisolated enum RAWArchiveService {
             at: sourceSidecar,
             to: destinationSidecar
         )
+        carryEmbeddedOrientation(from: sourceURL, intoArchiveSidecar: destinationSidecar,
+                                 archiveURL: destinationURL)
+    }
+
+    /// Rendered (TIFF/JPEG XL) archives are written in the RAW's sensor frame whenever a
+    /// sidecar exists (`EditedImageRenderer.ExportOrientationPolicy.rawArchive`), so the
+    /// copied sidecar's crop/masks still line up and its `tiff:Orientation` orients the
+    /// pixels exactly as it does the RAW. A sidecar without its own orientation relied on
+    /// the RAW's embedded tag, which the rendered archive (EXIF 1) no longer carries; write
+    /// that tag into the copy so the archive displays as the original does. DNG archives
+    /// keep their own embedded orientation and are left byte-identical.
+    private static func carryEmbeddedOrientation(
+        from sourceURL: URL,
+        intoArchiveSidecar sidecarURL: URL,
+        archiveURL: URL
+    ) {
+        guard !SupportedImageFormats.isRaw(url: archiveURL),
+              XMPSidecarService().sidecarOrientation(for: sourceURL) == nil else { return }
+        let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: sourceURL)
+        guard fileOrientation != 1,
+              var xmp = try? XMPSidecar.read(from: sidecarURL) else { return }
+        let value = String(fileOrientation)
+        xmp.setValue(.simple(value), namespace: XMPNamespace.tiff, property: "Orientation")
+        xmp.setValue(.simple(value), namespace: XMPNamespace.exif, property: "Orientation")
+        guard let data = XMPWriter.generateXML(xmp).data(using: .utf8) else { return }
+        try? data.write(to: sidecarURL, options: .atomic)
     }
 
     static func saveBookmark(for url: URL, key: String) {

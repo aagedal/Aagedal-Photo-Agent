@@ -449,6 +449,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
 
             // Force orientation to 1 — rendered pixels are already upright.
             destMetadata.setOrientation(1)
+            Self.normalizeXMPOrientation(&destMetadata)
 
             // PNG/HEIC/AVIF/JPEG XL can't carry IPTC-IIM: the writer drops it with only a
             // warning, so an IIM-only source (older cameras/agency files) would lose caption,
@@ -471,6 +472,21 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 throw error
             }
         }
+    }
+
+    /// `setOrientation` only touches EXIF. The source XMP is copied wholesale, and the app's
+    /// own rotate (like Lightroom/Bridge) also records `tiff:Orientation` and
+    /// `exif:Orientation` there; left as-is, XMP-honoring readers would rotate the upright
+    /// rendered pixels a second time. Reset whichever carriers the copied packet has to 1.
+    nonisolated static func normalizeXMPOrientation(_ metadata: inout ImageMetadata) {
+        guard var xmp = metadata.xmp else { return }
+        var changed = false
+        for namespace in [XMPNamespace.tiff, XMPNamespace.exif]
+        where xmp.value(namespace: namespace, property: "Orientation") != nil {
+            xmp.setValue(.simple("1"), namespace: namespace, property: "Orientation")
+            changed = true
+        }
+        if changed { metadata.xmp = xmp }
     }
 
     nonisolated static func containerCarriesIIM(_ metadata: ImageMetadata) -> Bool {

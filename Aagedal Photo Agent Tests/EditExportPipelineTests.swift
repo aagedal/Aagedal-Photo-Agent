@@ -2813,6 +2813,106 @@ struct ExportRenderFidelityTests {
         }
     }
 
+    @Test("A photo rotated by the app's own rotate exports with EXIF and XMP orientation both 1")
+    func appRotatedPhotoExportsConsistentOrientation() async throws {
+        let directory = try makeDirectory("app-rotated")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        try writeQuadrantJPEG(to: source, orientation: 1)
+        _ = try await SwiftExifWriteEngine().writeFieldMutation(
+            .orientation(expected: 1, new: 6), to: source, validatePreparedIntent: {}
+        )
+        let rotated = try SwiftMediaMetadata.readMetadata(from: source)
+        #expect(rotated.exif?.orientation == 6)
+        #expect(rotated.xmp?.tiffOrientation == "6")
+
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source, cameraRaw: editedSettings(), kind: .saveAs(.jpeg),
+            outputFolder: directory.appendingPathComponent("output"), folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker()
+        )
+        let output = try pixels(at: rendered)
+        #expect(output.width == 32)
+        #expect(output.height == 64)
+        let physical = try SwiftMediaMetadata.readMetadata(from: rendered)
+        #expect((physical.exif?.orientation ?? 1) == 1)
+        #expect((physical.xmp?.tiffOrientation ?? "1") == "1")
+        #expect((physical.xmp?.simpleValue(namespace: XMPNamespace.exif, property: "Orientation") ?? "1") == "1")
+    }
+
+    /// Classifies a pixel by its dominant channel; archive pixels are PQ-encoded, so
+    /// absolute levels after conversion to 8-bit sRGB are not meaningful.
+    private func dominant(_ pixels: Pixels, _ x: Int, _ y: Int) -> String {
+        let p = pixels.rgb(x, y)
+        if p.r > p.g + 40, p.r > p.b + 40 { return "red" }
+        if p.g > p.r + 40, p.g > p.b + 40 { return "green" }
+        if p.b > p.r + 40, p.b > p.g + 40 { return "blue" }
+        return min(p.r, p.g, p.b) > 60 ? "white" : "other"
+    }
+
+    @Test("RAW archives stay consistent with their copied sidecar's orientation")
+    func rawArchiveOrientationMatchesCopiedSidecar() async throws {
+        let directory = try makeDirectory("raw-archive-orientation")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // CIRAWFilter rejects these bytes, so the archive takes the renderer's generic
+        // CIImage fallback, which bakes the embedded orientation exactly as CIRAWFilter does.
+        func makeSource(_ name: String) throws -> URL {
+            let jpeg = directory.appendingPathComponent("\(name).jpg")
+            try writeQuadrantJPEG(to: jpeg, orientation: 6)
+            let raw = directory.appendingPathComponent("\(name).dng")
+            try FileManager.default.moveItem(at: jpeg, to: raw)
+            #expect(FullScreenImageCache.fileEXIFOrientation(at: raw) == 6)
+            return raw
+        }
+        func archive(_ source: URL) async throws -> URL {
+            let folder = directory.appendingPathComponent("archive-\(source.deletingPathExtension().lastPathComponent)")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let output = try await EditedImageRenderer.convertRAWTo16BitTIFF(
+                from: source, decodeProfile: .camera, destinationFolder: folder)
+            try RAWArchiveService.copySidecarIfPresent(from: source, to: output)
+            return output
+        }
+        func displayedOrientation(_ url: URL) -> Int {
+            FullScreenImageCache.displayOrientation(
+                for: url, fallback: FullScreenImageCache.fileEXIFOrientation(at: url))
+        }
+
+        // Sidecar with orientation: sensor-frame pixels, copied sidecar orients them.
+        let oriented = try makeSource("oriented")
+        try writeSidecarOrientation(6, for: oriented)
+        let orientedArchive = try await archive(oriented)
+        let orientedPixels = try pixels(at: orientedArchive)
+        #expect(orientedPixels.width == 64)
+        #expect(orientedPixels.height == 32)
+        #expect(dominant(orientedPixels, 8, 8) == "red")
+        #expect(dominant(orientedPixels, 56, 24) == "white")
+        #expect(displayedOrientation(orientedArchive) == displayedOrientation(oriented))
+
+        // Sidecar without orientation: the RAW's embedded tag is carried into the copy.
+        let unoriented = try makeSource("unoriented")
+        try Data("""
+            <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\
+            <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="3"/>\
+            </rdf:RDF></x:xmpmeta>
+            """.utf8).write(to: XMPSidecarService().sidecarURL(for: unoriented))
+        #expect(XMPSidecarService().sidecarOrientation(for: unoriented) == nil)
+        let unorientedArchive = try await archive(unoriented)
+        let unorientedPixels = try pixels(at: unorientedArchive)
+        #expect(unorientedPixels.width == 64)
+        #expect(XMPSidecarService().sidecarOrientation(for: unorientedArchive) == 6)
+        #expect(displayedOrientation(unorientedArchive) == displayedOrientation(unoriented))
+
+        // No sidecar: nothing else carries the orientation, so it stays baked in.
+        let bare = try makeSource("bare")
+        let bareArchive = try await archive(bare)
+        let barePixels = try pixels(at: bareArchive)
+        #expect(barePixels.width == 32)
+        #expect(barePixels.height == 64)
+        #expect(dominant(barePixels, 8, 16) == "blue")
+        #expect(dominant(barePixels, 24, 16) == "red")
+        #expect(displayedOrientation(bareArchive) == 1)
+    }
+
     // MARK: Adaptive HDR sources
 
     @Test("SDR exports of a gain-map JPEG use its SDR rendition instead of clipping the expansion")
@@ -2870,17 +2970,40 @@ struct ExportRenderFidelityTests {
         #expect(unedited.mean < 2, "unedited SDR export differs from the SDR rendition: \(unedited)")
         #expect(clippedCount(exported) <= clippedCount(basePixels) + 2)
 
-        // Save As forces SDR even when the photo was edited in HDR mode.
-        var hdrEdited = CameraRawSettings()
-        hdrEdited.hdrEditMode = 1
-        hdrEdited.contrast2012 = 0
+        // Save As forces SDR; HDR mode alone (Develop auto-enables it) is not a pixel edit.
+        var hdrModeOnly = CameraRawSettings()
+        hdrModeOnly.hdrEditMode = 1
+        #expect(EditedImageRenderer.sdrOutputUsesBaseRendition(of: hdrModeOnly))
         let savedAs = try pixels(at: try await EditedImageRenderer.saveAs(
-            from: source, cameraRaw: hdrEdited, format: .png,
+            from: source, cameraRaw: hdrModeOnly, format: .png,
             destinationFolder: directory.appendingPathComponent("output")
         ))
         let saved = meanAbsoluteDifference(savedAs, basePixels)
         #expect(saved.mean < 3, "Save As SDR differs from the SDR rendition: \(saved)")
         #expect(clippedCount(savedAs) <= clippedCount(basePixels) + 2)
+
+        // An edited photo keeps Develop's expanded decode: -1 EV recovers gain-map
+        // highlights exactly as the user tuned it, rather than darkening the SDR base.
+        var edited = CameraRawSettings()
+        edited.exposure2012 = -1
+        #expect(!EditedImageRenderer.sdrOutputUsesBaseRendition(of: edited))
+        func developRendition(of decoded: CIImage) throws -> Pixels {
+            let rendered = CameraRawApproximation.applyWithCrop(
+                to: decoded, settings: edited, exifOrientation: 1)
+            return try pixels(of: try #require(
+                context.createCGImage(rendered, from: rendered.extent, format: .RGBA8, colorSpace: sRGB)))
+        }
+        let developReference = try developRendition(of: expanded)
+        let baseReference = try developRendition(of: base)
+        try #require(meanAbsoluteDifference(developReference, baseReference).mean > 3,
+                     "fixture must distinguish the expanded and base decodes once edited")
+        let editedExport = try pixels(at: try await EditedImageRenderer.render(
+            from: source, cameraRaw: edited, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration(), collisionPolicy: .appendNumber
+        ))
+        let editedDifference = meanAbsoluteDifference(editedExport, developReference)
+        #expect(editedDifference.mean < 2, "edited SDR export differs from Develop's rendition: \(editedDifference)")
     }
 
     // MARK: Reduced-resolution decode

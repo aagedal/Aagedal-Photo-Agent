@@ -39,6 +39,19 @@ nonisolated enum EditedImageRenderer {
         let pixelOrientation: Int
     }
 
+    /// How `prepareExportSource` chooses the frame the decoded pixels end up in.
+    enum ExportOrientationPolicy {
+        /// Develop renders: rotate into the sidecar-first display orientation.
+        case display
+        /// Unedited RAW archives, which ship with a copy of the source's XMP sidecar.
+        /// That sidecar's Camera Raw crop/masks and (via `RAWArchiveService`) its
+        /// orientation are expressed in the sensor frame, so when a sidecar exists the
+        /// pixels go back to the sensor frame (orientation 1) and the copied sidecar
+        /// orients them, exactly as it does the original RAW. Without a sidecar nothing
+        /// else carries the orientation, so the file orientation stays baked in.
+        case rawArchive
+    }
+
     private static let rawExtensions: Set<String> = [
         "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf", "dng", "rw2", "orf", "pef", "srw"
     ]
@@ -47,18 +60,21 @@ nonisolated enum EditedImageRenderer {
     ///
     /// Orientation: every decode below (CIRAWFilter, `.applyOrientationProperty`) bakes
     /// the FILE's embedded tag into the pixels, but RAW and C2PA/sidecar-only rotations
-    /// live in the sidecar, which wins (single source of truth). When
-    /// `appliesDisplayOrientation` is set the pixels are rotated file → display before any
-    /// editing, and that display orientation is reported as the pixels' frame. This is
-    /// exactly how Develop renders (`DevelopSourceDecodeService.orientedToTarget` + upload
-    /// with `exifOrientation: targetOrientation`), so crops, masks and watermarks land
-    /// where the user placed them, and watermarks stay upright. Unedited RAW archives
-    /// keep the file orientation because they carry the original sidecar alongside.
+    /// live in the sidecar, which wins (single source of truth). With the `.display`
+    /// policy the pixels are rotated file → display before any editing, and that display
+    /// orientation is reported as the pixels' frame. This is exactly how Develop renders
+    /// (`DevelopSourceDecodeService.orientedToTarget` + upload with
+    /// `exifOrientation: targetOrientation`), so crops, masks and watermarks land where the
+    /// user placed them, and watermarks stay upright. See `ExportOrientationPolicy` for
+    /// RAW archives.
     ///
-    /// `outputIsHDR`: only an HDR output expands adaptive (gain-map) JPEG/HEIC sources.
-    /// An SDR output decodes the container's own SDR base rendition (what the grid
-    /// thumbnail and every SDR viewer show); expanding and then encoding 8-bit hard-clipped
-    /// the gain-map highlights.
+    /// Adaptive (gain-map) JPEG/HEIC sources: Develop and the edited previews always
+    /// decode them expanded, so any develop edit was tuned against the expanded rendition
+    /// (e.g. -1 EV pulling gain-map highlights back into range) and the export keeps that
+    /// decode. Only an SDR output of a photo with no pixel-affecting edits (geometry
+    /// aside) decodes the container's own SDR base rendition, which is what the grid
+    /// thumbnail and every SDR viewer show for it; expanding that and encoding 8-bit
+    /// hard-clipped the gain-map highlights.
     ///
     /// `maximumOutputPixelSize`: when a resolution limit is set and every enabled effect
     /// scales with image size, the source is decoded near the needed size instead of at
@@ -69,16 +85,23 @@ nonisolated enum EditedImageRenderer {
         cameraRaw: CameraRawSettings?,
         rawDecodeProfile: RAWDecodeProfile? = nil,
         outputIsHDR: Bool,
-        appliesDisplayOrientation: Bool = true,
+        orientationPolicy: ExportOrientationPolicy = .display,
         maximumOutputPixelSize: Int? = nil
     ) throws -> ExportSource {
         var input: CIImage
         var effectiveSettings = cameraRaw
 
         let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: sourceURL)
-        let requestedOrientation = appliesDisplayOrientation
-            ? FullScreenImageCache.displayOrientation(for: sourceURL, fallback: fileOrientation)
-            : fileOrientation
+        let requestedOrientation: Int
+        switch orientationPolicy {
+        case .display:
+            requestedOrientation = FullScreenImageCache.displayOrientation(
+                for: sourceURL, fallback: fileOrientation)
+        case .rawArchive:
+            requestedOrientation = XMPSidecarService().sidecarExists(for: sourceURL)
+                ? 1
+                : fileOrientation
+        }
         // `orientationCorrection` models only the four rotations; never claim a mirrored
         // frame the pixels were not actually moved into.
         let rotationOnly: Set<Int> = [1, 3, 6, 8]
@@ -99,6 +122,14 @@ nonisolated enum EditedImageRenderer {
         if rawExtensions.contains(sourceURL.pathExtension.lowercased()) {
             // Full-quality CIRAWFilter decode for export (no draft mode). Always decodes
             // with full EDR headroom; SDR output is rolled off by the tone pipeline.
+            //
+            // A reduced decode (resolution limit) lets CIRAWFilter apply its default
+            // sharpening and noise reduction at that scale, so micro-contrast and noise
+            // differ slightly from a full decode + downscale. This is deliberate: Develop's
+            // fit-to-view source goes through the same `loadRAWImage(maxPixelSize:)` →
+            // `RAWSourceDecoder.decode` path, with the same (default) CIRAWFilter detail and
+            // NR settings, decode profile and decoder version, so the reduced export
+            // matches what the user saw while editing.
             var rawResult = FullScreenImageCache.loadRAWImage(
                 from: sourceURL,
                 draftMode: false,
@@ -141,7 +172,7 @@ nonisolated enum EditedImageRenderer {
                 .applyOrientationProperty: true,
                 .toneMapHDRtoSDR: false
             ]
-            if outputIsHDR {
+            if outputIsHDR || !sdrOutputUsesBaseRendition(of: cameraRaw) {
                 options[.expandToHDR] = true
             }
             guard let ciImage = CIImage(contentsOf: sourceURL, options: options) else {
@@ -191,7 +222,7 @@ nonisolated enum EditedImageRenderer {
         cameraRaw: CameraRawSettings?,
         rawDecodeProfile: RAWDecodeProfile? = nil,
         outputIsHDR: Bool,
-        appliesDisplayOrientation: Bool = true,
+        orientationPolicy: ExportOrientationPolicy = .display,
         maximumOutputPixelSize: Int? = nil
     ) async throws -> CIImage {
         let source = try prepareExportSource(
@@ -199,7 +230,7 @@ nonisolated enum EditedImageRenderer {
             cameraRaw: cameraRaw,
             rawDecodeProfile: rawDecodeProfile,
             outputIsHDR: outputIsHDR,
-            appliesDisplayOrientation: appliesDisplayOrientation,
+            orientationPolicy: orientationPolicy,
             maximumOutputPixelSize: maximumOutputPixelSize
         )
         try Task.checkCancellation()
@@ -288,24 +319,28 @@ nonisolated enum EditedImageRenderer {
         return true
     }
 
+    /// True when an SDR output may start from an adaptive-HDR source's SDR base rendition:
+    /// the settings change no pixels beyond geometry (crop/rotation), so nothing was tuned
+    /// against Develop's expanded decode.
+    static func sdrOutputUsesBaseRendition(of settings: CameraRawSettings?) -> Bool {
+        guard let settings else { return true }
+        return MetalEditPipeline.isIdentitySettings(settings)
+    }
+
     private static func downsampledForExport(_ image: CIImage, maxPixelSize: CGFloat?) -> CIImage {
         guard let maxPixelSize else { return image }
         let extent = image.extent
         let longest = max(extent.width, extent.height)
         guard longest.isFinite, longest > maxPixelSize, maxPixelSize > 0 else { return image }
+        // One uniform scale; the final `limitedForExport` does the integer sizing.
         let scale = maxPixelSize / longest
-        // Scale each axis to whole pixels so the GPU source has no partially covered
-        // edge row/column (the aspect change is far below a pixel).
-        let width = max(1, (extent.width * scale).rounded())
-        let height = max(1, (extent.height * scale).rounded())
         return image
             .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
             .clampedToExtent()
-            .transformed(by: CGAffineTransform(
-                scaleX: width / extent.width,
-                y: height / extent.height
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .cropped(to: CGRect(
+                x: 0, y: 0, width: extent.width * scale, height: extent.height * scale
             ))
-            .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
     }
 
     // MARK: - Unified Render
@@ -1363,7 +1398,7 @@ nonisolated enum EditedImageRenderer {
             cameraRaw: archiveSettings,
             rawDecodeProfile: decodeProfile,
             outputIsHDR: true,
-            appliesDisplayOrientation: false
+            orientationPolicy: .rawArchive
         )
         let quality = AppDefaults.store.object(
             forKey: UserDefaultsKeys.exportQualityHDR
@@ -1417,7 +1452,7 @@ nonisolated enum EditedImageRenderer {
             cameraRaw: archiveSettings,
             rawDecodeProfile: decodeProfile,
             outputIsHDR: true,
-            appliesDisplayOrientation: false
+            orientationPolicy: .rawArchive
         )
         let destinationURL = try reserveRAWArchiveOutput(
             for: sourceURL,
