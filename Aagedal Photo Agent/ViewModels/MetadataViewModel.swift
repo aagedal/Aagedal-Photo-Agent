@@ -3862,16 +3862,67 @@ final class MetadataViewModel {
         supersedableSingleSave = (writeTaskGeneration, imageURL, loadID)
     }
 
-    /// Waits until the current write chain (including writes queued while waiting) and any
-    /// metadata batch (Write All Pending, variable processing) finish. A Write All batch runs
-    /// outside `writeTask`, so quit, rename and Paste IPTC must wait for it here too.
+    /// Waits until the current write chain (including writes queued while waiting) finishes.
+    /// Folder-wide batches (Write All Pending, Process Variables) run outside it; only quit
+    /// (`waitForPendingWritesAndBatches`) and file operations whose targets the batch is
+    /// writing (`waitForBatchOverlapping`) wait for those.
     func waitForPendingWrites() async {
+        while let task = writeTask {
+            await task.value
+            if writeTask == task { return }
+        }
+    }
+
+    /// Quit-time barrier: the write chain and any metadata batch, including work queued meanwhile.
+    func waitForPendingWritesAndBatches() async {
         while true {
             let write = writeTask
             let batch = batchProcessTask
             await write?.value
             await batch?.value
             if writeTask == write, batchProcessTask == batch { return }
+        }
+    }
+
+    nonisolated enum BatchProcessKind: Sendable {
+        case writeAllPending
+        case processVariables
+
+        var displayName: String {
+            switch self {
+            case .writeAllPending: "Write All"
+            case .processVariables: "Process Variables"
+            }
+        }
+    }
+
+    /// What the running folder batch is and which folder it writes; valid while `isProcessingFolder`.
+    @ObservationIgnored private var batchProcessScope: (kind: BatchProcessKind, folder: URL)?
+
+    /// "Write All: 340 of 2000" while a folder batch runs, else nil.
+    var runningBatchDescription: String? {
+        guard isProcessingFolder, let scope = batchProcessScope else { return nil }
+        let parts = folderProcessProgress.split(separator: "/")
+        guard parts.count == 2 else { return scope.kind.displayName }
+        return "\(scope.kind.displayName): \(parts[0]) of \(parts[1])"
+    }
+
+    /// The kind of running folder batch that may write any of `urls`, or nil.
+    func runningBatchOverlapping(_ urls: [URL]) -> BatchProcessKind? {
+        guard isProcessingFolder, let scope = batchProcessScope else { return nil }
+        let folder = scope.folder.standardizedFileURL.resolvingSymlinksInPath().path
+        let overlaps = urls.contains {
+            $0.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path == folder
+        }
+        return overlaps ? scope.kind : nil
+    }
+
+    /// Waits for the folder batch only when it may be writing one of `urls` (rename, move).
+    func waitForBatchOverlapping(_ urls: [URL]) async {
+        guard runningBatchOverlapping(urls) != nil else { return }
+        while let batch = batchProcessTask {
+            await batch.value
+            if batchProcessTask == batch { return }
         }
     }
 
@@ -4389,6 +4440,7 @@ final class MetadataViewModel {
         activeVariableBatchIDs.insert(batchID)
         synchronizeVariableLifecycleRetention()
         isProcessingFolder = true
+        batchProcessScope = (.processVariables, folder)
         folderProcessProgress = "0/\(urls.count)"
         variableBatchOutcome = nil
         variableProcessingStatus = nil
@@ -5597,6 +5649,7 @@ final class MetadataViewModel {
         let reader = readService
         isProcessingFolder = true
         folderProcessProgress = "0/?"
+        batchProcessScope = (.writeAllPending, folderURL)
         pendingWriteBatchOutcome = nil
         saveError = nil
         batchProcessTask?.cancel()

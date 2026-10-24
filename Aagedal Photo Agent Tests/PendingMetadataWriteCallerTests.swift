@@ -96,9 +96,9 @@ struct PendingMetadataWriteCallerTests {
         #expect(model.saveError == outcome.attentionMessage)
     }
 
-    @Test("waitForPendingWrites also waits for a running Write All batch")
+    @Test("Only the quit barrier and overlapping Rename/Move wait for a running Write All batch")
     @MainActor
-    func waitForPendingWritesCoversWriteAllBatch() async throws {
+    func onlyQuitAndOverlappingFileOperationsWaitForWriteAll() async throws {
         let folder = URL(fileURLWithPath: "/virtual/pending-quit-wait")
         let photo = folder.appendingPathComponent("a.jpg")
         let discovery = PendingWriteCallerDiscovery(.init(records: [photo: record(photo)], failures: []))
@@ -107,9 +107,19 @@ struct PendingMetadataWriteCallerTests {
         model.currentFolderURL = folder
         model.writeAllPendingChanges(in: folder, images: [])
         try await waitForPause(executor, name: "a.jpg")
+
+        // Copy/Paste IPTC, exports and folder switches wait only for the editor write chain.
+        await model.waitForPendingWrites()
+        #expect(model.isProcessingFolder, "the editor write chain must not wait for the batch")
+        await model.waitForBatchOverlapping([URL(fileURLWithPath: "/virtual/elsewhere/b.jpg")])
+        #expect(model.isProcessingFolder, "a rename in another folder must not wait")
+        #expect(model.runningBatchOverlapping([folder.appendingPathComponent("c.jpg")]) == .writeAllPending)
+        #expect(model.runningBatchOverlapping([URL(fileURLWithPath: "/virtual/elsewhere/b.jpg")]) == nil)
+        #expect(model.runningBatchDescription == "Write All: 0 of 1")
+
         var waitReturned = false
         let waiter = Task { @MainActor in
-            await model.waitForPendingWrites()
+            await model.waitForPendingWritesAndBatches()
             waitReturned = true
         }
         for _ in 0..<20 { await Task.yield() }

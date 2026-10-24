@@ -411,15 +411,15 @@ struct ApplicationTerminationFlushCoordinatorTests {
         clock.fire()
     }
 
-    @Test("Quit Without Saving from the saving prompt terminates without waiting for the stalled stage")
+    @Test("Quit Without Saving on a stalled last stage terminates without waiting for it")
     func waitingQuitWithoutSaving() async {
         let clock = TerminationManualClock()
         let gate = TerminationManualGate()
-        var developCalls = 0
+        var captionCalls = 0
         let coordinator = ApplicationTerminationFlushCoordinator(
-            captionFlush: { await gate.wait() },
+            captionFlush: { captionCalls += 1 },
             developFlush: {
-                developCalls += 1
+                await gate.wait()
                 return .succeeded
             },
             waitTimeout: .seconds(4),
@@ -432,13 +432,102 @@ struct ApplicationTerminationFlushCoordinatorTests {
         await clock.waitForSleeps(1)
         clock.fire()
         #expect(await resolution.value)
-        #expect(developCalls == 0)
+        #expect(captionCalls == 1, "earlier stages are not rerun")
         #expect(coordinator.unfinishedAttempt == nil)
         gate.open()
         clock.fire()
     }
 
-    @Test("Cancel Quit keeps the writes running, and the next quit waits for them first")
+    @Test("Quit Without Saving at the saving prompt abandons only the hung stage; the rest still save")
+    func waitingQuitWithoutSavingSkipsOnlyRunningStage() async {
+        let clock = TerminationManualClock()
+        let hung = TerminationManualGate()
+        var events: [String] = []
+        var hungRuns = 0
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            browserEditorFlush: {
+                hungRuns += 1
+                await hung.wait()
+                events.append("browserEditor finished")
+            },
+            captionFlush: { events.append("caption") },
+            analysisFlush: { events.append("analysis") },
+            developFlush: {
+                events.append("develop")
+                return .succeeded
+            },
+            waitTimeout: .seconds(4),
+            sleep: { _ in await clock.sleep() },
+            describeActivity: { stage in stage == .browserEditor ? "Write All: 340 of 2000" : nil }
+        )
+        var prompted: [ApplicationTerminationFlushStage?] = []
+        var descriptions: [String] = []
+        let shouldTerminate = Task { @MainActor in
+            await coordinator.resolve(
+                chooseWhileWaiting: { context in
+                    prompted.append(context.stage)
+                    descriptions.append(context.activityDescription)
+                    return .quitWithoutSaving
+                },
+                chooseFailure: { _ in
+                    Issue.record("No failure expected")
+                    return .keepOpen
+                }
+            )
+        }
+        await clock.waitForSleeps(1)
+        clock.fire()
+        #expect(await shouldTerminate.value)
+        #expect(prompted == [.browserEditor])
+        #expect(descriptions == ["Write All: 340 of 2000"])
+        #expect(events == ["caption", "analysis", "develop"])
+        #expect(hungRuns == 1, "the abandoned stage is not restarted")
+
+        // The abandoned attempt finishes its own stage's writes but starts no later stage.
+        hung.open()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(events == ["caption", "analysis", "develop", "browserEditor finished"])
+        clock.fire()
+    }
+
+    @Test("Captured Primary Develop work cannot be abandoned from the saving prompt")
+    func waitingPromptRefusesToAbandonPendingDevelop() async {
+        let clock = TerminationManualClock()
+        let gate = TerminationManualGate()
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            captionFlush: {},
+            developFlush: {
+                await gate.wait()
+                return .succeeded
+            },
+            waitTimeout: .seconds(4),
+            sleep: { _ in await clock.sleep() },
+            canAbandonStage: { $0 != .develop }
+        )
+        var allowed: [Bool] = []
+        let resolution = Task { @MainActor in
+            await coordinator.resolve(
+                chooseWhileWaiting: { context in
+                    allowed.append(context.allowsQuitWithoutSaving)
+                    if allowed.count == 1 { return .quitWithoutSaving } // ignored: treated as Keep Waiting
+                    return await withCheckedContinuation { continuation in
+                        context.whenFlushFinishes { continuation.resume(returning: .keepWaiting) }
+                        gate.open()
+                    }
+                },
+                chooseFailure: { _ in .keepOpen }
+            )
+        }
+        await clock.waitForSleeps(1)
+        clock.fire()
+        await clock.waitForSleeps(2)
+        clock.fire()
+        #expect(await resolution.value)
+        #expect(allowed == [false, false])
+        clock.fire()
+    }
+
+    @Test("Cancel Quit stops the attempt after its running stage, and the next quit waits for it first")
     func waitingCancelQuitKeepsWorkRunning() async throws {
         let clock = TerminationManualClock()
         let gate = TerminationManualGate()
@@ -478,8 +567,29 @@ struct ApplicationTerminationFlushCoordinatorTests {
         #expect(events.isEmpty, "the next quit must not start while the earlier writes run")
         gate.open()
         #expect(await nextResolution.value)
-        #expect(events == ["caption", "develop", "next quit"])
+        // The cancelled attempt finished Caption's writes but never started Develop, so it
+        // cannot commit editors the user moved on with after cancelling.
+        #expect(events == ["caption", "next quit"])
         clock.fire()
+    }
+
+    @Test("A cancelled attempt starts no later stage")
+    func cancelledAttemptStopsBetweenStages() async {
+        var stages: [ApplicationTerminationFlushStage] = []
+        let attempt = ApplicationTerminationAttempt()
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            browserEditorFlush: {
+                stages.append(.browserEditor)
+                attempt.cancel()
+            },
+            captionFlush: { stages.append(.caption) },
+            developFlush: {
+                stages.append(.develop)
+                return .succeeded
+            }
+        )
+        #expect(await coordinator.attempt(as: attempt) == .cancelled)
+        #expect(stages == [.browserEditor])
     }
 
     @Test("Quit warning lists every running background writer")
