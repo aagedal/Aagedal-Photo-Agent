@@ -548,7 +548,7 @@ struct XMPSidecarService: Sendable {
         orientation: Int?,
         for imageURL: URL
     ) async throws {
-        if let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL) {
+        if let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL, requiringFreshListing: true) {
             // Clearing the JPEG's develop must not erase the RAW's; writing it would overwrite it.
             guard let settings, !settings.isEmpty else { return }
             throw StemSidecarDevelopOwnedByRawError(imageURL: imageURL, rawURL: rawURL)
@@ -581,7 +581,7 @@ struct XMPSidecarService: Sendable {
         for imageURL: URL,
         mutation: @escaping @Sendable (CameraRawSettings?) -> CameraRawSettings
     ) async throws {
-        if let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL) {
+        if let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL, requiringFreshListing: true) {
             throw StemSidecarDevelopOwnedByRawError(imageURL: imageURL, rawURL: rawURL)
         }
         _ = try await updateXMPTransaction(for: imageURL) { xmp in
@@ -599,7 +599,7 @@ struct XMPSidecarService: Sendable {
     }
 
     func saveCameraRawOnly(_ settings: CameraRawSettings?, orientation: Int?, for imageURL: URL) throws {
-        if let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL) {
+        if let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL, requiringFreshListing: true) {
             guard let settings, !settings.isEmpty else { return }
             throw StemSidecarDevelopOwnedByRawError(imageURL: imageURL, rawURL: rawURL)
         }
@@ -630,7 +630,7 @@ struct XMPSidecarService: Sendable {
     /// False for the non-RAW half of a RAW+JPEG pair: the shared stem sidecar's Camera Raw block
     /// belongs to the RAW and is left exactly as stored by every write made for the JPEG.
     nonisolated private func ownsDevelopBlock(for imageURL: URL) -> Bool {
-        !PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: imageURL)
+        !PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: imageURL, requiringFreshListing: true)
     }
 
     nonisolated private func writeXMP(_ xmp: XMPData, to url: URL) throws {

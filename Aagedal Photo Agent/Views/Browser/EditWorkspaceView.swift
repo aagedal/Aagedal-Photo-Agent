@@ -8018,6 +8018,10 @@ struct EditWorkspaceView: View {
                 anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil
             )
 
+            // Camera Raw-only embed: no descriptive rewrite, never into a file whose metadata
+            // wouldn't fit, and (outside Simple) never into a file with Content Credentials.
+            let allowsCredentialedEmbed = MetadataWritePreset.current == .simple
+            var report = DevelopEmbedReport()
             if let crop, cropIsAngled {
                 // crs crop fields use Adobe's un-rotated-frame corner encoding,
                 // which depends on each target's pixel aspect — encode per
@@ -8026,15 +8030,20 @@ struct EditWorkspaceView: View {
                 for (aspect, urls) in aspectGroups {
                     var groupFields = fields
                     groupFields.merge(cropFields(for: crop.encodedForACR(aspect: aspect))) { _, new in new }
-                    try await writeEngine.writeFields(
-                        groupFields, to: urls, structuredData: structuredData
+                    let groupReport = try await writeEngine.writeDevelopFields(
+                        groupFields, to: urls, structuredData: structuredData,
+                        allowsCredentialedEmbed: allowsCredentialedEmbed
                     )
+                    report.refusedForContentCredentials += groupReport.refusedForContentCredentials
+                    report.refusedForMetadataSize += groupReport.refusedForMetadataSize
                 }
             } else {
-                try await writeEngine.writeFields(
-                    fields, to: targetURLs, structuredData: structuredData
+                report = try await writeEngine.writeDevelopFields(
+                    fields, to: targetURLs, structuredData: structuredData,
+                    allowsCredentialedEmbed: allowsCredentialedEmbed
                 )
             }
+            if !report.isEmpty { throw DevelopEmbedRefusedError(report: report) }
         }
 
         persistenceSession.scheduleBatchPersistence {
@@ -8061,7 +8070,7 @@ struct EditWorkspaceView: View {
         urls.filter {
             SupportedImageFormats.isRaw(url: $0)
                 || (sidecarService.sidecarExists(for: $0)
-                    && !PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: $0))
+                    && !PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: $0, requiringFreshListing: true))
         }
     }
 

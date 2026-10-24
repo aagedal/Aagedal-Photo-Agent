@@ -150,6 +150,14 @@ nonisolated protocol DevelopVersionCatalogPersisting: Sendable {
     func save(
         _ catalog: DevelopVersionCatalog
     ) async throws -> DevelopVersionCatalogStorage
+
+    /// Removes the catalog stored under `sha256` when it belongs to `sourceURL`: used only for a
+    /// hash superseded by this app's own metadata-only rewrite of that source.
+    func removeSupersededCatalog(forSHA256 sha256: String, sourceURL: URL) async
+}
+
+extension DevelopVersionCatalogPersisting {
+    func removeSupersededCatalog(forSHA256 sha256: String, sourceURL: URL) async {}
 }
 
 extension DevelopVersionCatalogRepository: DevelopVersionCatalogPersisting {}
@@ -189,6 +197,10 @@ final class DevelopVersionSessionCoordinator {
     @ObservationIgnored private let revisionCapture: RevisionCapture
     @ObservationIgnored private let repositoryFactory: RepositoryFactory
     @ObservationIgnored private let saveDelay: Duration
+    /// Source hashes replaced by this app's own metadata-only rewrites (a RAW+JPEG pair's JPEG
+    /// Develop saves) during this session. A catalog still bound to one of them is rebound to the
+    /// current revision when saved, and its old file is removed instead of left as an orphan.
+    @ObservationIgnored private var supersededSHAs: Set<String> = []
 
     private let log = Logger(
         subsystem: "com.aagedal.photo-agent",
@@ -311,11 +323,11 @@ final class DevelopVersionSessionCoordinator {
         notice = nil
         saveTask = Task { [weak self] in
             do {
-                let storage = try await repository.save(candidate)
-                guard let self, !Task.isCancelled,
-                      sessionID == expectedSessionID,
-                      revision?.sha256 == sourceHash else { return }
-                catalog = candidate
+                guard let self,
+                      let (saved, storage) = try await saveFollowingRewrites(candidate, repository: repository,
+                        sessionID: expectedSessionID),
+                      !Task.isCancelled else { return }
+                catalog = saved
                 self.storage = storage
                 persistenceState = .saved
                 onSuccess()
@@ -323,7 +335,7 @@ final class DevelopVersionSessionCoordinator {
                 return
             } catch {
                 guard let self, sessionID == expectedSessionID,
-                      revision?.sha256 == sourceHash else { return }
+                      revision?.sha256 == sourceHash || supersededSHAs.contains(sourceHash) else { return }
                 persistenceState = .failed(error.localizedDescription)
                 notice = error.localizedDescription
             }
@@ -360,10 +372,10 @@ final class DevelopVersionSessionCoordinator {
                 guard let self else { return }
                 try await Task.sleep(for: saveDelay)
                 try Task.checkCancellation()
-                let storage = try await repository.save(candidate)
-                guard !Task.isCancelled, sessionID == expectedSessionID,
-                      revision?.sha256 == candidate.source.sha256 else { return }
-                catalog = candidate
+                guard let (saved, storage) = try await saveFollowingRewrites(candidate, repository: repository,
+                        sessionID: expectedSessionID),
+                      !Task.isCancelled else { return }
+                catalog = saved
                 self.storage = storage
                 persistenceState = .saved
                 onSaved()
@@ -371,7 +383,8 @@ final class DevelopVersionSessionCoordinator {
                 return
             } catch {
                 guard let self, sessionID == expectedSessionID,
-                      revision?.sha256 == candidate.source.sha256 else { return }
+                      revision?.sha256 == candidate.source.sha256
+                        || supersededSHAs.contains(candidate.source.sha256) else { return }
                 persistenceState = .failed(error.localizedDescription)
                 notice = error.localizedDescription
             }
@@ -406,15 +419,14 @@ final class DevelopVersionSessionCoordinator {
         persistenceState = .saving
         notice = nil
         do {
-            let storage = try await repository.save(candidate)
-            guard sessionID == expectedSessionID,
-                  revision?.sha256 == candidate.source.sha256 else {
+            guard let (saved, storage) = try await saveFollowingRewrites(candidate, repository: repository,
+                    sessionID: expectedSessionID) else {
                 let message = "The source changed before the named version could be saved."
                 persistenceState = .failed(message)
                 notice = message
                 return .failed(message)
             }
-            catalog = candidate
+            catalog = saved
             self.storage = storage
             persistenceState = .saved
             onSaved()
@@ -444,40 +456,95 @@ final class DevelopVersionSessionCoordinator {
         return true
     }
 
+    /// Waits for the current save chain (including a rebinding follow-up chained onto it).
+    func waitForPendingSave() async {
+        while let task = saveTask {
+            await task.value
+            if saveTask == task { break }
+        }
+    }
+
     func cancelSave() {
         saveTask?.cancel()
         saveTask = nil
     }
 
     /// A Primary Develop save of a RAW+JPEG pair's JPEG rewrites only the file's embedded XMP
-    /// (atomic, metadata-only): its pixels and geometry are unchanged but its sha256 is not,
-    /// and catalogs are keyed by that hash. Carry the session's catalog to the new revision so
-    /// named versions stay available now and on the next open. A persisted catalog is saved
-    /// under the new hash (the repository never deletes the old file); an unsaved one moves in
-    /// memory only. No-op when the bytes didn't change or another session is active.
+    /// (atomic, metadata-only): its pixels and geometry are unchanged but its sha256 is not, and
+    /// catalogs are keyed by that hash. Rebind the session to the new revision in one main-actor
+    /// step (no await between reading and replacing the catalog), so a version switch or save
+    /// issued around it is never overwritten or dropped: every save path rebinds a catalog still
+    /// bound to a superseded hash before writing (`saveFollowingRewrites`). A persisted catalog
+    /// is saved under the new hash, chained after any in-flight save, and the superseded file is
+    /// removed so sequential commits leave exactly one catalog.
     func followMetadataOnlyRewrite(of imageURL: URL) async {
-        guard sourceURL == imageURL, catalog != nil, let previous = revision else { return }
+        guard sourceURL == imageURL, let previous = revision else { return }
         let session = sessionID
+        let current: SourceImageRevision
         do {
-            let current = try await revisionCapture(imageURL, previous.exifOrientation ?? 1)
-            guard sessionID == session, sourceURL == imageURL, let latest = self.catalog,
-                  latest.source.sha256 != current.sha256,
-                  current.pixelWidth == previous.pixelWidth, current.pixelHeight == previous.pixelHeight else { return }
-            let reassociated = try latest.reassociated(to: current)
-            if storage != nil, let repository {
-                let saved = try await repository.save(reassociated)
-                guard sessionID == session, sourceURL == imageURL else { return }
-                storage = saved
-            }
-            self.catalog = reassociated
-            revision = current
-        } catch is CancellationError {
-            return
+            current = try await revisionCapture(imageURL, previous.exifOrientation ?? 1)
         } catch {
-            guard sessionID == session, sourceURL == imageURL else { return }
-            log.error("Develop versions could not follow a metadata-only source rewrite: \(error.localizedDescription, privacy: .public)")
-            notice = "Named versions could not follow this photo's saved Develop settings: \(error.localizedDescription)"
+            return
         }
+        guard sessionID == session, sourceURL == imageURL, let bound = revision,
+              bound.sha256 != current.sha256,
+              current.pixelWidth == bound.pixelWidth, current.pixelHeight == bound.pixelHeight else { return }
+        supersededSHAs.insert(bound.sha256)
+        revision = current
+        guard let latest = catalog else { return }
+        do {
+            catalog = try latest.reassociated(to: current)
+        } catch {
+            notice = "Named versions could not follow this photo's saved Develop settings: \(error.localizedDescription)"
+            return
+        }
+        guard storage != nil, let repository else { return }
+        let prior = saveTask
+        saveTask = Task { [weak self] in
+            await prior?.value
+            guard let self, !Task.isCancelled, sessionID == session, let latest = catalog else { return }
+            do {
+                guard let (_, storage) = try await saveFollowingRewrites(latest, repository: repository,
+                        sessionID: session) else { return }
+                self.storage = storage
+            } catch {
+                guard sessionID == session else { return }
+                log.error("Develop versions could not follow a metadata-only source rewrite: \(error.localizedDescription, privacy: .public)")
+                notice = "Named versions could not follow this photo's saved Develop settings: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Rebinds a catalog whose source hash was superseded by this session's own metadata-only
+    /// rewrite to the current revision; any other catalog is returned unchanged.
+    private func rebasedForCurrentRevision(_ candidate: DevelopVersionCatalog) throws -> DevelopVersionCatalog {
+        guard let revision, candidate.source.sha256 != revision.sha256,
+              supersededSHAs.contains(candidate.source.sha256) else { return candidate }
+        return try candidate.reassociated(to: revision)
+    }
+
+    /// Saves `candidate` bound to the session's current revision, re-saving if a metadata-only
+    /// rewrite superseded it during the await, then removes catalogs left under superseded
+    /// hashes. Nil when the session no longer owns this source.
+    private func saveFollowingRewrites(
+        _ candidate: DevelopVersionCatalog,
+        repository: any DevelopVersionCatalogPersisting,
+        sessionID expected: UUID
+    ) async throws -> (DevelopVersionCatalog, DevelopVersionCatalogStorage)? {
+        var current = try rebasedForCurrentRevision(candidate)
+        for _ in 0..<4 {
+            let storage = try await repository.save(current)
+            guard sessionID == expected, let revision, let sourceURL else { return nil }
+            if revision.sha256 == current.source.sha256 {
+                for sha in supersededSHAs where sha != revision.sha256 {
+                    await repository.removeSupersededCatalog(forSHA256: sha, sourceURL: sourceURL)
+                }
+                return (current, storage)
+            }
+            guard supersededSHAs.contains(current.source.sha256) else { return nil }
+            current = try rebasedForCurrentRevision(current)
+        }
+        return nil
     }
 
     func reset() {
@@ -497,5 +564,6 @@ final class DevelopVersionSessionCoordinator {
         notice = nil
         primarySettings = nil
         hasInstalledLoadedVersion = false
+        supersededSHAs = []
     }
 }

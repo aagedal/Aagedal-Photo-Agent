@@ -4893,7 +4893,12 @@ final class BrowserViewModel {
             let fileURLs = urls.filter { !SupportedImageFormats.isRaw(url: $0) }
             guard !fileURLs.isEmpty else { return }
             do {
-                try await writeEngine.writeFields(clearFields, to: fileURLs, structuredData: structuredData)
+                // Camera Raw-only: no descriptive rewrite, refused (not degraded) when the file's
+                // metadata wouldn't fit or, outside Simple, when it carries Content Credentials.
+                let report = try await writeEngine.writeDevelopFields(clearFields, to: fileURLs,
+                    structuredData: structuredData,
+                    allowsCredentialedEmbed: MetadataWritePreset.current == .simple)
+                if let message = report.message { errorMessage = "Reset All Edits: " + message }
             } catch {
                 logger.error("Failed to clear camera raw XMP fields: \(error.localizedDescription)")
             }

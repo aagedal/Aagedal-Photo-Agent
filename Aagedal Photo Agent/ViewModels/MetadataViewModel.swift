@@ -1614,7 +1614,7 @@ final class MetadataViewModel {
             saveError = refusal; onComplete(.failed(message: refusal)); return
         }
         let pairedWithRAW = !SupportedImageFormats.isRaw(url: image)
-            && PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: image)
+            && PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: image, requiringFreshListing: true)
         let mode = Self.primaryDevelopMode(requestedMode, pairedWithRAW: pairedWithRAW)
         let edited = editingMetadata
         if let existing = retainedPrimaryDevelopWrites.last(where: {
@@ -1707,15 +1707,16 @@ final class MetadataViewModel {
                     hasChanges = false; selectedHavePendingSidecars = false; saveError = nil
                 }
                 synchronizePrimaryDevelopRetention(); onComplete(.succeeded)
-            } else if result.refusedForContentCredentials {
-                // Nothing was written: drop this photo's queued edits instead of retaining work
-                // that can never be saved, and refuse further edits up front.
-                let message = result.failure ?? "This photo has Content Credentials; its Develop edit was not saved."
+            } else if result.refusedForContentCredentials || result.refusedBeforeWrite {
+                // Nothing was written (Content Credentials, or develop metadata too large for the
+                // file): drop this photo's queued edits instead of retaining work that can never
+                // be saved, and revert only the Develop part of the editor.
+                let message = result.failure ?? "This photo's Develop edit could not be saved safely and was not written."
                 retainedPrimaryDevelopWrites.removeAll {
                     $0.imageURL == request.imageURL && $0.folderURL == request.folderURL && $0.loadID == request.loadID
                 }
                 if metadataLoadRequestID == request.loadID, selectedURLs == [request.imageURL] {
-                    selectedHasC2PA = true
+                    if result.refusedForContentCredentials { selectedHasC2PA = true }
                     revertPrimaryDevelopToPersisted()
                     saveError = message
                 }
