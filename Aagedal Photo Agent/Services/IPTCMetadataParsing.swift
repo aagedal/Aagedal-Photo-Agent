@@ -122,6 +122,9 @@ nonisolated enum MetadataDictKey {
     /// App-private (aaphoto namespace): the global Anonymizer redaction settings.
     static let anonymizerAmount = "AnonymizerAmount"
     static let anonymizerBlackOut = "AnonymizerBlackOut"
+    /// App-private (aaphoto namespace): the develop record already reflects the file's embedded
+    /// redactions (`CameraRawSettings.embeddedRedactionsReviewed`).
+    static let embeddedRedactionsReviewed = "EmbeddedRedactionsReviewed"
     /// App-private (aaphoto namespace): global density render adjustment.
     static let globalDensity = "GlobalDensity"
     static let filmGrain = "FilmGrain"
@@ -1242,6 +1245,9 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
     let anonymizerBlackOut = parseBoolValue(dict[MetadataDictKey.anonymizerBlackOut])
     if (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true {
         cameraRaw.anonymizer = AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
+    }
+    if parseBoolValue(dict[MetadataDictKey.embeddedRedactionsReviewed]) == true {
+        cameraRaw.embeddedRedactionsReviewed = true
     }
     let film = FilmEmulationSettings(
         grain: parseDoubleValue(dict[MetadataDictKey.filmGrain]),

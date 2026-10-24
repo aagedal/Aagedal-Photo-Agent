@@ -288,6 +288,8 @@ final class FullScreenImageCache: @unchecked Sendable {
         renderToken: String? = nil,
         isEdited: Bool = false
     ) {
+        // A grey placeholder from a failed GPU render is shown but never cached (retry next time).
+        guard !RedactionPlaceholderTracking.isPlaceholder(image) else { return }
         let c = isEdited ? editedCache : cache
         let key = Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken)
         lock.withLock {
@@ -319,6 +321,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         renderToken: String? = nil,
         isEdited: Bool = false
     ) {
+        guard !RedactionPlaceholderTracking.isPlaceholder(image) else { return }
         let c = isEdited ? editedDisplayPreviewCache : displayPreviewCache
         let key = Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken)
         lock.withLock {
@@ -593,6 +596,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated private func storePrefetchedImage(_ image: CGImage, for key: PrefetchKey, requestID: UUID) {
+        guard !RedactionPlaceholderTracking.isPlaceholder(image) else { return }
         lock.withLock {
             guard prefetchTasks[key]?.id == requestID else { return }
             let cacheKey = Self.cacheKey(for: key.url, orientation: key.orientation, renderToken: key.renderToken)
@@ -821,21 +825,33 @@ final class FullScreenImageCache: @unchecked Sendable {
         fileOrientation: Int,
         displayOrientation: Int
     ) -> CGImage {
-        let processed = applyEditsInDisplayFrame(
-            to: CIImage(cgImage: cgImage),
-            settings: settings,
-            fileOrientation: fileOrientation,
-            displayOrientation: displayOrientation
-        )
-        // Never fall back to the unedited source when it would show what the edit hides
-        // (redactions, masks, watermarks): a preview can be screen-shared.
-        let unedited = CameraRawApproximation.fallbackCanReproduce(settings)
-            ? cgImage
-            : CameraRawApproximation.redactionSafePlaceholderCGImage(
-                width: cgImage.width, height: cgImage.height) ?? cgImage
-        let extent = processed.extent
-        guard extent.width > 0, extent.height > 0 else { return unedited }
-        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? unedited
+        // A placeholder anywhere in this render registers the result, keeping it out of caches.
+        let outer = RedactionPlaceholderTracking.flag
+        let flag = RedactionPlaceholderFlag()
+        let image: CGImage = RedactionPlaceholderTracking.$flag.withValue(flag) {
+            let processed = applyEditsInDisplayFrame(
+                to: CIImage(cgImage: cgImage),
+                settings: settings,
+                fileOrientation: fileOrientation,
+                displayOrientation: displayOrientation
+            )
+            // Never fall back to the unedited source when it would show what the edit hides
+            // (redactions, masks, watermarks): a preview can be screen-shared.
+            func unedited() -> CGImage {
+                CameraRawApproximation.fallbackCanReproduce(settings)
+                    ? cgImage
+                    : CameraRawApproximation.redactionSafePlaceholderCGImage(
+                        width: cgImage.width, height: cgImage.height) ?? cgImage
+            }
+            let extent = processed.extent
+            guard extent.width > 0, extent.height > 0 else { return unedited() }
+            return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? unedited()
+        }
+        if flag.isSet {
+            RedactionPlaceholderTracking.register(image)
+            outer?.set()
+        }
+        return image
     }
 
     /// Browse-mode scope source for `url`: a small decode, edited (with crop) when `settings`
@@ -908,6 +924,22 @@ final class FullScreenImageCache: @unchecked Sendable {
         screenMaxPx: CGFloat,
         sourceMaxPixelSize: CGFloat? = nil,
         isolation: isolated EditedPreviewRenderWorker = .shared
+    ) async -> CGImage? {
+        // A redaction-safe placeholder (failed GPU render) is registered so no cache keeps it.
+        await RedactionPlaceholderTracking.track(isolation: isolation) {
+            await decodedEditedPreviewRender(
+                for: url, settings: settings, orientation: orientation, screenMaxPx: screenMaxPx,
+                sourceMaxPixelSize: sourceMaxPixelSize, isolation: isolation)
+        }
+    }
+
+    private static func decodedEditedPreviewRender(
+        for url: URL,
+        settings: CameraRawSettings?,
+        orientation: Int,
+        screenMaxPx: CGFloat,
+        sourceMaxPixelSize: CGFloat?,
+        isolation: isolated EditedPreviewRenderWorker
     ) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
         var settings = settings

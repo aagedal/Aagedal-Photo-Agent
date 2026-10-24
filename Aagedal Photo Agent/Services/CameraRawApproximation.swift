@@ -9,6 +9,69 @@ nonisolated enum GPURenderFaultInjection {
     @TaskLocal static var forceFailure = false
 }
 
+/// Set when a preview render returned the redaction-safe placeholder (a failed GPU render).
+nonisolated final class RedactionPlaceholderFlag: Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: false)
+    func set() { state.withLock { $0 = true } }
+    var isSet: Bool { state.withLock { $0 } }
+}
+
+/// Keeps grey placeholder previews (shown instead of unredacted pixels when the GPU render
+/// fails) out of the thumbnail / full-screen / Compare caches, so the next request retries the
+/// render. Producers render under `track`, which registers the resulting CGImage when a
+/// placeholder was involved; caches skip registered images.
+nonisolated enum RedactionPlaceholderTracking {
+    @TaskLocal static var flag: RedactionPlaceholderFlag?
+
+    /// Recently produced placeholder CGImages (identity only, bounded). A stale identity reused
+    /// by a later image can at worst skip one cache insert.
+    private static let registry = OSAllocatedUnfairLock<[ObjectIdentifier]>(initialState: [])
+    private static let registryLimit = 64
+
+    static func markPlaceholderProduced() { flag?.set() }
+
+    static func register(_ image: CGImage) {
+        let id = ObjectIdentifier(image)
+        registry.withLock { ids in
+            guard !ids.contains(id) else { return }
+            ids.append(id)
+            if ids.count > registryLimit { ids.removeFirst(ids.count - registryLimit) }
+        }
+    }
+
+    static func isPlaceholder(_ image: CGImage) -> Bool {
+        let id = ObjectIdentifier(image)
+        return registry.withLock { $0.contains(id) }
+    }
+
+    /// Runs a CGImage-producing preview render; registers its result when a placeholder was
+    /// produced anywhere inside it.
+    static func trackSync(_ body: () -> CGImage?) -> CGImage? {
+        let outer = flag
+        let inner = RedactionPlaceholderFlag()
+        let image = $flag.withValue(inner) { body() }
+        if inner.isSet {
+            if let image { register(image) }
+            outer?.set()
+        }
+        return image
+    }
+
+    static func track(
+        isolation: isolated (any Actor)? = #isolation,
+        _ body: () async -> CGImage?
+    ) async -> CGImage? {
+        let outer = flag
+        let inner = RedactionPlaceholderFlag()
+        let image = await $flag.withValue(inner) { await body() }
+        if inner.isSet {
+            if let image { register(image) }
+            outer?.set()
+        }
+        return image
+    }
+}
+
 /// An output render refused because the GPU render failed and the CIFilter fallback can't
 /// reproduce the edit (it drops masks, the Anonymizer and watermarks). Nothing is written.
 nonisolated struct EditRenderRefusedError: LocalizedError, Sendable, Equatable {
@@ -99,12 +162,14 @@ enum CameraRawApproximation {
     /// A neutral mid-grey stand-in with `input`'s extent, shown by previews when the GPU render
     /// failed for settings the fallback can't reproduce. Never derived from the source pixels.
     nonisolated static func redactionSafePlaceholder(for input: CIImage) -> CIImage {
-        CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: input.extent)
+        RedactionPlaceholderTracking.markPlaceholderProduced()
+        return CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: input.extent)
     }
 
     /// CGImage form of `redactionSafePlaceholder`, for callers that would otherwise fall back to
     /// the unedited source CGImage when materializing an edit fails.
     nonisolated static func redactionSafePlaceholderCGImage(width: Int, height: Int) -> CGImage? {
+        RedactionPlaceholderTracking.markPlaceholderProduced()
         guard width > 0, height > 0,
               let context = CGContext(
                 data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -113,7 +178,9 @@ enum CameraRawApproximation {
               ) else { return nil }
         context.setFillColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage()
+        let image = context.makeImage()
+        if let image { RedactionPlaceholderTracking.register(image) }
+        return image
     }
 
     /// Preview render (Develop scopes, full screen, thumbnails). A refused fallback yields

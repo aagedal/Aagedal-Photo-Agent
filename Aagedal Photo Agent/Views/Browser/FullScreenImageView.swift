@@ -1026,19 +1026,22 @@ struct FullScreenImageView: View {
     /// Apply CameraRaw adjustments + crop to a CIImage source, preserving HDR float values.
     /// Edits in the display frame like the CGImage overload above.
     nonisolated private static func applyCameraRaw(to ciImage: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1, fileOrientation: Int = 0) -> CGImage? {
-        let processed = FullScreenImageCache.applyEditsInDisplayFrame(
-            to: ciImage,
-            settings: settings,
-            fileOrientation: fileOrientation > 0 ? fileOrientation : exifOrientation,
-            displayOrientation: exifOrientation
-        )
+        // A failed-GPU placeholder is registered so the image cache never keeps it.
+        RedactionPlaceholderTracking.trackSync {
+            let processed = FullScreenImageCache.applyEditsInDisplayFrame(
+                to: ciImage,
+                settings: settings,
+                fileOrientation: fileOrientation > 0 ? fileOrientation : exifOrientation,
+                displayOrientation: exifOrientation
+            )
 
-        let extent = processed.extent
-        guard extent.width > 0, extent.height > 0 else { return nil }
-        // Stamp the rendered HDR pixels with their content headroom so the CALayer engages EDR
-        // (a Metal-rendered CGImage otherwise reports unknown headroom and is excluded from
-        // tone mapping → clamped to SDR). See CameraRawApproximation.createDisplayCGImage.
-        return CameraRawApproximation.createDisplayCGImage(processed, from: extent)
+            let extent = processed.extent
+            guard extent.width > 0, extent.height > 0 else { return nil }
+            // Stamp the rendered HDR pixels with their content headroom so the CALayer engages EDR
+            // (a Metal-rendered CGImage otherwise reports unknown headroom and is excluded from
+            // tone mapping → clamped to SDR). See CameraRawApproximation.createDisplayCGImage.
+            return CameraRawApproximation.createDisplayCGImage(processed, from: extent)
+        }
     }
 
     /// Correct a CGImage's orientation when the file's baked-in orientation

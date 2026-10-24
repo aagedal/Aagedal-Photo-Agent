@@ -330,6 +330,10 @@ extension ImageMetadata {
                 dict[MetadataDictKey.anonymizerBlackOut] = v
             }
             if let v = xmp.simpleValue(namespace: aaphotoNamespaceURI,
+                                       property: MetadataDictKey.embeddedRedactionsReviewed) {
+                dict[MetadataDictKey.embeddedRedactionsReviewed] = v
+            }
+            if let v = xmp.simpleValue(namespace: aaphotoNamespaceURI,
                                        property: MetadataDictKey.globalDensity) {
                 dict[MetadataDictKey.globalDensity] = v
             }

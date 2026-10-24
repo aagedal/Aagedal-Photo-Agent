@@ -7955,14 +7955,31 @@ struct EditWorkspaceView: View {
             try Task.checkCancellation()
             let engine = browserViewModel.writeEngine
             let failureTracker = MetadataFailureTracker()
+            // Wait for the pending Develop write, then render the live copy resolved against
+            // what is now on disk (live authoritative). The render-time redaction check then
+            // compares against the same saved state instead of racing the write.
+            let renderSettings = try await EditExportPipeline.resolveDevelopSaveSettings(
+                for: selectedImageURL,
+                live: {
+                    // The buffer only if it still belongs to this photo.
+                    metadataViewModel.selectedURLs.count == 1
+                        && metadataViewModel.selectedURLs.first == selectedImageURL
+                        ? metadataViewModel.editingMetadata.cameraRaw : settings
+                }
+            )
             // Never overwrite: a RAW+JPEG pair (IMG_1.ARW / IMG_1.JPG) or a repeated save
             // would otherwise silently replace an existing file with the same name.
-            let outputURL = try await EditExportPipeline.renderItem(
-                sourceURL: selectedImageURL, cameraRaw: settings, kind: .format,
-                outputFolder: outputFolder, folderURL: folderURL,
-                writeEngine: engine, failureTracker: failureTracker,
-                collisionPolicy: .appendNumber
-            )
+            let outputURL: URL
+            do {
+                outputURL = try await EditExportPipeline.renderItem(
+                    sourceURL: selectedImageURL, cameraRaw: renderSettings, kind: .format,
+                    outputFolder: outputFolder, folderURL: folderURL,
+                    writeEngine: engine, failureTracker: failureTracker,
+                    collisionPolicy: .appendNumber
+                )
+            } catch is RedactionMissingFromRenderError {
+                throw DevelopSaveError.redactionMissing(selectedImageURL.lastPathComponent)
+            }
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
             let watermarkWarnings = await failureTracker.missingWatermarkWarnings
