@@ -282,9 +282,26 @@ struct MetadataEditorXMPBaselineTests {
         f.model.loadSelectionMetadata(for: [], folderURL: f.folder)
         #expect(f.model.selectedURLs == [f.image])
         #expect(f.model.editingMetadata.title == "Uncaptured draft")
+        // Reselecting the held photo when it returns to the filter must not reload over it either.
+        f.model.loadSelectionMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        #expect(!f.model.isLoading)
+        #expect(f.model.editingMetadata.title == "Uncaptured draft")
         f.model.releaseSelectionHold()
         f.model.loadSelectionMetadata(for: [], folderURL: f.folder)
         #expect(f.model.selectedURLs.isEmpty)
+    }
+
+    @Test("A load that bails out early still ends, so queued picks cannot block flushes forever")
+    func earlyReturningLoadStillEnds() async throws {
+        let f = try fixture(masked: false); defer { try? FileManager.default.removeItem(at: f.folder) }
+        f.model.loadMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        f.model.performAfterEditorLoad(commit: {}) { f.model.appendKeywords(["Queued"]) > 0 }
+        #expect(f.model.hasDeferredEditorActions)
+        // The folder moving under the in-flight request makes it return before its normal tail.
+        f.model.currentFolderURL = f.folder.appendingPathComponent("elsewhere", isDirectory: true)
+        await f.model.waitForMetadataLoad()
+        #expect(!f.model.isLoading)
+        #expect(!f.model.hasDeferredEditorActions)
     }
 
     @Test("Picks deferred for one photo are dropped when the selection moves to another photo")

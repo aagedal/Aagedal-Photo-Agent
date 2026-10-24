@@ -896,11 +896,12 @@ struct CaptionWorkspaceView: View {
     /// The editor's selection load trails navigation, so right after moving its draft can still
     /// belong to the previous photo (or be a load placeholder). Actions that read or write the
     /// editor must only act once it describes the photo the header shows.
-    /// A same-photo reload (for example a folder auto-refresh after the sidecar write) keeps the
-    /// loaded, editable fields and so still qualifies; only the empty placeholder of a load does not.
+    /// Any in-flight load disqualifies, including a same-photo reload: it has already reset the
+    /// write baselines and its completion would overwrite edits applied meanwhile. Actions settle
+    /// such a reload first (`settleEditorLoad`).
     private var editorDescribesCurrentPhoto: Bool {
         guard let currentURL = session.currentURL else { return false }
-        return !metadataViewModel.isShowingLoadPlaceholder
+        return !metadataViewModel.isLoading
             && metadataViewModel.selectedURLs.count == 1
             && metadataViewModel.selectedURLs.first?.standardizedFileURL == currentURL
     }
@@ -985,6 +986,9 @@ struct CaptionWorkspaceView: View {
         }
         resynchronizesListAfterTransition = false
         session.replaceImages(visibleURLs)
+        if let held = metadataViewModel.heldSelectionURL, held.standardizedFileURL != session.currentURL {
+            metadataViewModel.releaseSelectionHold()
+        }
         // Full screen owns the browser selection while it is open (rating, label, or delete there
         // can change the list); pushing Caption's photo back would snap it to another image.
         // `adoptBrowserSelectionAfterFullScreen` reconciles on exit.
@@ -1000,17 +1004,30 @@ struct CaptionWorkspaceView: View {
     /// refused action leaves the photo's state as it was.
     private func prepareAndPerform(
         _ action: CaptionSessionAction,
+        settlesEditorLoad: Bool = false,
         admits: @MainActor () -> Bool = { true },
         operation: @MainActor () -> Void
     ) async throws {
         let token = try flushCoordinator.reserveTransition()
         try await flushCoordinator.performReservedTransition(token, flush: {
             try await session.prepare(for: action) { try await flushCoordinator.flushAsync() }
+            if settlesEditorLoad { await settleEditorLoad() }
         }, operation: {
             guard admits() else { return }
             session.markCommitted()
             operation()
         })
+    }
+
+    /// The flush's sidecar write can trigger a same-photo auto-refresh reload. Give an in-flight
+    /// load a bounded moment to finish so the action runs on a settled editor; a load that does
+    /// not finish in time is refused by the caller's admission check rather than hanging the
+    /// transition (which freezes the whole workspace).
+    private func settleEditorLoad(timeout: Duration = .seconds(5)) async {
+        let deadline = ContinuousClock.now + timeout
+        while metadataViewModel.isLoading, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
     }
 
     /// Write/Write & Next admission once the flush finished: focus must still be on `target` and
@@ -1128,9 +1145,13 @@ struct CaptionWorkspaceView: View {
                     loadToken = currentLoad
                     previousMetadata = try await metadataViewModel.loadCaptionCopyPreviousMetadata(
                         for: originalBrowserURL(for: previousURL))
+                    await settleEditorLoad()
                 }, operation: {
-                    guard let previous = previousMetadata, let loadToken, session.accepts(load: loadToken),
-                          editorDescribesCurrentPhoto else { return }
+                    guard let previous = previousMetadata, let loadToken, session.accepts(load: loadToken) else { return }
+                    guard editorDescribesCurrentPhoto else {
+                        inlineNotice = "Not copied: the photo's metadata is still loading. Try again in a moment."
+                        return
+                    }
                     let configuration = CaptionCopyPreviousConfiguration(defaultMode: mode)
                     let result = CaptionCopyPreviousService().copy(
                         previous: previous,
@@ -1175,10 +1196,13 @@ struct CaptionWorkspaceView: View {
                     return
                 }
 
-                try await prepareAndPerform(.codeReplacement) {
-                    guard let previewURL = session.currentURL, previewURL == target,
-                          editorDescribesCurrentPhoto else {
+                try await prepareAndPerform(.codeReplacement, settlesEditorLoad: true) {
+                    guard let previewURL = session.currentURL, previewURL == target else {
                         errorMessage = "The current photo is no longer available."
+                        return
+                    }
+                    guard editorDescribesCurrentPhoto else {
+                        inlineNotice = "The photo's metadata is still loading. Try again in a moment."
                         return
                     }
                     let inputMetadata = metadataViewModel.editingMetadata
@@ -1243,7 +1267,8 @@ struct CaptionWorkspaceView: View {
             guard !flushCoordinator.isTransitioning, let target = session.currentURL,
                   await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
-                try await prepareAndPerform(.write, admits: { editorAdmitsWrite(to: target) }) {
+                try await prepareAndPerform(.write, settlesEditorLoad: true,
+                                            admits: { editorAdmitsWrite(to: target) }) {
                     metadataViewModel.writeMetadataAndClearSidecar()
                 }
             } catch {
@@ -1257,7 +1282,8 @@ struct CaptionWorkspaceView: View {
             guard !flushCoordinator.isTransitioning, let target = session.currentURL,
                   await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
-                try await prepareAndPerform(.write, admits: { editorAdmitsWrite(to: target) }) {
+                try await prepareAndPerform(.write, settlesEditorLoad: true,
+                                            admits: { editorAdmitsWrite(to: target) }) {
                     pendingWriteAndNextURL = target
                     metadataViewModel.writeMetadataAndClearSidecar()
                     // A write refused before it starts (for example an unpersisted Develop edit)

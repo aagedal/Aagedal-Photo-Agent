@@ -559,10 +559,10 @@ final class MetadataViewModel {
     func loadSelectionMetadata(for images: [ImageFile], folderURL: URL?) {
         let urls = Set(images.map(\.url))
         if let held = heldSelectionURL?.standardizedFileURL,
-           selectedURLs.count == 1, selectedURLs[0].standardizedFileURL == held,
-           images.map({ $0.url.standardizedFileURL }) != [held] {
-            // Caption is holding this photo open until its draft is captured; the browser
-            // dropped it from the filtered selection, but replacing the editor would lose it.
+           selectedURLs.count == 1, selectedURLs[0].standardizedFileURL == held {
+            // Caption is holding this photo open until its draft is captured. Any selection
+            // load — the browser dropping it from the filter, or reselecting it when it comes
+            // back — would replace the uncaptured draft.
             return
         }
         if let eager = eagerSelectionLoadURLs, eager == urls, Set(selectedURLs) == urls {
@@ -711,6 +711,19 @@ final class MetadataViewModel {
 
             metadataLoadTask = Task {
                 var loaded = false
+                defer {
+                    // Several guards below return early without reaching the tail that ends the
+                    // load. When that happens to the still-current request (not one cancelled or
+                    // superseded by a newer owner), end the load here: otherwise the editor stays
+                    // loading forever and queued picks block every Caption flush.
+                    if !Task.isCancelled, self.metadataLoadRequestID == requestID, self.isLoading {
+                        self.isLoading = false
+                        self.deferredLoadActions = nil
+                        if self.metadata == nil, self.saveError == nil {
+                            self.saveError = "The photo's metadata could not be loaded. Select it again to retry."
+                        }
+                    }
+                }
                 let loadStart = ContinuousClock.now
                 self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
                 do {
