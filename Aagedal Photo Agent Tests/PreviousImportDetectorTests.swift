@@ -322,6 +322,30 @@ struct PreviousImportDetectorTests {
         #expect(!camera.isSameExposure(as: variant(software: nil)))
         #expect(!variant(subSecond: nil, serial: nil).isSameExposure(as: variant(subSecond: nil, serial: nil)))
     }
+
+    @Test("A truncated copy, or any RAW that isn't byte-identical, is never the same camera file")
+    func imageIdentityRejectsDamagedAndRawCopies() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("import-image-identity-damage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func file(_ name: String) -> URL { root.appendingPathComponent(name) }
+
+        // Same EXIF header, cut short before the end of the image data.
+        try writeIdentityJPEG(to: file("camera.jpg"), width: 512)
+        try writeIdentityJPEG(to: file("copy.jpg"), width: 512)
+        #expect(ImportImageIdentity.sameExposure(file("camera.jpg"), file("copy.jpg")))
+        let bytes = try Data(contentsOf: file("copy.jpg"))
+        try bytes.prefix(bytes.count * 2 / 3).write(to: file("truncated.jpg"))
+        #expect(!ImportImageIdentity.sameExposure(file("camera.jpg"), file("truncated.jpg")))
+
+        // RAW never passes on EXIF identity alone: the app never writes into a RAW.
+        try writeIdentityJPEG(to: file("camera.ARW"), width: 512)
+        try writeIdentityJPEG(to: file("copy.ARW"), width: 512, caption: "differs")
+        #expect(!ImportImageIdentity.sameExposure(file("camera.ARW"), file("copy.ARW")))
+        #expect(!ImportImageIdentity.isSameCameraFile(
+            source: file("camera.ARW"), destination: file("copy.ARW"), isImage: true))
+    }
 }
 
 /// Writes a small JPEG carrying EXIF capture identity (DateTimeOriginal, SubSecTimeOriginal,

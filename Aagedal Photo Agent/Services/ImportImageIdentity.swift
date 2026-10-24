@@ -72,11 +72,26 @@ nonisolated struct ImportImageIdentity: Sendable, Equatable {
     }
 
     /// `destination` is the same camera exposure as `source`, judged from EXIF identity.
+    ///
+    /// Never for RAW: the app never writes into a RAW, so a RAW copy must be byte-identical — a
+    /// truncated or bit-rotted copy still carries a readable EXIF header and would otherwise pass
+    /// as "already imported" while the good card file is skipped. A non-RAW copy must also decode
+    /// completely, for the same reason.
     static func sameExposure(_ source: URL, _ destination: URL) -> Bool {
-        guard let sourceIdentity = read(source), let destinationIdentity = read(destination) else {
+        guard !SupportedImageFormats.isRaw(url: source),
+              !SupportedImageFormats.isRaw(url: destination),
+              decodesCompletely(destination),
+              let sourceIdentity = read(source), let destinationIdentity = read(destination) else {
             return false
         }
         return sourceIdentity.isSameExposure(as: destinationIdentity)
+    }
+
+    static func decodesCompletely(_ url: URL) -> Bool {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, options),
+              CGImageSourceGetCount(source) > 0 else { return false }
+        return CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete
     }
 
     /// Byte-identical (size + sampled checksum), or — for an image — the same exposure.
