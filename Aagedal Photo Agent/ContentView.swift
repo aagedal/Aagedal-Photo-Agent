@@ -3687,7 +3687,9 @@ struct ContentView: View {
     /// and any stale scope image cleared; expanding them calls `reloadBrowseScopeImage()`.
     private func loadBrowseScopeImage(for image: ImageFile) {
         guard BrowseScopeLoadPolicy.shouldDecode(scopesExpanded: scopesExpanded, mainViewMode: mainViewMode) else {
-            if mainViewMode != .editing { loadScopeImage(for: nil) }
+            // Still set the waveform scale and gamut from the photo: full screen's gamut-clip
+            // overlay reads them with the scopes collapsed.
+            if mainViewMode != .editing { loadScopeImage(for: nil, isNativeHDR: image.isNativeHDR) }
             return
         }
         loadScopeImage(

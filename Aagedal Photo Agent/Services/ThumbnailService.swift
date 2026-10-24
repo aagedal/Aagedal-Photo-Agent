@@ -155,6 +155,9 @@ final class ThumbnailService {
     /// held arrow key spawns hundreds of QuickLook/ImageIO decodes at once, saturating `thumbnailsd`
     /// and the cooperative pool so the thumbnails actually on screen queue behind off-screen ones.
     private let decodeGate = ThumbnailDecodeGate(limit: 6)
+    /// Bounds the post-decode sidecar-orientation stage separately, so a slow volume can't pile
+    /// up blocked workers (and decoded images) behind the freed decode slots.
+    private let orientationGate = ThumbnailDecodeGate(limit: 6)
 
     init(
         memoryCoordinator: ImageMemoryCoordinator = .shared,
@@ -276,7 +279,10 @@ final class ThumbnailService {
         // before, so a rotation written meanwhile is still picked up: sidecar orientation wins.
         await decodeGate.release()
         guard !Task.isCancelled, let decoded else { return nil }
-        let oriented = await ThumbnailImageRenderWorker().orientedToSidecar(decoded, fileURL: url)
+        guard await orientationGate.acquire() else { return nil }
+        let oriented = Task.isCancelled
+            ? nil : await ThumbnailImageRenderWorker().orientedToSidecar(decoded, fileURL: url)
+        await orientationGate.release()
         return Task.isCancelled ? nil : oriented
     }
 
