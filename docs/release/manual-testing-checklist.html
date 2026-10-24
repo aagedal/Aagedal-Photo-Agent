@@ -10,7 +10,7 @@
 </style>
 </head>
 <body><main>
-<header><div class="eyebrow">Aagedal Photo Agent / 3.0 release preparation</div><h1>Manual testing checklist</h1><p class="muted">Offline working document · initial scope reviewed 9 September 2026 · all results start untested</p></header>
+<header><div class="eyebrow">Aagedal Photo Agent / 3.0 release preparation</div><h1>Manual testing checklist</h1><p class="muted">Offline working document · scope regenerated 25 October 2026 for the 3.0 scope (Deadline deferred to 3.1; local automation experimental and read-only) · all results start untested</p></header>
 <div class="banner"><strong>DRAFT — pending coordinator verification. The app is not yet declared ready.</strong><p>This checklist records evidence; it does not claim that any app test, external review or human acceptance has occurred. The coordinator must reconcile it with the current authoritative plans, finish implementation and validate the exact candidate before inviting final user testing. Unavailable prerequisites remain blocked. Passing this document never authorizes publication.</p></div>
 <section class="panel" aria-labelledby="how"><h2 id="how">How to use this document</h2><ol><li>The coordinator records the candidate identity, fixture inventory, approved scope and evidence links. Work only on disposable copies in an isolated profile; preserve originals and existing user settings.</li><li>Run the <strong>agent computer-use</strong> cases through the actual application and capture dated observations. Unit tests or source inspection cannot substitute for visual interaction. Record the executing agent or tester and tool/version in notes.</li><li>Complete the <strong>external / hardware</strong> prerequisites with the required samples, endpoints, reviewers and devices. An unavailable prerequisite is blocked, never automatically waived. Record any explicit scope decision and its owner.</li><li>Once the coordinator has verified the candidate and accounted for every mandatory gate, hand the user this candidate and the <strong>final user acceptance</strong> cases. Agent observations never count as the user’s acceptance.</li><li>For each result, include actual outcome, evidence location, fixture ID, environment and defect reference. Fail and blocked need a reason. Pass requires observed evidence. Revalidate affected cases after fixes; a new candidate identity marks old observations stale.</li></ol><p><strong>Priority:</strong> P0 protects data, release trust or the core workflow. P1 is still a required quality gate. This is a starting test inventory, not a replacement for the plans; add cases when implementation or scope changes.</p><p><strong>Storage:</strong> Results stay in this page’s memory unless you opt in below. Local browser storage may be unavailable or isolated per file path/browser. Export before closing. The export contains notes and environment details: use sanitized fixture IDs, never credentials or private photo/audio content.</p><nav aria-label="Checklist sections"><ul><li><a href="#agent">Agent computer use</a></li><li><a href="#user">Final user acceptance</a></li><li><a href="#external">External / hardware gates</a></li></ul></nav></section>
 <section class="panel" aria-labelledby="candidate-heading"><h2 id="candidate-heading">Candidate and evidence record</h2><p class="muted">Required identity fields bind every observation to a candidate. Placeholder text is not a completed identity.</p><div class="grid" id="identity">
@@ -34,9 +34,9 @@
     "lane": "Agent computer use",
     "priority": "P0",
     "title": "Launch, browse and return to the right workspace",
-    "source": "../v2.3/delivery-plan.md",
+    "source": "../feature-help-3.0.md",
     "setup": "Use a candidate app and a disposable folder with JPEG, RAW + XMP, PNG, TIFF, AVIF, JXL and licensed HEIC samples; record unavailable formats.",
-    "steps": "Launch the candidate. Open the folder, select an image, visit Caption, Metadata Review, Analysis, Develop and Deadline, then return to Browser. Try each Browser layout and reopen the app.",
+    "steps": "Launch the candidate. Open the folder, select an image, visit Caption, Metadata Review, Analysis and Develop from the Workspace menu, then return to Browser. Try each Browser layout and reopen the app.",
     "expected": "No crash, unexpected write or lost selection; readable loading/error states; Browser layout and supported persisted settings survive. Unsupported inputs are explained.",
     "cleanup": "Quit normally; preserve screenshots and fixture inventory. Delete only this session’s disposable outputs."
   },
@@ -184,17 +184,6 @@
     "cleanup": "Restore networking; retain PDFs and live comparison screenshots. Mark blocked if uncached offline state cannot be established."
   },
   {
-    "id": "A11",
-    "lane": "Agent computer use",
-    "priority": "P0",
-    "title": "Deadline blockers, stale preflight and output-size limits",
-    "source": "../journalistic-metadata-workflow-plan.md",
-    "setup": "Use copied mixed JPEG/RAW images, one incomplete caption, missing sidecar, a signed-C2PA sample if available and a disposable Deadline profile. Set a small explicit output-size limit.",
-    "steps": "Preflight the selection; use Fix Next Issue; inspect warnings and planned SDR JPEG/TIFF or supported HDR derivatives. Change metadata/selection after preflight and verify revalidation. Try original-file or sidecar-only delivery and an over-limit output.",
-    "expected": "Current blockers route to the correct image/field and disable Send; stale plans cannot send. Unsupported output modes and final bytes above the limit are rejected. C2PA validity is not implied for a new rendition.",
-    "cleanup": "Remove the disposable profile/staging after preserving sanitized preflight evidence. Do not send to any external endpoint in this case."
-  },
-  {
     "id": "A12",
     "lane": "Agent computer use",
     "priority": "P0",
@@ -252,79 +241,90 @@
   {
     "id": "A21",
     "lane": "Agent computer use",
-    "priority": "P0",
-    "title": "Local MCP metadata, preview plans and authorization",
-    "source": "../journalistic-metadata-workflow-plan.md",
-    "setup": "Use disposable client configurations and a disposable JPEG/RAW + XMP folder with embedded text, localized Title, explicit clears and pending/saved Photo Agent drafts. Record the candidate helper path, hash and original Automation Settings. Do not grant personal photo folders.",
-    "steps": "Keep the client connection open throughout initialization and successive calls; no EOF should be needed for a response. Using fresh get_photo_metadata tokens, prepare a descriptive patch with Unicode/newlines and duplicate keyword values; compare schema-3 normalized before/after and exact sourceValue/requestedValue. Compare preservationPreflight carrier hashes against the fixture; check RAW targets never embed, no write mode is selected, and preservationVerified remains false. Verify empty set refuses and explicit clear succeeds as a preview. Retrieve its planID with get_iptc_patch_plan; compare the entire returned plan. In Settings → Automation → Proofreading Plan Review, paste the same planID and inspect it. Compare normalized before/proposed values, quoted list boundaries and warnings; verify Unicode is literal text. Clear Review, change the ID, leave the view, and retry after a carrier edit or expiry. Inspection must never approve or write a patch. Choose Approve Reviewed Plan; require explicit session-only consent feedback and unchanged photo/sidecar bytes. Revoke, approve again, clear, edit the ID and leave/reopen the view; consent must not remain. Replace the photo after inspection and before approval; approval must refuse and clear the stale review. Leave approval pending through expiry: no late approved status may appear. Retry after a photo edit, revoke/re-enable, helper restart and five-minute expiry. Verify exact-byte photos/sidecars remain unchanged by these preview tools. Connect the bundled helper from each targeted client (Codex CLI, Claude Code, OpenCode 1.x and v2). Call list_transcription_providers without arguments; expect stable Apple Speech/custom Whisper IDs, unknown runtime availability and application-session-required readiness, with no helper transcription capability. Discover get_photo_metadata and call it with one explicit absolute path. In Settings choose a disposable custom Templates folder with iCloud template sync off, authorize that root, and call list_templates for metadata and develop. Compare UUIDs/names with the stored fixtures; test a changed or ambiguous inventory and revoked authorization. In a disposable test account, also authorize the existing default local Templates folder and repeat discovery; a missing library must not be created and iCloud sync must be refused. Restore the original template settings afterward. Compare fields, carrier selections, pending/conflict state and revisions with Photo Agent for embedded, XMP and pending/saved draft cases. Test malformed XMP, oversized text, a busy photo, unknown arguments and an unauthorized path. Disable automation or remove the test root while still connected and repeat the read.",
-    "expected": "Plan retrieval returns the exact preview only while original authority/revisions and expiry remain valid. Unexpired plans survive helper restart with identical IDs and values. Old plans refuse after edits, authorization changes or expiry; commit_iptc_patch remains unavailable. Local preview retention matches the Settings/privacy disclosure; expired records prune on subsequent successful preparation. Complete typed editorial values and explicit clears agree with Photo Agent. Technical/Develop fields and private history are absent. Invalid, busy, unsupported and oversized inputs return a whole-call refusal; revoked authority refuses on the existing connection. Revisions describe captured evidence and never imply write permission. Template discovery returns names/UUIDs/revisions without field values or filesystem paths; it does not grant application authority. Default/private and iCloud template libraries give actionable refusal. No source, template or sidecar bytes change. Record outcomes separately for every client; the standalone STDIO smoke is not client validation.",
-    "cleanup": "Remove disposable client entries and test-root grants, restore original automation enablement, and preserve only non-private protocol evidence and hashes."
+    "priority": "P1",
+    "title": "Experimental local automation stays read-only",
+    "source": "../feature-help-3.0.md",
+    "setup": "Use a disposable folder of JPEG and RAW + XMP copies with captions, one Sony JPEG/WAV pair and a disposable metadata template. Record SHA-256 hashes of every photo and sidecar and the current Settings ▸ Automation state. Install Claude Code or Codex. Never authorize personal photo folders.",
+    "steps": "Open Settings ▸ Automation and confirm local automation is off and labelled experimental. Choose Add Folder… and authorize only the disposable folder, then turn on the Local MCP Server. Copy the Client Setup command for your client, run it in Terminal and start the client. Ask it to read the metadata of one JPEG and one RAW, list the templates and preview applying the template to one photo; compare with what Photo Agent shows. Ask it to write a caption or apply the template directly and note the answer. Ask it to queue one metadata review request. Before approving, compare the hashes. Turn on Show reviews, history and recovery, find the request in Settings ▸ Automation and approve it there, then check which fields changed. Remove the folder from Authorized Folders while the client stays connected and repeat a read; also ask for a photo outside the folder.",
+    "expected": "Metadata and previews match the app; a RAW preview never proposes writing into the RAW file. Direct writes, template application, face scans and Develop work are unavailable or refused. Until the request is approved in the app nothing changes (hashes match), and the client cannot approve it itself; after approval only the reviewed fields change. After the folder is removed, the still-connected client is refused, as is any path outside an authorized folder.",
+    "cleanup": "Remove the client’s MCP entry, the folder grant and any queued requests; restore the original Automation settings. Keep only sanitized hash lists and screenshots."
   },
   {
-    "id": "A22",
+    "id": "A27",
     "lane": "Agent computer use",
     "priority": "P0",
-    "title": "Native operation history and stopped-owner evidence",
-    "source": "cycle-89-operation-history-recovery-2026-09-21.md",
-    "setup": "Use disposable patch-review photos and isolated operation storage. Record source, XMP and pending-draft bytes before each case. Keep personal photo roots unauthorized.",
-    "steps": "Apply an explicitly approved plan to a pending draft, then open Operation History and Refresh. Compare the operation ID and verified unpublished-draft status. Cancel the Remove Record confirmation, then confirm it; reopen the draft. For a held managed operation, request cancellation and verify it remains a request while its owner is alive. Terminate that fixture process and relaunch; open or refresh history. Repeat with missing owner-lock evidence, legacy records and a storage refusal. Inspect the error and retry behavior.",
-    "expected": "Confirmed record removal preserves photo, XMP and draft bytes. Live work is not falsely marked stopped. Valid released owner locks reconcile unfinished managed operations to Recovery required, preserving cancellation evidence. Recovery records have no removal control and no automatic replay or repair occurs. Missing proof and legacy records remain unresolved. Refresh failures preserve visibly stale evidence and disable mutation controls until a successful retry.",
-    "cleanup": "Stop fixture processes and remove only disposable fixture storage; retain test evidence. Do not erase production operation history."
+    "title": "Watermark layers: PNG and text, crop-aware, exported, missing image reported",
+    "source": "../feature-help-3.0.md",
+    "setup": "Use disposable JPEG and RAW copies with different aspect ratios. Have two small transparent PNG logos ready. Record the Watermarks library contents so you can restore it.",
+    "steps": "Open Settings ▸ Watermarks and import both PNGs. Choose Create Text…, enter two lines of text, pick a font size, color and opacity, and choose Create. In Develop, use Add Watermark to add a PNG layer and the text layer to a photo; place them in different corners with a margin. Crop and straighten the photo and check the watermarks stay in place relative to the new frame. Switch the size unit and the margin unit between Percent and Pixels and note the values before and after. Keep adding watermark layers and try to have five enabled. Export the photo as JPEG and open it in Preview. Delete one of the PNGs from the Watermarks library, return to the photo and export again.",
+    "expected": "Both watermarks look the same in Develop and in the exported file, positioned against the cropped frame. Switching units converts the value so the watermark does not visibly jump. With four enabled watermark layers the add-watermark tile is disabled and its tooltip explains the limit; disabling one re-enables it. After the PNG is deleted its layer shows Missing watermark and the export reports the missing image instead of silently dropping it. RAW files are not modified; the layers live in the XMP sidecar.",
+    "cleanup": "Restore the Watermarks library, delete the exports and disposable copies."
   },
   {
-    "id": "A23",
+    "id": "A28",
     "lane": "Agent computer use",
     "priority": "P0",
-    "title": "Separate native XMP candidate consent",
-    "source": "cycle-93-publication-review-template-model-locking-2026-09-22.md",
-    "setup": "Use a disposable exact-plan fixture and hash its photo, XMP and app history. Include a case with pending values outside the patch.",
-    "steps": "Inspect the plan and Verify XMP Dry Run. Check that Approve XMP Candidate is disabled until C2PA limitations are acknowledged and, when applicable, pending draft promotion is separately acknowledged. Approve, withdraw acknowledgement, approve again, leave and reopen. Repeat with source replacement before consent and plan expiry. Confirm that ordinary draft approval revokes XMP approval.",
-    "expected": "Consent is candidate-specific and separate from draft approval. Withdrawal, navigation, replacement and expiry cannot retain usable consent. Status says no metadata was published during consent-only steps. Publish Approved XMP is offered only after separate approval; explicitly publish a disposable candidate and verify both sidecars, unchanged photo bytes and persistence after relaunch. Photo, XMP and app-history bytes remain unchanged throughout consent-only steps.",
-    "cleanup": "Clear review and delete only disposable fixtures; restore original Automation Settings."
+    "title": "Anonymizer face blur never leaks the original pixels",
+    "source": "../limitations-3.0.md",
+    "setup": "Use disposable copies of one JPEG and one RAW + XMP with a clearly visible face. Set up an external editor in Settings, a test FTP/FTPS server with Skip automatic rendering of edited files turned on, and an empty export folder. Prepare one Develop template and one copied Develop setting without masks.",
+    "steps": "In Develop, press J on each photo to add an ellipse redaction over the face and raise the Anonymizer amount. Check the blur in the Browser thumbnail, Full Screen and Clean Feed. Export each photo, use Save As, upload both with Upload Selected, and drag each thumbnail to a Finder folder. Choose Open in External Editor and read the warning. Apply the Develop template and paste the copied settings onto both photos, then check the blur again. Open every output file in Preview at 100% and inspect it with a metadata tool for embedded previews or thumbnails.",
+    "expected": "The face is blurred in every view and in every file that leaves the app, including FTP uploads with skip rendering on and dragged-out files. Open in External Editor warns that the editor will show the unblurred original before going ahead. The template and paste never remove or weaken the redaction. No exported file contains an embedded preview or thumbnail of the unblurred original. Person Shown names are kept, as documented.",
+    "cleanup": "Delete exports, dragged files and remote test files; remove the disposable copies."
   },
   {
-    "id": "A24",
+    "id": "A29",
     "lane": "Agent computer use",
     "priority": "P0",
-    "title": "Interrupted XMP staging inspection and unchanged resolution",
-    "source": "cycle-97-installed-identities-recursive-previews-model-recovery-2026-09-22.md",
-    "setup": "Use disposable exact-plan photos and isolated recovery storage. Interrupt after durable staging before the first carrier install; retain original source, XMP and app-history hashes and identities.",
-    "steps": "1. Open Automation Settings and Inspect Retained Recovery. 2. Compare the photo path and unchanged-state result. Resolve Unchanged Staging and inspect again. 3. Relaunch and verify the disposition receipt and unchanged carriers. 4. Repeat after replacing a source or sidecar, including same-byte replacement, and after authority revocation. 5. Dismiss Settings while inspection or resolution is queued. 6. For a legacy source-less journal, supply the exact original photo path. 7. For a partially installed candidate with retained identities, choose Restore Original Metadata. Cancel first and verify no changes, then confirm and verify original XMP/app history or original absence, unchanged photo bytes, and a retained restoration receipt across relaunch. 8. Replace an installed carrier after inspection and confirm restoration is refused with external files and recovery evidence preserved. Missing identity receipts and uncertain changes must remain blocked.",
-    "expected": "Only exact unchanged photo/carrier generations permit explicit resolution. No live metadata changes, no false publication success, and recovery bytes remain retained until the next publication is staged. Changed and uncertain carriers remain blocked. Dismissal cancels queued work and suppresses stale completions. Partial-publication restore remains an implementation gate.",
-    "cleanup": "Retain sanitized receipts and before/after evidence; remove only disposable fixture storage."
+    "title": "RAW metadata and Develop changes go only to the XMP sidecar",
+    "source": "../../CHANGELOG.md",
+    "setup": "Use disposable copies of three RAW files with existing XMP sidecars, one RAW+JPEG pair sharing a sidecar, a metadata template and a memory card or folder to import from. Record SHA-256 of every RAW and JPEG and save a copy of each sidecar. Use the default Professional write preset.",
+    "steps": "Copy IPTC from a captioned JPEG and use Paste IPTC Metadata on two RAWs. Apply the metadata template to the third RAW. Import a RAW folder with a metadata template chosen in the import sheet. In Develop, copy settings from one RAW, select the other RAWs and paste. On the RAW+JPEG pair, write a caption to both, then edit the JPEG’s exposure in Develop and save. Recompute every hash and compare the sidecars with the saved copies.",
+    "expected": "Every RAW file hash is unchanged; captions, template fields and pasted Develop settings appear in each RAW’s .xmp sidecar and survive relaunch. Nothing is silently skipped. For the pair, the JPEG gets the caption embedded and the RAW gets it in the sidecar; editing the JPEG’s Develop does not change the RAW’s crs settings in the shared sidecar.",
+    "cleanup": "Keep the hash lists and sidecar diffs; delete the disposable copies and imports."
   },
   {
-    "id": "A25",
+    "id": "A30",
+    "lane": "Agent computer use",
+    "priority": "P1",
+    "title": "Import from Instagram and X post URLs",
+    "source": "../../CHANGELOG.md",
+    "setup": "Pick one public Instagram post and one public X post that you are allowed to download for testing, with at least one photo each. Choose an empty destination folder. Internet access is required.",
+    "steps": "Open Settings ▸ Web Downloads, choose Check for Updates and update gallery-dl and yt-dlp if offered. Choose File ▸ Import from Web URL…, paste the Instagram URL and choose Find Media. Select the items, choose the destination and Download & Import. Repeat with the X URL, and once more cancelling during the download. Open the destination in Finder and in Photo Agent.",
+    "expected": "Each import keeps the original download unchanged next to a working copy. The working copy carries source attribution (account and post) and a provenance JSON record sits beside it. Cancel reports what was kept. Updating the web tools does not need an app update and reports its result clearly.",
+    "cleanup": "Delete the downloaded files; note tool versions shown in Settings."
+  },
+  {
+    "id": "A31",
+    "lane": "Agent computer use",
+    "priority": "P1",
+    "title": "Keyboard shortcut editor and Settings search",
+    "source": "../feature-help-3.0.md",
+    "setup": "Record your current shortcut setup so it can be restored. Use any folder of disposable photos.",
+    "steps": "Open Settings ▸ Shortcuts and check the keyboard preview shows used and free keys. Pick a command, record a free key and check the app menu shows the new shortcut immediately. Record a key that is already in use and read the Reassign prompt; cancel once, then confirm. Use the new shortcuts in Browser. In Settings press Command+F, type Whisper, then certificate, and open a matching category. Press Escape to clear the search.",
+    "expected": "New shortcuts work at once and match the menu. An occupied key is never taken silently: the prompt names the command that loses it, and Cancel changes nothing. Search lists the Transcription and signing categories for those words, and Escape restores all categories.",
+    "cleanup": "Restore the original shortcuts."
+  },
+  {
+    "id": "A32",
     "lane": "Agent computer use",
     "priority": "P0",
-    "title": "Signed helper opens exact native transcription review",
-    "source": "cycle-122-installed-native-review-authority-2026-10-02.md",
-    "setup": "Use the exact signed candidate and its nested helper with disposable photo/WAV relationships and one authorized test folder. Keep the app running; record authority, request/plan archives and carrier hashes. Do not authorize personal photos.",
-    "steps": "1. Use get_photo_voice_memo and prepare_voice_transcription to retain an exact ordered batch. Get the current request epoch and request_voice_transcription_review with a fresh lowercase request UUID. 2. Call open_voice_transcription_review with a wrong epoch, then the original request/epoch. 3. Inspect the exact request and ordered photos automatically selected in Automation Settings. Review the concrete provider; verify consent is unchecked and confirmation disabled. 4. Check consent without submitting execution. Call with a stale epoch, then repeat with the valid original handles; inspect preservation on refusal and consent reset on acceptance. 5. Disable automation or remove the test root while the client remains connected and repeat. Re-enable deliberately and verify the original preview refuses under changed authority. 6. Quit the app and retry; it must refuse without launching the app. Repeat independently for each supported client and actual installed candidate.",
-    "expected": "Mutual authentication accepts only the matching signed pair. A valid handoff opens the exact retained intent and clears previous provider review/consent. A stale request cannot change the existing native selection or consent. Responses never claim consent, execution or completion. No operation, transcript draft or photo/carrier write occurs during review-only steps. Revocation is observed on the persistent connection. No response acknowledges completion merely because an exact linked operation handle exists. Development-signed Debug qualification does not satisfy distribution/provider acceptance.",
-    "cleanup": "Clear consent, remove disposable root/client entries, restore original automation settings and retain only sanitized protocol/hash evidence. Human results remain unrun until this procedure is actually exercised."
+    "title": "Voice memo transcription end to end with Apple Speech and Whisper",
+    "source": "3.0-completion-plan.md",
+    "setup": "Use a disposable copy of a Sony card folder with JPEG/RAW photos and WAV voice memos, including memos spoken in Norwegian and in English. Have a metadata template whose Description contains {voiceMemoTranscript}. Internet access is needed only for the model download.",
+    "steps": "In Caption, select one photo with a memo, choose Apple Speech in the transcription settings and press Transcribe. In Settings ▸ Transcription choose Whisper, download the Base model and wait for verification to finish; select an NbAiLab model once and read its warning, then go back to Base. In Browser select up to 8 photos with memos, right-click and choose Transcribe Voice Memos…, set the language and press Transcribe N Photos. Start a second batch and use Cancel Transcription in Activity partway. Turn off Wi-Fi and transcribe again. Remove the Base model in Settings and try once more. Finally apply the template to transcribed photos.",
+    "expected": "Transcripts are readable for both languages and stay drafts: no IPTC field changes until the template is applied, which puts the transcript into Description. Cancel keeps the transcripts already finished. Transcription works offline once the model is downloaded. A removed model gives a clear message and no silent fallback. The NbAiLab model shows its translate-to-Norwegian warning. WAV files are unchanged.",
+    "cleanup": "Turn Wi-Fi back on, restore the transcription settings and delete the disposable folder."
   },
   {
-    "id": "A26",
+    "id": "A33",
     "lane": "Agent computer use",
-    "priority": "P0",
-    "title": "Signed helper consumes one exact native transcription grant",
-    "source": "cycle-123-native-helper-transcription-start-2026-10-02.md",
-    "setup": "Use the exact signed candidate and nested helper, isolated automation stores and disposable photo/WAV relationships. Configure an explicitly available provider and retain original photo, WAV, relationship, metadata, request and plan evidence. Run separately with real Apple and curated/custom Whisper providers; synthetic recognition qualifies only coordination.",
-    "steps": "1. Prepare and queue one exact ordered request, open it through the helper and review its concrete provider. Call start_voice_transcription without native consent and again with only the consent checkbox checked: both must refuse. 2. Choose Allow Helper to Start Once. Send a wrong epoch; it must refuse while preserving the correct grant. Then start the original request and inspect retained linkage, progress, exact draft provenance and terminal outcome. 3. Retry the exact start after linkage and after relaunch; the same operation handle must return without changing drafts or operation/request bytes. 4. On new disposable requests, grant then withdraw and recheck consent, change provider/options, dismiss Settings, reopen review, or wait beyond 60 seconds. Each old grant must refuse until explicitly granted anew. 5. Cancel a running batch and verify provider teardown, saved-prefix drafts and truthful per-photo outcomes. Replace a disposable WAV or revoke the test folder after review and before start; admission must refuse. 6. Quit normally and verify listener teardown. Repeat from a real supported MCP client with the actual candidate.",
-    "expected": "Only the matching authenticated helper and running app can consume a fresh exact one-use native grant. Helpers cannot supply consent. executionRequested means grant consumption and scheduled admission only; linkedOperation returns the original durable handle without replay or a completion claim. Exact drafts are editable and unapproved; IPTC, source/WAV and association bytes remain unchanged. Missing or uncertain history remains unconfirmed. Provider selection changes and consent withdrawal revoke immediately, independent of delayed UI callbacks; clock rollback cannot extend the grant. Actual provider, distribution and relaunch evidence must be recorded separately from deterministic fixtures.",
-    "cleanup": "Stop and confirm teardown, clear unconsumed grants, restore test-only settings and remove disposable authority/client entries. Retain sanitized before/after hashes and protocol/operation evidence; do not record private transcript text."
-  },
-  {
-    "id": "U01",
-    "lane": "Final user acceptance",
-    "priority": "P0",
-    "title": "First-use Deadline assignment",
-    "source": "../journalistic-metadata-workflow-plan.md",
-    "setup": "After coordinator handoff, use the exact candidate and a small disposable assignment with one ready image, one incomplete image and a profile requiring caption/credit. Do not consult implementation notes.",
-    "steps": "Enter Deadline for the first time. Explain in notes the selected profile, readiness, planned output and next action. Use Fix Next Issue until ready; inspect Send eligibility and the post-send Activity entry using an authorized test destination from E02.",
-    "expected": "You can identify the next action and why Send is enabled/disabled without guessing. Record every confusing label or detour; successful delivery has a comprehensible receipt.",
-    "cleanup": "Remove test staging/profile and remote test outputs after retaining results. If E02 has no authorized endpoint, assess preflight and mark the send portion blocked."
+    "priority": "P1",
+    "title": "Quit saves pending edits in every workspace",
+    "source": "../../CHANGELOG.md",
+    "setup": "Use a folder of large disposable photos (or a slow network volume) so saving takes several seconds. Record file and sidecar hashes.",
+    "steps": "Edit a field in the Browser metadata panel without saving, type a caption in Caption, and change exposure in Develop. Choose Quit. Repeat with a large batch metadata edit still writing and wait for the Saving Changes… prompt; read what it lists, choose Keep Waiting, then Quit Without Saving for one stage only. Relaunch and check all three edits.",
+    "expected": "Quit saves each workspace’s edits in turn. If saving takes more than a few seconds, Saving Changes… lists the pending work with Keep Waiting, Quit Without Saving and Cancel Quit. Quit Without Saving abandons only the stage still running; the other edits are saved and present after relaunch. Cancel Quit leaves the app running with edits intact.",
+    "cleanup": "Delete the disposable copies."
   },
   {
     "id": "U02",
@@ -343,7 +343,7 @@
     "priority": "P0",
     "title": "VoiceOver and Full Keyboard Access across workspaces",
     "source": "../accessibility-keyboard-audit-validation.md",
-    "setup": "Use an isolated test session, VoiceOver and Full Keyboard Access. Cover Browser, Metadata Review, Caption, Deadline, Activity, Analysis/OSINT, Compare, Develop, Full Screen and Settings.",
+    "setup": "Use an isolated test session, VoiceOver and Full Keyboard Access. Cover Browser, Metadata Review, Caption, Activity, Analysis/OSINT, Compare, Develop, Full Screen and Settings.",
     "steps": "Navigate controls in each workspace; identify selected image, mixed values, issues and disabled actions by speech. Create/edit an annotation and solar calculation with keyboard controls. Exercise Save/Write success/failure, cancellation and recovery; escape each modal/popover.",
     "expected": "All essential workflows have an operable focus path and meaningful labels/states; announcements are understandable and privacy-safe. No focus trap or pointer-only release-critical action. Record actual speech and failures rather than assuming accessibility labels are sufficient.",
     "cleanup": "Restore VoiceOver and Full Keyboard Access to their prior state; keep a sanitized workspace-by-workspace observation log."
@@ -355,7 +355,7 @@
     "title": "Window sizes, localization, contrast and motion",
     "source": "../accessibility-keyboard-audit-validation.md",
     "setup": "Use small and large windows, long Unicode captions and many named people. Record supported localization and accessibility settings being exercised.",
-    "steps": "Resize Caption, Deadline, Analysis and Activity to practical minimum/maximum sizes. Enable larger text where supported, increased contrast and reduced motion; test a supported long-string localization and live IME entry.",
+    "steps": "Resize Caption, Develop, Analysis and Activity to practical minimum/maximum sizes. Enable larger text where supported, increased contrast and reduced motion; test a supported long-string localization and live IME entry.",
     "expected": "Required controls and messages remain visible or reachable by scrolling, text does not overlap, focus remains visible, motion settings are respected and composition is preserved.",
     "cleanup": "Restore language, window and accessibility settings; capture only non-sensitive screenshots."
   },
@@ -375,10 +375,10 @@
     "lane": "Final user acceptance",
     "priority": "P0",
     "title": "Final end-to-end card-to-caption-to-delivery rehearsal",
-    "source": "../journalistic-metadata-workflow-plan.md",
-    "setup": "Requires completed agent gates and authorized test fixtures/endpoints. Use the exact handoff candidate, a realistic disposable assignment and representative Sony memos if in approved scope.",
-    "steps": "Import with backup; cull, caption, rename and edit a named version. Verify memo review/apply where supported. Resolve Deadline issues, deliver, reopen output in external metadata tools and inspect Activity receipt. Quit/relaunch midway once at an ordinary safe point.",
-    "expected": "You can finish the assignment without workaround, lost data or unexplained state. Backup, names, captions, intended output and receipt agree; limitations are understandable. Record time, friction and any failed case IDs before acceptance.",
+    "source": "3.0-completion-plan.md",
+    "setup": "Requires completed agent gates and the authorized FTPS test endpoint from E10. Use the exact handoff candidate, a realistic disposable assignment and representative Sony memos.",
+    "steps": "Import with backup; cull, caption, rename and edit a named version. Transcribe and apply one voice memo. Use Fix Next Issue in Caption until every photo is complete, then Export one set to a local folder and upload another with Upload Selected to the test FTPS server. Reopen both outputs in external metadata tools and inspect the Activity entry. Quit/relaunch midway once at an ordinary safe point.",
+    "expected": "You can finish the assignment without workaround, lost data or unexplained state. Backup, names, captions, edits and the delivered files agree, and Activity describes what was sent; limitations are understandable. Record time, friction and any failed case IDs before acceptance.",
     "cleanup": "Remove remote/disposable assignment outputs; export this checklist. Final product acceptance is an explicit human decision, not the pass count."
   },
   {
@@ -396,11 +396,11 @@
     "id": "E02",
     "lane": "External / hardware gates",
     "priority": "P0",
-    "title": "Real FTP, explicit FTPS and SFTP delivery",
-    "source": "../manual-release-prerequisite-audit.md",
-    "setup": "Requires explicitly authorized disposable endpoints for all three protocols and credentials entered through the app’s Keychain UI. Never use a saved production destination merely because it exists.",
-    "steps": "Send a supported derivative through each endpoint, download/inspect it in Bridge and Photo Mechanic, and compare with the staged file. Test wrong credentials, certificate failure for FTPS, disconnect, cancellation, relaunch and retry on the disposable workflow.",
-    "expected": "No premature success, duplicate/reordered retry or upload of stale bytes. Failures are actionable. Receipt accurately describes protocol acknowledgement/remote size rather than claiming a remote cryptographic hash. Credentials never appear in logs or export.",
+    "title": "Real FTP and explicit FTPS delivery; old SFTP profiles refused",
+    "source": "../limitations-3.0.md",
+    "setup": "Requires explicitly authorized disposable FTP and FTPS endpoints and credentials entered through the app’s Keychain UI. Prepare one saved server profile that still uses SFTP (for example carried over from 2.x). Never use a saved production destination merely because it exists.",
+    "steps": "Upload a supported rendition through the FTP and FTPS endpoints, download it and inspect it in Bridge and Photo Mechanic, and compare with the local file. Test wrong credentials, a certificate failure for FTPS, disconnect, cancellation, relaunch and retry. Open the old SFTP profile in Settings ▸ FTP and try to upload with it, then use Switch to FTPS and upload again.",
+    "expected": "No premature success, duplicate/reordered retry or upload of stale bytes. Failures are actionable. Plain FTP warns that it is unencrypted. The SFTP profile is flagged as unsupported by macOS’s built-in curl, the upload is refused rather than attempted, and Switch to FTPS converts it in one click. Credentials never appear in logs or export.",
     "cleanup": "Delete only the designated remote test paths and local staging; remove temporary credentials/configuration when approved. Retain sanitized evidence without hosts, users or secrets."
   },
   {
@@ -421,7 +421,7 @@
     "title": "Permission, removable volume, iCloud and disk-capacity failures",
     "source": "../manual-release-prerequisite-audit.md",
     "setup": "Requires designated disposable removable and read-only volumes, revoked test bookmarks, an actual evicted iCloud image, and a bounded disposable disk image for capacity testing. Never exhaust the host disk or use system/recovery volumes.",
-    "steps": "Reopen a bookmarked folder after revoking access; retry through the chooser. Disconnect/reconnect the test removable volume during work. Access the read-only target. In an isolated offline state open the evicted file then restore network. Fill only the bounded test disk image and try a save/delivery staging operation.",
+    "steps": "Reopen a bookmarked folder after revoking access; retry through the chooser. Disconnect/reconnect the test removable volume during work. Access the read-only target. In an isolated offline state open the evicted file then restore network. Fill only the bounded test disk image and try a metadata save and an Export.",
     "expected": "Launch and navigation stay responsive; errors identify actual access/offline/capacity state, preserve drafts and recover without silent loss. No false claim that an unmaterialized iCloud item was read/written.",
     "cleanup": "Restore network/permissions; reconnect/eject volumes safely and remove the disposable disk image. Preserve sanitized evidence and original backup."
   },
@@ -443,7 +443,7 @@
     "title": "Target-tier performance, GPU and cancellation",
     "source": "../v2.3/delivery-plan.md",
     "setup": "Coordinator must first record target Apple Silicon tiers and explicit memory/latency budgets. Requires representative hardware, Instruments/Thread Performance Checker and GPU validation; use disposable large/RAW batches.",
-    "steps": "Measure cold launch, preview/RAW decode, scopes, hashing and two-RAW Compare on every tier. Run prolonged Analysis, rapidly change selections and cancel. Exercise 10,000-file rename preview, incremental preflight, live Develop and a large delivery batch.",
+    "steps": "Measure cold launch, preview/RAW decode, scopes, hashing and two-RAW Compare on every tier. Run prolonged Analysis, rapidly change selections and cancel. Exercise 10,000-file rename preview, live Develop, a large Export and a large FTP upload batch.",
     "expected": "Measurements meet the approved budgets, cancellation stays responsive and no sustained memory growth, main-thread I/O stall, GPU validation error or stale render occurs. Without defined budgets or a tier, mark blocked, not pass.",
     "cleanup": "Stop profilers and test tasks; retain sanitized traces, hardware/OS identity, timing and peak memory. Remove generated batches."
   },
@@ -454,7 +454,7 @@
     "title": "Runtime privacy, security and license review",
     "source": "../v2.3/delivery-plan.md",
     "setup": "Requires a designated isolated profile with synthetic captions/people/GPS, approved network-capture tooling, and the release component/license inventory. Legal approval must come from its actual reviewer.",
-    "steps": "Exercise map/search, report redaction, optional sync, delivery and failure/recovery. Inspect runtime logs, temporary/staged files, retained receipts, deletion behavior and network requests for the synthetic markers. Review component provenance, required license notices and source offer.",
+    "steps": "Exercise map/search, report redaction, optional sync, FTP upload, web import and failure/recovery. Inspect runtime logs, temporary/staged files, retained receipts, deletion behavior and network requests for the synthetic markers. Review component provenance, required license notices and source offer.",
     "expected": "Only intended data is persisted/transmitted, secrets and sensitive values stay out of logs/receipts, exclusion/deletion controls behave as documented, and dated security/privacy/legal decisions identify their reviewers. Code checks alone do not count as external approval.",
     "cleanup": "Stop capture; securely handle/delete captures containing any private data. Restore sync/network settings and document remaining external decisions."
   },
@@ -468,6 +468,17 @@
     "steps": "Repeat A12 for each claimed combination and RAW/JPEG/Both choice. Inspect ambiguous/duplicate groups, no-earlier-than-image timing, delayed memos and shared RAW/JPEG associations; compare imported and backup WAV bytes.",
     "expected": "The documented support matrix exactly matches evidence. Unproven associations fail closed and appear clearly; no audio is attached to the wrong exposure or silently omitted by an approved lifecycle/delivery action.",
     "cleanup": "Keep private fixtures outside git and exported reports; retain only sanitized sample IDs and hashes with owner authorization."
+  },
+  {
+    "id": "E10",
+    "lane": "External / hardware gates",
+    "priority": "P0",
+    "title": "FTPS hot-folder delivery: temporary names, cancel, retry and wrong password",
+    "source": "../limitations-3.0.md",
+    "setup": "Requires an authorized FTPS server with a hot folder you can watch (an ingest system or a directory listing refreshed during upload), a profile saved in Settings ▸ FTP and 20 or more large disposable photos. Never use a production newsroom folder.",
+    "steps": "Upload Selected with all photos while listing the hot folder repeatedly. Start another upload and Cancel midway, then list the folder. Make some files fail (for example a name the server refuses, or drop the network briefly) and use Retry Failed. Change the saved password to a wrong one and upload once, then restore it.",
+    "expected": "During transfer files appear only as hidden temporary .name….part files and are renamed to their final names when complete; the hot folder never sees a partial file under a final name. Cancel leaves no partial file. Retry Failed resends only the failures. A wrong password is tried once and reported clearly, without repeated logins.",
+    "cleanup": "Delete the remote test files; restore the server profile."
   },
   {
     "id": "E09",
