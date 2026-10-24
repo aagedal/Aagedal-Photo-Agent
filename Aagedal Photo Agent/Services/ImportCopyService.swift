@@ -57,6 +57,18 @@ actor ImportCopyService {
         /// reused after a destination appears or disappears.
         var expectedPrimaryCollision: Bool? = nil
         var expectedBackupCollision: Bool? = nil
+        /// Set by import preflight, which resolves every file of an exposure together (one
+        /// suffix for RAW, JPEG, voice memo and their sidecars). A frozen destination is used
+        /// exactly as planned: the copy never re-resolves it per file, and a file that appeared
+        /// there after preflight fails the job instead of splitting the exposure.
+        var frozenDestination: Bool = false
+        /// Reported as `wasRenamed` for a frozen destination.
+        var plannedRename: Bool = false
+        /// Skips only the backup leg (its frozen backup file already exists).
+        var backupSkipReason: SkipReason? = nil
+        /// Skip Existing found a *different* file under this name, so the job was renamed
+        /// instead of skipped. Surfaced to the user as a warning.
+        var renamedAwayFromDifferentFile: Bool = false
     }
 
     enum SkipReason: String, Sendable, Equatable {
@@ -85,6 +97,8 @@ actor ImportCopyService {
         let primaryVerification: VerificationOutcome
         let backup: DestinationOutcome?
         let backupVerification: VerificationOutcome?
+        /// Skip Existing met a different file with the same name and copied under a new name.
+        var renamedAwayFromDifferentFile: Bool = false
     }
 
     enum CopyError: Error, LocalizedError {
@@ -211,13 +225,21 @@ actor ImportCopyService {
             )
         }
 
-        // Resolve primary destination (conflict policy).
+        // Resolve primary destination (conflict policy). Import preflight freezes the
+        // destination for the whole exposure; only unfrozen callers resolve per file.
         let primaryResolved: ResolvedDestination
         do {
-            primaryResolved = try Self.resolveDestination(
-                desired: job.desiredPrimaryDest,
-                policy: conflictPolicy
-            )
+            primaryResolved = job.frozenDestination
+                ? .resolved(
+                    job.desiredPrimaryDest,
+                    wasRenamed: job.plannedRename,
+                    differed: job.renamedAwayFromDifferentFile
+                )
+                : try Self.resolveDestination(
+                    source: job.source,
+                    desired: job.desiredPrimaryDest,
+                    policy: conflictPolicy
+                )
         } catch {
             return CopyResult(
                 id: job.id,
@@ -230,17 +252,17 @@ actor ImportCopyService {
         }
 
         // Skip → skip both legs.
-        if case .skip = primaryResolved {
+        if case .skip(let reason) = primaryResolved {
             return CopyResult(
                 id: job.id,
                 source: job.source,
-                primary: .skipped(.destinationExists),
+                primary: .skipped(reason),
                 primaryVerification: .skipped,
-                backup: job.desiredBackupDest != nil ? .skipped(.destinationExists) : nil,
+                backup: job.desiredBackupDest != nil ? .skipped(reason) : nil,
                 backupVerification: job.desiredBackupDest != nil ? .skipped : nil
             )
         }
-        guard case let .resolved(primaryURL, wasRenamed) = primaryResolved else {
+        guard case let .resolved(primaryURL, wasRenamed, renamedAwayFromDifferentFile) = primaryResolved else {
             return CopyResult(
                 id: job.id,
                 source: job.source,
@@ -269,7 +291,17 @@ actor ImportCopyService {
             // Don't fail backup if primary verification failed — still try backup so the user has redundancy.
             let backupResolved: ResolvedDestination
             do {
-                backupResolved = try Self.resolveDestination(desired: desiredBackup, policy: conflictPolicy)
+                if let reason = job.backupSkipReason {
+                    backupResolved = .skip(reason)
+                } else if job.frozenDestination {
+                    backupResolved = .resolved(desiredBackup, wasRenamed: job.plannedRename, differed: false)
+                } else {
+                    backupResolved = try Self.resolveDestination(
+                        source: job.source,
+                        desired: desiredBackup,
+                        policy: conflictPolicy
+                    )
+                }
             } catch {
                 backupOutcome = .failed(error.localizedDescription)
                 backupVerification = .skipped
@@ -281,18 +313,30 @@ actor ImportCopyService {
                         : .failed("Verification failed."),
                     primaryVerification: primaryVerification,
                     backup: backupOutcome,
-                    backupVerification: backupVerification
+                    backupVerification: backupVerification,
+                    renamedAwayFromDifferentFile: renamedAwayFromDifferentFile
                 )
             }
 
             switch backupResolved {
-            case .skip:
-                backupOutcome = .skipped(.destinationExists)
+            case .skip(let reason):
+                backupOutcome = .skipped(reason)
                 backupVerification = .skipped
-            case .resolved(let backupURL, let backupWasRenamed):
+            case .resolved(let backupURL, let backupWasRenamed, _):
+                // Read the card once: a verified primary is byte-identical to the source, so the
+                // backup is copied from it, and its staged bytes must still hash to the hash
+                // streamed from the card. Without a verified primary, read the source again.
+                var backupSource = job.source
+                var expectedBackupHash: Data?
+                if primaryVerification == .verified,
+                   case let .copied(copiedPrimary, _, _, primaryHash) = primaryOutcome {
+                    backupSource = copiedPrimary
+                    expectedBackupHash = primaryHash
+                }
                 do {
                     (backupOutcome, backupVerification) = try copyLeg(
-                        source: job.source,
+                        source: backupSource,
+                        expectedSourceHash: expectedBackupHash,
                         destination: backupURL,
                         wasRenamed: backupWasRenamed,
                         shouldVerify: verificationMode == .on && verifyBackup,
@@ -320,7 +364,8 @@ actor ImportCopyService {
             primary: primaryOutcome,
             primaryVerification: primaryVerification,
             backup: backupOutcome,
-            backupVerification: backupVerification
+            backupVerification: backupVerification,
+            renamedAwayFromDifferentFile: renamedAwayFromDifferentFile
         )
     }
 
@@ -336,6 +381,7 @@ actor ImportCopyService {
     /// propagates to `run`; it is never represented as a successful skipped verification.
     private func copyLeg(
         source: URL,
+        expectedSourceHash: Data? = nil,
         destination: URL,
         wasRenamed: Bool,
         shouldVerify: Bool,
@@ -357,6 +403,15 @@ actor ImportCopyService {
             throw CancellationError()
         } catch {
             return (.failed(error.localizedDescription), .skipped)
+        }
+
+        // A leg copied from an earlier verified copy must carry the bytes streamed from the card.
+        if let expectedSourceHash, staged.hash != expectedSourceHash {
+            try? FileManager.default.removeItem(at: staged.temporaryURL)
+            return (
+                .failed("Verification mismatch — copy differs from the verified primary."),
+                .mismatch(expected: expectedSourceHash, got: staged.hash)
+            )
         }
 
         let verification: VerificationOutcome
@@ -407,7 +462,7 @@ actor ImportCopyService {
     private func stageCopy(source: URL, destination: URL, forVerification: Bool) throws -> StagedCopy {
         let fm = FileManager.default
         let partialURL = destination.deletingLastPathComponent().appendingPathComponent(
-            ".\(destination.lastPathComponent).\(UUID().uuidString).partial"
+            Self.stagingFileName(for: destination.lastPathComponent)
         )
 
         // Ensure parent directory exists (defensive — caller should have created it).
@@ -499,24 +554,37 @@ actor ImportCopyService {
     // MARK: - Conflict Resolution
 
     private enum ResolvedDestination {
-        case skip
-        case resolved(URL, wasRenamed: Bool)
+        case skip(SkipReason)
+        case resolved(URL, wasRenamed: Bool, differed: Bool)
     }
 
     nonisolated private static func resolveDestination(
+        source: URL,
         desired: URL,
         policy: ImportConflictPolicy
     ) throws -> ResolvedDestination {
         let fm = FileManager.default
         guard fm.fileExists(atPath: desired.path) else {
-            return .resolved(desired, wasRenamed: false)
+            return .resolved(desired, wasRenamed: false, differed: false)
         }
         switch policy {
         case .skipExisting:
-            return .skip
+            // Skip only a true duplicate. A different file that merely shares the name (two
+            // bodies with the same frame counter) is kept under a new name, never dropped.
+            if filesHaveSameIdentity(source, desired) {
+                return .skip(.destinationExists)
+            }
+            return .resolved(try renamedDestination(for: desired), wasRenamed: true, differed: true)
         case .overwrite:
-            return .resolved(desired, wasRenamed: false)
+            return .resolved(desired, wasRenamed: false, differed: false)
         case .renameWithSuffix:
+            return .resolved(try renamedDestination(for: desired), wasRenamed: true, differed: false)
+        }
+    }
+
+    nonisolated private static func renamedDestination(for desired: URL) throws -> URL {
+        let fm = FileManager.default
+        do {
             let directory = desired.deletingLastPathComponent()
             let basename = desired.deletingPathExtension().lastPathComponent
             let ext = desired.pathExtension
@@ -527,11 +595,79 @@ actor ImportCopyService {
                     : "\(basename)-\(index).\(ext)"
                 let candidate = directory.appendingPathComponent(candidateName)
                 if !fm.fileExists(atPath: candidate.path) {
-                    return .resolved(candidate, wasRenamed: true)
+                    return candidate
                 }
             }
             throw CopyError.renameSuffixExhausted(desired)
         }
+    }
+
+    /// True when two files have the same size and the same sampled checksum — the identity
+    /// the importer uses for "this exact photo is already there".
+    nonisolated static func filesHaveSameIdentity(_ lhs: URL, _ rhs: URL) -> Bool {
+        let keys: Set<URLResourceKey> = [.fileSizeKey]
+        guard let leftSize = try? lhs.resourceValues(forKeys: keys).fileSize,
+              let rightSize = try? rhs.resourceValues(forKeys: keys).fileSize,
+              leftSize == rightSize,
+              let leftHash = try? HashStream.quickHashFile(at: lhs),
+              let rightHash = try? HashStream.quickHashFile(at: rhs) else {
+            return false
+        }
+        return leftHash == rightHash
+    }
+
+    // MARK: - Staging Files
+
+    nonisolated static let stagingFileSuffix = ".partial"
+
+    /// `.<name>.<UUID>.partial` beside the destination: hidden, unique, same directory.
+    nonisolated static func stagingFileName(for destinationName: String) -> String {
+        ".\(destinationName).\(UUID().uuidString)\(stagingFileSuffix)"
+    }
+
+    /// Matches exactly the staging names produced by `stagingFileName(for:)`: a leading dot,
+    /// a non-empty destination name, a canonical UUID and the `.partial` suffix.
+    nonisolated static func isStagingFileName(_ name: String) -> Bool {
+        guard name.hasPrefix("."), name.hasSuffix(stagingFileSuffix) else { return false }
+        let body = name.dropFirst().dropLast(stagingFileSuffix.count)
+        guard let dot = body.lastIndex(of: ".") else { return false }
+        let destinationName = body[..<dot]
+        let uuidText = String(body[body.index(after: dot)...])
+        guard !destinationName.isEmpty, uuidText.count == 36,
+              let uuid = UUID(uuidString: uuidText) else { return false }
+        return uuid.uuidString == uuidText
+    }
+
+    /// Removes staging files a crashed or force-quit import left behind. Only regular files
+    /// directly inside the given folders whose names match the app's exact staging pattern and
+    /// that have not been modified for `minimumAge` are deleted; nothing else is touched.
+    @discardableResult
+    nonisolated static func sweepStaleStagingFiles(
+        in folders: [URL],
+        olderThan minimumAge: TimeInterval = 3600,
+        now: Date = Date()
+    ) -> [URL] {
+        let fm = FileManager.default
+        var removed: [URL] = []
+        var seen = Set<String>()
+        for folder in folders where seen.insert(folder.standardizedFileURL.path).inserted {
+            guard let names = try? fm.contentsOfDirectory(atPath: folder.path) else { continue }
+            for name in names where isStagingFileName(name) {
+                let url = folder.appendingPathComponent(name)
+                guard let values = try? url.resourceValues(forKeys: [
+                    .isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey,
+                ]), values.isRegularFile == true, values.isSymbolicLink != true,
+                      let modified = values.contentModificationDate,
+                      now.timeIntervalSince(modified) >= minimumAge else { continue }
+                do {
+                    try fm.removeItem(at: url)
+                    removed.append(url)
+                } catch {
+                    copyLog.warning("Could not remove stale staging file \(name, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+                }
+            }
+        }
+        return removed
     }
 
     nonisolated private static func filesReferToSameItem(_ lhs: URL, _ rhs: URL) -> Bool {

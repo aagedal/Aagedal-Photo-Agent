@@ -6,33 +6,83 @@ private nonisolated let previousImportLog = Logger(
     category: "PreviousImportDetector"
 )
 
-/// Finds source files that already exist in an import folder for the same date.
+/// Finds source files that were already imported into a destination library.
 ///
-/// Detection deliberately requires three increasingly expensive matches:
-/// 1. an existing destination folder begins with the same `yyyy-MM-dd` date,
-/// 2. a regular file below that folder has the same filename and size, and
-/// 3. sampled SHA-256 checksums match.
+/// 1. **Import ledger** (`ImportLedger`): the source identity recorded when the file was
+///    copied — original filename, size, sampled checksum (and capture date when both sides
+///    know it). It matches regardless of the import date, a `-1` rename, or metadata embedded
+///    into the copy afterwards. A ledger match counts only while its recorded destination still
+///    exists, so a photo that is no longer in the library is never withheld.
+/// 2. **Destination scan** for imports made before the ledger existed. It deliberately requires
+///    three increasingly expensive matches:
+///    1. an existing destination folder begins with the same `yyyy-MM-dd` date,
+///    2. a regular file below that folder has the same filename (or that filename with a
+///       `-<n>` conflict suffix) and size, and
+///    3. sampled SHA-256 checksums match.
 ///
-/// Date folders are checked in every layout the importer can create: directly
-/// below the destination base, below `<year>`, and below `<year>/<month>`. Files
-/// below a matching folder are searched recursively to cover RAW/JPEG and split-
-/// shoot subfolders.
+///    Date folders are checked in every layout the importer can create: directly below the
+///    destination base, below `<year>`, and below `<year>/<month>`. Files below a matching
+///    folder are searched recursively to cover RAW/JPEG and split-shoot subfolders.
+/// 3. **RAW partner**: a JPEG (or other non-RAW) whose same-stem RAW from the same card folder
+///    matched counts as imported when its partner file exists beside that RAW's copy — the
+///    JPEG's own bytes may have changed when metadata was embedded into it.
 nonisolated struct PreviousImportDetector {
     struct Candidate: Sendable {
         let source: URL
         let dateFolderName: String
+        var captureDate: Date? = nil
     }
 
     static func duplicateSources(
         among candidates: [Candidate],
         destinationBaseURL: URL
     ) throws -> Set<URL> {
-        let validCandidates = candidates.filter { isDateFolderName($0.dateFolderName) }
-        guard !validCandidates.isEmpty else { return [] }
+        guard !candidates.isEmpty else { return [] }
 
         var duplicates: Set<URL> = []
+        var matchedDestinations: [URL: URL] = [:]
         var quickHashes: [URL: Data] = [:]
 
+        func sourceHash(_ url: URL) -> Data? {
+            if let cached = quickHashes[url] { return cached }
+            guard let hash = try? HashStream.quickHashFile(at: url) else { return nil }
+            quickHashes[url] = hash
+            return hash
+        }
+
+        // 1. Ledger.
+        let ledger = ImportLedger.load(root: destinationBaseURL)
+        if !ledger.isEmpty {
+            let entriesByKey = Dictionary(grouping: ledger) {
+                ImportLedger.lookupKey(name: $0.name, size: $0.size)
+            }
+            for candidate in candidates {
+                try Task.checkCancellation()
+                guard let size = fileSize(at: candidate.source),
+                      let entries = entriesByKey[ImportLedger.lookupKey(
+                        name: candidate.source.lastPathComponent,
+                        size: Int64(size)
+                      )],
+                      let hash = sourceHash(candidate.source) else { continue }
+                let hex = hash.map { String(format: "%02x", $0) }.joined()
+                let captureDate = ImportLedger.captureDateString(candidate.captureDate)
+                for entry in entries where entry.quickHash == hex {
+                    if let captureDate, let recorded = entry.captureDate, recorded != captureDate {
+                        continue
+                    }
+                    let destination = destinationBaseURL.appendingPathComponent(entry.destination)
+                    guard FileManager.default.fileExists(atPath: destination.path) else { continue }
+                    duplicates.insert(candidate.source)
+                    matchedDestinations[candidate.source] = destination
+                    break
+                }
+            }
+        }
+
+        // 2. Destination scan for imports recorded before the ledger existed.
+        let validCandidates = candidates.filter {
+            isDateFolderName($0.dateFolderName) && !duplicates.contains($0.source)
+        }
         for (dateFolderName, dateCandidates) in Dictionary(grouping: validCandidates, by: \Candidate.dateFolderName) {
             try Task.checkCancellation()
 
@@ -56,16 +106,7 @@ nonisolated struct PreviousImportDetector {
                 }
 
                 for existing in existingFiles where fileSize(at: existing) == sourceSize {
-                    let sourceHash: Data
-                    if let cached = quickHashes[candidate.source] {
-                        sourceHash = cached
-                    } else {
-                        guard let hash = try? HashStream.quickHashFile(at: candidate.source) else {
-                            break
-                        }
-                        quickHashes[candidate.source] = hash
-                        sourceHash = hash
-                    }
+                    guard let sourceHash = sourceHash(candidate.source) else { break }
 
                     let existingHash: Data
                     if let cached = quickHashes[existing] {
@@ -80,16 +121,56 @@ nonisolated struct PreviousImportDetector {
 
                     if sourceHash == existingHash {
                         duplicates.insert(candidate.source)
+                        matchedDestinations[candidate.source] = existing
                         break
                     }
                 }
             }
         }
 
+        // 3. Partners of matched RAW files.
+        let rawMatchesByExposure = Dictionary(
+            matchedDestinations.filter { SupportedImageFormats.isRaw(url: $0.key) }
+                .map { (exposureKey($0.key), $0.value) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        if !rawMatchesByExposure.isEmpty {
+            for candidate in candidates where !duplicates.contains(candidate.source)
+                && !SupportedImageFormats.isRaw(url: candidate.source) {
+                guard let rawCopy = rawMatchesByExposure[exposureKey(candidate.source)] else { continue }
+                if partnerExists(for: candidate.source, besideRawCopy: rawCopy) {
+                    duplicates.insert(candidate.source)
+                }
+            }
+        }
+
         if !duplicates.isEmpty {
-            previousImportLog.info("Found \(duplicates.count) duplicate files in matching date folders.")
+            previousImportLog.info("Found \(duplicates.count) previously imported files.")
         }
         return duplicates
+    }
+
+    /// Card folder + stem: the files of one exposure on the source.
+    private static func exposureKey(_ source: URL) -> String {
+        source.deletingLastPathComponent().standardizedFileURL.path.lowercased()
+            + "|" + normalizedFilename(source.deletingPathExtension().lastPathComponent)
+    }
+
+    /// The partner sits beside the RAW's copy under the copy's stem — in the same folder, or in
+    /// the sibling `JPEG` folder of the importer's RAW/JPEG layout.
+    private static func partnerExists(for partner: URL, besideRawCopy rawCopy: URL) -> Bool {
+        let stem = rawCopy.deletingPathExtension().lastPathComponent
+        let ext = partner.pathExtension
+        let name = ext.isEmpty ? stem : "\(stem).\(ext)"
+        let rawFolder = rawCopy.deletingLastPathComponent()
+        var folders = [rawFolder]
+        if rawFolder.lastPathComponent.caseInsensitiveCompare("RAW") == .orderedSame {
+            folders.append(rawFolder.deletingLastPathComponent().appendingPathComponent("JPEG"))
+        }
+        return folders.contains { folder in
+            let candidate = folder.appendingPathComponent(name)
+            return (try? candidate.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
     }
 
     static func folderName(_ folderName: String, matchesDate dateFolderName: String) -> Bool {
@@ -182,6 +263,11 @@ nonisolated struct PreviousImportDetector {
                 if wantedNames.contains(key) {
                     matches[key, default: []].append(item)
                 }
+                // A copy the importer renamed for a name conflict (`IMG_0001-1.JPG`) still
+                // carries the card's bytes; let it match the card's `IMG_0001.JPG`.
+                if let unsuffixed = conflictSuffixStripped(key), wantedNames.contains(unsuffixed) {
+                    matches[unsuffixed, default: []].append(item)
+                }
             }
         }
         return matches
@@ -197,6 +283,18 @@ nonisolated struct PreviousImportDetector {
             }
         }
         return true
+    }
+
+    /// `name-<digits>.ext` → `name.ext`; nil when the stem carries no conflict suffix.
+    private static func conflictSuffixStripped(_ filename: String) -> String? {
+        let ext = (filename as NSString).pathExtension
+        let stem = (filename as NSString).deletingPathExtension
+        guard let dash = stem.lastIndex(of: "-") else { return nil }
+        let digits = stem[stem.index(after: dash)...]
+        guard !digits.isEmpty, digits.allSatisfy(\.isASCII), digits.allSatisfy(\.isNumber),
+              dash > stem.startIndex else { return nil }
+        let base = String(stem[..<dash])
+        return ext.isEmpty ? base : "\(base).\(ext)"
     }
 
     private static func normalizedFilename(_ value: String) -> String {

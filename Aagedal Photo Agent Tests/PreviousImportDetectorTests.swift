@@ -103,4 +103,106 @@ struct PreviousImportDetectorTests {
 
         #expect(duplicates.contains(source))
     }
+
+    @Test("The import ledger recognizes a copy that changed, was renamed, or sits in another day's folder")
+    func ledgerRecognizesChangedRenamedAndOtherDayCopies() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("previous-import-ledger-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let card = root.appendingPathComponent("card", isDirectory: true)
+        let photos = root.appendingPathComponent("photos", isDirectory: true)
+        let olderImport = photos.appendingPathComponent("2020-01-01 – Earlier", isDirectory: true)
+        try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: olderImport, withIntermediateDirectories: true)
+
+        let captioned = card.appendingPathComponent("DSC_0001.JPG")
+        let renamed = card.appendingPathComponent("DSC_0002.JPG")
+        let removed = card.appendingPathComponent("DSC_0003.JPG")
+        let neverImported = card.appendingPathComponent("DSC_0004.JPG")
+        for (index, url) in [captioned, renamed, removed, neverImported].enumerated() {
+            try Data((0..<9_000).map { UInt8(($0 + index * 7) % 251) }).write(to: url)
+        }
+
+        // Copies as an import leaves them: one got an embedded caption (bytes changed), one was
+        // renamed for a conflict, and one has since been deleted from the library.
+        let captionedCopy = olderImport.appendingPathComponent("DSC_0001.JPG")
+        let renamedCopy = olderImport.appendingPathComponent("DSC_0002-1.JPG")
+        let removedCopy = olderImport.appendingPathComponent("DSC_0003.JPG")
+        try FileManager.default.copyItem(at: captioned, to: captionedCopy)
+        try FileManager.default.copyItem(at: renamed, to: renamedCopy)
+        try FileManager.default.copyItem(at: removed, to: removedCopy)
+        let entries = try [
+            (captioned, captionedCopy), (renamed, renamedCopy), (removed, removedCopy),
+        ].map { try ImportLedger.entry(source: $0.0, destination: $0.1, root: photos, captureDate: nil) }
+        try ImportLedger.append(entries, root: photos)
+        try Data("caption-embedded".utf8).write(to: captionedCopy)
+        try FileManager.default.removeItem(at: removedCopy)
+
+        // Today's flat import looks for today's date only; the ledger is date independent.
+        let duplicates = try PreviousImportDetector.duplicateSources(
+            among: [captioned, renamed, removed, neverImported].map {
+                .init(source: $0, dateFolderName: "2026-10-24")
+            },
+            destinationBaseURL: photos
+        )
+
+        #expect(duplicates == Set([captioned, renamed]))
+    }
+
+    @Test("A torn ledger line is skipped and later appends stay readable")
+    func ledgerSurvivesTornLine() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("previous-import-ledger-torn-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try Data(#"{"v":1,"name":"torn"#.utf8).write(to: ImportLedger.url(forRoot: root))
+        let entry = ImportLedger.Entry(
+            name: "IMG_1.CR3", size: 10, captureDate: nil, quickHash: "ab",
+            destination: "2026-10-24/IMG_1.CR3", importedAt: "2026-10-24T10:00:00Z"
+        )
+        try ImportLedger.append([entry], root: root)
+        try ImportLedger.append([entry], root: root)
+
+        #expect(ImportLedger.load(root: root) == [entry, entry])
+    }
+
+    @Test("Legacy scan recognizes renamed copies, and a matched RAW vouches for its JPEG partner")
+    func legacyScanRenamedCopiesAndRawPartner() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("previous-import-legacy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let card = root.appendingPathComponent("card", isDirectory: true)
+        let photos = root.appendingPathComponent("photos", isDirectory: true)
+        let shoot = photos.appendingPathComponent("2026-07-21 – Cup", isDirectory: true)
+        let rawFolder = shoot.appendingPathComponent("RAW", isDirectory: true)
+        let jpegFolder = shoot.appendingPathComponent("JPEG", isDirectory: true)
+        for folder in [card, rawFolder, jpegFolder] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+
+        let raw = card.appendingPathComponent("IMG_0001.CR3")
+        let jpeg = card.appendingPathComponent("IMG_0001.JPG")
+        let loneRaw = card.appendingPathComponent("IMG_0002.CR3")
+        let loneJPEG = card.appendingPathComponent("IMG_0002.JPG")
+        try Data(repeating: 0x11, count: 4_000).write(to: raw)
+        try Data(repeating: 0x22, count: 4_000).write(to: jpeg)
+        try Data(repeating: 0x33, count: 4_000).write(to: loneRaw)
+        try Data(repeating: 0x44, count: 4_000).write(to: loneJPEG)
+
+        // Imported before the ledger existed, renamed for a conflict; the JPEG copy has since
+        // had metadata embedded. IMG_0002's JPEG was never imported.
+        try FileManager.default.copyItem(at: raw, to: rawFolder.appendingPathComponent("IMG_0001-1.CR3"))
+        try Data("embedded".utf8).write(to: jpegFolder.appendingPathComponent("IMG_0001-1.JPG"))
+        try FileManager.default.copyItem(at: loneRaw, to: rawFolder.appendingPathComponent("IMG_0002.CR3"))
+
+        let duplicates = try PreviousImportDetector.duplicateSources(
+            among: [raw, jpeg, loneRaw, loneJPEG].map { .init(source: $0, dateFolderName: "2026-07-21") },
+            destinationBaseURL: photos
+        )
+
+        #expect(duplicates == Set([raw, jpeg, loneRaw]))
+    }
 }
