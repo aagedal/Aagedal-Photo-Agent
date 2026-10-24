@@ -47,7 +47,7 @@ actor MCPFaceScanOperationService {
         let binding = try intents.reviewBinding(id: intentID)
         let retained = try intents.retain(id: intentID)
         let operationID = UUID(), admissionID = UUID()
-        let ownerID = await coordinator.ownerID
+        let ownerID = coordinator.ownerID
         let receipts = self.receipts, intents = self.intents, schedule = self.schedule, registry = self.registry
         let checkDurable: @Sendable () throws -> Void = {
             guard let binding else { return }
