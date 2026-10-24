@@ -1951,6 +1951,9 @@ struct ContentView: View {
                     connections: ftp.connections,
                     writeEngine: browser.writeEngine,
                     resume: false,
+                    onRenameRefused: { id in
+                        Task { @MainActor in ftp.markServerRefusesRename(connectionID: id) }
+                    },
                     progress: progress
                 )
             },
@@ -1960,6 +1963,9 @@ struct ContentView: View {
                     connections: ftp.connections,
                     writeEngine: browser.writeEngine,
                     resume: true,
+                    onRenameRefused: { id in
+                        Task { @MainActor in ftp.markServerRefusesRename(connectionID: id) }
+                    },
                     progress: progress
                 )
             },

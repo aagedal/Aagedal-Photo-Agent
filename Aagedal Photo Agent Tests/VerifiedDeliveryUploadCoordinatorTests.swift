@@ -176,7 +176,7 @@ struct VerifiedDeliveryUploadCoordinatorTests {
         #expect(FileManager.default.fileExists(atPath: fixture.stagedURLs[0].path))
     }
 
-    @Test("failure retains inputs and retry starts at the failed file boundary")
+    @Test("a file-level failure continues the batch and resume re-sends only that file")
     func failureAndRetry() async throws {
         let fixture = try await UploadFixture(itemCount: 3)
         defer { fixture.remove() }
@@ -191,9 +191,10 @@ struct VerifiedDeliveryUploadCoordinatorTests {
         ))
 
         #expect(first.status == .failed)
-        #expect(first.items.map(\.stage) == [.sent, .failed, .queued])
+        #expect(first.items.map(\.stage) == [.sent, .failed, .sent])
         #expect(first.items[1].failure?.code == .uploadRejected)
-        #expect(first.checkpoint.items.map(\.itemIndex) == [0])
+        #expect(first.checkpoint.items.map(\.itemIndex) == [0, 2])
+        #expect(await firstTransport.uploadedItemIndices() == [0, 2])
         #expect(fixture.stagedURLs.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
 
         let retryTransport = UploadRecorder()
@@ -209,14 +210,115 @@ struct VerifiedDeliveryUploadCoordinatorTests {
 
         #expect(retry.status == .completed)
         #expect(retry.items.allSatisfy { $0.stage == .sent })
-        #expect(await retryTransport.uploadedItemIndices() == [1, 2])
+        #expect(await retryTransport.uploadedItemIndices() == [1])
+        #expect(retry.checkpoint.items.map(\.itemIndex) == [0, 1, 2])
+    }
+
+    @Test("server-level failures stop the batch with their fixed category", arguments: [
+        DeliveryFTPTransportError.loginDenied, .serverUnreachable, .ftpsUnsupported,
+        .certificateUntrusted, .credentialUnavailable,
+    ])
+    func serverLevelFailureStopsBatch(error: DeliveryFTPTransportError) async throws {
+        let fixture = try await UploadFixture(itemCount: 3)
+        defer { fixture.remove() }
+        let transport = UploadRecorder(failingCalls: [2], failure: error)
+        let result = try await VerifiedDeliveryUploadCoordinator(
+            transport: transport.transport()
+        ).upload(DeliveryUploadRequest(plan: fixture.plan, stagedBatch: fixture.verifiedBatch()))
+
+        #expect(result.status == .failed)
+        #expect(result.items.map(\.stage) == [.sent, .failed, .queued])
+        let code = try #require(result.items[1].failure?.code)
+        #expect(code.isServerLevel)
+        #expect(code == DeliveryUploadFailureCode(transportError: error))
+        #expect(await transport.uploadedItemIndices() == [0])
+    }
+
+    @Test("file-level categories are reported per item without stopping", arguments: [
+        DeliveryFTPTransportError.fileRejected, .timedOut, .uploadFailed,
+    ])
+    func fileLevelFailureContinues(error: DeliveryFTPTransportError) async throws {
+        let fixture = try await UploadFixture(itemCount: 3)
+        defer { fixture.remove() }
+        let transport = UploadRecorder(failingCalls: [1], failure: error)
+        let result = try await VerifiedDeliveryUploadCoordinator(
+            transport: transport.transport()
+        ).upload(DeliveryUploadRequest(plan: fixture.plan, stagedBatch: fixture.verifiedBatch()))
+
+        #expect(result.status == .failed)
+        #expect(result.items.map(\.stage) == [.failed, .sent, .sent])
+        #expect(result.items[0].failure?.code.isServerLevel == false)
+        #expect(result.checkpoint.items.map(\.itemIndex) == [1, 2])
+    }
+
+    @Test("a missing remote file after an acknowledged upload is sent, not visible")
+    func remoteMissingIsSentNotVisible() async throws {
+        let fixture = try await UploadFixture(itemCount: 2)
+        defer { fixture.remove() }
+        let transport = UploadRecorder(remoteObservation: .missing)
+        let result = try await VerifiedDeliveryUploadCoordinator(
+            transport: transport.transport(),
+            now: { Date(timeIntervalSince1970: 300) }
+        ).upload(DeliveryUploadRequest(
+            plan: fixture.plan,
+            stagedBatch: fixture.verifiedBatch(),
+            remoteStatPolicy: .attemptIfAvailable
+        ))
+
+        #expect(result.status == .completed)
+        #expect(result.items.map(\.stage) == [.sent, .sent])
+        #expect(result.items.allSatisfy { $0.failure == nil })
+        guard case .missing = result.items[0].remoteConfirmation else {
+            Issue.record("Expected sent-but-not-visible evidence")
+            return
+        }
+        #expect(result.checkpoint.items.map(\.itemIndex) == [0, 1])
+
+        // Resume treats them as delivered: nothing is uploaded twice.
+        let resumeTransport = UploadRecorder()
+        let resumed = try await VerifiedDeliveryUploadCoordinator(
+            transport: resumeTransport.transport(),
+            now: { Date(timeIntervalSince1970: 301) }
+        ).upload(DeliveryUploadRequest(
+            plan: fixture.plan,
+            stagedBatch: fixture.verifiedBatch(),
+            remoteStatPolicy: .attemptIfAvailable,
+            resumeCheckpoint: result.checkpoint
+        ))
+        #expect(resumed.status == .completed)
+        #expect(await resumeTransport.uploadedItemIndices().isEmpty)
+    }
+
+    @Test("cancellation terminates the active transfer and leaves it for resume")
+    func cancellationInterruptsActiveTransfer() async throws {
+        let fixture = try await UploadFixture(itemCount: 2)
+        defer { fixture.remove() }
+        let gate = CancellableUploadGate()
+        let coordinator = VerifiedDeliveryUploadCoordinator(transport: gate.transport())
+        let operation = Task {
+            try await coordinator.upload(DeliveryUploadRequest(
+                plan: fixture.plan,
+                stagedBatch: fixture.verifiedBatch()
+            ))
+        }
+        await gate.waitUntilStarted()
+        await coordinator.requestCancellation()
+        let result = try await operation.value
+
+        #expect(result.status == .cancelled)
+        #expect(result.items.map(\.stage) == [.cancelled, .cancelled])
+        #expect(result.checkpoint.items.isEmpty)
+        #expect(await gate.observedCancellation)
     }
 
     @Test("network unavailable before the first file retains every item for retry")
     func networkDropBeforeFirstFile() async throws {
         let fixture = try await UploadFixture(itemCount: 3)
         defer { fixture.remove() }
-        let unavailable = UploadRecorder(failingCalls: [1])
+        let unavailable = UploadRecorder(
+            failingCalls: [1],
+            failure: DeliveryFTPTransportError.serverUnreachable
+        )
         let first = try await VerifiedDeliveryUploadCoordinator(
             transport: unavailable.transport()
         ).upload(DeliveryUploadRequest(
@@ -226,7 +328,7 @@ struct VerifiedDeliveryUploadCoordinatorTests {
 
         #expect(first.status == .failed)
         #expect(first.items.map(\.stage) == [.failed, .queued, .queued])
-        #expect(first.items[0].failure?.code == .uploadRejected)
+        #expect(first.items[0].failure?.code == .serverUnreachable)
         #expect(first.checkpoint.items.isEmpty)
         let failureJSON = String(
             decoding: try JSONEncoder().encode(first),
@@ -268,9 +370,10 @@ struct VerifiedDeliveryUploadCoordinatorTests {
         let first = try await operation.value
 
         // A transport failure wins for the active file; cancellation never relabels an ambiguous
-        // partial remote object as safely cancelled. The prior acknowledged prefix remains exact.
+        // partial remote object as safely cancelled. The prior acknowledged prefix remains exact,
+        // and the cancellation stops the files after it.
         #expect(first.status == .failed)
-        #expect(first.items.map(\.stage) == [.sent, .failed, .queued])
+        #expect(first.items.map(\.stage) == [.sent, .failed, .cancelled])
         #expect(first.items[1].failure?.code == .uploadRejected)
         #expect(first.checkpoint.items.map(\.itemIndex) == [0])
         #expect(await gate.startedItemIndices() == [0, 1])
@@ -328,30 +431,48 @@ struct VerifiedDeliveryUploadCoordinatorTests {
         #expect(await relaunchedTransport.uploadedItemIndices() == [1])
     }
 
-    @Test("resume checkpoint must be a timestamp-coherent sequential prefix")
+    @Test("resume checkpoint must be timestamp-coherent and in plan order without duplicates")
     func checkpointIntegrity() async throws {
         let fixture = try await UploadFixture(itemCount: 2)
         defer { fixture.remove() }
         let evidence = try await DeliveryUploadFileInspector.live.inspect(fixture.stagedURLs[1])
+        let item1 = DeliveryUploadCheckpointItem(
+            itemIndex: 1,
+            stageInputFingerprint: fixture.plan.items[1].stageInputFingerprint,
+            localEvidence: evidence,
+            uploadAcknowledgedAt: Date(timeIntervalSince1970: 10),
+            remoteConfirmation: .notRequested
+        )
+        // A non-prefix checkpoint (item 0 failed, item 1 delivered) resumes only item 0.
         let nonPrefix = DeliveryUploadCheckpoint(
             planFingerprint: fixture.plan.fingerprint,
             stagingBatchIdentifier: fixture.stagingResult.batchID,
-            items: [DeliveryUploadCheckpointItem(
-                itemIndex: 1,
-                stageInputFingerprint: fixture.plan.items[1].stageInputFingerprint,
-                localEvidence: evidence,
-                uploadAcknowledgedAt: Date(timeIntervalSince1970: 10),
-                remoteConfirmation: .notRequested
-            )]
+            items: [item1]
         )
+        let resumeTransport = UploadRecorder()
+        let resumed = try await VerifiedDeliveryUploadCoordinator(
+            transport: resumeTransport.transport()
+        ).upload(DeliveryUploadRequest(
+            plan: fixture.plan,
+            stagedBatch: fixture.verifiedBatch(),
+            resumeCheckpoint: nonPrefix
+        ))
+        #expect(resumed.status == .completed)
+        #expect(await resumeTransport.uploadedItemIndices() == [0])
+
         let coordinator = VerifiedDeliveryUploadCoordinator(
             transport: UploadRecorder().transport()
+        )
+        let duplicated = DeliveryUploadCheckpoint(
+            planFingerprint: fixture.plan.fingerprint,
+            stagingBatchIdentifier: fixture.stagingResult.batchID,
+            items: [item1, item1]
         )
         await #expect(throws: DeliveryUploadPreflightError.invalidResumeCheckpoint) {
             _ = try await coordinator.upload(DeliveryUploadRequest(
                 plan: fixture.plan,
                 stagedBatch: fixture.verifiedBatch(),
-                resumeCheckpoint: nonPrefix
+                resumeCheckpoint: duplicated
             ))
         }
 
@@ -598,13 +719,16 @@ private actor UploadRecorder {
     private var callCount = 0
     private var uploaded: [Int] = []
     private let failingCalls: Set<Int>
+    private let failure: any Error
     private let remoteObservation: DeliveryRemoteStatObservation
 
     init(
         failingCalls: Set<Int> = [],
+        failure: any Error = FakeTransportError.rejected,
         remoteObservation: DeliveryRemoteStatObservation = .unavailable
     ) {
         self.failingCalls = failingCalls
+        self.failure = failure
         self.remoteObservation = remoteObservation
     }
 
@@ -620,7 +744,7 @@ private actor UploadRecorder {
     private func upload(_ transfer: DeliveryUploadTransfer) throws {
         callCount += 1
         let call = callCount
-        guard !failingCalls.contains(call) else { throw FakeTransportError.rejected }
+        guard !failingCalls.contains(call) else { throw failure }
         uploaded.append(Self.itemIndex(from: transfer.outputFilename))
     }
 
@@ -736,6 +860,34 @@ private struct SensitiveNetworkDropError: LocalizedError {
 }
 
 private enum FakeTransportError: Error { case rejected }
+
+/// A transfer that only ends by being cancelled, like curl blocked on a dead link.
+private actor CancellableUploadGate {
+    private var started = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var observedCancellation = false
+
+    nonisolated func transport() -> DeliveryUploadTransport {
+        DeliveryUploadTransport(upload: { [self] _ in try await upload() })
+    }
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    private func upload() async throws {
+        started = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+        do {
+            try await Task.sleep(for: .seconds(30))
+        } catch {
+            observedCancellation = true
+            throw CancellationError()
+        }
+    }
+}
 
 private struct UploadFixture {
     let rootURL: URL

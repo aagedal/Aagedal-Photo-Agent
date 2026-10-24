@@ -628,9 +628,9 @@ private func makeActivityReceipt(
     switch remoteStatus {
     case .notRequested:
         remoteAcknowledgement = DeliveryRemoteStatAcknowledgement(status: .notRequested)
-    case .unavailable:
+    case .unavailable, .notVisibleAfterUpload:
         remoteAcknowledgement = DeliveryRemoteStatAcknowledgement(
-            status: .unavailable,
+            status: remoteStatus,
             checkedAt: completedAt.addingTimeInterval(-4)
         )
     case .matchesDeliveredByteSize:

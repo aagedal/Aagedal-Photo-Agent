@@ -34,7 +34,7 @@ nonisolated struct DeliveryTransportSecurity: Codable, Equatable, Hashable, Send
     }
 }
 
-struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
+nonisolated struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
     var id: UUID
     var name: String
     var host: String
@@ -49,6 +49,11 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
     /// The exact insecure transport state explicitly accepted before its first upload. A change
     /// to protocol or verification invalidates this acknowledgement.
     var firstUploadAcknowledgedSecurity: DeliveryTransportSecurity?
+    /// The server accepted a temporary upload but refused to rename it (RNFR/RNTO), as
+    /// write-only drop boxes do. Learned on the first such upload and persisted, so later
+    /// uploads go straight to the final name instead of leaving a `.part` file each time.
+    /// Cleared when the host, port or user name changes.
+    var serverRefusesRename: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -61,6 +66,7 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         case useTLS
         case allowInsecureHostVerification
         case firstUploadAcknowledgedSecurity
+        case serverRefusesRename
     }
 
     nonisolated init(
@@ -73,7 +79,8 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         useSFTP: Bool = false,
         useTLS: Bool = false,
         allowInsecureHostVerification: Bool = false,
-        firstUploadAcknowledgedSecurity: DeliveryTransportSecurity? = nil
+        firstUploadAcknowledgedSecurity: DeliveryTransportSecurity? = nil,
+        serverRefusesRename: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -85,6 +92,7 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         self.useTLS = useTLS
         self.allowInsecureHostVerification = allowInsecureHostVerification
         self.firstUploadAcknowledgedSecurity = firstUploadAcknowledgedSecurity
+        self.serverRefusesRename = serverRefusesRename
     }
 
     nonisolated var keychainKey: String { "ftpConnection-\(id.uuidString)" }
@@ -105,16 +113,88 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
     /// Why Save must stay disabled for the edited profile, or `nil` when it can be saved.
     /// Credentials go into a netrc file at upload time, so an empty user name or password
     /// would otherwise only fail later, file by file.
+    /// Validates the profile as it will be saved, i.e. after `normalizeHostInput()`.
     nonisolated func saveValidationMessage(password: String) -> String? {
+        var normalized = self
+        if let message = normalized.normalizeHostInput() { return message }
+        return normalized.validationMessageForNormalizedFields(password: password)
+    }
+
+    private nonisolated func validationMessageForNormalizedFields(password: String) -> String? {
         if name.trimmingCharacters(in: .whitespaces).isEmpty { return "Enter a connection name." }
         if host.isEmpty { return "Enter a host." }
         if host.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) })
             || host.contains("#") || host.contains("\"") {
             return "The host can't contain spaces, '#' or quotes."
         }
+        if host.contains("/") || host.contains("@") {
+            return "Enter only the server name in Host — the user name and folder have their own fields."
+        }
         if !(1 ... 65_535).contains(port) { return "Enter a port between 1 and 65535." }
         if username.isEmpty { return "Enter a user name." }
         if password.isEmpty { return "Enter a password." }
+        return nil
+    }
+
+    /// Cleans up what people paste into the Host field: surrounding whitespace, a scheme
+    /// (`ftp://`, `ftps://`, `sftp://`), a `:port` suffix (moved into `port`) and a `/path`
+    /// suffix (moved into `remotePath` when that is still the default `/`). Returns a message
+    /// when the input can't be normalized unambiguously (a path while a different remote
+    /// folder is set, an embedded user name, or an invalid port), leaving the fields unchanged.
+    @discardableResult
+    nonisolated mutating func normalizeHostInput() -> String? {
+        var value = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let schemeRange = value.range(of: "://") {
+            let scheme = value[value.startIndex ..< schemeRange.lowerBound].lowercased()
+            guard ["ftp", "ftps", "sftp"].contains(scheme) else {
+                return "Enter only the server name in Host, without “\(scheme)://”."
+            }
+            value = String(value[schemeRange.upperBound...])
+        }
+        if value.contains("@") {
+            return "Enter only the server name in Host — put the user name in the Username field."
+        }
+
+        var path: String?
+        if let slash = value.firstIndex(of: "/") {
+            let suffix = String(value[slash...])
+            value = String(value[..<slash])
+            let trimmedPath = suffix.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if !trimmedPath.isEmpty { path = "/" + trimmedPath }
+        }
+
+        var parsedPort: Int?
+        if value.hasPrefix("["), let close = value.firstIndex(of: "]") {
+            // Bracketed IPv6 literal, optionally followed by :port.
+            let remainder = value[value.index(after: close)...]
+            if remainder.hasPrefix(":") {
+                guard let number = Int(remainder.dropFirst()), (1 ... 65_535).contains(number) else {
+                    return "Enter a port between 1 and 65535."
+                }
+                parsedPort = number
+                value = String(value[...close])
+            }
+        } else if value.filter({ $0 == ":" }).count == 1, let colon = value.firstIndex(of: ":") {
+            // host:port (a bare IPv6 literal has several colons and is left alone).
+            guard let number = Int(value[value.index(after: colon)...]),
+                  (1 ... 65_535).contains(number) else {
+                return "Enter a port between 1 and 65535."
+            }
+            parsedPort = number
+            value = String(value[..<colon])
+        }
+
+        if let path {
+            let currentPath = remotePath.trimmingCharacters(in: .whitespaces)
+            let slashes = CharacterSet(charactersIn: "/")
+            if currentPath.isEmpty || currentPath == "/" {
+                remotePath = path
+            } else if currentPath.trimmingCharacters(in: slashes) != path.trimmingCharacters(in: slashes) {
+                return "Host contains a folder (“\(path)”) but Remote Path is “\(currentPath)”. Remove the folder from Host."
+            }
+        }
+        host = value
+        if let parsedPort { port = parsedPort }
         return nil
     }
 
@@ -165,6 +245,11 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
             DeliveryTransportSecurity.self,
             forKey: .firstUploadAcknowledgedSecurity
         )
+        serverRefusesRename = try container.decodeIfPresent(Bool.self, forKey: .serverRefusesRename) ?? false
         normalizeTransportAcknowledgement()
+        // Migrate profiles saved before host validation: "ftp://host:2121/path" produced
+        // unusable URLs. Applied only when it normalizes cleanly.
+        var migrated = self
+        if migrated.normalizeHostInput() == nil { self = migrated }
     }
 }

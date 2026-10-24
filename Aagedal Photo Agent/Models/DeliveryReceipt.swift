@@ -382,6 +382,9 @@ nonisolated struct DeliveryRemoteStatAcknowledgement: Codable, Equatable, Sendab
         case unavailable
         case matchesDeliveredByteSize
         case doesNotMatchDeliveredByteSize
+        /// The server acknowledged the upload, but the file wasn't visible afterwards — normal
+        /// for write-only drop boxes and hot folders that move files away immediately.
+        case notVisibleAfterUpload
     }
 
     let status: Status
@@ -404,7 +407,7 @@ nonisolated struct DeliveryRemoteStatAcknowledgement: Codable, Equatable, Sendab
             guard checkedAt == nil, observedByteSize == nil else {
                 throw DeliveryReceiptValidationError.incoherentRemoteStatAcknowledgement
             }
-        case .unavailable:
+        case .unavailable, .notVisibleAfterUpload:
             guard let checkedAt,
                   (startedAt...completedAt).contains(checkedAt),
                   observedByteSize == nil else {

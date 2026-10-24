@@ -7,11 +7,14 @@ nonisolated private let ftpLog = Logger(subsystem: "com.aagedal.photo-agent", ca
 /// network services, rendering hardware, and signing tools.
 nonisolated struct FTPUploadExecutionAccess: Sendable {
     var password: @MainActor @Sendable (String) -> String? = { KeychainService.load(forKey: $0) }
-    var upload: @Sendable (URL, FTPConnection, String, @escaping @Sendable (FTPUploadProgress) -> Void) async throws -> Void = { url, connection, password, progress in
+    var upload: @Sendable (URL, FTPConnection, String, @escaping @Sendable (FTPUploadProgress) -> Void) async throws -> FTPUploadOutcome = { url, connection, password, progress in
         try await FTPService().uploadFile(localURL: url, connection: connection, password: password, progressHandler: progress)
     }
+    /// Renders `<source basename>.jpg` into the output folder, replacing the app's own earlier
+    /// render of the same source, so re-sending a photo uploads it under the same name instead
+    /// of a new numbered copy (which newsroom systems would ingest as a second photo).
     var render: @MainActor @Sendable (URL, CameraRawSettings?, URL, URL?, any MetadataWriteEngine, MetadataFailureTracker) async throws -> URL = { source, raw, output, folder, engine, tracker in
-        try await EditExportPipeline.renderForDelivery(sourceURL: source, cameraRaw: raw, kind: .jpeg, outputFolder: output, folderURL: folder, writeEngine: engine, failureTracker: tracker)
+        try await EditExportPipeline.renderForDelivery(sourceURL: source, cameraRaw: raw, kind: .jpeg, outputFolder: output, folderURL: folder, writeEngine: engine, failureTracker: tracker, collisionPolicy: .replaceExisting)
     }
     var sign: @Sendable (C2PAUploadSigningConfiguration, URL) async throws -> Void = { configuration, url in
         try await configuration.sign(url)
@@ -217,36 +220,21 @@ actor FTPUploadFileSystemBoundary {
         )
     }
 
-    func sequenceRenderedFile(
-        _ sourceURL: URL,
-        avoiding reservedNames: Set<String>
-    ) throws -> FTPPreparedUploadFile {
-        let directory = sourceURL.deletingLastPathComponent()
-        let base = sourceURL.deletingPathExtension().lastPathComponent
-        let ext = sourceURL.pathExtension
-        var counter = 1
-
-        while true {
-            try Task.checkCancellation()
-            let name = ext.isEmpty ? "\(base)_\(counter)" : "\(base)_\(counter).\(ext)"
-            let destinationURL = directory.appendingPathComponent(name)
-            guard !reservedNames.contains(name),
-                  !FileManager.default.fileExists(atPath: destinationURL.path) else {
-                counter += 1
-                continue
-            }
-            do {
-                try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
-                return FTPPreparedUploadFile(
-                    url: destinationURL,
-                    wasStaged: true,
-                    usedCopyFallback: false,
-                    cancellationRequestedAfterCommit: Task.isCancelled
-                )
-            } catch let error as CocoaError where error.code == .fileWriteFileExists {
-                counter += 1
-            }
+    /// Moves a render into its deterministic place in the `Uploaded` folder, replacing the
+    /// app's own earlier render under that name. Used only when two sources in one batch would
+    /// render to the same name (e.g. a RAW+JPEG pair), so the second one gets `<base>-2.jpg`.
+    func moveRenderedFile(_ sourceURL: URL, to destinationURL: URL) throws -> FTPPreparedUploadFile {
+        try Task.checkCancellation()
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
         }
+        try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+        return FTPPreparedUploadFile(
+            url: destinationURL,
+            wasStaged: true,
+            usedCopyFallback: false,
+            cancellationRequestedAfterCommit: Task.isCancelled
+        )
     }
 
     func removeItem(at url: URL) throws {
@@ -272,6 +260,12 @@ final class FTPViewModel {
     var isUploading = false
     var isRendering = false
     var uploadProgress: [String: FTPUploadProgress] = [:]
+    /// Why each file of the current/last run didn't arrive, keyed by the name shown in the
+    /// progress list (the upload name, or the source name when it failed before upload).
+    var uploadFailures: [String: String] = [:]
+    /// Source files of the last finished run that didn't arrive (failed, not prepared, or not
+    /// reached after a batch stop). "Retry Failed" re-sends exactly these.
+    var failedSourceURLs: [URL] = []
     var overallProgress: Double = 0
     var errorMessages: [String] = []
     var completedCount = 0
@@ -326,6 +320,23 @@ final class FTPViewModel {
     @ObservationIgnored private var uploadGeneration = UUID()
     /// What the in-flight run will report to Activity, so a cancel can still record it.
     @ObservationIgnored private var activeRun: ActiveUploadRun?
+    /// The transfer running alongside the next file's render (render/upload pipelining).
+    /// Cancelled with the run so Cancel stops curl immediately.
+    @ObservationIgnored private var inFlightTransfer: Task<FileTransferResult, Never>?
+    /// Restarts the last run's request for a subset of its sources with the same settings.
+    @ObservationIgnored private var retryLauncher: ((_ sources: [URL]) -> Bool)?
+    /// How `overallProgress` is computed: uploads only, or render (first half) + upload.
+    @ObservationIgnored private var progressIncludesRendering = false
+
+    private enum FileTransferResult {
+        case succeeded(FTPUploadOutcome)
+        case failed(any Error)
+        case cancelled
+    }
+
+    var canRetryFailed: Bool {
+        uploadCompleted && !failedSourceURLs.isEmpty && retryLauncher != nil
+    }
     /// Settings and the main window each own an `FTPViewModel`; this keeps their cached
     /// `connections` in step when the other one saves.
     @ObservationIgnored nonisolated(unsafe) private var connectionsObserver: NSObjectProtocol?
@@ -365,17 +376,18 @@ final class FTPViewModel {
         uploadGeneration == generation && !Task.isCancelled
     }
 
-    private func applyUploadProgress(_ progress: FTPUploadProgress, generation: UUID,
-                                     offset: Double = 0, range: Double = 1) {
+    private func applyUploadProgress(_ progress: FTPUploadProgress, generation: UUID) {
         guard uploadGeneration == generation, isUploading, !uploadCompleted,
               uploadProgress[progress.fileName]?.isComplete != true,
+              uploadFailures[progress.fileName] == nil,
               progress.fractionCompleted >= (uploadProgress[progress.fileName]?.fractionCompleted ?? 0) else { return }
         uploadProgress[progress.fileName] = progress
-        updateSmoothedProgress(uploadWeightOffset: offset, uploadWeightRange: range)
+        updateSmoothedProgress()
     }
 
     deinit {
         uploadTask?.cancel()
+        inFlightTransfer?.cancel()
         completionTask?.cancel()
         connectionTestTask?.cancel()
         if let connectionsObserver {
@@ -455,7 +467,9 @@ final class FTPViewModel {
     /// Probes the connection currently being edited (connect + auth + list the remote
     /// directory) without uploading anything, updating `connectionTest` for the form UI.
     func testConnection() {
-        let connection = editingConnection
+        var connection = editingConnection
+        // Test what Save would store ("ftp://host:2121/in" → host, port, folder).
+        connection.normalizeHostInput()
         let password = editingPassword
         connectionTestTask?.cancel()
         connectionTest = .testing
@@ -483,6 +497,7 @@ final class FTPViewModel {
             serverFormError = message
             return false
         }
+        editingConnection.normalizeHostInput()
         if editingConnection.transportSecurity.isInsecure,
            !acknowledgingInsecureTransport {
             return false
@@ -507,6 +522,13 @@ final class FTPViewModel {
                    stored[index].transportSecurity == edited.transportSecurity {
                     merged.firstUploadAcknowledgedSecurity = stored[index].firstUploadAcknowledgedSecurity
                 }
+                // Rename support is a property of the server account: keep what an upload
+                // learned meanwhile, forget it when the form points at another server/user.
+                let sameAccount = stored[index].host.caseInsensitiveCompare(edited.host) == .orderedSame
+                    && stored[index].port == edited.port
+                    && stored[index].username == edited.username
+                merged.serverRefusesRename = sameAccount
+                    && (stored[index].serverRefusesRename || edited.serverRefusesRename)
                 stored[index] = merged
             } else {
                 stored.append(edited)
@@ -534,6 +556,22 @@ final class FTPViewModel {
         return acknowledged
     }
 
+    /// Persists that this server refuses RNFR/RNTO, so later uploads skip the temporary name.
+    func markServerRefusesRename(connectionID: UUID) {
+        guard connections.first(where: { $0.id == connectionID })?.serverRefusesRename != true else { return }
+        mutateStoredConnections { stored in
+            guard let index = stored.firstIndex(where: { $0.id == connectionID }) else { return }
+            stored[index].serverRefusesRename = true
+        }
+    }
+
+    /// Re-sends only the files of the last run that didn't arrive, with the same settings.
+    @discardableResult
+    func retryFailedUploads() -> Bool {
+        guard canRetryFailed, let retryLauncher else { return false }
+        return retryLauncher(failedSourceURLs)
+    }
+
     func cancelUpload() {
         // Record what the cancelled run managed before tearing it down, so Activity shows it.
         if let run = activeRun, isUploading || isRendering {
@@ -549,6 +587,8 @@ final class FTPViewModel {
         uploadGeneration = UUID()
         uploadTask?.cancel()
         uploadTask = nil
+        inFlightTransfer?.cancel()
+        inFlightTransfer = nil
         completionTask?.cancel()
         completionTask = nil
         isUploading = false
@@ -635,21 +675,18 @@ final class FTPViewModel {
             selectedCount: urls.count,
             plannedFileNames: urls.map(\.lastPathComponent)
         )
+        let connectionID = connection.id
+        retryLauncher = { [weak self] sources in
+            guard let self else { return false }
+            return self.uploadFiles(sources, to: self.latestConnection(connectionID, fallback: connection))
+        }
 
+        resetRunState(totalCount: urls.count, includesRendering: false)
         isUploading = true
         isRendering = false
-        uploadCompleted = false
-        uploadStopped = false
-        errorMessages = []
-        completedCount = 0
-        renderCompletedCount = 0
-        renderTotalCount = 0
-        totalCount = urls.count
-        uploadProgress = [:]
-        overallProgress = 0
-        renderedUploadedFolders = []
 
         uploadTask?.cancel()
+        inFlightTransfer?.cancel()
         let generation = UUID()
         uploadGeneration = generation
         uploadTask = Task { [weak self] in
@@ -672,38 +709,44 @@ final class FTPViewModel {
             } catch {
                 guard self.ownsUpload(generation) else { return }
                 self.errorMessages = ["Failed to inspect upload files: \(error.localizedDescription)"]
-                self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent))
+                self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent),
+                                 sources: urls)
                 return
             }
-            for (index, url) in urls.enumerated() {
+            var activeConnection = connection
+            var delivered: Set<URL> = []
+            uploadLoop: for (index, url) in urls.enumerated() {
                 guard self.ownsUpload(generation) else { return }
-                do {
-                    try await execution.upload(url, connection, password) { progress in
-                        Task { @MainActor in
-                            self.applyUploadProgress(progress, generation: generation)
-                        }
+                let result = await self.transfer(url, connection: activeConnection,
+                                                 password: password, generation: generation)
+                guard self.ownsUpload(generation) else { return }
+                switch result {
+                case .cancelled:
+                    return
+                case .succeeded(let outcome):
+                    if outcome.renameRefused {
+                        activeConnection.serverRefusesRename = true
+                        self.markServerRefusesRename(connectionID: connection.id)
                     }
                     // Count completion here, on the awaited result, rather than from the
                     // background progress callback: the callback is delivered via an
                     // unstructured Task that may not have drained by the time the loop
                     // finishes and recordActivity() reads completedCount.
-                    guard self.ownsUpload(generation) else { return }
                     self.markFileComplete(url.lastPathComponent)
-                } catch is CancellationError {
-                    return
-                } catch {
-                    guard self.ownsUpload(generation) else { return }
-                    self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
+                    delivered.insert(url)
+                case .failed(let error):
+                    self.recordUploadFailure(url.lastPathComponent, error: error)
                     // The server is unreachable / rejecting auth — every remaining file
                     // would fail identically, so stop rather than retrying each in turn.
-                    if (error as? FTPService.FTPError)?.isServerLevel == true {
-                        self.appendBatchAbortNotice(remaining: urls.count - index - 1)
-                        break
+                    if (error as? FTPService.FTPError)?.isServerLevel ?? false {
+                        self.markNotSent(urls[(index + 1)...].map(\.lastPathComponent))
+                        break uploadLoop
                     }
                 }
             }
             guard self.ownsUpload(generation) else { return }
             self.recordUploadCompletion(id: historyID)
+            self.failedSourceURLs = urls.filter { !delivered.contains($0) }
             self.showCompletion(
                 connection: connection,
                 selectedCount: urls.count,
@@ -714,13 +757,20 @@ final class FTPViewModel {
     }
 
     /// Uploads `urls`, rendering to JPEG only the files in `renderURLs` and sending every other
-    /// file as its original. Rendered output names are de-duplicated in their persistent output
-    /// folders; non-rendered originals upload in place unless a name collision forces staging a
-    /// safe hard-link/copy (the user's real files are never moved or renamed). Falls back to the
-    /// plain `uploadFiles(_:to:)` fast path when nothing in the batch needs rendering.
+    /// file as its original. Non-rendered originals upload in place unless a name collision
+    /// forces staging a safe hard-link/copy (the user's real files are never moved or renamed).
+    /// Falls back to the plain `uploadFiles(_:to:)` fast path when nothing needs rendering.
     /// `sidecarOverlayURLs` are as-is files whose `.xmp` sidecar carries descriptive metadata
     /// the embedded copy lacks: they upload as a private staged copy with the export overlay
     /// applied, so the server receives what the metadata panel shows (originals are untouched).
+    ///
+    /// Renders are named deterministically — `Uploaded/<source basename>.jpg`, replacing the
+    /// app's own earlier render — so re-sending a photo replaces it on the server instead of
+    /// adding a numbered duplicate. Only two sources of one batch that would share a name get a
+    /// `-2`, `-3`… suffix.
+    ///
+    /// Rendering and uploading are pipelined: file N uploads while file N+1 renders and signs
+    /// (a buffer of one prepared file). C2PA signing happens per file, before its upload.
     @discardableResult
     func uploadFiles(
         _ urls: [URL],
@@ -749,23 +799,31 @@ final class FTPViewModel {
         activeRun = ActiveUploadRun(
             connection: connection,
             selectedCount: urls.count,
-            plannedFileNames: urls.map(\.lastPathComponent)
+            plannedFileNames: []
         )
+        let connectionID = connection.id
+        retryLauncher = { [weak self] sources in
+            guard let self else { return false }
+            let subset = Set(sources)
+            return self.uploadFiles(
+                sources,
+                renderURLs: renderURLs.intersection(subset),
+                sidecarOverlayURLs: sidecarOverlayURLs.intersection(subset),
+                to: self.latestConnection(connectionID, fallback: connection),
+                readService: readService,
+                writeEngine: writeEngine,
+                inMemoryCameraRaw: inMemoryCameraRaw,
+                signingConfiguration: signingConfiguration
+            )
+        }
 
+        resetRunState(totalCount: urls.count, includesRendering: true)
         isRendering = true
         isUploading = false
-        uploadCompleted = false
-        uploadStopped = false
-        errorMessages = []
-        renderCompletedCount = 0
         renderTotalCount = renderTargets.count
-        completedCount = 0
-        totalCount = urls.count
-        uploadProgress = [:]
-        overallProgress = 0
-        renderedUploadedFolders = []
 
         uploadTask?.cancel()
+        inFlightTransfer?.cancel()
         let generation = UUID()
         uploadGeneration = generation
         uploadTask = Task { [weak self] in
@@ -788,7 +846,8 @@ final class FTPViewModel {
             } catch {
                 guard self.ownsUpload(generation) else { return }
                 self.errorMessages = ["Failed to inspect upload files: \(error.localizedDescription)"]
-                self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent))
+                self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent),
+                                 sources: urls)
                 return
             }
 
@@ -800,7 +859,8 @@ final class FTPViewModel {
             } catch {
                 guard self.ownsUpload(generation) else { return }
                 self.errorMessages = ["Failed to create temp directory: \(error.localizedDescription)"]
-                self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent))
+                self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent),
+                                 sources: urls)
                 return
             }
 
@@ -836,116 +896,146 @@ final class FTPViewModel {
 
             guard self.ownsUpload(generation) else { return }
 
-            // Render phase (0–50% of overall progress). Files not in renderURLs are interleaved
-            // in source order as their originals, so the upload list preserves the user's order.
             let failureTracker = MetadataFailureTracker()
-            var uploadURLs: [URL] = []
-            var renderedUploadURLs: [URL] = []
-            // Tracks upload filenames already taken in this batch so two sources that
-            // share a basename across folders (e.g. /A/img.jpg and /B/img.jpg, both →
-            // img_jpg.jpg) don't end up overwriting each other on the remote server.
+            // Upload filenames already taken in this batch, so two sources that share a
+            // basename across folders (e.g. /A/img.jpg and /B/img.jpg) don't overwrite each
+            // other on the remote server.
             var usedNames: Set<String> = []
-            // Selected files that never reached the upload list, so the activity record
-            // reports them as failed instead of silently omitting them.
-            var unpreparedFileNames: [String] = []
+            // `Uploaded/<base>` render targets already claimed in this batch (lowercased: the
+            // volume is usually case-insensitive), so a RAW+JPEG pair can't render onto — or
+            // replace mid-upload — the same local file.
+            var claimedRenderTargets: Set<String> = []
+            var activeConnection = connection
+            var delivered: Set<URL> = []
+            var serverStopped = false
+            var signingStopped = false
+            // The prepared file currently uploading, if any.
+            var pending: (url: URL, source: URL, task: Task<FileTransferResult, Never>)?
+
+            /// Waits for the in-flight upload and records its result. Returns false when the
+            /// run no longer owns the UI (cancelled/restarted).
+            @MainActor func settlePending() async -> Bool {
+                guard let current = pending else { return true }
+                let result = await current.task.value
+                pending = nil
+                guard self.ownsUpload(generation) else { return false }
+                self.inFlightTransfer = nil
+                switch result {
+                case .cancelled:
+                    return false
+                case .succeeded(let outcome):
+                    if outcome.renameRefused {
+                        activeConnection.serverRefusesRename = true
+                        self.markServerRefusesRename(connectionID: connection.id)
+                    }
+                    self.markFileComplete(current.url.lastPathComponent)
+                    delivered.insert(current.source)
+                case .failed(let error):
+                    self.recordUploadFailure(current.url.lastPathComponent, error: error)
+                    if (error as? FTPService.FTPError)?.isServerLevel ?? false {
+                        serverStopped = true
+                    }
+                }
+                return true
+            }
+
+            @MainActor func notPrepared(_ url: URL, reason: String) {
+                self.activeRun?.unpreparedFileNames.append(url.lastPathComponent)
+                self.uploadFailures[url.lastPathComponent] = reason
+                self.totalCount = max(self.totalCount - 1, 0)
+            }
+
             for (index, url) in urls.enumerated() {
                 guard self.ownsUpload(generation) else { return }
-                guard renderURLs.contains(url) else {
-                    if overlayTargets.contains(url) {
-                        // Upload a private copy carrying the sidecar's metadata.
-                        do {
-                            let stagedName = usedNames.insert(url.lastPathComponent).inserted
-                                ? url.lastPathComponent
-                                : self.reserveUploadName(for: url, avoiding: &usedNames)
-                            let staged = try await fileSystem.stageCopyForMetadataOverlay(
-                                url, as: stagedName, in: tempDir, index: index)
-                            guard self.ownsUpload(generation) else { return }
-                            switch await execution.overlay(url, staged.url, writeEngine) {
-                            case .applied, .noPendingEdits:
-                                break
-                            case .staleSidecarSkipped:
-                                await failureTracker.recordStaleSidecar(url.lastPathComponent)
-                            case .failed:
-                                await failureTracker.recordOverlayFailure(url.lastPathComponent)
-                                guard self.ownsUpload(generation) else { return }
-                                unpreparedFileNames.append(url.lastPathComponent)
-                                continue
-                            }
-                            guard self.ownsUpload(generation) else { return }
-                            uploadURLs.append(staged.url)
-                        } catch is CancellationError {
-                            return
-                        } catch {
-                            guard self.ownsUpload(generation) else { return }
-                            self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
-                            unpreparedFileNames.append(url.lastPathComponent)
-                        }
-                        continue
-                    }
-                    // Upload the untouched original (staged only on a name collision).
-                    do {
-                        if usedNames.insert(url.lastPathComponent).inserted {
-                            uploadURLs.append(url)
-                        } else {
-                            let stagedName = self.reserveUploadName(
-                                for: url,
-                                avoiding: &usedNames
-                            )
-                            let staged = try await fileSystem.stageOriginal(
-                                url,
-                                as: stagedName,
-                                in: tempDir,
-                                index: index
-                            )
-                            guard self.ownsUpload(generation) else { return }
-                            uploadURLs.append(staged.url)
-                        }
-                    } catch is CancellationError {
-                        return
-                    } catch {
-                        guard self.ownsUpload(generation) else { return }
-                        self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
-                        unpreparedFileNames.append(url.lastPathComponent)
-                    }
+                if serverStopped || signingStopped {
+                    notPrepared(url, reason: serverStopped
+                        ? "Not sent — stopped after the server error above."
+                        : "Not sent — upload stopped because a rendered file couldn't be signed.")
                     continue
                 }
+
+                // Prepare file N (render/stage/sign) while file N-1 uploads.
+                var prepared: URL?
+                let isRender = renderURLs.contains(url)
                 do {
-                    // Render into an `Uploaded` sub-folder of the source's own folder so the
-                    // rendered JPEG persists for the user (the prior temp-dir output was lost
-                    // on cleanup). The render output name is derived from the source basename,
-                    // so apply an always-incrementing `_N` suffix afterward: this keeps two
-                    // same-named sources from clobbering each other on disk and de-duplicates
-                    // the remote name (which is derived from the local filename).
-                    let uploadedDir = url.deletingLastPathComponent()
-                        .appendingPathComponent("Uploaded", isDirectory: true)
-                    try await fileSystem.ensureDirectory(uploadedDir)
-                    guard self.ownsUpload(generation) else { return }
-                    let outputURL = try await execution.render(
-                        url, metadataMap[url]?.cameraRaw, uploadedDir,
-                        url.deletingLastPathComponent(), writeEngine, failureTracker)
-                    guard self.ownsUpload(generation) else { return }
-                    let prepared = try await fileSystem.sequenceRenderedFile(
-                        outputURL,
-                        avoiding: usedNames
-                    )
-                    guard self.ownsUpload(generation) else { return }
-                    let renderedURL = prepared.url
-                    usedNames.insert(renderedURL.lastPathComponent)
-                    uploadURLs.append(renderedURL)
-                    renderedUploadURLs.append(renderedURL)
-                    if !self.renderedUploadedFolders.contains(uploadedDir) {
-                        self.renderedUploadedFolders.append(uploadedDir)
+                    if isRender {
+                        prepared = try await self.renderForUpload(
+                            url, index: index, tempDir: tempDir,
+                            cameraRaw: metadataMap[url]?.cameraRaw,
+                            writeEngine: writeEngine, failureTracker: failureTracker,
+                            usedNames: &usedNames, claimedRenderTargets: &claimedRenderTargets,
+                            signingConfiguration: signingConfiguration, generation: generation)
+                    } else if overlayTargets.contains(url) {
+                        // Upload a private copy carrying the sidecar's metadata.
+                        let stagedName = usedNames.insert(url.lastPathComponent).inserted
+                            ? url.lastPathComponent
+                            : self.reserveUploadName(for: url, avoiding: &usedNames)
+                        let staged = try await fileSystem.stageCopyForMetadataOverlay(
+                            url, as: stagedName, in: tempDir, index: index)
+                        guard self.ownsUpload(generation) else { return }
+                        switch await execution.overlay(url, staged.url, writeEngine) {
+                        case .applied, .noPendingEdits:
+                            prepared = staged.url
+                        case .staleSidecarSkipped:
+                            await failureTracker.recordStaleSidecar(url.lastPathComponent)
+                            prepared = staged.url
+                        case .failed:
+                            await failureTracker.recordOverlayFailure(url.lastPathComponent)
+                            guard self.ownsUpload(generation) else { return }
+                            notPrepared(url, reason: "Sidecar metadata couldn't be applied — not uploaded.")
+                        }
+                    } else if usedNames.insert(url.lastPathComponent).inserted {
+                        // Upload the untouched original in place.
+                        prepared = url
+                    } else {
+                        // Name collision: stage a hard link/copy under a reserved name.
+                        let stagedName = self.reserveUploadName(for: url, avoiding: &usedNames)
+                        prepared = try await fileSystem.stageOriginal(
+                            url, as: stagedName, in: tempDir, index: index).url
                     }
                 } catch is CancellationError {
+                    if self.uploadGeneration == generation { self.isRendering = false }
                     return
+                } catch let error as FTPUploadSigningFailure {
+                    guard self.ownsUpload(generation) else { return }
+                    self.errorMessages.append("C2PA signing failed for \(error.fileName): \(error.underlying.localizedDescription)")
+                    notPrepared(url, reason: "C2PA signing failed — not uploaded.")
+                    signingStopped = true
                 } catch {
                     guard self.ownsUpload(generation) else { return }
                     self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
-                    unpreparedFileNames.append(url.lastPathComponent)
+                    notPrepared(url, reason: "Couldn't be prepared: \(error.localizedDescription)")
                 }
-                self.renderCompletedCount += 1
-                self.overallProgress = Double(self.renderCompletedCount) / Double(self.renderTotalCount) * 0.5
+                guard self.ownsUpload(generation) else { return }
+                if isRender {
+                    self.renderCompletedCount += 1
+                    self.updateSmoothedProgress()
+                }
+
+                // Hand the prepared file to the uploader once the previous upload finished.
+                guard await settlePending() else { return }
+                guard let prepared else { continue }
+                if serverStopped || signingStopped {
+                    notPrepared(url, reason: serverStopped
+                        ? "Not sent — stopped after the server error above."
+                        : "Not sent — upload stopped because a rendered file couldn't be signed.")
+                    continue
+                }
+                self.isUploading = true
+                self.activeRun?.plannedFileNames.append(prepared.lastPathComponent)
+                let uploadConnection = activeConnection
+                let task = Task { [weak self] () -> FileTransferResult in
+                    guard let self else { return .cancelled }
+                    return await self.transfer(prepared, connection: uploadConnection,
+                                               password: password, generation: generation)
+                }
+                self.inFlightTransfer = task
+                pending = (prepared, url, task)
             }
+            guard self.ownsUpload(generation) else { return }
+            self.isRendering = false
+            guard await settlePending() else { return }
+            guard self.ownsUpload(generation) else { return }
 
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
@@ -964,75 +1054,174 @@ final class FTPViewModel {
             if !watermarkWarnings.isEmpty {
                 self.errorMessages.append("\(watermarkWarnings.count) \(watermarkWarnings.count == 1 ? "image was" : "images were") uploaded without a watermark whose library image is missing (deleted or not yet synced): \(watermarkWarnings.joined(separator: ", "))")
             }
-
-            guard self.ownsUpload(generation) else { return }
-
-            if let signingConfiguration, !renderedUploadURLs.isEmpty {
-                var signingFailed = false
-                for renderedURL in renderedUploadURLs {
-                    do {
-                        try Task.checkCancellation()
-                        guard self.ownsUpload(generation) else { return }
-                        try await execution.sign(signingConfiguration, renderedURL)
-                        guard self.ownsUpload(generation) else { return }
-                    } catch is CancellationError {
-                        if self.uploadGeneration == generation { self.isRendering = false }
-                        return
-                    } catch {
-                        guard self.ownsUpload(generation) else { return }
-                        signingFailed = true
-                        self.errorMessages.append("C2PA signing failed for \(renderedURL.lastPathComponent): \(error.localizedDescription)")
-                    }
-                }
-                guard !signingFailed else {
-                    self.errorMessages.append("Upload stopped because every rendered file must be signed successfully.")
-                    self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent))
-                    return
-                }
+            if serverStopped {
+                self.appendBatchAbortNotice(remaining: self.notSentCount())
+            }
+            if signingStopped {
+                self.errorMessages.append("Upload stopped because every rendered file must be signed successfully.")
+                self.uploadStopped = true
             }
 
-            guard self.ownsUpload(generation) else { return }
-
-            // Upload phase (50–100% of overall progress)
-            self.isRendering = false
-            self.isUploading = true
-            self.totalCount = uploadURLs.count
-            self.completedCount = 0
-            self.activeRun?.plannedFileNames = uploadURLs.map(\.lastPathComponent)
-            self.activeRun?.unpreparedFileNames = unpreparedFileNames
-
-            for (index, url) in uploadURLs.enumerated() {
-                guard self.ownsUpload(generation) else { return }
-                do {
-                    try await execution.upload(url, connection, password) { progress in
-                        Task { @MainActor in
-                            self.applyUploadProgress(progress, generation: generation, offset: 0.5, range: 0.5)
-                        }
-                    }
-                    guard self.ownsUpload(generation) else { return }
-                    self.markFileComplete(url.lastPathComponent, uploadWeightOffset: 0.5, uploadWeightRange: 0.5)
-                } catch is CancellationError {
-                    return
-                } catch {
-                    guard self.ownsUpload(generation) else { return }
-                    self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
-                    if (error as? FTPService.FTPError)?.isServerLevel == true {
-                        self.appendBatchAbortNotice(remaining: uploadURLs.count - index - 1)
-                        break
-                    }
-                }
-            }
-
-            guard self.ownsUpload(generation) else { return }
             self.recordUploadCompletion(id: historyID)
+            self.failedSourceURLs = urls.filter { !delivered.contains($0) }
+            let run = self.activeRun
             self.showCompletion(
                 connection: connection,
                 selectedCount: urls.count,
-                plannedFileNames: uploadURLs.map(\.lastPathComponent),
-                unpreparedFileNames: unpreparedFileNames
+                plannedFileNames: run?.plannedFileNames ?? [],
+                unpreparedFileNames: run?.unpreparedFileNames ?? []
             )
         }
         return true
+    }
+
+    /// Renders one source into its deterministic `Uploaded/<base>.jpg`, resolves batch name
+    /// collisions, and signs it (before any hard-linked staging, so the link sees the signed
+    /// bytes). Returns the file to upload; its last path component is the remote name.
+    private func renderForUpload(
+        _ url: URL,
+        index: Int,
+        tempDir: URL,
+        cameraRaw: CameraRawSettings?,
+        writeEngine: any MetadataWriteEngine,
+        failureTracker: MetadataFailureTracker,
+        usedNames: inout Set<String>,
+        claimedRenderTargets: inout Set<String>,
+        signingConfiguration: C2PAUploadSigningConfiguration?,
+        generation: UUID
+    ) async throws -> URL? {
+        let uploadedDir = url.deletingLastPathComponent()
+            .appendingPathComponent("Uploaded", isDirectory: true)
+        try await fileSystem.ensureDirectory(uploadedDir)
+        guard ownsUpload(generation) else { throw CancellationError() }
+
+        let base = url.deletingPathExtension().lastPathComponent
+        let renderKey = Self.renderTargetKey(folder: uploadedDir, base: base)
+        let collidesLocally = !claimedRenderTargets.insert(renderKey).inserted
+        // A second source with the same basename renders privately first, then moves to a
+        // reserved `<base>-N.jpg`, so it never replaces the first one's render (possibly
+        // while that file is still uploading).
+        let renderFolder: URL
+        if collidesLocally {
+            renderFolder = tempDir.appendingPathComponent("r\(index)", isDirectory: true)
+            try await fileSystem.ensureDirectory(renderFolder)
+        } else {
+            renderFolder = uploadedDir
+        }
+        var outputURL = try await execution.render(
+            url, cameraRaw, renderFolder, url.deletingLastPathComponent(), writeEngine, failureTracker)
+        guard ownsUpload(generation) else { throw CancellationError() }
+
+        if collidesLocally {
+            let name = reserveUploadName(for: outputURL, avoiding: &usedNames)
+            claimedRenderTargets.insert(Self.renderTargetKey(
+                folder: uploadedDir, base: (name as NSString).deletingPathExtension))
+            outputURL = try await fileSystem.moveRenderedFile(
+                outputURL, to: uploadedDir.appendingPathComponent(name)).url
+            guard ownsUpload(generation) else { throw CancellationError() }
+        }
+        if !renderedUploadedFolders.contains(uploadedDir) {
+            renderedUploadedFolders.append(uploadedDir)
+        }
+
+        if let signingConfiguration {
+            try Task.checkCancellation()
+            do {
+                try await execution.sign(signingConfiguration, outputURL)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw FTPUploadSigningFailure(fileName: outputURL.lastPathComponent, underlying: error)
+            }
+            guard ownsUpload(generation) else { throw CancellationError() }
+        }
+
+        if !collidesLocally, !usedNames.insert(outputURL.lastPathComponent).inserted {
+            // Same name as a file from another folder in this batch: upload a staged link
+            // under a reserved remote name; the local render keeps its deterministic name.
+            let name = reserveUploadName(for: outputURL, avoiding: &usedNames)
+            outputURL = try await fileSystem.stageOriginal(outputURL, as: name, in: tempDir, index: index).url
+        }
+        return outputURL
+    }
+
+    private nonisolated static func renderTargetKey(folder: URL, base: String) -> String {
+        folder.standardizedFileURL.path.lowercased() + "/" + base.lowercased()
+    }
+
+    /// Runs one transfer and folds late results out once the run no longer owns the UI.
+    private func transfer(
+        _ url: URL,
+        connection: FTPConnection,
+        password: String,
+        generation: UUID
+    ) async -> FileTransferResult {
+        do {
+            let outcome = try await execution.upload(url, connection, password) { [weak self] progress in
+                Task { @MainActor in
+                    self?.applyUploadProgress(progress, generation: generation)
+                }
+            }
+            return .succeeded(outcome)
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failed(error)
+        }
+    }
+
+    private struct FTPUploadSigningFailure: Error {
+        let fileName: String
+        let underlying: any Error
+    }
+
+    private func latestConnection(_ id: UUID, fallback: FTPConnection) -> FTPConnection {
+        connections.first { $0.id == id } ?? fallback
+    }
+
+    private func resetRunState(totalCount: Int, includesRendering: Bool) {
+        uploadCompleted = false
+        uploadStopped = false
+        errorMessages = []
+        completedCount = 0
+        renderCompletedCount = 0
+        renderTotalCount = 0
+        self.totalCount = totalCount
+        uploadProgress = [:]
+        uploadFailures = [:]
+        failedSourceURLs = []
+        overallProgress = 0
+        renderedUploadedFolders = []
+        progressIncludesRendering = includesRendering
+    }
+
+    /// Records why a file didn't arrive: shown on its row in the progress list, in the error
+    /// list, and in Activity.
+    private func recordUploadFailure(_ fileName: String, error: any Error) {
+        let reason = Self.failureReason(for: error)
+        uploadFailures[fileName] = reason
+        errorMessages.append("Failed to upload \(fileName): \(error.localizedDescription)")
+    }
+
+    private func markNotSent(_ fileNames: [String]) {
+        for name in fileNames where uploadFailures[name] == nil && uploadProgress[name]?.isComplete != true {
+            uploadFailures[name] = "Not sent — stopped after the server error above."
+        }
+        appendBatchAbortNotice(remaining: fileNames.count)
+    }
+
+    private func notSentCount() -> Int {
+        uploadFailures.values.filter { $0.hasPrefix("Not sent") }.count
+    }
+
+    /// A short, user-facing reason for one failed file (the full curl diagnostic stays in
+    /// `errorMessages`).
+    private static func failureReason(for error: any Error) -> String {
+        if let ftpError = error as? FTPService.FTPError {
+            if let category = ftpError.category { return category.userMessage }
+            return ftpError.localizedDescription
+        }
+        return error.localizedDescription
     }
 
     /// Admission checks that must pass before Keychain access, history creation, rendering, or
@@ -1085,7 +1274,7 @@ final class FTPViewModel {
     /// progress map and `completedCount` synchronously on the main actor, so the activity
     /// record written right after the loop reflects every successful file — the trailing
     /// `isComplete` progress callback is delivered out-of-band and can't be relied on here.
-    private func markFileComplete(_ fileName: String, uploadWeightOffset: Double = 0, uploadWeightRange: Double = 1.0) {
+    private func markFileComplete(_ fileName: String) {
         let bytes = uploadProgress[fileName]?.totalBytes ?? 0
         uploadProgress[fileName] = FTPUploadProgress(
             fileName: fileName,
@@ -1094,15 +1283,26 @@ final class FTPViewModel {
             fractionCompleted: 1.0,
             isComplete: true
         )
+        uploadFailures[fileName] = nil
         completedCount += 1
-        updateSmoothedProgress(uploadWeightOffset: uploadWeightOffset, uploadWeightRange: uploadWeightRange)
+        updateSmoothedProgress()
     }
 
-    /// Computes smooth overall progress by interpolating per-file fractions.
-    private func updateSmoothedProgress(uploadWeightOffset: Double = 0, uploadWeightRange: Double = 1.0) {
+    /// Computes smooth overall progress by interpolating per-file fractions. When the run also
+    /// renders, rendering fills the first half and uploading the second; with pipelining both
+    /// advance together.
+    private func updateSmoothedProgress() {
         let count = Double(max(totalCount, 1))
         let perFileContribution = uploadProgress.values.reduce(0.0) { $0 + $1.fractionCompleted }
-        overallProgress = uploadWeightOffset + (perFileContribution / count) * uploadWeightRange
+        let uploadFraction = min(perFileContribution / count, 1)
+        if progressIncludesRendering {
+            let renderFraction = renderTotalCount == 0
+                ? 1
+                : Double(renderCompletedCount) / Double(renderTotalCount)
+            overallProgress = renderFraction * 0.5 + uploadFraction * 0.5
+        } else {
+            overallProgress = uploadFraction
+        }
     }
 
     /// Shows the sticky completion state and records the upload to the shared
@@ -1119,6 +1319,7 @@ final class FTPViewModel {
         unpreparedFileNames: [String] = []
     ) {
         activeRun = nil
+        inFlightTransfer = nil
         isUploading = false
         isRendering = false
         uploadCompleted = true
@@ -1131,11 +1332,12 @@ final class FTPViewModel {
         )
     }
 
-    /// Ends a run that stopped before uploading anything (inspection, staging or signing
-    /// failed) in the same sticky terminal state as a finished upload, so the reasons in
+    /// Ends a run that stopped before uploading anything (inspection or staging failed) in
+    /// the same sticky terminal state as a finished upload, so the reasons in
     /// `errorMessages` stay visible after the sheet has closed.
-    private func showStopped(connection: FTPConnection, selectedFileNames: [String]) {
+    private func showStopped(connection: FTPConnection, selectedFileNames: [String], sources: [URL]) {
         uploadStopped = true
+        failedSourceURLs = sources
         showCompletion(
             connection: connection,
             selectedCount: selectedFileNames.count,
@@ -1164,7 +1366,8 @@ final class FTPViewModel {
                 fileName: fileName,
                 destination: connection.name,
                 succeeded: succeeded,
-                verification: .notApplicable
+                verification: .notApplicable,
+                statusDetail: succeeded ? nil : uploadFailures[fileName]
             )
         }
         // Every planned file is listed — including ones a server-level abort never reached —

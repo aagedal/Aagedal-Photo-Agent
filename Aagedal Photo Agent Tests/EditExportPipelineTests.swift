@@ -5792,6 +5792,7 @@ struct ExportSavingReleaseFixTests {
         execution.upload = { url, _, _, _ in
             let metadata = try await SwiftExifReadService().readFullMetadata(url: url)
             await probe.record(url: url, title: metadata.title, description: metadata.description)
+            return FTPUploadOutcome()
         }
         execution.render = { _, _, _, _, _, _ in
             Issue.record("An as-is upload must not render")

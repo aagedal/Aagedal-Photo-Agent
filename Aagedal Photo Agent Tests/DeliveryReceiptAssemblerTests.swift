@@ -317,7 +317,7 @@ struct DeliveryReceiptAssemblerTests {
         }
 
         items = fixture.upload.items
-        items[0].remoteConfirmation = .missing(checkedAt: Date(timeIntervalSince1970: 101))
+        items[0].remoteConfirmation = .unavailable(checkedAt: nil)
         #expect(throws: DeliveryReceiptAssemblyError.remoteEvidenceMismatch(itemIndex: 0)) {
             _ = try makeAssembler().assemble(
                 plan: fixture.plan,
@@ -325,6 +325,39 @@ struct DeliveryReceiptAssemblerTests {
                 uploadResult: fixture.upload(items: items)
             )
         }
+    }
+
+    @Test("a file not visible after an acknowledged upload is receipted as sent, not visible")
+    func notVisibleAfterUpload() async throws {
+        let fixture = try await ReceiptAssemblyFixture()
+        var items = fixture.upload.items
+        let acknowledgedAt = try #require(items[0].uploadAcknowledgement.acknowledgedAt)
+        let notVisible = DeliveryRemoteFileConfirmation.missing(checkedAt: acknowledgedAt.addingTimeInterval(1))
+        items[0].remoteConfirmation = notVisible
+        let checkpointItems = fixture.upload.checkpoint.items.map { saved in
+            saved.itemIndex != 0 ? saved : DeliveryUploadCheckpointItem(
+                itemIndex: saved.itemIndex,
+                stageInputFingerprint: saved.stageInputFingerprint,
+                localEvidence: saved.localEvidence,
+                uploadAcknowledgedAt: saved.uploadAcknowledgedAt,
+                remoteConfirmation: notVisible,
+                voiceMemoLocalEvidence: saved.voiceMemoLocalEvidence,
+                voiceMemoUploadAcknowledgedAt: saved.voiceMemoUploadAcknowledgedAt,
+                voiceMemoRemoteConfirmation: saved.voiceMemoRemoteConfirmation
+            )
+        }
+        let checkpoint = DeliveryUploadCheckpoint(
+            planFingerprint: fixture.upload.checkpoint.planFingerprint,
+            stagingBatchIdentifier: fixture.upload.checkpoint.stagingBatchIdentifier,
+            items: checkpointItems
+        )
+        let receipt = try makeAssembler().assemble(
+            plan: fixture.plan,
+            stagingResult: fixture.staging,
+            uploadResult: fixture.upload(items: items, checkpoint: checkpoint)
+        )
+        #expect(receipt.items[0].remoteStatAcknowledgement.status == .notVisibleAfterUpload)
+        #expect(receipt.items[0].remoteStatAcknowledgement.observedByteSize == nil)
     }
 
     @Test("completed checkpoint must exactly reproduce every terminal item")

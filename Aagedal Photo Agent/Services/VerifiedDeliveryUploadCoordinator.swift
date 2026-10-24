@@ -203,9 +203,74 @@ nonisolated enum DeliveryUploadItemStage: String, Codable, Equatable, Sendable {
 nonisolated enum DeliveryUploadFailureCode: String, Codable, Equatable, Sendable {
     case localArtifactInspectionFailed
     case localArtifactChanged
+    /// The server rejected this file (or the transfer broke); other files may still succeed.
     case uploadRejected
+    /// Retained for decoding older results; a missing remote file after an acknowledged
+    /// upload is now recorded as "sent, not visible" rather than as a failure.
     case remoteFileMissing
     case remoteByteCountMismatch
+    // Fixed transfer categories (never server output). The server-level ones stop the batch.
+    case connectionUnavailable
+    case loginDenied
+    case accessDenied
+    case serverUnreachable
+    case ftpsUnsupported
+    case certificateUntrusted
+    case secureConnectionFailed
+    case timedOut
+
+    /// True when every remaining file would fail the same way, so the batch stops here instead
+    /// of retrying each file (and, for logins, risking a lockout).
+    var isServerLevel: Bool {
+        switch self {
+        case .connectionUnavailable, .loginDenied, .accessDenied, .serverUnreachable,
+             .ftpsUnsupported, .certificateUntrusted, .secureConnectionFailed:
+            true
+        case .localArtifactInspectionFailed, .localArtifactChanged, .uploadRejected,
+             .remoteFileMissing, .remoteByteCountMismatch, .timedOut:
+            false
+        }
+    }
+
+    var userMessage: String {
+        switch self {
+        case .localArtifactInspectionFailed: "The staged file could not be read."
+        case .localArtifactChanged: "The staged file changed after verification."
+        case .uploadRejected: FTPFailureCategory.fileRejected.userMessage
+        case .remoteFileMissing: "The file was not visible on the server after upload."
+        case .remoteByteCountMismatch: "The file size on the server doesn't match the delivered file."
+        case .connectionUnavailable: "The saved delivery connection or its password is unavailable."
+        case .loginDenied: FTPFailureCategory.loginDenied.userMessage
+        case .accessDenied: FTPFailureCategory.accessDenied.userMessage
+        case .serverUnreachable: FTPFailureCategory.serverUnreachable.userMessage
+        case .ftpsUnsupported: FTPFailureCategory.ftpsUnsupported.userMessage
+        case .certificateUntrusted: FTPFailureCategory.certificateUntrusted.userMessage
+        case .secureConnectionFailed: FTPFailureCategory.secureConnectionFailed.userMessage
+        case .timedOut: FTPFailureCategory.timedOut.userMessage
+        }
+    }
+
+    /// Maps a transport error to its fixed code. Unknown errors are file-level rejections.
+    init(transportError error: any Error) {
+        guard let transportError = error as? DeliveryFTPTransportError else {
+            self = .uploadRejected
+            return
+        }
+        switch transportError {
+        case .invalidConnectionIdentifier, .connectionUnavailable, .credentialUnavailable,
+             .insecureTransportNotAcknowledged:
+            self = .connectionUnavailable
+        case .loginDenied: self = .loginDenied
+        case .accessDenied: self = .accessDenied
+        case .serverUnreachable: self = .serverUnreachable
+        case .ftpsUnsupported: self = .ftpsUnsupported
+        case .certificateUntrusted: self = .certificateUntrusted
+        case .secureConnectionFailed: self = .secureConnectionFailed
+        case .timedOut: self = .timedOut
+        case .unsafeTransfer, .uploadFailed, .remoteObservationUnavailable, .fileRejected:
+            self = .uploadRejected
+        }
+    }
 }
 
 /// A deliberately non-diagnostic failure record. Transport errors can contain server responses,
@@ -447,13 +512,18 @@ private nonisolated struct DeliveryUploadArtifactEvidence: Sendable {
     let voiceMemo: DeliveryUploadFileEvidence?
 }
 
-/// Sequential verified upload orchestration. Cancellation is observed only before the first file
-/// or after a file has completed upload and optional remote-stat inspection. In-flight transport
-/// work runs in an unstructured task so cancellation of the caller cannot interrupt a file.
+/// Sequential verified upload orchestration.
 ///
-/// There is intentionally no `FTPService` adapter here: its current API accepts a password at the
-/// call site and terminates curl on task cancellation. A production adapter must resolve secrets
-/// internally and preserve this coordinator's file-boundary cancellation guarantee.
+/// Failures are classified per file: a file-level failure (the server rejected one file, a
+/// transfer stalled, a staged file changed) marks that item failed and the batch continues;
+/// a server-level failure (login denied, TLS refused, server unreachable after retries,
+/// unusable connection) stops the batch because every remaining file would fail the same way.
+/// Every delivered item is checkpointed — not just a contiguous prefix — so Resume skips
+/// exactly the delivered items and re-sends only the failed or unattempted ones.
+///
+/// Cancellation stops at the next file boundary and also terminates the active transfer:
+/// the transport uploads to a temporary name and renames only after a complete transfer, so
+/// interrupting it can't leave a truncated file under the final name.
 actor VerifiedDeliveryUploadCoordinator {
     typealias ProgressHandler = @Sendable (DeliveryUploadProgress) async -> Void
 
@@ -462,6 +532,7 @@ actor VerifiedDeliveryUploadCoordinator {
     private let now: @Sendable () -> Date
     private var cancellationRequested = false
     private var isExecuting = false
+    private var activeTransfer: Task<Void, any Error>?
 
     init(
         transport: DeliveryUploadTransport,
@@ -473,10 +544,18 @@ actor VerifiedDeliveryUploadCoordinator {
         self.now = now
     }
 
-    /// Requests a stop at the next file boundary. The active upload/stat operation is never
-    /// cancelled, avoiding an ambiguous partially written remote object.
+    /// Requests a stop: no further file starts, and an active transfer is terminated (the
+    /// transport cleans up its temporary remote file). A transfer that completes anyway is
+    /// recorded as sent.
     func requestCancellation() {
         cancellationRequested = true
+        activeTransfer?.cancel()
+    }
+
+    private enum FileStep {
+        case delivered
+        case failed(DeliveryUploadFailureCode)
+        case cancelled
     }
 
     func upload(
@@ -508,49 +587,40 @@ actor VerifiedDeliveryUploadCoordinator {
         try applyResumeCheckpoint(request.resumeCheckpoint, request: request, results: &results)
         await publish(progress, request: request, currentItemIndex: nil, results: results)
 
+        var anyItemFailed = false
         for item in request.plan.items where results[item.itemIndex].stage != .sent {
             if cancellationRequested || Task.isCancelled {
                 cancelQueuedItems(&results)
-                await publish(
-                    progress,
-                    request: request,
-                    currentItemIndex: nil,
-                    results: results
-                )
-                return result(.cancelled, request: request, results: results)
+                await publish(progress, request: request, currentItemIndex: nil, results: results)
+                return result(anyItemFailed ? .failed : .cancelled, request: request, results: results)
             }
 
             let index = item.itemIndex
             let artifact = request.stagedBatch.artifacts[index]
-            let originalEvidence = evidence[index].image
+
             let freshEvidence: DeliveryUploadFileEvidence
             do {
                 freshEvidence = try await fileInspector.inspect(artifact.localURL)
             } catch {
-                results[index].stage = .failed
-                results[index].failure = DeliveryUploadItemFailure(
-                    code: .localArtifactInspectionFailed
-                )
-                await publish(progress, request: request, currentItemIndex: index, results: results)
-                return result(.failed, request: request, results: results)
+                anyItemFailed = true
+                if await markFailed(.localArtifactInspectionFailed, index: index, request: request, progress: progress, results: &results) {
+                    return result(.failed, request: request, results: results)
+                }
+                continue
             }
             if cancellationRequested || Task.isCancelled {
                 cancelQueuedItems(&results)
-                await publish(
-                    progress,
-                    request: request,
-                    currentItemIndex: nil,
-                    results: results
-                )
-                return result(.cancelled, request: request, results: results)
+                await publish(progress, request: request, currentItemIndex: nil, results: results)
+                return result(anyItemFailed ? .failed : .cancelled, request: request, results: results)
             }
-            guard freshEvidence == originalEvidence,
+            guard freshEvidence == evidence[index].image,
                   freshEvidence.byteCount == artifact.expectedByteCount,
                   freshEvidence.sha256 == artifact.expectedSHA256 else {
-                results[index].stage = .failed
-                results[index].failure = DeliveryUploadItemFailure(code: .localArtifactChanged)
-                await publish(progress, request: request, currentItemIndex: index, results: results)
-                return result(.failed, request: request, results: results)
+                anyItemFailed = true
+                if await markFailed(.localArtifactChanged, index: index, request: request, progress: progress, results: &results) {
+                    return result(.failed, request: request, results: results)
+                }
+                continue
             }
 
             let transfer = DeliveryUploadTransfer(
@@ -561,80 +631,26 @@ actor VerifiedDeliveryUploadCoordinator {
                 expectedByteCount: freshEvidence.byteCount,
                 expectedSHA256: freshEvidence.sha256
             )
-            results[index].stage = .uploading
-            await publish(progress, request: request, currentItemIndex: index, results: results)
-
-            do {
-                try await runUncancelled { [transport] in
-                    try await transport.upload(transfer)
-                }
-            } catch {
-                results[index].stage = .failed
-                results[index].failure = DeliveryUploadItemFailure(code: .uploadRejected)
+            switch await deliverFile(
+                transfer,
+                index: index,
+                isVoiceMemo: false,
+                request: request,
+                progress: progress,
+                results: &results
+            ) {
+            case .delivered:
+                break
+            case .cancelled:
+                results[index].stage = .cancelled
+                cancelQueuedItems(&results)
                 await publish(progress, request: request, currentItemIndex: index, results: results)
-                return result(.failed, request: request, results: results)
+                return result(anyItemFailed ? .failed : .cancelled, request: request, results: results)
+            case let .failed(code):
+                anyItemFailed = true
+                if await markFailed(code, index: index, request: request, progress: progress, results: &results) { return result(.failed, request: request, results: results) }
+                continue
             }
-            results[index].uploadAcknowledgement = DeliveryUploadAcknowledgement(
-                status: .protocolAcknowledged,
-                acknowledgedAt: now()
-            )
-
-            if request.remoteStatPolicy == .attemptIfAvailable {
-                results[index].stage = .remoteConfirming
-                await publish(progress, request: request, currentItemIndex: index, results: results)
-                let checkedAt = now()
-                let observation: DeliveryRemoteStatObservation
-                if let remoteStat = transport.remoteStat {
-                    do {
-                        observation = try await runUncancelled {
-                            try await remoteStat(transfer)
-                        }
-                    } catch {
-                        observation = .unavailable
-                    }
-                } else {
-                    observation = .unavailable
-                }
-                switch observation {
-                case .unavailable:
-                    results[index].remoteConfirmation = .unavailable(checkedAt: checkedAt)
-                case .missing:
-                    results[index].remoteConfirmation = .missing(checkedAt: checkedAt)
-                    results[index].stage = .failed
-                    results[index].failure = DeliveryUploadItemFailure(code: .remoteFileMissing)
-                    await publish(
-                        progress,
-                        request: request,
-                        currentItemIndex: index,
-                        results: results
-                    )
-                    return result(.failed, request: request, results: results)
-                case .exists(byteCount: nil):
-                    results[index].remoteConfirmation = .existsSizeUnknown(checkedAt: checkedAt)
-                case let .exists(byteCount: .some(observed)) where observed == freshEvidence.byteCount:
-                    results[index].remoteConfirmation = .sizeMatches(
-                        checkedAt: checkedAt,
-                        observedByteCount: observed
-                    )
-                case let .exists(byteCount: .some(observed)):
-                    results[index].remoteConfirmation = .sizeMismatch(
-                        checkedAt: checkedAt,
-                        observedByteCount: observed
-                    )
-                    results[index].stage = .failed
-                    results[index].failure = DeliveryUploadItemFailure(
-                        code: .remoteByteCountMismatch
-                    )
-                    await publish(
-                        progress,
-                        request: request,
-                        currentItemIndex: index,
-                        results: results
-                    )
-                    return result(.failed, request: request, results: results)
-                }
-            }
-
 
             if let memo = artifact.voiceMemo,
                let originalMemoEvidence = evidence[index].voiceMemo {
@@ -642,26 +658,26 @@ actor VerifiedDeliveryUploadCoordinator {
                     results[index].stage = .cancelled
                     cancelQueuedItems(&results)
                     await publish(progress, request: request, currentItemIndex: index, results: results)
-                    return result(.cancelled, request: request, results: results)
+                    return result(anyItemFailed ? .failed : .cancelled, request: request, results: results)
                 }
                 let freshMemoEvidence: DeliveryUploadFileEvidence
                 do {
                     freshMemoEvidence = try await fileInspector.inspect(memo.localURL)
                 } catch {
-                    results[index].stage = .failed
-                    results[index].failure = DeliveryUploadItemFailure(
-                        code: .localArtifactInspectionFailed
-                    )
-                    await publish(progress, request: request, currentItemIndex: index, results: results)
-                    return result(.failed, request: request, results: results)
+                    anyItemFailed = true
+                    if await markFailed(.localArtifactInspectionFailed, index: index, request: request, progress: progress, results: &results) {
+                        return result(.failed, request: request, results: results)
+                    }
+                    continue
                 }
                 guard freshMemoEvidence == originalMemoEvidence,
                       freshMemoEvidence.byteCount == memo.expectedByteCount,
                       freshMemoEvidence.sha256 == memo.expectedSHA256 else {
-                    results[index].stage = .failed
-                    results[index].failure = DeliveryUploadItemFailure(code: .localArtifactChanged)
-                    await publish(progress, request: request, currentItemIndex: index, results: results)
-                    return result(.failed, request: request, results: results)
+                    anyItemFailed = true
+                    if await markFailed(.localArtifactChanged, index: index, request: request, progress: progress, results: &results) {
+                        return result(.failed, request: request, results: results)
+                    }
+                    continue
                 }
                 let memoTransfer = DeliveryUploadTransfer(
                     connectionIdentifier: request.plan.destination.connectionIdentifier,
@@ -671,64 +687,25 @@ actor VerifiedDeliveryUploadCoordinator {
                     expectedByteCount: freshMemoEvidence.byteCount,
                     expectedSHA256: freshMemoEvidence.sha256
                 )
-                results[index].stage = .uploading
-                await publish(progress, request: request, currentItemIndex: index, results: results)
-                do {
-                    try await runUncancelled { [transport] in
-                        try await transport.upload(memoTransfer)
-                    }
-                } catch {
-                    results[index].stage = .failed
-                    results[index].failure = DeliveryUploadItemFailure(code: .uploadRejected)
+                switch await deliverFile(
+                    memoTransfer,
+                    index: index,
+                    isVoiceMemo: true,
+                    request: request,
+                    progress: progress,
+                    results: &results
+                ) {
+                case .delivered:
+                    break
+                case .cancelled:
+                    results[index].stage = .cancelled
+                    cancelQueuedItems(&results)
                     await publish(progress, request: request, currentItemIndex: index, results: results)
-                    return result(.failed, request: request, results: results)
-                }
-                results[index].voiceMemoUploadAcknowledgement = DeliveryUploadAcknowledgement(
-                    status: .protocolAcknowledged,
-                    acknowledgedAt: now()
-                )
-                if request.remoteStatPolicy == .attemptIfAvailable {
-                    results[index].stage = .remoteConfirming
-                    await publish(progress, request: request, currentItemIndex: index, results: results)
-                    let checkedAt = now()
-                    let observation: DeliveryRemoteStatObservation
-                    if let remoteStat = transport.remoteStat {
-                        do {
-                            observation = try await runUncancelled {
-                                try await remoteStat(memoTransfer)
-                            }
-                        } catch {
-                            observation = .unavailable
-                        }
-                    } else {
-                        observation = .unavailable
-                    }
-                    switch observation {
-                    case .unavailable:
-                        results[index].voiceMemoRemoteConfirmation = .unavailable(checkedAt: checkedAt)
-                    case .missing:
-                        results[index].voiceMemoRemoteConfirmation = .missing(checkedAt: checkedAt)
-                        results[index].stage = .failed
-                        results[index].failure = DeliveryUploadItemFailure(code: .remoteFileMissing)
-                        await publish(progress, request: request, currentItemIndex: index, results: results)
-                        return result(.failed, request: request, results: results)
-                    case .exists(byteCount: nil):
-                        results[index].voiceMemoRemoteConfirmation = .existsSizeUnknown(checkedAt: checkedAt)
-                    case let .exists(byteCount: .some(observed)) where observed == freshMemoEvidence.byteCount:
-                        results[index].voiceMemoRemoteConfirmation = .sizeMatches(
-                            checkedAt: checkedAt,
-                            observedByteCount: observed
-                        )
-                    case let .exists(byteCount: .some(observed)):
-                        results[index].voiceMemoRemoteConfirmation = .sizeMismatch(
-                            checkedAt: checkedAt,
-                            observedByteCount: observed
-                        )
-                        results[index].stage = .failed
-                        results[index].failure = DeliveryUploadItemFailure(code: .remoteByteCountMismatch)
-                        await publish(progress, request: request, currentItemIndex: index, results: results)
-                        return result(.failed, request: request, results: results)
-                    }
+                    return result(anyItemFailed ? .failed : .cancelled, request: request, results: results)
+                case let .failed(code):
+                    anyItemFailed = true
+                    if await markFailed(code, index: index, request: request, progress: progress, results: &results) { return result(.failed, request: request, results: results) }
+                    continue
                 }
             }
 
@@ -736,7 +713,111 @@ actor VerifiedDeliveryUploadCoordinator {
             await publish(progress, request: request, currentItemIndex: index, results: results)
         }
 
-        return result(.completed, request: request, results: results)
+        return result(anyItemFailed ? .failed : .completed, request: request, results: results)
+    }
+
+    /// Marks an item failed and publishes it; returns true when the batch must stop here.
+    private func markFailed(
+        _ code: DeliveryUploadFailureCode,
+        index: Int,
+        request: DeliveryUploadRequest,
+        progress: ProgressHandler?,
+        results: inout [DeliveryUploadItemResult]
+    ) async -> Bool {
+        results[index].stage = .failed
+        results[index].failure = DeliveryUploadItemFailure(code: code)
+        await publish(progress, request: request, currentItemIndex: index, results: results)
+        return code.isServerLevel
+    }
+
+    /// Uploads one file and, when requested, observes it remotely. A remote "missing" after a
+    /// protocol-acknowledged STOR (and rename) is recorded as sent-but-not-visible: write-only
+    /// drop boxes can't be listed and hot folders move files away instantly, so treating it as
+    /// a failure would make Resume upload the item twice.
+    private func deliverFile(
+        _ transfer: DeliveryUploadTransfer,
+        index: Int,
+        isVoiceMemo: Bool,
+        request: DeliveryUploadRequest,
+        progress: ProgressHandler?,
+        results: inout [DeliveryUploadItemResult]
+    ) async -> FileStep {
+        results[index].stage = .uploading
+        await publish(progress, request: request, currentItemIndex: index, results: results)
+
+        do {
+            try await runCancellableTransfer { [transport] in
+                try await transport.upload(transfer)
+            }
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failed(DeliveryUploadFailureCode(transportError: error))
+        }
+        let acknowledgement = DeliveryUploadAcknowledgement(
+            status: .protocolAcknowledged,
+            acknowledgedAt: now()
+        )
+        if isVoiceMemo {
+            results[index].voiceMemoUploadAcknowledgement = acknowledgement
+        } else {
+            results[index].uploadAcknowledgement = acknowledgement
+        }
+
+        guard request.remoteStatPolicy == .attemptIfAvailable else { return .delivered }
+        results[index].stage = .remoteConfirming
+        await publish(progress, request: request, currentItemIndex: index, results: results)
+        let checkedAt = now()
+        let observation: DeliveryRemoteStatObservation
+        if let remoteStat = transport.remoteStat {
+            do {
+                observation = try await runUncancelled {
+                    try await remoteStat(transfer)
+                }
+            } catch {
+                observation = .unavailable
+            }
+        } else {
+            observation = .unavailable
+        }
+
+        let confirmation: DeliveryRemoteFileConfirmation
+        var failure: DeliveryUploadFailureCode?
+        switch observation {
+        case .unavailable:
+            confirmation = .unavailable(checkedAt: checkedAt)
+        case .missing:
+            confirmation = .missing(checkedAt: checkedAt)
+        case .exists(byteCount: nil):
+            confirmation = .existsSizeUnknown(checkedAt: checkedAt)
+        case let .exists(byteCount: .some(observed)) where observed == transfer.expectedByteCount:
+            confirmation = .sizeMatches(checkedAt: checkedAt, observedByteCount: observed)
+        case let .exists(byteCount: .some(observed)):
+            confirmation = .sizeMismatch(checkedAt: checkedAt, observedByteCount: observed)
+            failure = .remoteByteCountMismatch
+        }
+        if isVoiceMemo {
+            results[index].voiceMemoRemoteConfirmation = confirmation
+        } else {
+            results[index].remoteConfirmation = confirmation
+        }
+        if let failure { return .failed(failure) }
+        return .delivered
+    }
+
+    /// Runs one transfer so that `requestCancellation()` or cancellation of the calling task
+    /// terminates it.
+    private func runCancellableTransfer(
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        let task = Task.detached { try await operation() }
+        activeTransfer = task
+        defer { activeTransfer = nil }
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func validateAndInspect(
@@ -842,10 +923,13 @@ actor VerifiedDeliveryUploadCoordinator {
               checkpoint.stagingBatchIdentifier == request.stagedBatch.batchIdentifier else {
             throw DeliveryUploadPreflightError.staleResumeCheckpoint
         }
-        guard checkpoint.items.map(\.itemIndex) == Array(checkpoint.items.indices),
-              zip(checkpoint.items, checkpoint.items.dropFirst()).allSatisfy({ pair in
-                  pair.0.uploadAcknowledgedAt <= pair.1.uploadAcknowledgedAt
-              }) else {
+        // Delivered items need not be a contiguous prefix (the batch continues past file-level
+        // failures, and a resumed run delivers earlier items later), but each item appears once,
+        // in plan order.
+        guard zip(checkpoint.items, checkpoint.items.dropFirst()).allSatisfy({ pair in
+                  pair.0.itemIndex < pair.1.itemIndex
+              }),
+              checkpoint.items.allSatisfy({ results.indices.contains($0.itemIndex) }) else {
             throw DeliveryUploadPreflightError.invalidResumeCheckpoint
         }
 
@@ -976,8 +1060,9 @@ actor VerifiedDeliveryUploadCoordinator {
         _ confirmation: DeliveryRemoteFileConfirmation
     ) -> Bool {
         switch confirmation {
-        case .notRequested, .unavailable, .existsSizeUnknown, .sizeMatches: true
-        case .missing, .sizeMismatch: false
+        // `.missing` after an acknowledged upload = sent, not visible (drop box / hot folder).
+        case .notRequested, .unavailable, .existsSizeUnknown, .sizeMatches, .missing: true
+        case .sizeMismatch: false
         }
     }
 

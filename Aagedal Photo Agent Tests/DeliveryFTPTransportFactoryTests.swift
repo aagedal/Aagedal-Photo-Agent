@@ -31,7 +31,10 @@ struct DeliveryFTPTransportFactoryTests {
 
         #expect(capture.keys == [makeConnection().keychainKey])
         let arguments = try #require(capture.argumentVectors.first)
-        #expect(arguments.contains("ftp://original.example:21/desk/news.jpg"))
+        // Uploaded to a temporary name and renamed into place after a complete transfer.
+        #expect(arguments.contains("ftp://original.example:21/desk/.news.jpg.part"))
+        #expect(arguments.contains("-RNFR .news.jpg.part"))
+        #expect(arguments.contains("-RNTO news.jpg"))
         #expect(!arguments.contains(where: { $0.contains("mutated.invalid") }))
         #expect(!arguments.contains(where: { $0.contains(Self.secret) }))
     }
@@ -305,6 +308,88 @@ struct DeliveryFTPTransportFactoryTests {
             #expect(!text.contains("reporter"))
             #expect(!text.contains("example.invalid"))
         }
+    }
+
+    @Test("curl exit statuses cross the boundary only as fixed categories", arguments: [
+        (Int32(67), DeliveryFTPTransportError.loginDenied),
+        (64, .ftpsUnsupported),
+        (60, .certificateUntrusted),
+        (6, .serverUnreachable),
+        (25, .fileRejected),
+    ])
+    func failureCategories(status: Int32, expected: DeliveryFTPTransportError) async throws {
+        let file = try makeFile(name: "news.jpg", bytes: Data("news".utf8))
+        defer { try? FileManager.default.removeItem(at: file) }
+        let transport = DeliveryFTPTransportFactory.make(
+            connections: [makeConnection()],
+            secretLoader: .init { _ in Self.secret },
+            processRunner: .init { _, arguments in
+                // Cleanup (--head) succeeds; the transfer fails with the scripted status.
+                arguments.contains("--head")
+                    ? .init(terminationStatus: 0)
+                    : .init(terminationStatus: status, standardError: "curl: (\(status)) \(Self.secret) reporter")
+            },
+            retryDelay: .zero
+        )
+        do {
+            try await transport.upload(makeTransfer(file: file))
+            Issue.record("A failed transfer unexpectedly uploaded")
+        } catch let error as DeliveryFTPTransportError {
+            #expect(error == expected)
+            #expect(error.isServerLevel == (expected != .fileRejected))
+            #expect(!(error.errorDescription ?? "").contains(Self.secret))
+            #expect(!(error.errorDescription ?? "").contains("reporter"))
+        }
+    }
+
+    @Test("a refused rename falls back to a direct upload, is reported once and remembered")
+    func renameRefusalFallback() async throws {
+        let file = try makeFile(name: "news.jpg", bytes: Data("news".utf8))
+        defer { try? FileManager.default.removeItem(at: file) }
+        let capture = DeliveryFTPCapture()
+        let transport = DeliveryFTPTransportFactory.make(
+            connections: [makeConnection()],
+            secretLoader: .init { _ in Self.secret },
+            processRunner: .init { _, arguments in
+                capture.recordArguments(arguments)
+                return .init(terminationStatus: arguments.contains("-RNFR .news.jpg.part") ? 21 : 0)
+            },
+            onRenameRefused: { capture.recordKey($0.uuidString) }
+        )
+
+        try await transport.upload(makeTransfer(file: file))
+        try await transport.upload(makeTransfer(file: file))
+
+        #expect(capture.keys == [Self.identifier.uuidString])
+        let vectors = capture.argumentVectors
+        #expect(vectors.count == 4)
+        #expect(vectors[0].contains("ftp://original.example:21/desk/.news.jpg.part"))
+        #expect(vectors[1].contains("-DELE .news.jpg.part"))
+        #expect(vectors[2].contains("ftp://original.example:21/desk/news.jpg"))
+        // The second file skips the temporary name for this connection.
+        #expect(vectors[3].contains("ftp://original.example:21/desk/news.jpg"))
+        #expect(!vectors[3].contains("-Q"))
+    }
+
+    @Test("cancelling the transfer surfaces as cancellation, not as a rejection")
+    func cancellationPassesThrough() async throws {
+        let file = try makeFile(name: "news.jpg", bytes: Data("news".utf8))
+        defer { try? FileManager.default.removeItem(at: file) }
+        let capture = DeliveryFTPCapture()
+        let transport = DeliveryFTPTransportFactory.make(
+            connections: [makeConnection()],
+            secretLoader: .init { _ in Self.secret },
+            processRunner: .init { _, arguments in
+                capture.recordArguments(arguments)
+                if arguments.contains("--head") { return .init(terminationStatus: 0) }
+                throw CancellationError()
+            }
+        )
+        await #expect(throws: CancellationError.self) {
+            try await transport.upload(makeTransfer(file: file))
+        }
+        // The partial temporary file is removed best-effort.
+        #expect(capture.argumentVectors.last?.contains("-DELE .news.jpg.part") == true)
     }
 
     private func makeConnection() -> FTPConnection {

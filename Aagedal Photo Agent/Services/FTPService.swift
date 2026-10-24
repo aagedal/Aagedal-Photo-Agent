@@ -8,70 +8,77 @@ struct FTPUploadProgress: Sendable {
     var isComplete: Bool
 }
 
+/// What a successful upload learned about the server. `renameRefused` means the server
+/// accepted the temporary file but refused RNFR/RNTO (typical for write-only drop boxes), so
+/// the file was re-sent directly under its final name. Callers persist this on the profile
+/// (`FTPConnection.serverRefusesRename`) so later uploads skip the temporary name.
+nonisolated struct FTPUploadOutcome: Equatable, Sendable {
+    var renameRefused: Bool = false
+}
+
+/// Fixed, credential-free classification of a failed curl transfer. Derived from curl's exit
+/// status (and, for timeouts, curl's own diagnostic wording) inside `FTPService`, so callers
+/// that must never see server output can still act on and report the kind of failure.
+nonisolated enum FTPFailureCategory: String, Codable, Equatable, Sendable {
+    /// The server refused the user name/password.
+    case loginDenied
+    /// Logged in, but the server refused access to the remote folder.
+    case accessDenied
+    /// DNS, connection refused or a connect timeout — nothing reached the server.
+    case serverUnreachable
+    /// Explicit FTPS was required but the server doesn't offer AUTH TLS.
+    case ftpsUnsupported
+    /// The server's TLS certificate failed verification.
+    case certificateUntrusted
+    /// Another TLS handshake failure.
+    case secureConnectionFailed
+    /// The transfer started but stalled or exceeded its time limit.
+    case timedOut
+    /// The server rejected this file (or the transfer broke) — other files may still succeed.
+    case fileRejected
+
+    /// True when every other file in the batch would fail the same way, so a batch should stop
+    /// rather than retry each remaining file (and, for logins, risk a server lockout).
+    var isServerLevel: Bool {
+        switch self {
+        case .loginDenied, .accessDenied, .serverUnreachable, .ftpsUnsupported,
+             .certificateUntrusted, .secureConnectionFailed:
+            true
+        case .timedOut, .fileRejected:
+            false
+        }
+    }
+
+    /// One-sentence, credential-free explanation for the user.
+    var userMessage: String {
+        switch self {
+        case .loginDenied: "Login denied — check the user name and password."
+        case .accessDenied: "The server denied access to the remote folder — check the folder and its permissions."
+        case .serverUnreachable: "The server couldn't be reached — check the host, port and network."
+        case .ftpsUnsupported: "The server doesn't support FTPS — edit the server to use plain FTP or a different port."
+        case .certificateUntrusted: "The server's certificate isn't trusted."
+        case .secureConnectionFailed: "The secure (TLS) connection to the server failed."
+        case .timedOut: "The transfer stalled and timed out."
+        case .fileRejected: "The server did not accept the file."
+        }
+    }
+}
+
 struct FTPService: Sendable {
-    /// Thread-safe buffer for accumulating stderr output from curl.
-    private final class LockedBuffer: @unchecked Sendable {
-        nonisolated(unsafe) private var buffer = ""
-        private let lock = NSLock()
-        private let characterLimit = 64 * 1024
-
-        nonisolated func append(_ string: String) {
-            lock.withLock {
-                buffer += string
-                if buffer.count > characterLimit {
-                    buffer = String(buffer.suffix(characterLimit))
-                }
-            }
-        }
-
-        nonisolated var value: String {
-            lock.withLock { buffer }
-        }
-    }
-
-    /// Guards a continuation against double-resume when Task cancellation
-    /// races with normal process termination.
-    private final class CancellationState: @unchecked Sendable {
-        nonisolated(unsafe) private var _resumed = false
-        nonisolated(unsafe) private var _cancelled = false
-        nonisolated(unsafe) private var _launched = false
-        private let lock = NSLock()
-
-        nonisolated var isCancelled: Bool {
-            lock.withLock { _cancelled }
-        }
-
-        nonisolated func markCancelled() {
-            lock.withLock { _cancelled = true }
-        }
-
-        nonisolated func markLaunched() -> Bool {
-            lock.withLock {
-                _launched = true
-                return _cancelled
-            }
-        }
-
-        nonisolated var isLaunched: Bool {
-            lock.withLock { _launched }
-        }
-
-        nonisolated func claimResume() -> Bool {
-            lock.withLock {
-                if _resumed { return false }
-                _resumed = true
-                return true
-            }
-        }
-    }
-
     /// Upload a single file to the FTP server using curl.
+    ///
+    /// The file is sent to a temporary name (`.<name>.part`) and renamed to its final name only
+    /// after a complete transfer, so a hot folder never ingests a truncated image (see
+    /// `performUpload`). Returns what the upload learned about the server's rename support.
+    @discardableResult
     nonisolated func uploadFile(
         localURL: URL,
         connection: FTPConnection,
         password: String,
+        runner: FTPCurlRunner = .live,
+        retryDelay: Duration = FTPService.transientRetryDelay,
         progressHandler: @Sendable @escaping (FTPUploadProgress) -> Void
-    ) async throws {
+    ) async throws -> FTPUploadOutcome {
         try Task.checkCancellation()
         guard !connection.useSFTP else { throw FTPError.sftpUnavailable }
         let netrcContent = try Self.netrcContent(
@@ -80,8 +87,7 @@ struct FTPService: Sendable {
             password: password
         )
 
-        let remoteURL = Self.remoteUploadURL(for: localURL.lastPathComponent, connection: connection)
-
+        let fileName = localURL.lastPathComponent
         let fileSize = try localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
 
         // Write credentials to a temporary .netrc file so the password
@@ -95,107 +101,234 @@ struct FTPService: Sendable {
         try Self.writeNetrcAtomically(netrcData, to: netrcURL)
         defer { try? FileManager.default.removeItem(at: netrcURL) }
 
-        let arguments = Self.curlArguments(
-            localPath: localURL.path,
-            remoteURL: remoteURL,
-            netrcPath: netrcURL.path,
-            connection: connection
-        )
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        process.arguments = arguments
-
-        let stderrPipe = Pipe()
-        process.standardError = stderrPipe
-        // Discard stdout. nullDevice (vs an undrained Pipe) can't fill its buffer
-        // and block curl if the server ever writes a chatty response.
-        process.standardOutput = FileHandle.nullDevice
-
-        // Parse progress from stderr and capture output for error reporting
-        let stderrBuffer = LockedBuffer()
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-
-            stderrBuffer.append(str)
-
-            // curl progress bar format: "  % Total    % Received % Xferd  Average Speed..."
-            // Look for percentage
-            if let percentStr = str.split(separator: " ").first(where: { $0.hasSuffix("%") || Double($0) != nil }),
+        // curl progress bar format: "  % Total    % Received % Xferd  Average Speed..."
+        let progressParser: @Sendable (String) -> Void = { chunk in
+            if let percentStr = chunk.split(separator: " ").first(where: { $0.hasSuffix("%") || Double($0) != nil }),
                let percent = Double(percentStr.replacingOccurrences(of: "%", with: "")) {
                 let fraction = min(percent / 100.0, 1.0)
-                let progress = FTPUploadProgress(
-                    fileName: localURL.lastPathComponent,
+                progressHandler(FTPUploadProgress(
+                    fileName: fileName,
                     bytesUploaded: Int64(fraction * Double(fileSize)),
                     totalBytes: Int64(fileSize),
                     fractionCompleted: fraction,
                     isComplete: false
-                )
-                progressHandler(progress)
+                ))
             }
         }
 
-        let state = CancellationState()
-
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                process.terminationHandler = { proc in
-                    stderrPipe.fileHandleForReading.readabilityHandler = nil
-
-                    guard state.claimResume() else { return }
-
-                    if state.isCancelled {
-                        continuation.resume(throwing: CancellationError())
-                        return
-                    }
-
-                    if proc.terminationStatus == 0 {
-                        continuation.resume()
-                    } else {
-                        let stderr = stderrBuffer.value
-                        continuation.resume(throwing: FTPError.uploadFailed(proc.terminationStatus, stderr))
-                    }
-                }
-                do {
-                    try process.run()
-                    if state.markLaunched() {
-                        process.terminate()
-                    }
-                } catch {
-                    stderrPipe.fileHandleForReading.readabilityHandler = nil
-                    if state.claimResume() {
-                        continuation.resume(throwing: state.isCancelled ? CancellationError() : error)
-                    }
-                }
-            }
-        } onCancel: {
-            state.markCancelled()
-            if state.isLaunched {
-                process.terminate()
-            }
+        let outcome = try await Self.performUpload(
+            localPath: localURL.path,
+            filename: fileName,
+            connection: connection,
+            netrcPath: netrcURL.path,
+            retryDelay: retryDelay
+        ) { arguments, isTransfer in
+            try await runner.run(arguments, isTransfer ? progressParser : nil)
         }
 
-        let finalProgress = FTPUploadProgress(
-            fileName: localURL.lastPathComponent,
+        progressHandler(FTPUploadProgress(
+            fileName: fileName,
             bytesUploaded: Int64(fileSize),
             totalBytes: Int64(fileSize),
             fractionCompleted: 1.0,
             isComplete: true
-        )
-        progressHandler(finalProgress)
+        ))
+        return outcome
     }
+
+    // MARK: - Upload algorithm (shared by the legacy and Deadline delivery paths)
+
+    /// curl's `CURLE_QUOTE_ERROR`: a quote command (here: the post-transfer RNFR/RNTO) was
+    /// refused. Post-quote commands only run after a complete transfer, so this status means
+    /// the temporary file arrived but could not be renamed.
+    nonisolated static let curlQuoteErrorExitCode: Int32 = 21
+
+    /// Exit statuses retried in-app: couldn't connect (7), timed out/stalled (28), send (55)
+    /// and receive (56) errors — the transient failures of a bad network. Everything else
+    /// (notably login failures) is never retried, so a wrong password can't lock an account.
+    nonisolated static let transientExitCodes: Set<Int32> = [7, 28, 55, 56]
+    nonisolated static let maximumTransferAttempts = 4
+    nonisolated static let transientRetryDelay: Duration = .seconds(2)
+
+    /// The temporary name a file is uploaded under before being renamed into place:
+    /// `.<name>.part`. The leading dot hides it from most hot-folder scanners and directory
+    /// listings, and the `.part` extension keeps image ingesters from picking it up even where
+    /// dot-files are visible. Returns `nil` (upload directly) when the name can't safely be
+    /// used in an RNFR/RNTO command — control characters would split the FTP command line —
+    /// or would exceed a 255-byte file-name limit.
+    nonisolated static func temporaryUploadName(for filename: String) -> String? {
+        let candidate = ".\(filename).part"
+        guard !filename.isEmpty,
+              candidate.utf8.count <= 255,
+              !filename.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0)
+              }) else { return nil }
+        return candidate
+    }
+
+    /// Uploads one file and, unless the profile is known to refuse renames, does so atomically:
+    ///
+    /// 1. STOR to `.<name>.part` (curl `-T` to the temporary URL), then — only after a complete
+    ///    transfer — post-quote `DELE <name>` (failure ignored: some servers, e.g. IIS, refuse
+    ///    to RNTO over an existing file), `RNFR .<name>.part`, `RNTO <name>`. Post-quote
+    ///    commands run in the URL's directory, so the bare names are relative to it.
+    /// 2. Transient failures (7/28/55/56) are retried in-app; each attempt overwrites the
+    ///    temporary file, so a broken attempt never surfaces under the final name.
+    /// 3. If the transfer succeeded but the rename was refused (curl 21), the temporary file is
+    ///    deleted best-effort and the file is re-sent directly under its final name; the
+    ///    returned outcome reports `renameRefused` so the caller can remember it.
+    /// 4. On failure or cancellation the temporary file is deleted best-effort (skipped for
+    ///    server-level failures, where a cleanup connection would fail the same way).
+    ///
+    /// `run` executes one curl invocation; its second argument is true for the transfer itself
+    /// (callers attach progress parsing to it) and false for the cleanup command.
+    nonisolated static func performUpload(
+        localPath: String,
+        filename: String,
+        connection: FTPConnection,
+        netrcPath: String,
+        retryDelay: Duration = transientRetryDelay,
+        run: @escaping @Sendable (_ arguments: [String], _ isTransfer: Bool) async throws -> DeliveryProcessResult
+    ) async throws -> FTPUploadOutcome {
+        var temporaryName = connection.serverRefusesRename || connection.useSFTP
+            ? nil
+            : temporaryUploadName(for: filename)
+        var renameRefused = false
+
+        while true {
+            let arguments = uploadArguments(
+                localPath: localPath,
+                filename: filename,
+                temporaryName: temporaryName,
+                netrcPath: netrcPath,
+                connection: connection
+            )
+            let result: DeliveryProcessResult
+            do {
+                result = try await runRetryingTransientFailures(
+                    arguments,
+                    retryDelay: retryDelay
+                ) { try await run($0, true) }
+            } catch is CancellationError {
+                if let temporaryName {
+                    await removeTemporaryUpload(temporaryName, netrcPath: netrcPath, connection: connection, run: run)
+                }
+                throw CancellationError()
+            }
+
+            if result.terminationStatus == 0 {
+                return FTPUploadOutcome(renameRefused: renameRefused)
+            }
+            if result.terminationStatus == curlQuoteErrorExitCode, let pending = temporaryName {
+                await removeTemporaryUpload(pending, netrcPath: netrcPath, connection: connection, run: run)
+                try Task.checkCancellation()
+                temporaryName = nil
+                renameRefused = true
+                continue
+            }
+            if let temporaryName,
+               !failureCategory(exitCode: result.terminationStatus, stderr: result.standardError).isServerLevel {
+                await removeTemporaryUpload(temporaryName, netrcPath: netrcPath, connection: connection, run: run)
+            }
+            throw FTPError.uploadFailed(result.terminationStatus, result.standardError)
+        }
+    }
+
+    nonisolated static func runRetryingTransientFailures(
+        _ arguments: [String],
+        retryDelay: Duration,
+        run: @Sendable ([String]) async throws -> DeliveryProcessResult
+    ) async throws -> DeliveryProcessResult {
+        var attempt = 1
+        while true {
+            try Task.checkCancellation()
+            let result = try await run(arguments)
+            guard transientExitCodes.contains(result.terminationStatus),
+                  attempt < maximumTransferAttempts else { return result }
+            attempt += 1
+            if retryDelay > .zero { try await Task.sleep(for: retryDelay) }
+        }
+    }
+
+    /// Best-effort `DELE` of a leftover temporary upload. Runs detached so a cancelled upload
+    /// can still clean up after itself; bounded by short curl timeouts.
+    nonisolated private static func removeTemporaryUpload(
+        _ temporaryName: String,
+        netrcPath: String,
+        connection: FTPConnection,
+        run: @escaping @Sendable ([String], Bool) async throws -> DeliveryProcessResult
+    ) async {
+        let arguments = cleanupArguments(temporaryName: temporaryName, netrcPath: netrcPath, connection: connection)
+        await Task.detached {
+            _ = try? await run(arguments, false)
+        }.value
+    }
+
+    /// The full curl argument vector for one transfer attempt: direct to `filename`, or to
+    /// `temporaryName` followed by the post-transfer rename into place.
+    nonisolated static func uploadArguments(
+        localPath: String,
+        filename: String,
+        temporaryName: String?,
+        netrcPath: String,
+        connection: FTPConnection
+    ) -> [String] {
+        var arguments = curlArguments(
+            localPath: localPath,
+            remoteURL: remoteUploadURL(for: temporaryName ?? filename, connection: connection),
+            netrcPath: netrcPath,
+            connection: connection
+        )
+        if let temporaryName {
+            // "-" = after the transfer, and only if it succeeded; "*" = ignore a failure.
+            arguments += [
+                "-Q", "-*DELE \(filename)",
+                "-Q", "-RNFR \(temporaryName)",
+                "-Q", "-RNTO \(filename)",
+            ]
+        }
+        return arguments
+    }
+
+    /// `curl --head` on the remote directory with a post-quote `DELE`: connects, changes into
+    /// the folder and deletes the temporary file without listing or transferring anything
+    /// (listing is often forbidden on drop boxes).
+    nonisolated static func cleanupArguments(
+        temporaryName: String,
+        netrcPath: String,
+        connection: FTPConnection
+    ) -> [String] {
+        var arguments = [
+            "--netrc-file", netrcPath,
+            "--head",
+            "--silent",
+            "--show-error",
+            "--globoff",
+            "--connect-timeout", "10",
+            "--max-time", "20",
+            remoteDirectoryURL(connection: connection),
+            "-Q", "-DELE \(temporaryName)",
+        ]
+        arguments.append(contentsOf: transportFlags(for: connection))
+        return arguments
+    }
+
+    // MARK: - Connection test
 
     /// Probes a connection without transferring a file: connect + authenticate + list the
     /// configured remote directory. Reuses the same credential handling and transport/security
     /// flags as the upload path so a passing test reflects what an upload would do. Fails fast
-    /// (`--connect-timeout`, no `--retry`) — a probe should surface an unreachable server
+    /// (`--connect-timeout`, no retries) — a probe should surface an unreachable server
     /// immediately rather than retrying for several seconds.
     ///
     /// Uploads create a missing remote folder (`--ftp-create-dirs`), so when only the folder
     /// can't be entered the server root is listed instead; if that works the test passes and
     /// the returned note says so. Returns `nil` when the configured folder itself listed.
-    nonisolated func testConnection(connection: FTPConnection, password: String) async throws -> String? {
+    nonisolated func testConnection(
+        connection: FTPConnection,
+        password: String,
+        runner: FTPCurlRunner = .live
+    ) async throws -> String? {
         try Task.checkCancellation()
         guard !connection.useSFTP else { throw FTPError.sftpUnavailable }
         let netrcContent = try Self.netrcContent(
@@ -213,28 +346,28 @@ struct FTPService: Sendable {
         try Self.writeNetrcAtomically(netrcData, to: netrcURL)
         defer { try? FileManager.default.removeItem(at: netrcURL) }
 
-        let directoryProbe = try await runProbe(arguments: Self.testConnectionArguments(
+        let directoryProbe = try await runner.run(Self.testConnectionArguments(
             remoteURL: Self.remoteDirectoryURL(connection: connection),
             netrcPath: netrcURL.path,
             connection: connection
-        ))
-        if directoryProbe.status == 0 { return nil }
+        ), nil)
+        if directoryProbe.terminationStatus == 0 { return nil }
 
         // Login worked but the folder couldn't be entered: check the root before blaming the server.
         var root = connection
         root.remotePath = "/"
-        if Self.isMissingDirectoryStatus(directoryProbe.status),
+        if Self.isMissingDirectoryStatus(directoryProbe.terminationStatus),
            Self.remoteDirectoryURL(connection: root) != Self.remoteDirectoryURL(connection: connection) {
-            let rootProbe = try await runProbe(arguments: Self.testConnectionArguments(
+            let rootProbe = try await runner.run(Self.testConnectionArguments(
                 remoteURL: Self.remoteDirectoryURL(connection: root),
                 netrcPath: netrcURL.path,
                 connection: connection
-            ))
-            if rootProbe.status == 0 {
+            ), nil)
+            if rootProbe.terminationStatus == 0 {
                 return "Connected. The folder “\(connection.remotePath)” doesn't exist yet or can't be listed; uploads will try to create it."
             }
         }
-        throw FTPError.connectionTestFailed(directoryProbe.status, directoryProbe.stderr)
+        throw FTPError.connectionTestFailed(directoryProbe.terminationStatus, directoryProbe.standardError)
     }
 
     /// curl exit statuses meaning login worked but the remote folder could not be entered
@@ -243,55 +376,7 @@ struct FTPService: Sendable {
         status == 9 || status == 78
     }
 
-    /// Runs one fail-fast curl probe and returns its exit status and captured stderr.
-    nonisolated private func runProbe(arguments: [String]) async throws -> (status: Int32, stderr: String) {
-        try Task.checkCancellation()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        process.arguments = arguments
-
-        let stderrPipe = Pipe()
-        process.standardError = stderrPipe
-        process.standardOutput = FileHandle.nullDevice
-
-        let stderrBuffer = LockedBuffer()
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-            stderrBuffer.append(str)
-        }
-
-        let state = CancellationState()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(status: Int32, stderr: String), any Error>) in
-                process.terminationHandler = { proc in
-                    stderrPipe.fileHandleForReading.readabilityHandler = nil
-                    guard state.claimResume() else { return }
-                    if state.isCancelled {
-                        continuation.resume(throwing: CancellationError())
-                    } else {
-                        continuation.resume(returning: (proc.terminationStatus, stderrBuffer.value))
-                    }
-                }
-                do {
-                    try process.run()
-                    if state.markLaunched() {
-                        process.terminate()
-                    }
-                } catch {
-                    stderrPipe.fileHandleForReading.readabilityHandler = nil
-                    if state.claimResume() {
-                        continuation.resume(throwing: state.isCancelled ? CancellationError() : error)
-                    }
-                }
-            }
-        } onCancel: {
-            state.markCancelled()
-            if state.isLaunched {
-                process.terminate()
-            }
-        }
-    }
+    // MARK: - URLs and arguments
 
     /// Builds the remote upload target URL for a file. Extracted as a pure function
     /// so the filename encoding is unit-testable.
@@ -334,7 +419,7 @@ struct FTPService: Sendable {
 
     /// Builds the curl argument vector for a connection test (directory listing). Shares
     /// the transport/security flags with the upload path via `transportFlags`, but fails
-    /// fast: a short `--connect-timeout` and no `--retry`, so an unreachable server is
+    /// fast: a short `--connect-timeout` and no retries, so an unreachable server is
     /// surfaced immediately instead of after several retry cycles.
     nonisolated static func testConnectionArguments(
         remoteURL: String,
@@ -373,10 +458,15 @@ struct FTPService: Sendable {
         return flags
     }
 
-    /// Builds the curl argument vector for an upload. Extracted as a pure function
-    /// so the security-critical transport flags are unit-testable: explicit FTPS
-    /// must add `--ssl-reqd` (so a TLS failure aborts rather than silently sending
-    /// credentials in the clear), and plain FTP must carry no TLS/insecure flags.
+    /// Builds the curl argument vector for one direct transfer to `remoteURL`. Extracted as a
+    /// pure function so the security-critical transport flags are unit-testable: explicit FTPS
+    /// must add `--ssl-reqd` (so a TLS failure aborts rather than silently sending credentials
+    /// in the clear), and plain FTP must carry no TLS/insecure flags.
+    ///
+    /// There is deliberately no `--retry`: curl's `--retry-all-errors` retried login failures
+    /// (risking account lockouts) and restarted a broken STOR under the final name. Transient
+    /// failures are retried in-app instead (`runRetryingTransientFailures`), always against the
+    /// temporary name.
     nonisolated static func curlArguments(
         localPath: String,
         remoteURL: String,
@@ -395,13 +485,10 @@ struct FTPService: Sendable {
             "--globoff",
             // Never let a black-holed server freeze progress indefinitely: give up on a
             // connection attempt after 15 s, and abort a transfer that moves less than
-            // 1 byte/s for 60 s. With the retries below a dead server fails in ~1 minute.
+            // 1 byte/s for 60 s. With the in-app retries a dead server fails in ~1 minute.
             "--connect-timeout", "15",
             "--speed-limit", "1",
             "--speed-time", "60",
-            "--retry", "3",
-            "--retry-delay", "2",
-            "--retry-all-errors",
             remoteURL,
         ]
 
@@ -411,6 +498,31 @@ struct FTPService: Sendable {
         arguments.append(contentsOf: transportFlags(for: connection))
         return arguments
     }
+
+    // MARK: - Failure classification
+
+    /// Maps a curl exit status to a fixed category. curl 28 covers both a connect timeout
+    /// (nothing reached the server) and a stalled transfer; curl's own diagnostic tells them
+    /// apart, and an unrecognized 28 is treated conservatively as unreachable.
+    nonisolated static func failureCategory(exitCode: Int32, stderr: String = "") -> FTPFailureCategory {
+        switch exitCode {
+        case 67: return .loginDenied
+        case 9: return .accessDenied
+        case 1, 5, 6, 7: return .serverUnreachable
+        case 28:
+            let lowered = stderr.lowercased()
+            if lowered.contains("too slow") || lowered.contains("operation timed out") {
+                return .timedOut
+            }
+            return .serverUnreachable
+        case 64: return .ftpsUnsupported
+        case 51, 60, 83: return .certificateUntrusted
+        case 35, 58, 59, 66, 77, 80, 90, 91: return .secureConnectionFailed
+        default: return .fileRejected
+        }
+    }
+
+    // MARK: - Credentials
 
     /// Builds the one-line netrc entry curl reads credentials from. The login and password are
     /// written as quoted tokens (supported by curl ≥ 7.84, macOS ships 8.x) so spaces, `#`,
@@ -490,29 +602,27 @@ struct FTPService: Sendable {
             }
         }
 
+        /// The fixed failure category for a curl failure; `nil` for local/configuration errors.
+        var category: FTPFailureCategory? {
+            switch self {
+            case .uploadFailed(let code, let stderr), .connectionTestFailed(let code, let stderr):
+                return FTPService.failureCategory(exitCode: code, stderr: stderr)
+            case .invalidCredential, .sftpUnavailable, .encodingFailed, .netrcCreationFailed:
+                return nil
+            }
+        }
+
         /// True when the failure means every other file in the batch would fail the
         /// same way — the server is unreachable, rejecting auth, refusing TLS, the
         /// credentials or protocol are unusable — so the upload loop should stop rather
         /// than retry each remaining file in turn. File-specific failures (e.g. 23 disk
-        /// write, 26 local read) stay non-fatal.
+        /// write, 26 local read, 25 STOR refused, a stalled transfer) stay non-fatal.
         var isServerLevel: Bool {
-            switch self {
-            case .uploadFailed(let code, _), .connectionTestFailed(let code, _):
-                return Self.isServerLevelExitCode(code)
-            case .invalidCredential, .sftpUnavailable, .encodingFailed, .netrcCreationFailed:
-                return true
-            }
+            category?.isServerLevel ?? true
         }
 
         nonisolated static func isServerLevelExitCode(_ code: Int32) -> Bool {
-            switch code {
-            case 1, 5, 6, 7, 9, 28, 35, 51, 67:
-                // unsupported protocol, proxy refused, DNS, connect, access denied,
-                // timeout, TLS handshake, cert verify, login denied
-                return true
-            default:
-                return false
-            }
+            FTPService.failureCategory(exitCode: code).isServerLevel
         }
 
         private static func describe(code: Int32, stderr: String, prefix: String) -> String {
@@ -529,26 +639,191 @@ struct FTPService: Sendable {
             case 5:  return "\(prefix): proxy connection refused"
             case 6:  return "\(prefix): could not resolve host"
             case 7:  return "\(prefix): could not connect to server"
-            case 9:  return "\(prefix): access denied by server"
+            case 9:  return "\(prefix): the server denied access to the remote folder — check the folder and its permissions"
+            case 21: return "\(prefix): the server refused a command (rename)"
             case 23: return "\(prefix): could not write data to disk"
-            case 25: return "\(prefix): could not start FTP upload"
+            case 25: return "\(prefix): the server refused to store the file"
             case 26: return "\(prefix): could not read local file"
             case 28: return "\(prefix): connection timed out or stalled"
             case 35: return "\(prefix): SSL/TLS handshake error"
-            case 51: return "\(prefix): server certificate verification failed"
+            case 51, 60, 83: return "\(prefix): The server's certificate isn't trusted"
             case 55: return "\(prefix): error sending data"
             case 56: return "\(prefix): error receiving data"
-            case 67: return "\(prefix): login denied (check username/password)"
+            case 58, 59, 66, 77, 80, 90, 91: return "\(prefix): the secure (TLS) connection failed"
+            case 64: return "\(prefix): The server doesn't support FTPS — edit the server to use plain FTP or a different port"
+            case 67: return "\(prefix): Login denied — check the user name and password"
             case 78: return "\(prefix): remote folder not found"
             default: return "\(prefix) (curl exit code \(code))"
             }
         }
 
-        /// Extracts the last "curl: (N) ..." diagnostic line from stderr.
-        private static func extractCurlError(from stderr: String) -> String? {
-            stderr.split(separator: "\n")
-                .last { $0.hasPrefix("curl:") }
-                .map(String.init)
+        /// Extracts the last "curl: (N) ..." diagnostic from stderr. `--progress-bar` redraws
+        /// with carriage returns, so the diagnostic can follow progress output on one line.
+        nonisolated static func extractCurlError(from stderr: String) -> String? {
+            stderr.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+                .compactMap { line -> String? in
+                    guard let range = line.range(of: "curl: (") else { return nil }
+                    return String(line[range.lowerBound...]).trimmingCharacters(in: .whitespaces)
+                }
+                .last
+        }
+    }
+}
+
+// MARK: - curl process execution
+
+/// Runs one `/usr/bin/curl` invocation. The second argument, when non-nil, receives stderr
+/// chunks as they arrive (the legacy path parses progress from it). Injectable so tests never
+/// launch curl or touch a server.
+nonisolated struct FTPCurlRunner: Sendable {
+    let run: @Sendable (_ arguments: [String], _ stderrChunk: (@Sendable (String) -> Void)?) async throws
+        -> FTPService.DeliveryProcessResult
+
+    nonisolated init(
+        run: @escaping @Sendable (_ arguments: [String], _ stderrChunk: (@Sendable (String) -> Void)?) async throws
+            -> FTPService.DeliveryProcessResult
+    ) {
+        self.run = run
+    }
+
+    nonisolated static let live = Self { arguments, stderrChunk in
+        try await FTPCurlProcessExecutor.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/curl"),
+            arguments: arguments,
+            stderrChunk: stderrChunk
+        )
+    }
+}
+
+private nonisolated final class FTPCurlProcessBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+    private let limit = 64 * 1024
+
+    func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.withLock {
+            storage.append(data)
+            if storage.count > limit { storage = storage.suffix(limit) }
+        }
+    }
+
+    var string: String {
+        lock.withLock { String(decoding: storage, as: UTF8.self) }
+    }
+}
+
+private nonisolated final class FTPCurlProcessState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+    private var cancelled = false
+    private var process: Process?
+
+    func install(_ process: Process) -> Bool {
+        lock.withLock {
+            self.process = process
+            return cancelled
+        }
+    }
+
+    func cancel() {
+        let process = lock.withLock { () -> Process? in
+            cancelled = true
+            return self.process
+        }
+        if let process { FTPCurlProcessExecutor.terminate(process) }
+    }
+
+    func claim() -> (claimed: Bool, cancelled: Bool) {
+        lock.withLock {
+            guard !resumed else { return (false, cancelled) }
+            resumed = true
+            return (true, cancelled)
+        }
+    }
+}
+
+/// The one place curl processes are launched. Cancellation sends SIGTERM and, if curl is still
+/// running after a short grace period (e.g. blocked on a dead socket), SIGKILL — so Cancel stops
+/// an in-flight file promptly. On exit the pipes are drained to EOF before the result is built,
+/// so curl's final "curl: (N) …" line is never lost to the readability-handler race.
+nonisolated enum FTPCurlProcessExecutor {
+    static let terminationGracePeriod: TimeInterval = 2
+
+    static func run(
+        executableURL: URL,
+        arguments: [String],
+        stderrChunk: (@Sendable (String) -> Void)? = nil
+    ) async throws -> FTPService.DeliveryProcessResult {
+        try Task.checkCancellation()
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        let stdout = Pipe()
+        let stderr = Pipe()
+        let stdoutBuffer = FTPCurlProcessBuffer()
+        let stderrBuffer = FTPCurlProcessBuffer()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        stdout.fileHandleForReading.readabilityHandler = { handle in
+            stdoutBuffer.append(handle.availableData)
+        }
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            stderrBuffer.append(data)
+            if let stderrChunk, let text = String(data: data, encoding: .utf8) {
+                stderrChunk(text)
+            }
+        }
+        let state = FTPCurlProcessState()
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                process.terminationHandler = { process in
+                    stdout.fileHandleForReading.readabilityHandler = nil
+                    stderr.fileHandleForReading.readabilityHandler = nil
+                    // Drain whatever the handlers had not read yet (curl's last error line).
+                    stdoutBuffer.append(stdout.fileHandleForReading.readDataToEndOfFile())
+                    stderrBuffer.append(stderr.fileHandleForReading.readDataToEndOfFile())
+                    let outcome = state.claim()
+                    guard outcome.claimed else { return }
+                    if outcome.cancelled {
+                        continuation.resume(throwing: CancellationError())
+                    } else {
+                        continuation.resume(returning: FTPService.DeliveryProcessResult(
+                            terminationStatus: process.terminationStatus,
+                            standardOutput: stdoutBuffer.string,
+                            standardError: stderrBuffer.string
+                        ))
+                    }
+                }
+                do {
+                    try process.run()
+                    if state.install(process) { terminate(process) }
+                } catch {
+                    stdout.fileHandleForReading.readabilityHandler = nil
+                    stderr.fileHandleForReading.readabilityHandler = nil
+                    let outcome = state.claim()
+                    if outcome.claimed {
+                        continuation.resume(throwing: outcome.cancelled ? CancellationError() : error)
+                    }
+                }
+            }
+        } onCancel: {
+            state.cancel()
+        }
+    }
+
+    /// SIGTERM now, SIGKILL after the grace period if curl hasn't exited.
+    static func terminate(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let pid = process.processIdentifier
+        DispatchQueue.global().asyncAfter(deadline: .now() + terminationGracePeriod) {
+            if process.isRunning, process.processIdentifier == pid {
+                kill(pid, SIGKILL)
+            }
         }
     }
 }
