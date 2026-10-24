@@ -151,6 +151,14 @@ final class FaceRecognitionViewModel {
     /// Face-data updates that arrived while this folder was scanning. The scan publishes its own
     /// snapshot at the end, so these are replayed afterwards instead of being overwritten.
     @ObservationIgnored private var deferredAfterScan: [@MainActor () -> Void] = []
+    /// The face data the pending proposal was planned from. A later edit re-plans from this
+    /// snapshot (Alice → Alicia → Alicja becomes one Alice → Alicja proposal) instead of
+    /// appending a correction that would target a name the photos never received.
+    @ObservationIgnored private var pendingProposalBase: FolderFaceData?
+    @ObservationIgnored private var pendingProposalExcludedPaths: Set<String> = []
+    /// Applied-name changes of Person Shown writes that are queued or running, in order. Planning
+    /// overlays them so it starts from the names the photos will carry once they land.
+    @ObservationIgnored private var inFlightAppliedNameChanges: [(id: UUID, folder: String, changes: AppliedPersonShownChanges)] = []
 
     /// Whether Apply All has anything to write: named face groups, or — with the Sports lens
     /// active — confirmed jersey players (sports resolution never names face groups). Partial
@@ -3007,10 +3015,12 @@ final class FaceRecognitionViewModel {
 
         guard !uniqueURLs.isEmpty else { return }
 
+        let perPhoto = Dictionary(uniqueURLs.map { ($0.lastPathComponent, Optional(appliedName)) },
+            uniquingKeysWith: { first, _ in first })
         enqueuePersonMutations(
             mutationsByURL: Dictionary(uniqueKeysWithValues: uniqueURLs.map { ($0, .addPersons(names)) }),
             folderURL: data.folderURL, capturedC2PA: nil,
-            appliedNameUpdates: [groupID: appliedName], onComplete: nil)
+            appliedNameUpdates: [groupID: perPhoto], onComplete: nil)
     }
 
     /// A face's photo inside `folderURL`, by filename when the stored URL names another folder.
@@ -3044,7 +3054,7 @@ final class FaceRecognitionViewModel {
         for image in images { availableByPath[image.url.standardizedFileURL.path] = image.url }
         var namesByURL: [URL: [String]] = [:]
         var seenNamesByURL: [URL: Set<String>] = [:]
-        var appliedNameUpdates: [UUID: String?] = [:]
+        var appliedNameUpdates: AppliedPersonShownChanges = [:]
 
         for face in data.faces {
             guard let photoURL = availableByPath[Self.currentPhotoURL(face.imageURL, in: data.folderURL).standardizedFileURL.path],
@@ -3055,7 +3065,7 @@ final class FaceRecognitionViewModel {
 
             let names = splitPersonNames(rawName)
             guard let appliedName = names.first else { continue }
-            appliedNameUpdates[groupID] = appliedName
+            appliedNameUpdates[groupID, default: [:]][photoURL.lastPathComponent] = .some(appliedName)
 
             var existing = namesByURL[photoURL] ?? []
             var seen = seenNamesByURL[photoURL] ?? Set(existing.map { $0.lowercased() })
@@ -3127,7 +3137,7 @@ final class FaceRecognitionViewModel {
     /// XMP sidecar only), C2PA, the metadata loss guard and preserves Develop settings.
     /// `appliedNameUpdates` records the exact name now in the photos once any write completes.
     private func enqueuePersonMutations(mutationsByURL: [URL: MetadataPhysicalFieldMutation], folderURL: URL,
-        capturedC2PA: [URL: Bool]?, appliedNameUpdates: [UUID: String?] = [:], onComplete: (() -> Void)?) {
+        capturedC2PA: [URL: Bool]?, appliedNameUpdates: AppliedPersonShownChanges = [:], onComplete: (() -> Void)?) {
         // Capture settings before any asynchronous reads or preceding accepted operations.
         let ordinaryMode = fieldMutationModeResolver(false, false)
         let c2paMode = fieldMutationModeResolver(true, false)
@@ -3138,6 +3148,10 @@ final class FaceRecognitionViewModel {
         let engine = writeEngine
         let reader = readService
         let signatureService = fileSignatureService
+        let inFlightID = UUID()
+        if !appliedNameUpdates.isEmpty {
+            inFlightAppliedNameChanges.append((inFlightID, Self.fieldMutationFolderIdentity(folderURL), appliedNameUpdates))
+        }
         metadataWriteTask = Task {
             // The completion closure releases FaceBar's busy state, including failures. Success
             // is represented by immutable results and change notifications, never this callback.
@@ -3189,12 +3203,20 @@ final class FaceRecognitionViewModel {
                 NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil,
                     userInfo: ["imageURLs": changed])
             }
+            inFlightAppliedNameChanges.removeAll { $0.id == inFlightID }
+            // Only photos whose write completed now carry the new names.
+            let completedPhotos = Set(results.filter(\.completed).map(\.imageURL.lastPathComponent))
+            if !appliedNameUpdates.isEmpty, let base = pendingProposalBase,
+               Self.fieldMutationFolderIdentity(base.folderURL) == Self.fieldMutationFolderIdentity(folderURL) {
+                var updatedBase = base
+                PersonShownCorrectionPlanner.applying(appliedNameUpdates, to: &updatedBase, onlyPhotos: completedPhotos)
+                pendingProposalBase = updatedBase
+            }
             guard faceData.map({ Self.fieldMutationFolderIdentity($0.folderURL) }) == Self.fieldMutationFolderIdentity(folderURL) else { return }
             fieldMutationResults = results
             if let failure = MetadataFieldMutationFeedback.failureSummary(results) { errorMessage = failure }
-            let completedAny = results.contains(where: \.completed)
-            updateFaceDataAfterOwnWrites(folderURL: folderURL,
-                appliedNameUpdates: completedAny ? appliedNameUpdates : [:], ownWrites: ownWrites)
+            updateFaceDataAfterOwnWrites(folderURL: folderURL, appliedNameUpdates: appliedNameUpdates,
+                completedPhotos: completedPhotos, ownWrites: ownWrites)
         }
     }
 
@@ -3207,36 +3229,23 @@ final class FaceRecognitionViewModel {
     /// After our own verified Person Shown writes: remember the exact applied names, and move each
     /// rewritten photo's scan signature forward (only when it still described the pre-write file)
     /// so the next incremental scan keeps the faces of a photo whose pixels did not change.
-    private func updateFaceDataAfterOwnWrites(folderURL: URL, appliedNameUpdates: [UUID: String?],
-                                              ownWrites: [OwnPersonWrite]) {
+    private func updateFaceDataAfterOwnWrites(folderURL: URL, appliedNameUpdates: AppliedPersonShownChanges,
+                                              completedPhotos: Set<String>, ownWrites: [OwnPersonWrite]) {
         guard !appliedNameUpdates.isEmpty || !ownWrites.isEmpty else { return }
         guard var data = faceData,
               Self.fieldMutationFolderIdentity(data.folderURL) == Self.fieldMutationFolderIdentity(folderURL) else { return }
         if isScanning(folderURL: data.folderURL) {
             deferredAfterScan.append { [weak self] in
-                self?.updateFaceDataAfterOwnWrites(folderURL: folderURL, appliedNameUpdates: appliedNameUpdates, ownWrites: ownWrites)
+                self?.updateFaceDataAfterOwnWrites(folderURL: folderURL, appliedNameUpdates: appliedNameUpdates,
+                    completedPhotos: completedPhotos, ownWrites: ownWrites)
             }
             return
         }
-        var changed = false
-        var renamedSinceApply = data
-        var hasStaleAppliedName = false
-        for (groupID, name) in appliedNameUpdates {
-            guard let index = data.groups.firstIndex(where: { $0.id == groupID }) else { continue }
-            if data.groups[index].appliedPersonShownName != name {
-                data.groups[index].appliedPersonShownName = name
-                renamedSinceApply.groups[index].appliedPersonShownName = name
-                changed = true
-            }
-            // The group was renamed while its write was in flight: offer the correction now.
-            let current = data.groups[index].isExcludedFromPersonShown ? nil
-                : data.groups[index].name?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let name, current != name {
-                renamedSinceApply.groups[index].name = name
-                renamedSinceApply.groups[index].excludedFromPersonShown = nil
-                hasStaleAppliedName = true
-            }
-        }
+        let before = data
+        // Renames made while this write ran were already planned against these names (the
+        // in-flight overlay), so recording them never needs a second prompt.
+        PersonShownCorrectionPlanner.applying(appliedNameUpdates, to: &data, onlyPhotos: completedPhotos)
+        var changed = data.groups.map(\.appliedPersonShownNames) != before.groups.map(\.appliedPersonShownNames)
         for write in ownWrites {
             let key = write.url.path
             guard let stored = data.scannedFiles[key], stored.hasSameFileFacts(as: write.before),
@@ -3249,10 +3258,6 @@ final class FaceRecognitionViewModel {
         guard changed else { return }
         faceData = data
         scheduleFaceDataPersistence(data)
-        if hasStaleAppliedName {
-            renamedSinceApply.scannedFiles = data.scannedFiles
-            offerPersonShownUpdate(before: renamedSinceApply, after: data)
-        }
     }
 
     func waitForPendingFieldMutationWrites() async { await metadataWriteTask?.value }
@@ -3315,21 +3320,40 @@ final class FaceRecognitionViewModel {
 
     private func offerPersonShownUpdate(before: FolderFaceData, after: FolderFaceData,
                                         excluding excludedURLs: Set<URL> = []) {
-        guard Self.fieldMutationFolderIdentity(before.folderURL) == Self.fieldMutationFolderIdentity(after.folderURL),
-              var proposal = PersonShownCorrectionPlanner.proposal(before: before, after: after) else { return }
-        if !excludedURLs.isEmpty {
-            let excludedPaths = Set(excludedURLs.map { $0.standardizedFileURL.path })
-            proposal.replacementsByURL = proposal.replacementsByURL.filter {
+        let folder = Self.fieldMutationFolderIdentity(after.folderURL)
+        guard Self.fieldMutationFolderIdentity(before.folderURL) == folder else { return }
+        // A pending proposal is re-planned from its original snapshot so consecutive edits
+        // collapse into one correction from what the photos actually carry.
+        let reusesPending = pendingPersonShownUpdate != nil
+            && pendingProposalBase.map { Self.fieldMutationFolderIdentity($0.folderURL) == folder } == true
+        let base = reusesPending ? (pendingProposalBase ?? before) : before
+        var excludedPaths = reusesPending ? pendingProposalExcludedPaths : []
+        excludedPaths.formUnion(excludedURLs.map { $0.standardizedFileURL.path })
+        var planningBase = base
+        for entry in inFlightAppliedNameChanges where entry.folder == folder {
+            PersonShownCorrectionPlanner.applying(entry.changes, to: &planningBase)
+        }
+        var proposal = PersonShownCorrectionPlanner.proposal(before: planningBase, after: after)
+        if !excludedPaths.isEmpty, var filtered = proposal {
+            filtered.replacementsByURL = filtered.replacementsByURL.filter {
                 !excludedPaths.contains($0.key.standardizedFileURL.path)
             }
-            guard !proposal.replacementsByURL.isEmpty else { return }
+            proposal = filtered.replacementsByURL.isEmpty ? nil : filtered
         }
-        if let pending = pendingPersonShownUpdate,
-           Self.fieldMutationFolderIdentity(pending.folderURL) == Self.fieldMutationFolderIdentity(proposal.folderURL) {
-            pendingPersonShownUpdate = pending.merged(with: proposal)
-        } else {
-            pendingPersonShownUpdate = proposal
+        guard let proposal else {
+            // e.g. renamed back before answering: nothing is wrong any more.
+            if reusesPending { clearPendingPersonShownUpdate() }
+            return
         }
+        pendingProposalBase = base
+        pendingProposalExcludedPaths = excludedPaths
+        pendingPersonShownUpdate = proposal
+    }
+
+    private func clearPendingPersonShownUpdate() {
+        pendingPersonShownUpdate = nil
+        pendingProposalBase = nil
+        pendingProposalExcludedPaths = []
     }
 
     /// "Update": replace/remove only the exact app-applied names, through the field-mutation
@@ -3337,7 +3361,14 @@ final class FaceRecognitionViewModel {
     /// `knownC2PA`: the browser's content-credential status per photo (avoids re-reading files).
     func confirmPersonShownUpdate(knownC2PA: [URL: Bool]? = nil, onComplete: (() -> Void)? = nil) {
         guard let proposal = pendingPersonShownUpdate else { onComplete?(); return }
-        pendingPersonShownUpdate = nil
+        let base = pendingProposalBase
+        let excluded = pendingProposalExcludedPaths
+        clearPendingPersonShownUpdate()
+        func keepPending() {
+            pendingPersonShownUpdate = proposal
+            pendingProposalBase = base
+            pendingProposalExcludedPaths = excluded
+        }
         guard faceData.map({ Self.fieldMutationFolderIdentity($0.folderURL) })
                 == Self.fieldMutationFolderIdentity(proposal.folderURL) else {
             errorMessage = "The face folder changed; Person Shown was not updated."
@@ -3345,13 +3376,13 @@ final class FaceRecognitionViewModel {
             return
         }
         guard !refuseFaceEditDuringScan(proposal.folderURL) else {
-            pendingPersonShownUpdate = proposal
+            keepPending()
             onComplete?()
             return
         }
         guard !fieldMutationIsPaused(in: proposal.folderURL) else {
             errorMessage = "Face metadata writing is paused while files in this folder are being renamed."
-            pendingPersonShownUpdate = proposal
+            keepPending()
             onComplete?()
             return
         }
@@ -3363,7 +3394,7 @@ final class FaceRecognitionViewModel {
     /// "Leave Photos Unchanged": photos keep their names; the applied names stay as they were,
     /// so a later correction still targets exactly what is in the photos.
     func declinePersonShownUpdate() {
-        pendingPersonShownUpdate = nil
+        clearPendingPersonShownUpdate()
     }
 
     private func replayDeferredFaceUpdates() {

@@ -906,6 +906,13 @@ final class CaptionWorkspaceFlushCoordinator {
         try await persistenceQueue.drainAsync()
     }
 
+    /// Owner-addressed `flushAsync`: Caption flushes its own editor, never another pane's Review.
+    func flushAsync(owner: UUID) async throws {
+        try requireVariableDraftsPersisted()
+        try enqueueFlush(owner: owner)
+        try await persistenceQueue.drainAsync()
+    }
+
     /// Like `flushAsync`, but captures every registered editor (quit and workspace transitions).
     func flushAllAsync() async throws {
         try requireVariableDraftsPersisted()
@@ -934,22 +941,53 @@ final class CaptionWorkspaceFlushCoordinator {
         return try enqueueFlush(current)
     }
 
-    /// Captures every registered editor in registration order (each at most once per call).
-    /// Returns whether any draft was captured.
+    /// Captures one specific editor. Caption uses this for its own blur, navigation and actions
+    /// so it can never capture (or be blocked by) a Review pane registered after it.
+    @discardableResult
+    func enqueueFlush(owner: UUID) throws -> Bool {
+        guard let registration = registrations.last(where: { $0.owner == owner }) else {
+            throw CaptionWorkspaceFlushError.handlerUnavailable
+        }
+        return try enqueueFlush(registration)
+    }
+
+    /// Captures every registered editor in registration order. One editor's refusal (an active
+    /// input-method composition, a review in progress) does not stop the others from being
+    /// captured; the failures are reported together afterwards. Returns whether any draft was
+    /// captured.
     @discardableResult
     func enqueueFlushAll() throws -> Bool {
         guard !registrations.isEmpty else { throw CaptionWorkspaceFlushError.handlerUnavailable }
         var captured = false
-        for registration in registrations where try enqueueFlush(registration) { captured = true }
+        var failures: [any Error] = []
+        for registration in registrations {
+            do { if try enqueueFlush(registration) { captured = true } }
+            catch { failures.append(error) }
+        }
+        try Self.throwCombined(failures)
         return captured
     }
 
-    /// Captures the given owners' editors that are still registered (termination retries skip
-    /// owners that were already captured once).
-    fileprivate func enqueueFlush(owners: [UUID]) throws {
+    /// Captures the given owners' editors that are still registered, continuing past failures.
+    /// Returns the owners that were captured (termination retries skip them).
+    fileprivate func enqueueFlush(owners: [UUID]) -> (captured: [UUID], failures: [any Error]) {
+        var captured: [UUID] = []
+        var failures: [any Error] = []
         for registration in registrations where owners.contains(registration.owner) {
-            _ = try enqueueFlush(registration)
+            do {
+                _ = try enqueueFlush(registration)
+                captured.append(registration.owner)
+            } catch { failures.append(error) }
         }
+        return (captured, failures)
+    }
+
+    /// A single failure keeps its exact error; several are combined into one message.
+    fileprivate static func throwCombined(_ failures: [any Error]) throws {
+        guard let first = failures.first else { return }
+        guard failures.count > 1 else { throw first }
+        throw CaptionWorkspaceFlushError.persistenceFailed(
+            failures.map(\.localizedDescription).joined(separator: "\n"))
     }
 
     fileprivate var registeredOwnerIDs: [UUID] { registrations.map(\.owner) }
@@ -969,6 +1007,13 @@ final class CaptionWorkspaceFlushCoordinator {
     func editorCompositionState() throws -> CodeReplacementCompositionState {
         guard let current else { throw CaptionWorkspaceFlushError.handlerUnavailable }
         return current.compositionState()
+    }
+
+    func editorCompositionState(owner: UUID) throws -> CodeReplacementCompositionState {
+        guard let registration = registrations.last(where: { $0.owner == owner }) else {
+            throw CaptionWorkspaceFlushError.handlerUnavailable
+        }
+        return registration.compositionState()
     }
 
     fileprivate func requireVariableDraftsPersisted() throws {
@@ -997,11 +1042,13 @@ final class CaptionWorkspaceTerminationFlushOperation {
     func flush() async throws {
         try coordinator.requireVariableDraftsPersisted()
         // Every mounted editor (Caption and each Review pane) is captured, not only the latest.
-        for owner in coordinator.registeredOwnerIDs where !capturedOwners.contains(owner) {
-            try coordinator.enqueueFlush(owners: [owner])
-            capturedOwners.insert(owner)
-        }
+        // One editor's refusal does not stop the others; their drafts are still drained before
+        // the combined failure is reported.
+        let pending = coordinator.registeredOwnerIDs.filter { !capturedOwners.contains($0) }
+        let result = coordinator.enqueueFlush(owners: pending)
+        capturedOwners.formUnion(result.captured)
         try await coordinator.drainQueuedPersistenceForTermination()
+        try CaptionWorkspaceFlushCoordinator.throwCombined(result.failures)
     }
 }
 

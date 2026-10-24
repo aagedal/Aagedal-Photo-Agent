@@ -1976,7 +1976,7 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(caption.contains("settingsViewModel.requestedDestination = .metadata"))
         #expect(caption.contains("openSettings()"))
         #expect(caption.contains("caption.metadataSettings"))
-        #expect(caption.contains("try await flushCoordinator.flushAsync()"))
+        #expect(caption.contains("try await flushCoordinator.flushAsync(owner: captionEditorOwner)"))
         #expect(caption.contains("session.isTransitioning || flushCoordinator.isTransitioning"))
         #expect(caption.contains(".disabled(isCurrentPhotoUnderReview || isEditorTransitioning)"))
         #expect(caption.contains("!isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return event }"))

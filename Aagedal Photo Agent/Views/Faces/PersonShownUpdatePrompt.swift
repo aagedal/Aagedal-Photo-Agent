@@ -29,8 +29,8 @@ struct PersonShownUpdatePromptModifier: ViewModifier {
             Text("""
             \(proposal.summary)
 
-            Only names this app applied are changed, and only in photos that still contain them. \
-            Names typed by hand are left as they are.
+            Only names this app wrote to these photos are changed, and only where they are still \
+            present. Names typed by hand are left as they are.
             """)
         }
     }

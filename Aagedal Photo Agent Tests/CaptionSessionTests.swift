@@ -578,6 +578,24 @@ struct CaptionSessionTests {
         try await termination.flush()
         #expect(flushed == ["first", "second"])
 
+        // One editor's refusal does not stop the others from being captured.
+        flushed = []
+        let refusing = UUID()
+        coordinator.register(owner: refusing) { throw FlushFailure() }
+        #expect(throws: FlushFailure.self) { try coordinator.enqueueFlushAll() }
+        #expect(flushed == ["first", "second"])
+        let retry = CaptionWorkspaceTerminationFlushOperation(coordinator: coordinator)
+        flushed = []
+        await #expect(throws: FlushFailure.self) { try await retry.flush() }
+        #expect(flushed == ["first", "second"])
+        coordinator.unregister(owner: refusing)
+
+        // Caption addresses its own editor even when a Review pane registered after it.
+        flushed = []
+        try coordinator.enqueueFlush(owner: firstReview)
+        #expect(flushed == ["first"])
+        #expect(throws: CaptionWorkspaceFlushError.handlerUnavailable) { try coordinator.enqueueFlush(owner: UUID()) }
+
         // Unmounting one pane leaves the other registered.
         coordinator.unregister(owner: secondReview)
         #expect(coordinator.hasRegisteredHandler)

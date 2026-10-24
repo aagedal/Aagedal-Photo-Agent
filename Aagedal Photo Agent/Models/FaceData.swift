@@ -224,19 +224,39 @@ nonisolated struct FaceGroup: Codable, Identifiable {
     /// Reversible "do not write Person Shown" choice for referees, coaches, supporters, etc.
     /// The group and its faces remain available for later correction/re-inclusion.
     var excludedFromPersonShown: Bool? = nil
-    /// The exact name this app last wrote into Person Shown for this group's photos (Apply or a
-    /// confirmed "Update Person Shown"). Corrections only ever replace or remove this string, so
-    /// names a user typed by hand are never touched. Nil for legacy data and never-applied groups.
-    var appliedPersonShownName: String? = nil
+    /// The exact name this app wrote into Person Shown for this group, per photo (keyed by
+    /// filename, so a moved or copied folder keeps it). Recorded only from completed writes
+    /// (Apply, or a confirmed "Update Person Shown"). Corrections only ever replace or remove
+    /// these exact strings in these photos, so a name typed by hand elsewhere — including in a
+    /// photo whose face joined the group later — is never touched. Nil for older data.
+    var appliedPersonShownNames: [String: String]? = nil
 
     var isExcludedFromPersonShown: Bool { excludedFromPersonShown ?? false }
 
-    /// A merge keeps the source's applied name when the surviving group shows the same name, so
-    /// a later rename of the merged group can still correct the photos the source applied it to.
+    /// The name this app wrote for this group into the photo with `filename`, if any.
+    func appliedPersonShownName(forPhoto filename: String) -> String? {
+        appliedPersonShownNames?[filename]
+    }
+
+    /// Whether this group's name has been written to at least one photo by this app.
+    var hasAppliedPersonShownName: Bool { !(appliedPersonShownNames ?? [:]).isEmpty }
+
+    /// Sets (or, with nil, clears) the recorded applied name for one photo.
+    mutating func setAppliedPersonShownName(_ name: String?, forPhoto filename: String) {
+        var names = appliedPersonShownNames ?? [:]
+        names[filename] = name
+        appliedPersonShownNames = names.isEmpty ? nil : names
+    }
+
+    /// A merge keeps the source's per-photo records whose name the surviving group also shows:
+    /// those photos really carry that string from this app, so a later rename of the merged
+    /// group can still correct them. Records for any other name are not inherited.
     mutating func inheritAppliedName(from source: FaceGroup) {
-        guard appliedPersonShownName == nil, let applied = source.appliedPersonShownName,
-              applied == name?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-        appliedPersonShownName = applied
+        guard let shown = name?.trimmingCharacters(in: .whitespacesAndNewlines), !shown.isEmpty else { return }
+        for (photo, applied) in source.appliedPersonShownNames ?? [:]
+        where applied == shown && appliedPersonShownName(forPhoto: photo) == nil {
+            setAppliedPersonShownName(applied, forPhoto: photo)
+        }
     }
 }
 
@@ -515,6 +535,17 @@ nonisolated struct FolderFaceData: Codable {
             if reassociated != source { changedReferenceCount += 1 }
         }
         scannedFiles = reassociatedScannedFiles
+
+        // Per-photo applied Person Shown records follow the renamed files.
+        let renamedFilenames = Dictionary(mappings.map {
+            ($0.sourceURL.lastPathComponent, $0.destinationURL.lastPathComponent)
+        }, uniquingKeysWith: { first, _ in first })
+        for index in groups.indices {
+            guard let applied = groups[index].appliedPersonShownNames else { continue }
+            var renamed: [String: String] = [:]
+            for (photo, name) in applied { renamed[renamedFilenames[photo] ?? photo] = name }
+            groups[index].appliedPersonShownNames = renamed
+        }
         return changedReferenceCount
     }
 }

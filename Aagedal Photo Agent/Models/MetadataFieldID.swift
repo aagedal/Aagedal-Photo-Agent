@@ -490,6 +490,15 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         return repeatableValues(in: metadata).joined(separator: Self.reviewNameListSeparator)
     }
 
+    /// A visible reminder under a Review name cell that holds a comma but no semicolon: it may be
+    /// one "Last, First" person or a pasted comma list. Never auto-split ("Støre, Jonas Gahr").
+    func reviewNameListHint(for text: String) -> String? {
+        guard usesReviewNameListSeparator, text.contains(","), !text.contains(";") else { return nil }
+        return self == .personShown
+            ? "Commas stay inside one name. Separate people with ;"
+            : "Commas stay inside one name. Separate organisations with ;"
+    }
+
     func setReviewTextValue(_ value: String, in metadata: inout IPTCMetadata) {
         guard usesReviewNameListSeparator else {
             setTextValue(value, in: &metadata)

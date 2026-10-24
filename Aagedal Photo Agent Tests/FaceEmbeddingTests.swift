@@ -3262,6 +3262,13 @@ struct FaceDataMetadataWriteTests {
         try writeJPEG(to: other, seed: 2)
         #expect(FaceScanContentFingerprint.compute(for: other) != original)
         #expect(FaceScanContentFingerprint.compute(for: folder.appendingPathComponent("missing.jpg")) == nil)
+        // Truncated or cut-off files (a dropped network volume) yield no fingerprint, never a crash.
+        let truncated = folder.appendingPathComponent("truncated.jpg")
+        try Data(try Data(contentsOf: other).prefix(20)).write(to: truncated)
+        #expect(FaceScanContentFingerprint.compute(for: truncated) == nil)
+        let empty = folder.appendingPathComponent("empty.jpg")
+        try Data().write(to: empty)
+        #expect(FaceScanContentFingerprint.compute(for: empty) == nil)
     }
 
     @Test("Classification keeps a metadata-only change and backfills legacy signatures")

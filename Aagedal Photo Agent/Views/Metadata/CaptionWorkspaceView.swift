@@ -48,6 +48,8 @@ struct CaptionWorkspaceView: View {
     @State private var conflictOperationID: UUID?
     @State private var conflictReviewRequestID: UUID?
     @State private var flushCoordinator = CaptionWorkspaceFlushCoordinator.shared
+    /// The Caption editor's flush owner; Caption's own captures address only this editor.
+    @State private var captionEditorOwner = UUID()
     @State private var conflictReview: CaptionConflictSnapshot?
     @State private var reviewedFailure: CaptionQueueFailure?
     @State private var conflictExportReceipt: CaptionConflictExportReceipt?
@@ -208,6 +210,7 @@ struct CaptionWorkspaceView: View {
                             onPendingStatusChanged: browserViewModel.refreshPendingStatus,
                             commitsToHistorySidecarOnly: true,
                             captionFlushCoordinator: .shared,
+                            captionFlushOwnerID: captionEditorOwner,
                             onFocusedFieldChanged: { field in
                                 activeEditorField = field
                                 if let field {
@@ -474,10 +477,10 @@ struct CaptionWorkspaceView: View {
             // FIFO, and do not touch another selected photo's editor merely to review its head.
             if metadataViewModel.selectedURLs.count == 1,
                metadataViewModel.selectedURLs[0].resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path {
-                guard try flushCoordinator.editorCompositionState() == .committed else {
+                guard try flushCoordinator.editorCompositionState(owner: captionEditorOwner) == .committed else {
                     throw CaptionWorkspaceFlushError.persistenceFailed("Finish the active text composition before reviewing queued edits.")
                 }
-                try flushCoordinator.enqueueFlush()
+                try flushCoordinator.enqueueFlush(owner: captionEditorOwner)
             }
             conflictCheckpoint = metadataViewModel.captionConflictEditorCheckpoint(for: photo)
             conflictImage = visibleImages.first { $0.url.resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path }
@@ -1038,7 +1041,7 @@ struct CaptionWorkspaceView: View {
     ) async throws {
         let token = try flushCoordinator.reserveTransition()
         try await flushCoordinator.performReservedTransition(token, flush: {
-            try await session.prepare(for: action) { try await flushCoordinator.flushAsync() }
+            try await session.prepare(for: action) { try await flushCoordinator.flushAsync(owner: captionEditorOwner) }
             if settlesEditorLoad { await settleEditorLoad() }
         }, operation: {
             guard admits() else { return }
@@ -1071,7 +1074,7 @@ struct CaptionWorkspaceView: View {
     @discardableResult
     private func enqueueCurrentDraftPersistence() throws -> Bool {
         guard !flushCoordinator.isTransitioning else { throw CaptionSessionError.transitionInProgress }
-        let captured = try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush()
+        let captured = try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush(owner: captionEditorOwner)
         session.markCommitted()
         // The draft is captured, so a photo held open after leaving the filter may now be replaced.
         metadataViewModel.releaseSelectionHold()
@@ -1163,7 +1166,7 @@ struct CaptionWorkspaceView: View {
                 var previousMetadata: IPTCMetadata?
                 var loadToken: CaptionLoadToken?
                 try await flushCoordinator.performReservedTransition(token, flush: {
-                    try await session.prepare(for: .copyPrevious) { try await flushCoordinator.flushAsync() }
+                    try await session.prepare(for: .copyPrevious) { try await flushCoordinator.flushAsync(owner: captionEditorOwner) }
                     session.markCommitted()
                     guard let previousURL = session.previousURL else {
                         errorMessage = "There is no previous photo in the current order."
@@ -1221,7 +1224,7 @@ struct CaptionWorkspaceView: View {
                 // A marked range must not be read into the model or persisted. Query the actual
                 // AppKit field editor before crossing the normal flush barrier; once committed,
                 // the explicit command is safely post-flush and no longer depends on UI buffers.
-                let composition = try CaptionWorkspaceFlushCoordinator.shared.editorCompositionState()
+                let composition = try CaptionWorkspaceFlushCoordinator.shared.editorCompositionState(owner: captionEditorOwner)
                 guard composition == .committed else {
                     errorMessage = "Finish the active text composition before applying code replacement."
                     return
@@ -1336,10 +1339,10 @@ struct CaptionWorkspaceView: View {
             guard metadataViewModel.saveError == nil,
                   pendingURL.standardizedFileURL == session.currentURL?.standardizedFileURL else { return }
             do {
-                guard try CaptionWorkspaceFlushCoordinator.shared.editorCompositionState() == .committed else { return }
+                guard try CaptionWorkspaceFlushCoordinator.shared.editorCompositionState(owner: captionEditorOwner) == .committed else { return }
                 // Text entered during the write may still live in AppKit's field editor. Capture
                 // it in this navigation turn; a newer pending draft must keep this photo selected.
-                try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush()
+                try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush(owner: captionEditorOwner)
                 guard CaptionWriteAndNextGate.shouldAdvance(
                     pendingURL: pendingURL,
                     currentURL: session.currentURL,

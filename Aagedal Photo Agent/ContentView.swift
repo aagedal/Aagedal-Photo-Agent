@@ -1617,7 +1617,9 @@ struct ContentView: View {
         Task { @MainActor in
             do {
                 try await coordinator.performReservedTransition(token, flush: {
-                    if hasLiveEditor { try await coordinator.flushAsync() }
+                    // A workspace transition captures every mounted editor, not just the latest.
+                    if hasLiveEditor, coordinator.hasRegisteredHandler { try await coordinator.flushAllAsync() }
+                    else if hasLiveEditor { try await coordinator.flushAsync() }
                     else { try await coordinator.flushQueuedPersistenceAsync() }
                 }, operation: {
                     guard mainViewMode == workspace else { return }

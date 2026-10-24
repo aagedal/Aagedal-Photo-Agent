@@ -74,7 +74,8 @@ struct MetadataReviewView: View {
                                     onSave: {
                                         guard let editorID else { return }
                                         viewModel.commitMetadataReviewEditor(for: image.url, editorID: editorID)
-                                    })
+                                    },
+                                    onFocusChanged: { focused in viewModel.setMetadataReviewFocus(focused, key: key) })
                                 if let error = editor?.error ?? viewModel.metadataReviewLoadErrors[key] {
                                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                                 }
@@ -117,12 +118,13 @@ struct MetadataReviewView: View {
             discardInFlight = false
             reloadRequirements()
             coordinator.register(owner: owner,
-                compositionState: { BrowserViewModel.metadataReviewCompositionIsCommitted ? .committed : .active },
+                compositionState: { viewModel.metadataReviewHasActiveComposition ? .active : .committed },
                 handler: { try viewModel.captureMetadataReviewDrafts() })
         }
         .onDisappear {
             lifetime = nil
             operation = nil
+            viewModel.clearMetadataReviewFocus()
             coordinator.unregister(owner: owner)
             if let review { Task { await coordinator.endConflictReview(review) } }
             if !discardInFlight, let frozenPhoto, let freezeOwner { viewModel.endMetadataReviewRecovery(for: frozenPhoto, owner: freezeOwner) }
@@ -291,6 +293,7 @@ private struct MetadataReviewRow: View {
     let text: (MetadataFieldID) -> String
     let onTextChange: (MetadataFieldID, String) -> Void
     let onSave: () -> Void
+    var onFocusChanged: (Bool) -> Void = { _ in }
     @FocusState private var focusedField: MetadataFieldID?
 
     private let columns = [GridItem(.adaptive(minimum: 185, maximum: 320), spacing: 8, alignment: .top)]
@@ -321,8 +324,10 @@ private struct MetadataReviewRow: View {
             RoundedRectangle(cornerRadius: 9)
                 .stroke(isSelected ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isSelected ? 2 : 1)
         }
-        .onChange(of: focusedField) { oldField, _ in
+        .onChange(of: focusedField) { oldField, newField in
+            if newField != nil { onFocusChanged(true) }
             if oldField != nil { commitDraft() }
+            if newField == nil { onFocusChanged(false) }
         }
     }
 
@@ -375,6 +380,13 @@ private struct MetadataReviewRow: View {
                         ? "No validation issues"
                         : failures.map(\.accessibleDescription).joined(separator: "; ")
                 )
+
+            if let hint = field.reviewNameListHint(for: text(field)) {
+                Label(hint, systemImage: "info.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("metadataReview.nameListHint")
+            }
 
             ForEach(failures) { failure in
                 HStack(alignment: .firstTextBaseline, spacing: 4) {

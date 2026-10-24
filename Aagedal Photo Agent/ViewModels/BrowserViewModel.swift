@@ -341,6 +341,9 @@ final class BrowserViewModel {
     private(set) var metadataReviewLoadErrors: [String: String] = [:]
     private var metadataReviewFreezeOwners: [String: UUID] = [:]
     @ObservationIgnored private var metadataReviewLoadIDs: [String: UUID] = [:]
+    /// The Review row whose field currently has keyboard focus in this browser. Only that editor
+    /// owns the key window's input-method composition, so only it refuses a capture for it.
+    @ObservationIgnored private(set) var metadataReviewFocusedKey: String?
     /// Resolved review keys per URL; resolving symlinks on every row render was measurable.
     @ObservationIgnored private var metadataReviewKeyCache: [URL: String] = [:]
     @ObservationIgnored private let metadataReviewBaselineLoader: (@Sendable (URL, URL) async throws -> MetadataReviewLoadedBaseline)?
@@ -4136,7 +4139,10 @@ final class BrowserViewModel {
         if let editor = metadataReviewEditors[key] {
             guard editor.latestRequestID == nil, editor.draft == editor.previous,
                   editor.textBuffers.isEmpty else { return }
-            if !reloadClean, editor.sourceGeneration == metadataReviewSourceGeneration { return }
+            // Reuse only while the browser's record still matches the loaded baseline: Caption,
+            // templates, face Apply and external writes all change it without a new generation.
+            if !reloadClean, editor.sourceGeneration == metadataReviewSourceGeneration,
+               let index = metadataReviewImageIndex(for: url), images[index].metadata == editor.previous { return }
             metadataReviewEditors[key] = nil
         }
         guard !metadataReviewLoading.contains(key),
@@ -4260,6 +4266,19 @@ final class BrowserViewModel {
         if metadataReviewFreezeOwners[key] == owner { metadataReviewFreezeOwners[key] = nil }
     }
 
+    func setMetadataReviewFocus(_ focused: Bool, key: String) {
+        if focused { metadataReviewFocusedKey = key }
+        else if metadataReviewFocusedKey == key { metadataReviewFocusedKey = nil }
+    }
+
+    func clearMetadataReviewFocus() { metadataReviewFocusedKey = nil }
+
+    /// True only when one of this browser's Review fields is focused and composing: an IME
+    /// composition in Caption or another window never blocks this Review's captures.
+    var metadataReviewHasActiveComposition: Bool {
+        metadataReviewFocusedKey != nil && !Self.metadataReviewCompositionIsCommitted
+    }
+
     static var metadataReviewCompositionIsCommitted: Bool {
         guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return true }
         return !editor.hasMarkedText()
@@ -4267,7 +4286,7 @@ final class BrowserViewModel {
 
     /// Retained row buffers are captured before navigation/quit or review, even after lazy rows unmount.
     func captureMetadataReviewDrafts(for photo: URL? = nil) throws {
-        guard Self.metadataReviewCompositionIsCommitted else {
+        guard !metadataReviewHasActiveComposition else {
             throw CaptionWorkspaceFlushError.persistenceFailed("Finish the active text composition before saving or reviewing queued edits.")
         }
         let key = photo.map(Self.metadataReviewKey)

@@ -1714,7 +1714,9 @@ struct PersonShownCorrectionTests {
             faces += groupFaces
             groups.append(FaceGroup(id: groupID, name: spec.name, representativeFaceID: groupFaces.first?.id ?? UUID(),
                 faceIDs: groupFaces.map(\.id), knownPersonID: spec.knownPersonID,
-                appliedPersonShownName: spec.applied))
+                appliedPersonShownNames: spec.applied.map { name in
+                    Dictionary(spec.photos.map { ($0.lastPathComponent, name) }, uniquingKeysWith: { first, _ in first })
+                }))
         }
         return FolderFaceData(folderURL: folder, faces: faces, groups: groups,
             lastScanDate: Date(timeIntervalSince1970: 1), scanComplete: true)
@@ -1780,10 +1782,11 @@ struct PersonShownCorrectionTests {
             #expect(request.mutation == .replacePersons([.init(old: "Store", new: "Støre")]))
             #expect(request.requestedMode == (request.imageURL == raw ? .writeToXMPSidecar : .writeToFileAndXMPSidecar))
         }
-        #expect(model.faceData?.groups.first?.appliedPersonShownName == "Støre")
+        let written = ["a.jpg": "Støre", "b.jpg": "Støre", "c.NEF": "Støre"]
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == written)
         #expect(model.pendingPersonShownUpdate == nil)
         await model.waitForCurrentFaceDataPersistence()
-        #expect(FaceDataStorageService().loadFaceData(for: folder)?.groups.first?.appliedPersonShownName == "Støre")
+        #expect(FaceDataStorageService().loadFaceData(for: folder)?.groups.first?.appliedPersonShownNames == written)
     }
 
     @Test("Declining leaves photos and the applied name unchanged; unapplied groups never prompt")
@@ -1802,7 +1805,7 @@ struct PersonShownCorrectionTests {
         model.declinePersonShownUpdate()
         await model.waitForPendingFieldMutationWrites()
         #expect(await recorder.captured.isEmpty)
-        #expect(model.faceData?.groups.first?.appliedPersonShownName == "Store")
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Store"])
         // Renaming a never-applied group has nothing of ours to correct.
         model.nameGroup(data.groups[1].id, name: "Typed Again")
         #expect(model.pendingPersonShownUpdate == nil)
@@ -1866,7 +1869,7 @@ struct PersonShownCorrectionTests {
         #expect(proposal.replacementsByURL == [p2: [.init(old: "Ann", new: nil)]])
     }
 
-    @Test("Apply records the applied name; a rename during the write is offered as a correction afterwards")
+    @Test("Apply records the applied name per photo; a rename during the write is planned against it once")
     @MainActor
     func applyRecordsAppliedName() async throws {
         let folder = try makeFolder("apply")
@@ -1879,14 +1882,125 @@ struct PersonShownCorrectionTests {
         let deadline = ContinuousClock.now + .seconds(5)
         while !(await recorder.isPaused), ContinuousClock.now < deadline { await Task.yield() }
         #expect(await recorder.isPaused)
+        // The in-flight Apply is overlaid: the rename is planned from "Ann" right away.
         model.nameGroup(data.groups[0].id, name: "Anne")
-        #expect(model.pendingPersonShownUpdate == nil)
-        await recorder.resume()
-        await model.waitForPendingFieldMutationWrites()
-        #expect(model.faceData?.groups.first?.appliedPersonShownName == "Ann")
         let proposal = try #require(model.pendingPersonShownUpdate)
         #expect(proposal.replacementsByURL == [photo: [.init(old: "Ann", new: "Anne")]])
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Ann"])
+        // Completion records the name without a second prompt.
+        #expect(model.pendingPersonShownUpdate == proposal)
         await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Renames during a running update are planned from the name the photos will carry")
+    @MainActor
+    func renameDuringInFlightUpdate() async throws {
+        let folder = try makeFolder("chain")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Alice", applied: "Alice", photos: [photo])])
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = try makeModel(data, recorder: recorder)
+        let groupID = data.groups[0].id
+        model.nameGroup(groupID, name: "Alicia")
+        model.confirmPersonShownUpdate(knownC2PA: [photo: false])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await recorder.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        #expect(await recorder.isPaused)
+
+        model.nameGroup(groupID, name: "Alicja")
+        let proposal = try #require(model.pendingPersonShownUpdate)
+        #expect(proposal.replacementsByURL == [photo: [.init(old: "Alicia", new: "Alicja")]])
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Alicia"])
+        #expect(model.pendingPersonShownUpdate == proposal)
+
+        model.confirmPersonShownUpdate(knownC2PA: [photo: false])
+        await model.waitForPendingFieldMutationWrites()
+        let requests = await recorder.captured
+        #expect(requests.map(\.mutation) == [.replacePersons([.init(old: "Alice", new: "Alicia")]),
+                                             .replacePersons([.init(old: "Alicia", new: "Alicja")])])
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Alicja"])
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Declining a correction planned during a running update keeps later corrections exact")
+    @MainActor
+    func declineDuringInFlightUpdate() async throws {
+        let folder = try makeFolder("chain-decline")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Alice", applied: "Alice", photos: [photo])])
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = try makeModel(data, recorder: recorder)
+        let groupID = data.groups[0].id
+        model.nameGroup(groupID, name: "Alicia")
+        model.confirmPersonShownUpdate(knownC2PA: [photo: false])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await recorder.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        model.nameGroup(groupID, name: "Alicja")
+        model.declinePersonShownUpdate()
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.pendingPersonShownUpdate == nil)
+        #expect(model.faceData?.groups.first?.appliedPersonShownNames == ["a.jpg": "Alicia"])
+        // The photos carry "Alicia": the next rename targets exactly that.
+        model.nameGroup(groupID, name: "Ali")
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [photo: [.init(old: "Alicia", new: "Ali")]])
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Consecutive renames before answering collapse into one correction; renaming back clears it")
+    @MainActor
+    func pendingProposalIsReplanned() async throws {
+        let folder = try makeFolder("replan")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let data = makeData(folder: folder, [GroupSpec(name: "Alice", applied: "Alice", photos: [photo])])
+        let model = try makeModel(data, recorder: FieldMutationCallerRecorder())
+        let groupID = data.groups[0].id
+        model.nameGroup(groupID, name: "Alicia")
+        model.nameGroup(groupID, name: "Alicja")
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [photo: [.init(old: "Alice", new: "Alicja")]])
+        model.nameGroup(groupID, name: "Alice")
+        #expect(model.pendingPersonShownUpdate == nil)
+        await model.waitForCurrentFaceDataPersistence()
+    }
+
+    @Test("Corrections touch only photos this app wrote the name to; merges inherit only matching records")
+    @MainActor
+    func perPhotoAppliedRecords() async throws {
+        let folder = try makeFolder("per-photo")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let applied = folder.appendingPathComponent("applied.jpg")
+        let typed = folder.appendingPathComponent("typed.jpg")
+        let other = folder.appendingPathComponent("other.jpg")
+        var data = makeData(folder: folder, [
+            GroupSpec(name: "Ann", applied: nil, photos: [applied, typed]),
+            GroupSpec(name: "Ann", applied: nil, photos: [other]),
+            GroupSpec(name: "Bob", applied: nil, photos: [folder.appendingPathComponent("bob.jpg")]),
+        ])
+        // Apply wrote "Ann" only to applied.jpg; typed.jpg's face joined later (hand-typed name).
+        data.groups[0].appliedPersonShownNames = ["applied.jpg": "Ann"]
+        data.groups[1].appliedPersonShownNames = ["other.jpg": "Ann"]
+        let model = try makeModel(data, recorder: FieldMutationCallerRecorder())
+        model.nameGroup(data.groups[0].id, name: "Anne")
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [applied: [.init(old: "Ann", new: "Anne")]])
+        model.declinePersonShownUpdate()
+
+        // A never-applied target named differently inherits nothing; it offers removal instead.
+        model.mergeGroups(sourceID: data.groups[1].id, into: data.groups[2].id)
+        #expect(model.faceData?.groups.first { $0.id == data.groups[2].id }?.appliedPersonShownNames == nil)
+        #expect(model.pendingPersonShownUpdate?.replacementsByURL == [other: [.init(old: "Ann", new: nil)]])
+        model.declinePersonShownUpdate()
+        await model.waitForCurrentFaceDataPersistence()
+
+        var inheritor = FaceGroup(id: UUID(), name: "Ann", representativeFaceID: UUID(), faceIDs: [])
+        inheritor.inheritAppliedName(from: data.groups[1])
+        #expect(inheritor.appliedPersonShownNames == ["other.jpg": "Ann"])
     }
 
     @Test("Known People renames, merges and deletions update linked folder groups")
@@ -2050,6 +2164,10 @@ struct PersonShownCorrectionTests {
         var edited = metadata
         MetadataFieldID.personShown.setReviewTextValue("Støre, Jonas Gahr; Hansen, Ola; Brundtland, Gro Harlem", in: &edited)
         #expect(edited.personShown == ["Støre, Jonas Gahr", "Hansen, Ola", "Brundtland, Gro Harlem"])
+        #expect(MetadataFieldID.personShown.reviewNameListHint(for: "Alice, Bob, Carol") != nil)
+        #expect(MetadataFieldID.personShown.reviewNameListHint(for: "Støre, Jonas Gahr; Hansen, Ola") == nil)
+        #expect(MetadataFieldID.personShown.reviewNameListHint(for: "Ann") == nil)
+        #expect(MetadataFieldID.keywords.reviewNameListHint(for: "a, b") == nil)
         // Keywords keep the established comma syntax.
         var keywords = IPTCMetadata()
         MetadataFieldID.keywords.setReviewTextValue("a, b", in: &keywords)
@@ -2084,15 +2202,24 @@ struct PersonShownCorrectionTests {
             return .init(metadata: IPTCMetadata(title: "Saved"), sidecar: nil)
         }, metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator())
         model.currentFolderURL = photo.deletingLastPathComponent()
-        model.images = [ImageFile(url: photo)]
+        var image = ImageFile(url: photo)
+        image.metadata = IPTCMetadata(title: "Saved")
+        model.images = [image]
         await model.prepareMetadataReviewEditor(for: photo, reloadClean: false)
         let first = try #require(model.metadataReviewEditor(for: photo)?.id)
         await model.prepareMetadataReviewEditor(for: photo, reloadClean: false)
         #expect(model.metadataReviewEditor(for: photo)?.id == first)
         #expect(loads.value == 1)
         await model.prepareMetadataReviewEditor(for: photo)
-        #expect(model.metadataReviewEditor(for: photo)?.id != first)
+        let second = try #require(model.metadataReviewEditor(for: photo)?.id)
+        #expect(second != first)
         #expect(loads.value == 2)
+        // Caption, a template or face Apply changed the record while Review was away: a
+        // reappearing row must not keep showing the old clean draft.
+        model.images[0].metadata = IPTCMetadata(title: "Changed in Caption")
+        await model.prepareMetadataReviewEditor(for: photo, reloadClean: false)
+        #expect(model.metadataReviewEditor(for: photo)?.id != second)
+        #expect(loads.value == 3)
     }
 }
 

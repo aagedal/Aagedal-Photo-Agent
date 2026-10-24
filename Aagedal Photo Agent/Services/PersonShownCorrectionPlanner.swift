@@ -1,15 +1,18 @@
 import Foundation
 
+/// Per-group, per-photo changes to the recorded applied Person Shown names (photo filename →
+/// new exact name, or nil to drop the record). Applied only for photos whose write completed.
+typealias AppliedPersonShownChanges = [UUID: [String: String?]]
+
 /// A pending offer to correct Person Shown after a face edit (rename, move, merge, delete, or a
-/// Known People change) made a name this app applied wrong for some photos.
+/// Known People change) made a name this app wrote wrong for some photos.
 nonisolated struct PersonShownUpdateProposal: Identifiable, Sendable, Equatable {
     let id: UUID
     let folderURL: URL
     /// Ordered exact-string corrections per photo; applied in sequence by `.replacePersons`.
     var replacementsByURL: [URL: [MetadataPersonReplacement]]
-    /// Groups whose `appliedPersonShownName` becomes the new value once the update is written
-    /// (nil clears it: the group's name was removed).
-    var appliedNameUpdates: [UUID: String?]
+    /// How each group's per-photo applied records change once the photo's write completes.
+    var appliedNameUpdates: AppliedPersonShownChanges
 
     var photoCount: Int { replacementsByURL.count }
 
@@ -31,26 +34,14 @@ nonisolated struct PersonShownUpdateProposal: Identifiable, Sendable, Equatable 
         let shown = lines.prefix(4).joined(separator: "\n")
         return lines.count > 4 ? shown + "\n…and \(lines.count - 4) more" : shown
     }
-
-    /// Later proposals append their corrections: sequential exact replacements compose
-    /// (Store → Støre, then Støre → Stoere), so nothing confirmed earlier is lost.
-    func merged(with later: PersonShownUpdateProposal) -> PersonShownUpdateProposal {
-        var result = self
-        for (url, replacements) in later.replacementsByURL {
-            result.replacementsByURL[url, default: []].append(contentsOf: replacements)
-        }
-        for (groupID, name) in later.appliedNameUpdates { result.appliedNameUpdates[groupID] = name }
-        return PersonShownUpdateProposal(id: later.id, folderURL: later.folderURL,
-            replacementsByURL: result.replacementsByURL, appliedNameUpdates: result.appliedNameUpdates)
-    }
 }
 
-/// Computes which app-applied Person Shown names a face edit invalidated.
+/// Computes which app-written Person Shown names a face edit invalidated.
 ///
-/// Only a group's `appliedPersonShownName` — the exact string this app wrote — is ever replaced
-/// or removed, and only in photos where one of that group's faces was before the edit. A name is
-/// never removed from a photo where another face still shows that person, and the write itself
-/// skips photos that no longer contain the name, so manual entries are untouched.
+/// Only the exact string this app wrote for a group into a specific photo (its per-photo applied
+/// record) is ever replaced or removed, and only in that photo. A name is never removed from a
+/// photo where another face still shows that person, and the write itself skips photos that no
+/// longer contain the name, so names typed by hand are untouched.
 nonisolated enum PersonShownCorrectionPlanner {
     static func proposal(before: FolderFaceData, after: FolderFaceData) -> PersonShownUpdateProposal? {
         func clean(_ value: String?) -> String? {
@@ -79,18 +70,19 @@ nonisolated enum PersonShownCorrectionPlanner {
         }
 
         var replacementsByURL: [URL: [MetadataPersonReplacement]] = [:]
-        var appliedNameUpdates: [UUID: String?] = [:]
+        var appliedNameUpdates: AppliedPersonShownChanges = [:]
         for key in photoURLs.keys.sorted() {
             guard let url = photoURLs[key] else { continue }
+            let filename = url.lastPathComponent
             let beforeIDs = beforeByPhoto[key] ?? []
             let afterIDs = afterByPhoto[key] ?? []
             let shownAfter = Set(afterIDs.compactMap { shownName(afterGroups[$0]) })
 
-            // Names this app applied to this photo through a group present before the edit.
+            // Names this app wrote into this photo for a group present before the edit.
             var applied: [(groupID: UUID, name: String)] = []
             for groupID in beforeIDs {
                 guard let group = beforeGroups[groupID], !group.isExcludedFromPersonShown,
-                      let name = clean(group.appliedPersonShownName) else { continue }
+                      let name = clean(group.appliedPersonShownName(forPhoto: filename)) else { continue }
                 applied.append((groupID, name))
             }
             applied.sort { ($0.name, $0.groupID.uuidString) < ($1.name, $1.groupID.uuidString) }
@@ -100,36 +92,50 @@ nonisolated enum PersonShownCorrectionPlanner {
             var removed: Set<String> = []
             for (groupID, name) in applied {
                 if afterIDs.contains(groupID), let group = afterGroups[groupID] {
-                    // Same group still in the photo: it was renamed, cleared or excluded by this
-                    // edit. A mismatch the user already chose to leave is not offered again.
+                    // Same group still in the photo: renamed, cleared or excluded by this edit.
+                    // A mismatch the user already chose to leave is not offered again.
                     let newName = shownName(group)
                     guard newName != name, newName != shownName(beforeGroups[groupID]) else { continue }
                     let stillShown = afterIDs.contains { $0 != groupID && shownName(afterGroups[$0]) == name }
                     if let newName {
                         replacements.append(.init(old: name, new: newName, keepsOld: stillShown))
+                        appliedNameUpdates[groupID, default: [:]][filename] = .some(newName)
                     } else if !stillShown, removed.insert(name).inserted {
                         replacements.append(.init(old: name, new: nil))
+                        appliedNameUpdates[groupID, default: [:]][filename] = .some(nil)
                     }
-                    appliedNameUpdates[groupID] = .some(newName)
                 } else if !shownAfter.contains(name), removed.insert(name).inserted {
                     // The group's face left this photo (moved, merged, ungrouped or deleted)
                     // and no remaining face here shows that person.
                     replacements.append(.init(old: name, new: nil))
+                    appliedNameUpdates[groupID, default: [:]][filename] = .some(nil)
                 }
             }
-            // Faces that joined an applied group add that group's name to their photo.
+            // Faces that joined a group whose name this app has written add that name here.
             var added: Set<String> = []
             for groupID in afterIDs.sorted(by: { $0.uuidString < $1.uuidString }) where !beforeIDs.contains(groupID) {
-                guard let group = afterGroups[groupID], clean(group.appliedPersonShownName) != nil,
+                guard let group = afterGroups[groupID], group.hasAppliedPersonShownName,
                       let name = shownName(group), !appliedNames.contains(name),
                       added.insert(name).inserted else { continue }
                 replacements.append(.init(old: nil, new: name))
+                appliedNameUpdates[groupID, default: [:]][filename] = .some(name)
             }
             if !replacements.isEmpty { replacementsByURL[url] = replacements }
         }
         guard !replacementsByURL.isEmpty else { return nil }
         return PersonShownUpdateProposal(id: UUID(), folderURL: after.folderURL,
             replacementsByURL: replacementsByURL, appliedNameUpdates: appliedNameUpdates)
+    }
+
+    /// Applies per-photo applied-name changes to `data`, optionally only for `photos`.
+    static func applying(_ changes: AppliedPersonShownChanges, to data: inout FolderFaceData,
+                         onlyPhotos photos: Set<String>? = nil) {
+        for (groupID, perPhoto) in changes {
+            guard let index = data.groups.firstIndex(where: { $0.id == groupID }) else { continue }
+            for (photo, name) in perPhoto where photos?.contains(photo) ?? true {
+                data.groups[index].setAppliedPersonShownName(name, forPhoto: photo)
+            }
+        }
     }
 }
 

@@ -157,6 +157,9 @@ struct MetadataPanel: View {
     /// Captioning always commits drafts to the app sidecar. Embedding remains an explicit action.
     var commitsToHistorySidecarOnly = false
     var captionFlushCoordinator: CaptionWorkspaceFlushCoordinator?
+    /// The flush-registration owner Caption addresses (`enqueueFlush(owner:)`); nil keeps a
+    /// private owner. Lets Caption flush its own editor, never another window's Review drafts.
+    var captionFlushOwnerID: UUID? = nil
     var onFocusedFieldChanged: ((MetadataFieldID?) -> Void)?
     var onAutocompletePresentationChanged: ((Bool) -> Void)?
     var onTabTraversalRequested: ((MetadataFieldID, Bool) -> Void)?
@@ -181,7 +184,8 @@ struct MetadataPanel: View {
     @State private var showingStructuredKeywords = false
     @State private var showingStructuredPersonShown = false
     @State private var editingQuickList: QuickListType?
-    @State private var captionFlushOwner = UUID()
+    @State private var privateCaptionFlushOwner = UUID()
+    private var captionFlushOwner: UUID { captionFlushOwnerID ?? privateCaptionFlushOwner }
     @State private var editorBuffers = MetadataEditorBufferRegistry()
     @State private var showingCaptionAutocomplete = false
     @State private var captionAutocompleteField: MetadataFieldID?
@@ -1215,7 +1219,7 @@ struct MetadataPanel: View {
             do {
                 // Field blur and debounce must capture the same immutable FIFO request as
                 // navigation. A failed mirror then retries that event instead of inventing it again.
-                try captionFlushCoordinator.enqueueFlush()
+                try captionFlushCoordinator.enqueueFlush(owner: captionFlushOwner)
             } catch {
                 viewModel.saveError = "Failed to save caption sidecar: \(error.localizedDescription)"
             }
