@@ -2642,6 +2642,143 @@ struct AdaptiveHDRJPEGTests {
             .toneMapHDRtoSDR: false
         ]))
         #expect(expanded.contentHeadroom > 1)
+
+        // A real gain-map JPEG padded far past its header must still classify as
+        // HDR while the container preflight reads only the header region.
+        let padded = directory.appendingPathComponent("adaptive-hdr-padded.jpg")
+        var paddedData = try Data(contentsOf: destination)
+        paddedData.append(Data(count: 12_000_000))
+        try paddedData.write(to: padded)
+        let probe = SupportedImageFormats.gainMapContainerHintProbe(url: padded)
+        #expect(probe.hasHint)
+        #expect(probe.bytesRead < 300_000)
+        #expect(SupportedImageFormats.isHDR(url: padded))
+        #expect(
+            SupportedImageFormats.gainMapContainerHintProbe(url: destination).hasHint
+                == Self.legacyFullReadHint(url: destination)
+        )
+        #expect(
+            SupportedImageFormats.gainMapContainerHintProbe(url: source).hasHint
+                == Self.legacyFullReadHint(url: source)
+        )
+    }
+
+    /// Writes a synthetic JPEG: SOI, a big EXIF-like APP1, optional APP2 payload,
+    /// DQT, SOS, then `scanBytes` of entropy-coded filler and EOI.
+    private static func syntheticJPEG(
+        app2Payload: Data?,
+        scanBytes: Int,
+        scanInjection: Data? = nil
+    ) -> Data {
+        func segment(_ marker: UInt8, _ payload: Data) -> Data {
+            let length = payload.count + 2
+            var data = Data([0xFF, marker, UInt8(length >> 8), UInt8(length & 0xFF)])
+            data.append(payload)
+            return data
+        }
+        var data = Data([0xFF, 0xD8])
+        data.append(segment(0xE1, Data("Exif\0\0".utf8) + Data(repeating: 0x11, count: 60_000)))
+        if let app2Payload { data.append(segment(0xE2, app2Payload)) }
+        data.append(segment(0xDB, Data(repeating: 0x01, count: 65)))
+        data.append(segment(0xDA, Data(repeating: 0x00, count: 10)))
+        var scan = Data(repeating: 0x5A, count: scanBytes)
+        if let scanInjection {
+            scan.replaceSubrange(scanBytes / 2..<(scanBytes / 2 + scanInjection.count), with: scanInjection)
+        }
+        data.append(scan)
+        data.append(contentsOf: [0xFF, 0xD9])
+        return data
+    }
+
+    @Test("gain-map preflight reads only the JPEG header, never the whole file")
+    func gainMapPreflightIsBoundedForJPEG() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-hdr-preflight-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let scanBytes = 20_000_000
+        let cases: [(name: String, data: Data, expected: Bool)] = [
+            ("mpf.jpg", Self.syntheticJPEG(app2Payload: Data("MPF\0".utf8) + Data(count: 200), scanBytes: scanBytes), true),
+            ("iso.jpg", Self.syntheticJPEG(app2Payload: Data("urn:iso:std:iso:ts:21496:-1".utf8), scanBytes: scanBytes), true),
+            ("plain.jpg", Self.syntheticJPEG(app2Payload: nil, scanBytes: scanBytes), false),
+            // A signature buried in the compressed scan is not gain-map linkage.
+            ("scan-only.jpg", Self.syntheticJPEG(app2Payload: nil, scanBytes: scanBytes, scanInjection: Data("MPF\0".utf8)), false),
+        ]
+        for testCase in cases {
+            let url = directory.appendingPathComponent(testCase.name)
+            try testCase.data.write(to: url)
+            let probe = SupportedImageFormats.gainMapContainerHintProbe(url: url)
+            #expect(probe.hasHint == testCase.expected, "\(testCase.name)")
+            #expect(probe.hasHint == Self.legacyFullReadHint(url: url), "\(testCase.name)")
+            #expect(probe.bytesRead < 300_000, "\(testCase.name) read \(probe.bytesRead) bytes")
+        }
+
+        // Non-candidate formats are never opened.
+        let tiff = directory.appendingPathComponent("frame.tiff")
+        try Data(count: 1_000).write(to: tiff)
+        #expect(SupportedImageFormats.gainMapContainerHintProbe(url: tiff).bytesRead == 0)
+    }
+
+    @Test("gain-map preflight reads at most the HEIF prefix")
+    func gainMapPreflightIsBoundedForHEIF() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-hdr-preflight-heif-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let limit = SupportedImageFormats.heifGainMapHintPrefixLimit
+        var early = Data(count: 8_000_000)
+        early.replaceSubrange(4_096..<4_100, with: Data("tmap".utf8))
+        var late = Data(count: 8_000_000)
+        late.replaceSubrange(3_000_000..<3_000_004, with: Data("tmap".utf8))
+
+        for (name, data, expected) in [("early.heic", early, true), ("late.heic", late, false)] {
+            let url = directory.appendingPathComponent(name)
+            try data.write(to: url)
+            let probe = SupportedImageFormats.gainMapContainerHintProbe(url: url)
+            #expect(probe.hasHint == expected, "\(name)")
+            #expect(probe.hasHint == Self.legacyFullReadHint(url: url), "\(name)")
+            #expect(probe.bytesRead <= limit, "\(name) read \(probe.bytesRead) bytes")
+        }
+    }
+
+    /// The pre-3.0 whole-file implementation, kept verbatim as an oracle so the
+    /// bounded reader is proven to classify identically.
+    private static func legacyFullReadHint(url: URL) -> Bool {
+        let fileExtension = url.pathExtension.lowercased()
+        let isJPEGContainer = ["jpg", "jpeg"].contains(fileExtension)
+        guard isJPEGContainer || fileExtension == "heic" || fileExtension == "heif" else { return false }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
+        let gainMapSignatures = [
+            Data("AMPF".utf8), Data("MPF\0".utf8), Data("urn:iso:std:iso:ts:21496".utf8),
+            Data("HDRGainMap".utf8), Data("hdrgainmap".utf8), Data("tmap".utf8)
+        ]
+        if isJPEGContainer {
+            guard data.count >= 4, data[0] == 0xFF, data[1] == 0xD8 else { return false }
+            var offset = 2
+            while offset + 3 < data.count {
+                while offset < data.count, data[offset] == 0xFF { offset += 1 }
+                guard offset < data.count else { return false }
+                let marker = data[offset]
+                offset += 1
+                if marker == 0xDA || marker == 0xD9 { return false }
+                if marker == 0x01 || (0xD0...0xD7).contains(marker) { continue }
+                guard offset + 1 < data.count else { return false }
+                let length = (Int(data[offset]) << 8) | Int(data[offset + 1])
+                guard length >= 2, offset + length <= data.count else { return false }
+                let payloadStart = offset + 2
+                let payloadEnd = min(offset + length, payloadStart + 4_096)
+                if marker >= 0xE0, marker <= 0xEF, payloadStart < payloadEnd {
+                    let payload = Data(data[payloadStart..<payloadEnd])
+                    if gainMapSignatures.contains(where: { payload.range(of: $0) != nil }) { return true }
+                }
+                offset += length
+            }
+            return false
+        }
+        let prefix = Data(data.prefix(min(data.count, 1_048_576)))
+        return gainMapSignatures.contains(where: { prefix.range(of: $0) != nil })
     }
 }
 

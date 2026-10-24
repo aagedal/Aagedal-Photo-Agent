@@ -341,6 +341,50 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    /// Browser metadata-batch read. One listing of `.photo_metadata` decides which photos
+    /// currently have a carrier, so photos without one cost no per-file probes; the result is
+    /// authoritative for every URL in `imageURLs` (absent key = no readable owned sidecar,
+    /// exactly what `loadSidecar(for:in:)` would report). A cached record is reused while one
+    /// of its carriers is still listed; carriers that appeared since are read from disk.
+    @MetadataSidecarFilesystemActor
+    func loadSidecarsForBrowserBatch(
+        _ imageURLs: [URL], in folderURL: URL,
+        reusing cached: [URL: MetadataSidecar] = [:],
+        beforeRead: @escaping @Sendable (URL) -> Void = { _ in }
+    ) async -> [URL: MetadataSidecar] {
+        guard !Task.isCancelled, !imageURLs.isEmpty else { return [:] }
+        // Same outcomes as the per-file path: a missing directory means no carriers, and a
+        // non-directory entry fails every ownership read.
+        do { try requireMetadataDirectory(in: folderURL) } catch { return [:] }
+        guard let names = try? FileManager.default.contentsOfDirectory(
+            atPath: sidecarDirectory(for: folderURL).path
+        ) else { return [:] }
+        guard !names.isEmpty else { return [:] }
+        // Over-approximate matches (case and Unicode normalization folded) only cost a
+        // real read, which then decides; they can never hide an existing carrier.
+        let listed = Set(names.map(Self.carrierNameKey))
+        var result: [URL: MetadataSidecar] = [:]
+        var toRead: [URL] = []
+        for imageURL in imageURLs {
+            let hasCarrier = sidecarCandidateURLs(for: imageURL, in: folderURL)
+                .contains { listed.contains(Self.carrierNameKey($0.lastPathComponent)) }
+            guard hasCarrier else { continue }
+            if let record = cached[imageURL] {
+                result[imageURL] = record
+            } else {
+                toRead.append(imageURL)
+            }
+        }
+        guard !toRead.isEmpty else { return result }
+        let loaded = await loadSidecars(for: toRead, in: folderURL, beforeRead: beforeRead)
+        result.merge(loaded) { _, fresh in fresh }
+        return result
+    }
+
+    private nonisolated static func carrierNameKey(_ name: String) -> String {
+        name.precomposedStringWithCanonicalMapping.lowercased(with: Locale(identifier: "en_US_POSIX"))
+    }
+
     @MetadataSidecarFilesystemActor
     func imagesWithPendingChanges(in folderURL: URL) async -> Set<URL> {
         let sidecars = await loadAllSidecars(in: folderURL)

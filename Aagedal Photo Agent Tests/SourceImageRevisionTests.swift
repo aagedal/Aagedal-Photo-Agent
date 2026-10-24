@@ -657,6 +657,32 @@ struct SerializedFileSystemServiceTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("photos the scan saw without an .xmp skip the sidecar probe; others keep sidecar-first reads")
+    @MainActor
+    func displayOrientationSnapshotSkipsKnownMissingSidecars() async {
+        let withSidecar = URL(fileURLWithPath: "/virtual/rotated.raw")
+        let plain = URL(fileURLWithPath: "/virtual/plain.jpg")
+        let requestID = UUID()
+        let sidecarFirst = DisplayOrientationProbe(values: [withSidecar: 8, plain: 3])
+        let embeddedOnly = DisplayOrientationProbe(values: [withSidecar: 1, plain: 6])
+        let service = FileSystemService(
+            displayOrientation: sidecarFirst.read,
+            embeddedDisplayOrientation: embeddedOnly.read
+        )
+
+        let snapshot = await service.displayOrientationSnapshot(
+            for: [withSidecar, plain],
+            requestID: requestID,
+            urlsWithoutSidecar: [plain]
+        )
+
+        #expect(snapshot.orientations == [withSidecar: 8, plain: 6])
+        #expect(snapshot.completion == .complete)
+        #expect(sidecarFirst.urls == [withSidecar])
+        #expect(embeddedOnly.urls == [plain])
+        #expect(!embeddedOnly.ranOnMainThread)
+    }
+
     @Test("pre-cancelled Browser orientation snapshot performs no reads")
     func displayOrientationSnapshotHonorsPreCancellation() async {
         let requestID = UUID()

@@ -2738,3 +2738,83 @@ extension MetadataReplayIntentTests {
         #expect(!FileManager.default.fileExists(atPath: XMPSidecarService().sidecarURL(for: image).path))
     }
 }
+
+@Suite("Browser metadata-batch sidecar reads")
+struct BrowserBatchSidecarReadTests {
+    private nonisolated final class ReadCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var urls: [URL] = []
+        func record(_ url: URL) { lock.withLock { urls.append(url) } }
+        var readURLs: [URL] { lock.withLock { urls } }
+    }
+
+    private func makeFolder() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("browser-batch-sidecars-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private func pending(_ name: String, title: String) -> MetadataSidecar {
+        MetadataSidecar(sourceFile: name, pendingChanges: true, metadata: IPTCMetadata(title: title),
+            imageMetadataSnapshot: IPTCMetadata(title: "Original"), history: [])
+    }
+
+    @Test("a folder without .photo_metadata yields an authoritative empty result without per-photo reads")
+    func missingDirectoryMeansNoSidecars() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let images = (0..<20).map { folder.appendingPathComponent("IMG_\($0).jpg") }
+        let counter = ReadCounter()
+        let result = await MetadataSidecarService().loadSidecarsForBrowserBatch(
+            images, in: folder, beforeRead: { counter.record($0) })
+        #expect(result.isEmpty)
+        #expect(counter.readURLs.isEmpty)
+    }
+
+    @Test("only listed carriers are read; a missing entry means no sidecar")
+    func onlyListedCarriersAreRead() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let images = ["a.jpg", "b.jpg", "c.CR3", "d.jpg"].map { folder.appendingPathComponent($0) }
+        let service = MetadataSidecarService()
+        try service.saveSidecar(pending("a.jpg", title: "A"), for: images[0], in: folder)
+        try service.saveSidecar(pending("c.CR3", title: "C"), for: images[2], in: folder)
+
+        let counter = ReadCounter()
+        let result = await service.loadSidecarsForBrowserBatch(images, in: folder, beforeRead: { counter.record($0) })
+        #expect(Set(result.keys) == [images[0], images[2]])
+        #expect(result[images[0]]?.metadata.title == "A")
+        #expect(result[images[2]]?.metadata.title == "C")
+        #expect(Set(counter.readURLs) == [images[0], images[2]])
+        // Identical to the per-photo answer for every requested URL.
+        for image in images {
+            #expect(result[image]?.metadata.title == service.loadSidecar(for: image, in: folder)?.metadata.title)
+        }
+    }
+
+    @Test("cached records are reused, sidecars written after the cache are read, deleted ones vanish")
+    func cacheStaysAuthoritativeAcrossWrites() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let images = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        let service = MetadataSidecarService()
+        try service.saveSidecar(pending("a.jpg", title: "A"), for: images[0], in: folder)
+        try service.saveSidecar(pending("b.jpg", title: "B"), for: images[1], in: folder)
+        let cache = await service.loadAllSidecars(in: folder)
+        #expect(Set(cache.keys) == [images[0], images[1]])
+
+        // After the cache was built: c gains a sidecar, b's is deleted.
+        try service.saveSidecar(pending("c.jpg", title: "C new"), for: images[2], in: folder)
+        try service.deleteSidecar(for: images[1], in: folder)
+
+        let counter = ReadCounter()
+        let result = await service.loadSidecarsForBrowserBatch(
+            images, in: folder, reusing: cache, beforeRead: { counter.record($0) })
+        #expect(result[images[0]]?.metadata.title == "A")
+        #expect(result[images[1]] == nil)
+        #expect(result[images[2]]?.metadata.title == "C new")
+        // Only the newly written carrier needed a disk read.
+        #expect(counter.readURLs == [images[2]])
+    }
+}
