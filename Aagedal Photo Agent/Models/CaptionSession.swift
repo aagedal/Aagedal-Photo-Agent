@@ -911,8 +911,10 @@ final class CaptionWorkspaceFlushCoordinator {
     }
 
     /// Navigation flush: commits AppKit's buffered text and snapshots persistence without waiting
-    /// for sidecar disk I/O. A capture failure still prevents navigation.
-    func enqueueFlush() throws {
+    /// for sidecar disk I/O. A capture failure still prevents navigation. Returns whether a draft
+    /// was captured (false when the editor had nothing new to save).
+    @discardableResult
+    func enqueueFlush() throws -> Bool {
         if let current = currentImageURLHandler?(), isReviewing(current) {
             throw CaptionConflictRecoveryError.reviewInProgress
         }
@@ -924,7 +926,9 @@ final class CaptionWorkspaceFlushCoordinator {
         try handler()
         if let persistence = try persistenceCaptureHandler() {
             persistenceQueue.enqueue(persistence, onFailure: persistenceFailureHandler)
+            return true
         }
+        return false
     }
 
     func editorCompositionState() throws -> CodeReplacementCompositionState {

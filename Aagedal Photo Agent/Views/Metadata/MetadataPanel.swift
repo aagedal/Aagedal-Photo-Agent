@@ -1146,9 +1146,10 @@ struct MetadataPanel: View {
     }
 
     /// While loading: whether the editor holds anything the user typed or changed for this load
-    /// (model edits, an uncommitted field buffer, or marked text). Only then must a flush refuse.
+    /// (model edits, picks queued for the load, an uncommitted field buffer, or marked text).
+    /// Only then must a flush refuse.
     private func hasEditsDuringLoad() -> Bool {
-        if viewModel.hasUnpersistedEditorChanges { return true }
+        if viewModel.hasUnpersistedEditorChanges || viewModel.hasDeferredEditorActions { return true }
         let marked = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true
         return editorBuffers.hasUncommittedText(key: focusedField, loadID: viewModel.editorBufferLoadID,
             hasMarkedText: marked, metadata: viewModel.editingMetadata)

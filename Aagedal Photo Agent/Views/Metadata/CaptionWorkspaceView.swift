@@ -52,6 +52,9 @@ struct CaptionWorkspaceView: View {
     @State private var previewMode: CaptionPreviewMode = .fit
     @State private var showsConfirmedFaces = false
     @State private var confirmedPeople: [CaptionConfirmedPerson] = []
+    /// `confirmedPeople` mapped into the rendered preview's (possibly cropped) frame; faces
+    /// outside the crop are absent. The names readout and Faces toggle use the full list.
+    @State private var confirmedFaceOverlays: [CaptionConfirmedPerson] = []
     @State private var requestedFocusedField: MetadataFieldID?
     @State private var pendingWriteAndNextURL: URL?
     @State private var captionAdvanceShortcuts = CaptionAdvanceShortcutRegistry.shared
@@ -252,6 +255,12 @@ struct CaptionWorkspaceView: View {
         }
         .onDisappear {
             isWorkspaceActive = false
+            if metadataViewModel.heldSelectionURL != nil {
+                // Leaving Caption flushed the held photo; let the editor follow the browser again.
+                metadataViewModel.releaseSelectionHold()
+                metadataViewModel.loadSelectionMetadata(for: browserViewModel.selectedImages,
+                    folderURL: browserViewModel.currentFolderURL)
+            }
             workspaceLifetimeID = nil
             conflictOperationID = nil
             conflictReviewRequestID = nil
@@ -291,6 +300,7 @@ struct CaptionWorkspaceView: View {
             }
             if restoresEditorFocusAfterTransition {
                 restoresEditorFocusAfterTransition = false
+                guard conflictReview == nil, pendingReviewPhoto == nil else { return }
                 restoreLastEditorFocus()
             }
         }
@@ -727,7 +737,7 @@ struct CaptionWorkspaceView: View {
                     image: preview,
                     isUnavailable: previewFailed,
                     mode: previewMode,
-                    confirmedPeople: showsConfirmedFaces ? confirmedPeople : []
+                    confirmedPeople: showsConfirmedFaces ? confirmedFaceOverlays : []
                 )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -886,9 +896,11 @@ struct CaptionWorkspaceView: View {
     /// The editor's selection load trails navigation, so right after moving its draft can still
     /// belong to the previous photo (or be a load placeholder). Actions that read or write the
     /// editor must only act once it describes the photo the header shows.
+    /// A same-photo reload (for example a folder auto-refresh after the sidecar write) keeps the
+    /// loaded, editable fields and so still qualifies; only the empty placeholder of a load does not.
     private var editorDescribesCurrentPhoto: Bool {
         guard let currentURL = session.currentURL else { return false }
-        return !metadataViewModel.isLoading
+        return !metadataViewModel.isShowingLoadPlaceholder
             && metadataViewModel.selectedURLs.count == 1
             && metadataViewModel.selectedURLs.first?.standardizedFileURL == currentURL
     }
@@ -955,14 +967,18 @@ struct CaptionWorkspaceView: View {
             // Capture its buffered text before the session moves focus to a neighbour. Never move
             // on without it: mid-transition, retry once the transition ends; if the capture fails,
             // keep the editor on this photo and say so.
+            // The browser has already dropped it from its selection; hold the editor on it so the
+            // debounced selection load does not replace the uncaptured draft.
             guard !isEditorTransitioning else {
                 resynchronizesListAfterTransition = true
+                metadataViewModel.holdSelection(on: currentURL)
                 return
             }
             do {
                 try enqueueCurrentDraftPersistence()
             } catch {
                 resynchronizesListAfterTransition = true
+                metadataViewModel.holdSelection(on: currentURL)
                 errorMessage = "\(currentURL.lastPathComponent) left the current filter, but its caption edits could not be saved: \(error.localizedDescription) The photo stays open in Caption until they are saved."
                 return
             }
@@ -980,23 +996,41 @@ struct CaptionWorkspaceView: View {
         }
     }
 
+    /// `admits` is checked after the flush and before the session forgets the dirty marker, so a
+    /// refused action leaves the photo's state as it was.
     private func prepareAndPerform(
         _ action: CaptionSessionAction,
+        admits: @MainActor () -> Bool = { true },
         operation: @MainActor () -> Void
     ) async throws {
         let token = try flushCoordinator.reserveTransition()
         try await flushCoordinator.performReservedTransition(token, flush: {
             try await session.prepare(for: action) { try await flushCoordinator.flushAsync() }
         }, operation: {
+            guard admits() else { return }
             session.markCommitted()
             operation()
         })
     }
 
-    private func enqueueCurrentDraftPersistence() throws {
+    /// Write/Write & Next admission once the flush finished: focus must still be on `target` and
+    /// the editor must describe it. Refusals say so instead of silently doing nothing.
+    private func editorAdmitsWrite(to target: URL) -> Bool {
+        guard session.currentURL == target, editorDescribesCurrentPhoto else {
+            inlineNotice = "Not written: the photo's metadata is still loading. Try again in a moment."
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    private func enqueueCurrentDraftPersistence() throws -> Bool {
         guard !flushCoordinator.isTransitioning else { throw CaptionSessionError.transitionInProgress }
-        try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush()
+        let captured = try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush()
         session.markCommitted()
+        // The draft is captured, so a photo held open after leaving the filter may now be replaced.
+        metadataViewModel.releaseSelectionHold()
+        return captured
     }
 
     private func navigate(previous: Bool, announcesAdvance: Bool = false) {
@@ -1006,8 +1040,7 @@ struct CaptionWorkspaceView: View {
                 if announcesAdvance, !previous, !session.canGoNext {
                     // Save & Next on the last photo still saves; say why focus stays put.
                     guard session.currentURL != nil, !session.isTransitioning else { return }
-                    try enqueueCurrentDraftPersistence()
-                    inlineNotice = "Saved — last photo"
+                    inlineNotice = try enqueueCurrentDraftPersistence() ? "Saved — last photo" : "Last photo"
                     return
                 }
                 let moved = if previous {
@@ -1210,8 +1243,7 @@ struct CaptionWorkspaceView: View {
             guard !flushCoordinator.isTransitioning, let target = session.currentURL,
                   await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
-                try await prepareAndPerform(.write) {
-                    guard session.currentURL == target, editorDescribesCurrentPhoto else { return }
+                try await prepareAndPerform(.write, admits: { editorAdmitsWrite(to: target) }) {
                     metadataViewModel.writeMetadataAndClearSidecar()
                 }
             } catch {
@@ -1225,10 +1257,8 @@ struct CaptionWorkspaceView: View {
             guard !flushCoordinator.isTransitioning, let target = session.currentURL,
                   await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
-                try await prepareAndPerform(.write) {
-                    guard let currentURL = session.currentURL, currentURL == target,
-                          editorDescribesCurrentPhoto else { return }
-                    pendingWriteAndNextURL = currentURL
+                try await prepareAndPerform(.write, admits: { editorAdmitsWrite(to: target) }) {
+                    pendingWriteAndNextURL = target
                     metadataViewModel.writeMetadataAndClearSidecar()
                     // A write refused before it starts (for example an unpersisted Develop edit)
                     // sets `saveError` without toggling `isSaving`, so the completion handler
@@ -1440,6 +1470,7 @@ struct CaptionWorkspaceView: View {
         preview = nil
         previewFailed = false
         confirmedPeople = []
+        confirmedFaceOverlays = []
         guard let token = session.beginPreviewLoad() else { return }
         let image = currentImage
         // The editor's selection load is debounced, so right after navigating its draft still
@@ -1479,10 +1510,11 @@ struct CaptionWorkspaceView: View {
         // Face rects describe the uncropped photo; the edited preview shows the Develop crop.
         // The fallback thumbnail's framing is unknown, so a cropped photo shows no boxes there.
         let crop = settings?.crop
-        let people: [CaptionConfirmedPerson] = if crop?.isEffectiveCrop == true, cgImage == nil {
+        let people = CaptionConfirmedPersonOrdering.people(for: token.imageURL, in: faceData)
+        let overlays: [CaptionConfirmedPerson] = if crop?.isEffectiveCrop == true, cgImage == nil {
             []
         } else {
-            CaptionConfirmedPersonOrdering.people(for: token.imageURL, in: faceData).compactMap { person in
+            people.compactMap { person in
                 guard let rect = CaptionPreviewGeometry.croppedVisionRect(
                     person.normalizedFaceRect, crop: crop, displayOrientation: orientation,
                     renderedSize: loaded?.size ?? .zero) else { return nil }
@@ -1491,6 +1523,7 @@ struct CaptionWorkspaceView: View {
         }
         guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }
         confirmedPeople = people
+        confirmedFaceOverlays = overlays
     }
 }
 

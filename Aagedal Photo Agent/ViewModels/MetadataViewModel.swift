@@ -558,12 +558,27 @@ final class MetadataViewModel {
     /// loaded exactly this selection, so edits applied since then survive.
     func loadSelectionMetadata(for images: [ImageFile], folderURL: URL?) {
         let urls = Set(images.map(\.url))
+        if let held = heldSelectionURL?.standardizedFileURL,
+           selectedURLs.count == 1, selectedURLs[0].standardizedFileURL == held,
+           images.map({ $0.url.standardizedFileURL }) != [held] {
+            // Caption is holding this photo open until its draft is captured; the browser
+            // dropped it from the filtered selection, but replacing the editor would lose it.
+            return
+        }
         if let eager = eagerSelectionLoadURLs, eager == urls, Set(selectedURLs) == urls {
             eagerSelectionLoadURLs = nil
             return
         }
         loadMetadata(for: images, folderURL: folderURL)
     }
+
+    /// A photo Caption keeps open after it left the browser's filtered list, until its draft has
+    /// been captured. Only the debounced browser-selection load honours it.
+    @ObservationIgnored private(set) var heldSelectionURL: URL?
+
+    func holdSelection(on imageURL: URL) { heldSelectionURL = imageURL }
+
+    func releaseSelectionHold() { heldSelectionURL = nil }
 
     /// Loads a new browser selection immediately, ahead of its debounced selection load.
     func loadSelectionMetadataNow(for images: [ImageFile], folderURL: URL?) {
@@ -1392,6 +1407,15 @@ final class MetadataViewModel {
         } else {
             deferredLoadActions = (selection.urls, selection.folderURL, [action], commit)
         }
+    }
+
+    /// Keyword/person picks made against the load placeholder that are still queued for the
+    /// in-flight load. They live outside `editingMetadata` until the load finishes, so a flush
+    /// barrier must treat them as edits: replacing this load would drop them.
+    var hasDeferredEditorActions: Bool {
+        guard let deferred = deferredLoadActions, let selection = loadingSelection,
+              !deferred.actions.isEmpty else { return false }
+        return deferred.urls == selection.urls && deferred.folderURL == selection.folderURL
     }
 
     private func runDeferredLoadActions() {

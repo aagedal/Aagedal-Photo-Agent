@@ -252,10 +252,14 @@ struct MetadataEditorXMPBaselineTests {
         try #require(f.model.isEditorLoading)
         #expect(f.model.isShowingLoadPlaceholder)
         var commits = 0
+        #expect(!f.model.hasDeferredEditorActions)
         f.model.performAfterEditorLoad(commit: { commits += 1 }) { f.model.appendKeywords(["Picked"]) > 0 }
         f.model.performAfterEditorLoad(commit: { commits += 1 }) { f.model.appendPersonShown(["Doe, Jane"]) > 0 }
         #expect(f.model.editingMetadata.keywords.isEmpty)
+        // Queued picks are edits a Caption flush must not navigate away from.
+        #expect(f.model.hasDeferredEditorActions)
         await f.model.waitForMetadataLoad()
+        #expect(!f.model.hasDeferredEditorActions)
         #expect(!f.model.isEditorLoading)
         #expect(f.model.editingMetadata.title == "Pending headline")
         #expect(f.model.editingMetadata.keywords == ["Picked"])
@@ -267,6 +271,22 @@ struct MetadataEditorXMPBaselineTests {
         #expect(physical.personShown == ["Doe, Jane"])
     }
 
+    @Test("A Caption-held photo survives the browser's emptied selection load until released")
+    func heldSelectionSurvivesEmptiedBrowserSelection() async throws {
+        let f = try fixture(masked: false); defer { try? FileManager.default.removeItem(at: f.folder) }
+        f.model.loadMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        await f.model.waitForMetadataLoad()
+        f.model.editingMetadata.title = "Uncaptured draft"
+        f.model.markChanged()
+        f.model.holdSelection(on: f.image.standardizedFileURL)
+        f.model.loadSelectionMetadata(for: [], folderURL: f.folder)
+        #expect(f.model.selectedURLs == [f.image])
+        #expect(f.model.editingMetadata.title == "Uncaptured draft")
+        f.model.releaseSelectionHold()
+        f.model.loadSelectionMetadata(for: [], folderURL: f.folder)
+        #expect(f.model.selectedURLs.isEmpty)
+    }
+
     @Test("Picks deferred for one photo are dropped when the selection moves to another photo")
     func deferredPicksDroppedOnSelectionChange() async throws {
         let f = try fixture(masked: false); defer { try? FileManager.default.removeItem(at: f.folder) }
@@ -275,7 +295,9 @@ struct MetadataEditorXMPBaselineTests {
         f.model.loadMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
         var commits = 0
         f.model.performAfterEditorLoad(commit: { commits += 1 }) { f.model.appendKeywords(["Wrong photo"]) > 0 }
+        #expect(f.model.hasDeferredEditorActions)
         f.model.loadMetadata(for: [ImageFile(url: other)], folderURL: f.folder)
+        #expect(!f.model.hasDeferredEditorActions)
         await f.model.waitForMetadataLoad()
         #expect(f.model.selectedURLs == [other])
         #expect(f.model.editingMetadata.keywords.isEmpty)
