@@ -211,7 +211,11 @@ actor DevelopSourceDecodeService {
         maxPixelSize: CGFloat,
         into pipeline: MetalLivePreviewPipeline
     ) async -> Bool {
+        // The permit is taken before decoding: a RAW decode-settings change (which invalidates
+        // in-flight permits) during this decode must reject the result decoded with the old
+        // settings, rather than let it into the cache after the purge.
         guard !Task.isCancelled,
+              let permit = pipeline.beginSpeculativePrecache(),
               let result = await loadRAW(
                   from: url,
                   maxPixelSize: maxPixelSize,
@@ -224,7 +228,8 @@ actor DevelopSourceDecodeService {
             neutralTemperature: result.neutralTemperature,
             neutralTint: result.neutralTint,
             exifOrientation: targetOrientation,
-            decodeMaxPixelSize: maxPixelSize
+            decodeMaxPixelSize: maxPixelSize,
+            permit: permit
         )
         return true
     }

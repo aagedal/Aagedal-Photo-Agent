@@ -3,6 +3,7 @@ import CoreImage
 import Foundation
 import ImageIO
 import Metal
+import Observation
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -171,6 +172,97 @@ struct DevelopSourceDecodeServiceTests {
         let readBackImage = CIImage(cgImage: promoted)
         #expect(Self.red(readBackImage, x: 4, y: 28) > 0.9)
         #expect(Self.red(readBackImage, x: 4, y: 3) < 0.1)
+    }
+
+    /// A RAW decode-settings change while a neighbour is mid-decode must not let that old-settings
+    /// decode into the cache after the purge: the permit is taken before decoding.
+    @Test("a decode-settings change during a precache decode rejects the stale texture")
+    @MainActor
+    func decodeSettingsChangeDuringPrecacheDecodeRejectsResult() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let pipeline = MetalLivePreviewPipeline(device: device, commandQueue: queue)
+        else { return }
+        let discardDuringDecode = DecodeCounter()
+        let service = DevelopSourceDecodeService(
+            rawDecoder: { _, _, _ in
+                if discardDuringDecode.count > 0 {
+                    // `.rawDecodeSettingsDidChange` lands while CIRAWFilter is decoding.
+                    pipeline.discardSpeculativeTextures()
+                }
+                return FullScreenImageCache.RAWDecodeResult(
+                    image: Self.twoToneImage(),
+                    neutralTemperature: 5_000,
+                    neutralTint: 0
+                )
+            },
+            orientationReader: { _ in 1 }
+        )
+        let url = URL(fileURLWithPath: "/tmp/develop-precache-settings-change.arw")
+        pipeline.uploadSourceImage(Self.twoToneImage())
+
+        discardDuringDecode.increment()
+        _ = await service.precacheRAWTexture(
+            for: url, targetOrientation: 1, maxPixelSize: 2_048, into: pipeline
+        )
+        #expect(pipeline.applyCachedTexture(for: url, exifOrientation: 1, decodeMaxPixelSize: 2_048) == nil)
+
+        // Control: the same precache without a concurrent settings change is stored.
+        let control = DevelopSourceDecodeService(
+            rawDecoder: { _, _, _ in
+                FullScreenImageCache.RAWDecodeResult(
+                    image: Self.twoToneImage(),
+                    neutralTemperature: 5_000,
+                    neutralTint: 0
+                )
+            },
+            orientationReader: { _ in 1 }
+        )
+        _ = await control.precacheRAWTexture(
+            for: url, targetOrientation: 1, maxPixelSize: 2_048, into: pipeline
+        )
+        #expect(pipeline.applyCachedTexture(for: url, exifOrientation: 1, decodeMaxPixelSize: 2_048) != nil)
+    }
+
+    /// The scope panel picks the Metal scope from non-observable pipeline state; the observable
+    /// revision must move whenever the source texture is uploaded, promoted or cleared.
+    @Test("source texture upload, promotion and clear advance the observable scope revision")
+    @MainActor
+    func sourceTextureChangesAdvanceScopeRevision() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let pipeline = MetalLivePreviewPipeline(device: device, commandQueue: queue)
+        else { return }
+        let scope = ScopeViewModel(scopeMode: .waveform, persistsScopeMode: false)
+        scope.metalEditPipeline = pipeline
+        scope.refreshMetalSourceRevision()
+        #expect(!scope.isMetalScopeActive)
+
+        func expectRevisionChange(_ label: String, _ change: () -> Void) {
+            let before = scope.metalSourceRevision
+            let notifications = DecodeCounter()
+            withObservationTracking {
+                _ = scope.isMetalScopeActive
+            } onChange: {
+                notifications.increment()
+            }
+            change()
+            scope.refreshMetalSourceRevision()
+            #expect(scope.metalSourceRevision != before, Comment(rawValue: label))
+            #expect(notifications.count > 0, Comment(rawValue: label))
+        }
+
+        expectRevisionChange("upload") { pipeline.uploadSourceImage(Self.twoToneImage()) }
+
+        let url = URL(fileURLWithPath: "/tmp/develop-scope-revision.arw")
+        pipeline.precacheTexture(for: url, ciImage: Self.twoToneImage())
+        expectRevisionChange("promotion") { _ = pipeline.applyCachedTexture(for: url) }
+        expectRevisionChange("clear") { pipeline.clearSourceTexture() }
+
+        // No texture change: no notification churn.
+        let settled = scope.metalSourceRevision
+        scope.refreshMetalSourceRevision()
+        #expect(scope.metalSourceRevision == settled)
     }
 
     /// Non-RAW Develop sources are uploaded at screen resolution like RAW; zoom upgrades to the

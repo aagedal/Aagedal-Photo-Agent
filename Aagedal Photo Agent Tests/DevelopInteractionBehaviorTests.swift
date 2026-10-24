@@ -693,6 +693,57 @@ struct DevelopInteractionBehaviorTests {
         #expect(EditZoomBehavior.clampedScale(0.5) == 1)
     }
 
+    @Test("100% zoom uses native pixels in the displayed orientation, not the screen-res texture")
+    func actualPixelsZoomUsesNativeDimensions() {
+        let container = CGSize(width: 1_000, height: 800)
+        // 6000×4000 landscape on a 2× display: fit = 1000/6000 → 100% = 6000 / (1000 · 2) = 3.
+        let landscape = EditZoomBehavior.displayPixelSize(
+            nativePixelSize: CGSize(width: 6_000, height: 4_000),
+            orientation: 1
+        )
+        #expect(landscape == CGSize(width: 6_000, height: 4_000))
+        #expect(abs(EditZoomBehavior.actualPixelsScale(
+            containerSize: container, displayPixelSize: landscape, backingScale: 2
+        ) - 3) < 0.0001)
+        // The old basis — a 3200 px screen-res texture — would have stopped at 1.6×.
+        #expect(EditZoomBehavior.actualPixelsScale(
+            containerSize: container,
+            displayPixelSize: CGSize(width: 3_200, height: 2_133),
+            backingScale: 2
+        ) < 1.7)
+
+        // Orientations 5–8 transpose the stored dimensions: portrait 4000×6000 is
+        // height-limited in an 1000×800 view → fit = 800/6000 → 100% = 6000 / (800 · 2) = 3.75.
+        for orientation in 5...8 {
+            let portrait = EditZoomBehavior.displayPixelSize(
+                nativePixelSize: CGSize(width: 6_000, height: 4_000),
+                orientation: orientation
+            )
+            #expect(portrait == CGSize(width: 4_000, height: 6_000))
+            #expect(abs(EditZoomBehavior.actualPixelsScale(
+                containerSize: container, displayPixelSize: portrait, backingScale: 2
+            ) - 3.75) < 0.0001)
+        }
+        for orientation in [1, 2, 3, 4] {
+            #expect(EditZoomBehavior.displayPixelSize(
+                nativePixelSize: CGSize(width: 6_000, height: 4_000),
+                orientation: orientation
+            ) == CGSize(width: 6_000, height: 4_000))
+        }
+
+        // An image smaller than the fitted view yields < 1; clamping keeps it at fit.
+        let small = EditZoomBehavior.actualPixelsScale(
+            containerSize: container,
+            displayPixelSize: CGSize(width: 800, height: 600),
+            backingScale: 2
+        )
+        #expect(small < 1)
+        #expect(EditZoomBehavior.clampedScale(small) == 1)
+        #expect(EditZoomBehavior.actualPixelsScale(
+            containerSize: .zero, displayPixelSize: landscape, backingScale: 2
+        ) == 1)
+    }
+
     @Test("Crop handle padding is limited to the active crop tool")
     func cropPreviewHandlePadding() {
         #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: true) == 64)

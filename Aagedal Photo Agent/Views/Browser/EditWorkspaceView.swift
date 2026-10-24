@@ -296,6 +296,8 @@ struct EditWorkspaceView: View {
     /// only the most recent request is applied once the transition ends.
     @State private var pendingDevelopNavigation: PendingDevelopNavigation?
     @State private var watermarkStore = WatermarkStore.shared
+    /// Native pixel size of the last image whose 100% zoom was computed (header read cache).
+    @State private var nativePixelSizeCache: (url: URL, size: CGSize?)?
     /// SHA-256 watermark diagnostics for the version selector, reused across body evaluations.
     @State private var versionDiagnosticsMemo = DevelopVersionDiagnosticsMemo()
     /// Owns the live Metal pipeline, AppKit render coordinator, source-generation reset, warmup,
@@ -1025,7 +1027,10 @@ struct EditWorkspaceView: View {
             releaseHeldDevelopInput()
         }
         .onReceive(NotificationCenter.default.publisher(for: .rawDecodeSettingsDidChange)) { _ in
-            // Neighbours decoded ahead of navigation used the previous decode settings.
+            // Neighbours decoded ahead of navigation used the previous decode settings. Stop the
+            // running precache and reject anything it already decoded (permits are taken before
+            // the decode), then purge the cache.
+            adjacentRAWPrecacheTask?.cancel()
             metalPipeline?.discardSpeculativeTextures()
         }
         .onReceive(NotificationCenter.default.publisher(for: .watermarkLibraryDidChange)) { _ in
@@ -3030,6 +3035,7 @@ struct EditWorkspaceView: View {
                     scopeViewModel.metalScopeCoordinator = MetalScopeView.Coordinator(scopePipeline: scopePipeline)
                 }
             }
+            scopeViewModel.refreshMetalSourceRevision()
         }
         cleanFeedPublication.beginWorkspace(controller: cleanFeedController)
         // Wire the clean-feed mirror only when the feed is actually enabled, so users
@@ -3149,6 +3155,7 @@ struct EditWorkspaceView: View {
             orientation: selectedImageURL == nil ? nil : selectedImageOrientation
         )
         metalSession.beginImageSession(previewSession.sessionGeneration)
+        scopeViewModel.refreshMetalSourceRevision()
         previewRender.beginImageSession()
         interactiveRender.beginImageSession()
         whiteBalanceSession.beginImageSession(selectedImageURL)
@@ -3780,6 +3787,9 @@ struct EditWorkspaceView: View {
     }
 
     private func renderPreview() {
+        // Every texture upload, precache promotion, zoom upgrade and in-place rotation ends in
+        // a render; let the scope panel notice a source texture that appeared or changed.
+        scopeViewModel.refreshMetalSourceRevision()
         updateDisplayGamut()
         syncCleanFeed()
         let renderStart = ContinuousClock.now
@@ -8334,14 +8344,34 @@ struct EditWorkspaceView: View {
 
     private func calculateEditZoomTo100(in containerSize: CGSize) -> CGFloat {
         let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
-        // Use source texture dimensions for accurate 1:1 pixel mapping
-        let sourceWidth = CGFloat(metalPipeline?.sourceTextureSize?.width ?? currentImageSize?.width ?? 1)
-        let sourceHeight = CGFloat(metalPipeline?.sourceTextureSize?.height ?? currentImageSize?.height ?? 1)
-        let fittedScale = min(containerSize.width / sourceWidth, containerSize.height / sourceHeight)
-        let fittedWidth = sourceWidth * fittedScale
-        guard fittedWidth > 0 else { return 1.0 }
-        // At zoom100, 1 source pixel = 1 physical screen pixel
-        return sourceWidth / (fittedWidth * backingScale)
+        // 100% means one *native* image pixel per screen pixel. The source texture is
+        // screen-resolution (RAW and non-RAW) until a zoom upgrade, so it can't be the basis;
+        // it remains the fallback when the file's dimensions can't be read.
+        let displayPixelSize = nativeDisplayPixelSize()
+            ?? metalPipeline?.sourceTextureSize
+            ?? currentImageSize
+            ?? CGSize(width: 1, height: 1)
+        return EditZoomBehavior.actualPixelsScale(
+            containerSize: containerSize,
+            displayPixelSize: displayPixelSize,
+            backingScale: backingScale
+        )
+    }
+
+    /// Native pixel dimensions of the selected file in its displayed (in-memory, sidecar-first)
+    /// orientation. The header read is cached per URL.
+    private func nativeDisplayPixelSize() -> CGSize? {
+        guard let url = selectedImageURL else { return nil }
+        let native: CGSize?
+        if let cached = nativePixelSizeCache, cached.url == url {
+            native = cached.size
+        } else {
+            native = FullScreenImageCache.nativePixelSize(of: url)
+            nativePixelSizeCache = (url, native)
+        }
+        return native.map {
+            EditZoomBehavior.displayPixelSize(nativePixelSize: $0, orientation: selectedImageOrientation)
+        }
     }
 
     // MARK: - Key Event Handling
