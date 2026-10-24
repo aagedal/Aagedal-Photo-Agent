@@ -817,34 +817,45 @@ struct FTPAtomicUploadTests {
             .map { arguments[$0 + 1] }
     }
 
-    @Test("uploads go to a hidden .part name and are renamed into place after the transfer")
-    func temporaryNameAndRenameFlags() {
+    @Test("uploads go to a hidden temporary name; the rename travels in a -K config file")
+    func temporaryNameAndRenameConfig() throws {
+        let temporary = try #require(FTPService.temporaryUploadName(for: "Shot #3.jpg", token: "t1"))
+        #expect(temporary == ".Shot #3.jpg.t1.part")
         let arguments = FTPService.uploadArguments(
             localPath: "/tmp/Shot #3.jpg", filename: "Shot #3.jpg",
-            temporaryName: FTPService.temporaryUploadName(for: "Shot #3.jpg"),
+            temporaryName: temporary, quoteConfigPath: "/tmp/q.curlrc",
             netrcPath: "/tmp/x.netrc", connection: connection
         )
-        #expect(arguments.contains("ftp://ftp.example.com:21/in%20box/.Shot%20%233.jpg.part"))
+        #expect(arguments.contains("ftp://ftp.example.com:21/in%20box/.Shot%20%233.jpg.t1.part"))
         #expect(!arguments.contains("ftp://ftp.example.com:21/in%20box/Shot%20%233.jpg"))
-        // Post-quote ("-") commands run only after a successful transfer, in the URL's folder,
-        // with the literal (unencoded) names. The DELE of an existing target may fail ("*").
-        #expect(flagValues(arguments, "-Q") == [
-            "-*DELE Shot #3.jpg",
-            "-RNFR .Shot #3.jpg.part",
-            "-RNTO Shot #3.jpg",
-        ])
+        #expect(flagValues(arguments, "-K") == ["/tmp/q.curlrc"])
+        // No filename-bearing quote command on argv (Process would decompose it to NFD).
+        #expect(!arguments.contains("-Q"))
         #expect(arguments.contains("--ssl-reqd"))
         #expect(arguments.contains("--ftp-create-dirs"))
+        // Post-quote ("-") commands run only after a successful transfer, in the URL's folder,
+        // with the literal (unencoded) names. The DELE of an existing target may fail ("*").
+        #expect(FTPService.quoteCommands(filename: "Shot #3.jpg", temporaryName: temporary) == [
+            "-*DELE Shot #3.jpg",
+            "-RNFR .Shot #3.jpg.t1.part",
+            "-RNTO Shot #3.jpg",
+        ])
     }
 
-    @Test("a profile that refuses renames uploads directly under the final name")
+    @Test("curl config quoting escapes quotes and backslashes")
+    func configQuoting() {
+        #expect(FTPService.curlConfigContent(quoteCommands: ["-RNTO a \"b\" \\c.jpg"])
+            == "quote = \"-RNTO a \\\"b\\\" \\\\c.jpg\"\n")
+    }
+
+    @Test("a direct upload carries no rename commands")
     func directUploadWithoutRename() {
         let arguments = FTPService.uploadArguments(
-            localPath: "/tmp/a.jpg", filename: "a.jpg", temporaryName: nil,
+            localPath: "/tmp/a.jpg", filename: "a.jpg", temporaryName: nil, quoteConfigPath: nil,
             netrcPath: "/tmp/x.netrc", connection: connection
         )
         #expect(arguments.contains("ftp://ftp.example.com:21/in%20box/a.jpg"))
-        #expect(!arguments.contains("-Q"))
+        #expect(!arguments.contains("-Q") && !arguments.contains("-K"))
     }
 
     @Test("curl never retries on its own, so a wrong password is tried once")
@@ -859,21 +870,45 @@ struct FTPAtomicUploadTests {
 
     @Test("temporary names are skipped for names that can't be sent in an FTP command")
     func temporaryNameRules() {
-        #expect(FTPService.temporaryUploadName(for: "IMG_1.jpg") == ".IMG_1.jpg.part")
-        #expect(FTPService.temporaryUploadName(for: "bad\r\nDELE x.jpg") == nil)
-        #expect(FTPService.temporaryUploadName(for: String(repeating: "a", count: 250) + ".jpg") == nil)
+        #expect(FTPService.temporaryUploadName(for: "IMG_1.jpg", token: "ab12cd") == ".IMG_1.jpg.ab12cd.part")
+        #expect(FTPService.temporaryUploadName(for: "bad\r\nDELE x.jpg", token: "t") == nil)
+        #expect(FTPService.temporaryUploadName(for: String(repeating: "a", count: 245) + ".jpg", token: "t") == nil)
+        #expect(FTPService.randomTemporaryToken() != FTPService.randomTemporaryToken())
     }
 
-    @Test("success sends one transfer to the temporary name")
+    @Test("an NFC name reaches RNFR/RNTO byte-identical to the name curl STORes")
+    func nfcNameBytesMatchStoredName() async throws {
+        let name = "\u{00C5}lesund_bl\u{00E5}b\u{00E6}r.jpg"   // NFC "Ålesund_blåbær.jpg"
+        let runner = ScriptedCurl([0])
+        _ = try await FTPService.performUpload(
+            localPath: "/tmp/x.jpg", filename: name, connection: connection,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t1" }, run: runner.run
+        )
+        let call = try #require(runner.calls.first)
+        let url = try #require(call.arguments.first { $0.hasPrefix("ftp://") })
+        // The STOR name curl derives from the percent-encoded URL (ASCII on argv, so NFC survives).
+        let decodedFromURL = try #require(url.components(separatedBy: "/").last?.removingPercentEncoding)
+        #expect(Array(decodedFromURL.utf8) == Array(".\(name).t1.part".utf8))
+        let config = try #require(call.config)
+        let nfcName = Data(name.utf8)
+        let nfdName = Data(name.decomposedStringWithCanonicalMapping.utf8)
+        #expect(nfcName != nfdName)
+        #expect(config.range(of: Data("-RNFR ".utf8) + Data(decodedFromURL.utf8)) != nil)
+        #expect(config.range(of: Data("-RNTO ".utf8) + nfcName) != nil)
+        #expect(config.range(of: nfdName) == nil)
+    }
+
+    @Test("success sends one transfer to the temporary name and reports the rename")
     func successUsesTemporaryName() async throws {
         let runner = ScriptedCurl([0])
         let outcome = try await FTPService.performUpload(
             localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
-            netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t1" }, run: runner.run
         )
-        #expect(outcome == FTPUploadOutcome(renameRefused: false))
+        #expect(outcome == FTPUploadOutcome(renamedIntoPlace: true))
         #expect(runner.calls.count == 1)
-        #expect(runner.calls[0].arguments.contains("ftp://ftp.example.com:21/in%20box/.a.jpg.part"))
+        #expect(runner.calls[0].arguments.contains("ftp://ftp.example.com:21/in%20box/.a.jpg.t1.part"))
+        #expect(runner.calls[0].configText?.contains("quote = \"-RNFR .a.jpg.t1.part\"") == true)
     }
 
     @Test("a refused rename deletes the temporary file and re-sends under the final name")
@@ -881,24 +916,63 @@ struct FTPAtomicUploadTests {
         let runner = ScriptedCurl([21, 0, 0])
         let outcome = try await FTPService.performUpload(
             localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
-            netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t1" }, run: runner.run
         )
-        #expect(outcome.renameRefused)
+        #expect(outcome == FTPUploadOutcome(renameRefused: true))
         let calls = runner.calls
         #expect(calls.count == 3)
-        #expect(calls[0].isTransfer && calls[0].arguments.contains("-RNFR .a.jpg.part"))
+        #expect(calls[0].isTransfer && calls[0].configText?.contains("-RNFR .a.jpg.t1.part") == true)
         // Best-effort cleanup: --head on the folder with a post-quote DELE of the temp file.
         #expect(!calls[1].isTransfer)
         #expect(calls[1].arguments.contains("--head"))
         #expect(calls[1].arguments.contains("ftp://ftp.example.com:21/in%20box/"))
-        #expect(calls[1].arguments.contains("-DELE .a.jpg.part"))
+        #expect(calls[1].configText == "quote = \"-DELE .a.jpg.t1.part\"\n")
         #expect(calls[1].arguments.contains("--ssl-reqd"))
         #expect(calls[2].isTransfer)
         #expect(calls[2].arguments.contains("ftp://ftp.example.com:21/in%20box/a.jpg"))
-        #expect(!calls[2].arguments.contains("-Q"))
+        #expect(calls[2].config == nil)
     }
 
-    @Test("a profile known to refuse renames goes straight to the final name")
+    @Test("a refused temporary name (dot-file/extension filter) is re-sent directly")
+    func temporaryNameRefusedFallsBackToDirectUpload() async throws {
+        let runner = ScriptedCurl([25, 0, 0], stderr: "curl: (25) Failed FTP upload: 553")
+        let outcome = try await FTPService.performUpload(
+            localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t1" }, run: runner.run
+        )
+        #expect(outcome == FTPUploadOutcome(temporaryNameRefused: true))
+        let calls = runner.calls
+        #expect(calls.count == 3)
+        #expect(calls[1].configText == "quote = \"-DELE .a.jpg.t1.part\"\n")
+        #expect(calls[2].arguments.contains("ftp://ftp.example.com:21/in%20box/a.jpg"))
+
+        var profile = connection
+        let learned1 = profile.learnServerCompatibility(from: outcome, fileName: "a.jpg")
+        #expect(learned1)
+        #expect(profile.serverRefusesTemporaryName && profile.uploadsDirectly)
+        let next = ScriptedCurl([0])
+        _ = try await FTPService.performUpload(
+            localPath: "/tmp/b.jpg", filename: "b.jpg", connection: profile,
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: next.run
+        )
+        #expect(next.calls.count == 1)
+        #expect(next.calls[0].arguments.contains("ftp://ftp.example.com:21/in%20box/b.jpg"))
+        #expect(next.calls[0].config == nil)
+    }
+
+    @Test("when the direct re-send is also refused, the file fails and nothing is learned")
+    func directReSendAlsoRefused() async throws {
+        let runner = ScriptedCurl([25, 25], stderr: "curl: (25) Failed FTP upload: 552 quota")
+        await #expect(throws: FTPService.FTPError.self) {
+            _ = try await FTPService.performUpload(
+                localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
+                netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
+            )
+        }
+        #expect(runner.calls.filter(\.isTransfer).count == 2)
+    }
+
+    @Test("a profile known to need direct uploads goes straight to the final name")
     func knownRefusalSkipsTemporaryName() async throws {
         var dropBox = connection
         dropBox.serverRefusesRename = true
@@ -907,20 +981,30 @@ struct FTPAtomicUploadTests {
             localPath: "/tmp/a.jpg", filename: "a.jpg", connection: dropBox,
             netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
         )
-        #expect(!outcome.renameRefused)
-        #expect(runner.calls.map(\.arguments).allSatisfy { !$0.contains("-Q") })
+        #expect(outcome == FTPUploadOutcome())
+        #expect(runner.calls.allSatisfy { $0.config == nil })
         #expect(runner.calls[0].arguments.contains("ftp://ftp.example.com:21/in%20box/a.jpg"))
     }
 
-    @Test("transient network failures are retried in-app, always against the temporary name")
-    func transientFailuresRetry() async throws {
+    @Test("each retry uses a fresh temporary name, so a leftover can't block it")
+    func transientFailuresRetryWithFreshNames() async throws {
         let runner = ScriptedCurl([56, 28, 0])
+        let tokens = TokenSequence()
         _ = try await FTPService.performUpload(
             localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
-            netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
+            netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: tokens.next, run: runner.run
         )
-        #expect(runner.calls.count == 3)
-        #expect(runner.calls.allSatisfy { $0.isTransfer && $0.arguments.contains("-RNTO a.jpg") })
+        let transfers = runner.calls.filter(\.isTransfer)
+        #expect(transfers.count == 3)
+        #expect(transfers.map { $0.arguments.first { $0.hasPrefix("ftp://") } } == [
+            "ftp://ftp.example.com:21/in%20box/.a.jpg.t1.part",
+            "ftp://ftp.example.com:21/in%20box/.a.jpg.t2.part",
+            "ftp://ftp.example.com:21/in%20box/.a.jpg.t3.part",
+        ])
+        #expect(transfers.allSatisfy { $0.configText?.contains("-RNTO a.jpg") == true })
+        // Partial temporary files of the broken attempts are deleted.
+        let deleted = runner.calls.filter { !$0.isTransfer }.compactMap(\.configText)
+        #expect(deleted == ["quote = \"-DELE .a.jpg.t1.part\"\n", "quote = \"-DELE .a.jpg.t2.part\"\n"])
     }
 
     @Test("a login failure is never retried and leaves no cleanup connection")
@@ -947,11 +1031,11 @@ struct FTPAtomicUploadTests {
         await #expect(throws: FTPService.FTPError.self) {
             _ = try await FTPService.performUpload(
                 localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
-                netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
+                netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t" }, run: runner.run
             )
         }
         #expect(runner.calls.filter(\.isTransfer).count == FTPService.maximumTransferAttempts)
-        #expect(runner.calls.last?.arguments.contains("-DELE .a.jpg.part") == true)
+        #expect(runner.calls.last?.configText?.contains("-DELE .a.jpg.t.part") == true)
     }
 
     @Test("a cancelled transfer deletes its partial temporary file")
@@ -960,11 +1044,34 @@ struct FTPAtomicUploadTests {
         await #expect(throws: CancellationError.self) {
             _ = try await FTPService.performUpload(
                 localPath: "/tmp/a.jpg", filename: "a.jpg", connection: connection,
-                netrcPath: "/tmp/x.netrc", retryDelay: .zero, run: runner.run
+                netrcPath: "/tmp/x.netrc", retryDelay: .zero, makeTemporaryToken: { "t" }, run: runner.run
             )
         }
         #expect(runner.calls.count == 2)
-        #expect(runner.calls[1].arguments.contains("-DELE .a.jpg.part"))
+        #expect(runner.calls[1].configText?.contains("-DELE .a.jpg.t.part") == true)
+    }
+
+    @Test("rename support is persisted only after refusals on two different files")
+    func renameRefusalNeedsTwoFiles() {
+        var profile = connection
+        let refused = FTPUploadOutcome(renameRefused: true)
+        let learned2 = profile.learnServerCompatibility(from: refused, fileName: "a.jpg")
+        #expect(learned2)
+        #expect(!profile.serverRefusesRename && !profile.uploadsDirectly)
+        // The same file again (a retry) doesn't count.
+        let learned3 = profile.learnServerCompatibility(from: refused, fileName: "a.jpg")
+        #expect(!learned3)
+        #expect(!profile.serverRefusesRename)
+        // A working rename clears the count (the refusal was transient or name-specific).
+        let learned4 = profile.learnServerCompatibility(from: FTPUploadOutcome(renamedIntoPlace: true), fileName: "b.jpg")
+        #expect(learned4)
+        #expect(profile.renameRefusalCount == 0)
+        _ = profile.learnServerCompatibility(from: refused, fileName: "c.jpg")
+        let learned5 = profile.learnServerCompatibility(from: refused, fileName: "d.jpg")
+        #expect(learned5)
+        #expect(profile.serverRefusesRename && profile.uploadsDirectly)
+        profile.resetServerCompatibility()
+        #expect(!profile.hasLearnedServerCompatibility && !profile.uploadsDirectly)
     }
 
     @Test("legacy uploadFile falls back to a direct upload through the injected runner")
@@ -1048,6 +1155,35 @@ struct FTPCurlProcessExecutorTests {
         #expect(result.standardError.hasSuffix("curl: (67) Access denied: 530\n"))
     }
 
+    @Test("a cancel after the transfer reached 100% lets curl finish the rename and reports success")
+    func cancelAfterCompleteTransferIsNotLost() async throws {
+        let task = Task {
+            try await FTPCurlProcessExecutor.run(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                // Progress reaches 100%, then the acknowledgement/rename phase takes a moment.
+                arguments: ["-c", "printf '######## 100.0%%' >&2; sleep 1; exit 0"]
+            )
+        }
+        try await Task.sleep(for: .milliseconds(400))
+        task.cancel()
+        let result = try await task.value
+        #expect(result.terminationStatus == 0)
+    }
+
+    @Test("a clean exit 0 is reported even when a cancel raced it")
+    func exitZeroWinsOverLateCancel() async throws {
+        let task = Task {
+            try await FTPCurlProcessExecutor.run(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                // Ignores SIGTERM and still exits 0, like curl finishing its last reply.
+                arguments: ["-c", "trap '' TERM; sleep 0.5; exit 0"]
+            )
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        task.cancel()
+        #expect(try await task.value.terminationStatus == 0)
+    }
+
     @Test("cancellation terminates a process that ignores SIGTERM")
     func cancellationEscalatesToSIGKILL() async throws {
         let started = ContinuousClock.now
@@ -1067,7 +1203,13 @@ struct FTPCurlProcessExecutorTests {
 /// Scripted stand-in for curl: returns the next status for each transfer, and status 0 for
 /// cleanup commands. Never launches a process.
 private nonisolated final class ScriptedCurl: @unchecked Sendable {
-    struct Call { let arguments: [String]; let isTransfer: Bool }
+    struct Call {
+        let arguments: [String]
+        let isTransfer: Bool
+        /// Bytes of the `-K` config file as curl would read them during this call.
+        let config: Data?
+        var configText: String? { config.map { String(decoding: $0, as: UTF8.self) } }
+    }
     private let lock = NSLock()
     private var statuses: [Int32]
     private let stderr: String
@@ -1084,8 +1226,12 @@ private nonisolated final class ScriptedCurl: @unchecked Sendable {
 
     var run: @Sendable ([String], Bool) async throws -> FTPService.DeliveryProcessResult {
         { [self] arguments, isTransfer in
+            let config = arguments.firstIndex(of: "-K").flatMap { index -> Data? in
+                guard index + 1 < arguments.count else { return nil }
+                return FileManager.default.contents(atPath: arguments[index + 1])
+            }
             let status: Int32 = lock.withLock {
-                recorded.append(Call(arguments: arguments, isTransfer: isTransfer))
+                recorded.append(Call(arguments: arguments, isTransfer: isTransfer, config: config))
                 guard isTransfer, !statuses.isEmpty else { return 0 }
                 return statuses.removeFirst()
             }
@@ -1095,6 +1241,14 @@ private nonisolated final class ScriptedCurl: @unchecked Sendable {
                 standardError: status == 0 ? "" : stderr
             )
         }
+    }
+}
+
+private nonisolated final class TokenSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var next: @Sendable () -> String {
+        { [self] in lock.withLock { count += 1; return "t\(count)" } }
     }
 }
 
@@ -1458,17 +1612,19 @@ struct FTPUploadResultsTests {
         #expect(fixture.model.failedSourceURLs == fixture.sources)
     }
 
-    @Test("a server that refuses renames is remembered on the profile and for the next file")
+    @Test("rename refusals on two different files are remembered on the profile")
     func renameRefusalIsPersisted() async throws {
-        let fixture = try FTPRunFixture(names: ["a.jpg", "b.jpg"])
+        let fixture = try FTPRunFixture(names: ["a.jpg", "b.jpg", "c.jpg"])
         defer { fixture.remove() }
         await fixture.recorder.refuseRename()
 
         #expect(fixture.model.uploadFiles(fixture.sources, to: fixture.connection))
         await fixture.model.currentUploadCompletion()()
 
-        #expect(await fixture.recorder.serverRefusesRenameFlags() == [false, true])
+        // One refusal isn't enough (could be transient); the second file's refusal is.
+        #expect(await fixture.recorder.serverRefusesRenameFlags() == [false, false, true])
         #expect(fixture.model.connections.first?.serverRefusesRename == true)
+        #expect(fixture.model.connections.first?.renameRefusalCount == 2)
         let reloaded = FTPViewModel(defaults: fixture.defaults)
         reloaded.loadConnections()
         #expect(reloaded.connections.first?.serverRefusesRename == true)

@@ -5,22 +5,21 @@ import Foundation
 /// inside `FTPService`, immediately before an operation, and are never represented in a transfer,
 /// checkpoint, progress value, or outward error.
 nonisolated enum DeliveryFTPTransportFactory {
-    /// `onRenameRefused` receives the connection UUID the first time a server refuses the
-    /// temporary-name rename (see `FTPService.performUpload`), so the owner can persist
-    /// `FTPConnection.serverRefusesRename`; the transport itself skips the temporary name for
-    /// that connection for the rest of its lifetime.
+    /// `onCompatibilityLearned` receives the connection UUID, the upload outcome and the file
+    /// name whenever an upload taught something new about the server's temporary-name/rename
+    /// support (see `FTPConnection.learnServerCompatibility`), so the owner can persist it.
+    /// The transport applies the same learning to its own copy for the rest of its lifetime.
     static func make(
         connections: [FTPConnection],
         secretLoader: FTPService.DeliverySecretLoader = .keychain,
         processRunner: FTPService.DeliveryProcessRunner = .live,
         retryDelay: Duration = FTPService.transientRetryDelay,
-        onRenameRefused: @escaping @Sendable (UUID) -> Void = { _ in }
+        makeTemporaryToken: @escaping @Sendable () -> String = FTPService.randomTemporaryToken,
+        onCompatibilityLearned: @escaping @Sendable (UUID, FTPUploadOutcome, String) -> Void = { _, _, _ in }
     ) -> DeliveryUploadTransport {
         let inventory = connections
         let service = FTPService()
-        let renameRefusals = DeliveryRenameRefusals(
-            Set(connections.filter(\.serverRefusesRename).map(\.id))
-        )
+        let compatibility = DeliveryServerCompatibility(connections)
 
         return DeliveryUploadTransport(
             upload: { transfer in
@@ -30,17 +29,18 @@ nonisolated enum DeliveryFTPTransportFactory {
                         throw DeliveryFTPTransportError.insecureTransportNotAcknowledged
                     }
                     try await validateExactLocalEvidence(transfer)
-                    if renameRefusals.contains(resolved.id) { resolved.serverRefusesRename = true }
+                    compatibility.apply(to: &resolved)
                     let outcome = try await service.uploadDeliveryFile(
                         localURL: transfer.localURL,
                         outputFilename: transfer.outputFilename,
                         connection: resolved,
                         secretLoader: secretLoader,
                         processRunner: processRunner,
-                        retryDelay: retryDelay
+                        retryDelay: retryDelay,
+                        makeTemporaryToken: makeTemporaryToken
                     )
-                    if outcome.renameRefused, renameRefusals.insert(resolved.id) {
-                        onRenameRefused(resolved.id)
+                    if compatibility.learn(resolved.id, from: outcome, fileName: transfer.outputFilename) {
+                        onCompatibilityLearned(resolved.id, outcome, transfer.outputFilename)
                     }
                 } catch is CancellationError {
                     throw CancellationError()
@@ -197,18 +197,33 @@ nonisolated enum DeliveryFTPTransportFactory {
     }
 }
 
-/// Connections known (from the profile or earlier in this transport's lifetime) to refuse
-/// RNFR/RNTO, so their uploads go directly to the final name.
-private nonisolated final class DeliveryRenameRefusals: @unchecked Sendable {
+/// What this transport knows about each connection's temporary-name/rename support: seeded
+/// from the saved profiles and updated by every upload, so later files in a batch benefit.
+private nonisolated final class DeliveryServerCompatibility: @unchecked Sendable {
     private let lock = NSLock()
-    private var identifiers: Set<UUID>
+    private var profiles: [UUID: FTPConnection]
 
-    init(_ identifiers: Set<UUID>) { self.identifiers = identifiers }
+    init(_ connections: [FTPConnection]) {
+        profiles = Dictionary(connections.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
 
-    func contains(_ identifier: UUID) -> Bool { lock.withLock { identifiers.contains(identifier) } }
+    func apply(to connection: inout FTPConnection) {
+        guard let known = lock.withLock({ profiles[connection.id] }) else { return }
+        connection.serverRefusesRename = known.serverRefusesRename
+        connection.serverRefusesTemporaryName = known.serverRefusesTemporaryName
+        connection.renameRefusalCount = known.renameRefusalCount
+        connection.lastRenameRefusalFileName = known.lastRenameRefusalFileName
+    }
 
-    /// Returns true when the identifier was newly recorded.
-    func insert(_ identifier: UUID) -> Bool { lock.withLock { identifiers.insert(identifier).inserted } }
+    /// Returns true when the outcome changed what is known.
+    func learn(_ identifier: UUID, from outcome: FTPUploadOutcome, fileName: String) -> Bool {
+        lock.withLock {
+            guard var profile = profiles[identifier] else { return false }
+            let changed = profile.learnServerCompatibility(from: outcome, fileName: fileName)
+            profiles[identifier] = profile
+            return changed
+        }
+    }
 }
 
 /// Fixed, non-diagnostic errors. In particular, no underlying Keychain status, curl output,
@@ -347,7 +362,8 @@ extension FTPService {
         connection: FTPConnection,
         secretLoader: DeliverySecretLoader = .keychain,
         processRunner: DeliveryProcessRunner = .live,
-        retryDelay: Duration = FTPService.transientRetryDelay
+        retryDelay: Duration = FTPService.transientRetryDelay,
+        makeTemporaryToken: @escaping @Sendable () -> String = FTPService.randomTemporaryToken
     ) async throws -> FTPUploadOutcome {
         // macOS's /usr/bin/curl has no sftp protocol; refuse before touching the credential.
         guard !connection.useSFTP else { throw DeliveryBoundaryError.invalidConnection }
@@ -369,7 +385,8 @@ extension FTPService {
                 filename: outputFilename,
                 connection: connection,
                 netrcPath: netrcURL.path,
-                retryDelay: retryDelay
+                retryDelay: retryDelay,
+                makeTemporaryToken: makeTemporaryToken
             ) { arguments, _ in
                 try await processRunner.run(curlURL, arguments)
             }

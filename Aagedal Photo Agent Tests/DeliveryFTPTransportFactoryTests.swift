@@ -22,7 +22,8 @@ struct DeliveryFTPTransportFactoryTests {
             processRunner: .init { _, arguments in
                 capture.recordArguments(arguments)
                 return .init(terminationStatus: 0)
-            }
+            },
+            makeTemporaryToken: { "t" }
         )
 
         // The caller's mutable copy cannot alter the already-built transport inventory.
@@ -32,8 +33,8 @@ struct DeliveryFTPTransportFactoryTests {
         #expect(capture.keys == [makeConnection().keychainKey])
         let arguments = try #require(capture.argumentVectors.first)
         // Uploaded to a temporary name and renamed into place after a complete transfer.
-        #expect(arguments.contains("ftp://original.example:21/desk/.news.jpg.part"))
-        #expect(arguments.contains("-RNFR .news.jpg.part"))
+        #expect(arguments.contains("ftp://original.example:21/desk/.news.jpg.t.part"))
+        #expect(arguments.contains("-RNFR .news.jpg.t.part"))
         #expect(arguments.contains("-RNTO news.jpg"))
         #expect(!arguments.contains(where: { $0.contains("mutated.invalid") }))
         #expect(!arguments.contains(where: { $0.contains(Self.secret) }))
@@ -342,33 +343,70 @@ struct DeliveryFTPTransportFactoryTests {
         }
     }
 
-    @Test("a refused rename falls back to a direct upload, is reported once and remembered")
+    @Test("refused renames fall back to direct uploads; two files' refusals are remembered")
     func renameRefusalFallback() async throws {
-        let file = try makeFile(name: "news.jpg", bytes: Data("news".utf8))
-        defer { try? FileManager.default.removeItem(at: file) }
+        let names = ["news.jpg", "sport.jpg", "culture.jpg"]
+        let files = try names.map { try makeFile(name: $0, bytes: Data("news".utf8)) }
+        defer { files.forEach { try? FileManager.default.removeItem(at: $0) } }
         let capture = DeliveryFTPCapture()
         let transport = DeliveryFTPTransportFactory.make(
             connections: [makeConnection()],
             secretLoader: .init { _ in Self.secret },
             processRunner: .init { _, arguments in
                 capture.recordArguments(arguments)
-                return .init(terminationStatus: arguments.contains("-RNFR .news.jpg.part") ? 21 : 0)
+                let refusesRename = capture.argumentVectors.last?.contains { $0.hasPrefix("-RNFR ") } == true
+                return .init(terminationStatus: refusesRename ? 21 : 0)
             },
-            onRenameRefused: { capture.recordKey($0.uuidString) }
+            makeTemporaryToken: { "t" },
+            onCompatibilityLearned: { _, outcome, fileName in
+                capture.recordKey("\(fileName):\(outcome.renameRefused)")
+            }
         )
 
-        try await transport.upload(makeTransfer(file: file))
-        try await transport.upload(makeTransfer(file: file))
+        for (file, name) in zip(files, names) {
+            try await transport.upload(makeTransfer(file: file, outputFilename: name))
+        }
 
-        #expect(capture.keys == [Self.identifier.uuidString])
+        // Each refusal on a new file is learned; the third file goes direct.
+        #expect(capture.keys == ["news.jpg:true", "sport.jpg:true"])
+        let vectors = capture.argumentVectors
+        #expect(vectors.count == 7)
+        #expect(vectors[0].contains("ftp://original.example:21/desk/.news.jpg.t.part"))
+        #expect(vectors[1].contains("-DELE .news.jpg.t.part"))
+        #expect(vectors[2].contains("ftp://original.example:21/desk/news.jpg"))
+        #expect(vectors[3].contains("ftp://original.example:21/desk/.sport.jpg.t.part"))
+        #expect(vectors[5].contains("ftp://original.example:21/desk/sport.jpg"))
+        #expect(vectors[6].contains("ftp://original.example:21/desk/culture.jpg"))
+        #expect(!vectors[6].contains("-K"))
+    }
+
+    @Test("a refused temporary name is re-sent directly and remembered at once")
+    func temporaryNameRefusalFallback() async throws {
+        let names = ["news.jpg", "sport.jpg"]
+        let files = try names.map { try makeFile(name: $0, bytes: Data("news".utf8)) }
+        defer { files.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let capture = DeliveryFTPCapture()
+        let transport = DeliveryFTPTransportFactory.make(
+            connections: [makeConnection()],
+            secretLoader: .init { _ in Self.secret },
+            processRunner: .init { _, arguments in
+                capture.recordArguments(arguments)
+                let temporary = arguments.contains { $0.hasSuffix(".part") && $0.hasPrefix("ftp://") }
+                return .init(terminationStatus: temporary ? 25 : 0)
+            },
+            makeTemporaryToken: { "t" },
+            onCompatibilityLearned: { _, outcome, fileName in
+                capture.recordKey("\(fileName):\(outcome.temporaryNameRefused)")
+            }
+        )
+        for (file, name) in zip(files, names) {
+            try await transport.upload(makeTransfer(file: file, outputFilename: name))
+        }
+        #expect(capture.keys == ["news.jpg:true"])
         let vectors = capture.argumentVectors
         #expect(vectors.count == 4)
-        #expect(vectors[0].contains("ftp://original.example:21/desk/.news.jpg.part"))
-        #expect(vectors[1].contains("-DELE .news.jpg.part"))
         #expect(vectors[2].contains("ftp://original.example:21/desk/news.jpg"))
-        // The second file skips the temporary name for this connection.
-        #expect(vectors[3].contains("ftp://original.example:21/desk/news.jpg"))
-        #expect(!vectors[3].contains("-Q"))
+        #expect(vectors[3].contains("ftp://original.example:21/desk/sport.jpg"))
     }
 
     @Test("cancelling the transfer surfaces as cancellation, not as a rejection")
@@ -383,13 +421,14 @@ struct DeliveryFTPTransportFactoryTests {
                 capture.recordArguments(arguments)
                 if arguments.contains("--head") { return .init(terminationStatus: 0) }
                 throw CancellationError()
-            }
+            },
+            makeTemporaryToken: { "t" }
         )
         await #expect(throws: CancellationError.self) {
             try await transport.upload(makeTransfer(file: file))
         }
         // The partial temporary file is removed best-effort.
-        #expect(capture.argumentVectors.last?.contains("-DELE .news.jpg.part") == true)
+        #expect(capture.argumentVectors.last?.contains("-DELE .news.jpg.t.part") == true)
     }
 
     private func makeConnection() -> FTPConnection {
@@ -453,8 +492,18 @@ private nonisolated final class DeliveryFTPCapture: @unchecked Sendable {
     private var didComplete = false
 
     func recordKey(_ key: String) { lock.withLock { storedKeys.append(key) } }
+    /// Records argv plus the quote commands of any `-K` config file (read while it exists),
+    /// so tests can check the rename commands curl would send.
     func recordArguments(_ arguments: [String]) {
-        lock.withLock { storedArgumentVectors.append(arguments) }
+        var recorded = arguments
+        if let index = arguments.firstIndex(of: "-K"), index + 1 < arguments.count,
+           let config = FileManager.default.contents(atPath: arguments[index + 1]) {
+            for line in String(decoding: config, as: UTF8.self).split(separator: "\n")
+            where line.hasPrefix("quote = \"") && line.hasSuffix("\"") {
+                recorded.append(String(line.dropFirst("quote = \"".count).dropLast()))
+            }
+        }
+        lock.withLock { storedArgumentVectors.append(recorded) }
     }
     func markCompleted() { lock.withLock { didComplete = true } }
 

@@ -1951,8 +1951,10 @@ struct ContentView: View {
                     connections: ftp.connections,
                     writeEngine: browser.writeEngine,
                     resume: false,
-                    onRenameRefused: { id in
-                        Task { @MainActor in ftp.markServerRefusesRename(connectionID: id) }
+                    onCompatibilityLearned: { id, outcome, fileName in
+                        Task { @MainActor in
+                            ftp.learnServerCompatibility(connectionID: id, outcome: outcome, fileName: fileName)
+                        }
                     },
                     progress: progress
                 )
@@ -1963,8 +1965,10 @@ struct ContentView: View {
                     connections: ftp.connections,
                     writeEngine: browser.writeEngine,
                     resume: true,
-                    onRenameRefused: { id in
-                        Task { @MainActor in ftp.markServerRefusesRename(connectionID: id) }
+                    onCompatibilityLearned: { id, outcome, fileName in
+                        Task { @MainActor in
+                            ftp.learnServerCompatibility(connectionID: id, outcome: outcome, fileName: fileName)
+                        }
                     },
                     progress: progress
                 )
