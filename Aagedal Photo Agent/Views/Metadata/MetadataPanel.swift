@@ -2930,10 +2930,10 @@ private struct MetadataRatingAndLabelRow: View {
                         .accessibilityHint("Select again to clear this rating")
                     }
                 }
-    
+
                 Divider()
                     .frame(height: 14)
-    
+
                 HStack(spacing: 4) {
                     ForEach(ColorLabel.allCases.filter { $0 != .none }, id: \.self) { label in
                         Button {
@@ -2950,9 +2950,9 @@ private struct MetadataRatingAndLabelRow: View {
                         .accessibilityHint("Select again to clear this label")
                     }
                 }
-    
+
                 Spacer()
-    
+
                 if image.hasC2PA {
                     Label("C2PA", systemImage: "checkmark.seal.fill")
                         .font(.caption)

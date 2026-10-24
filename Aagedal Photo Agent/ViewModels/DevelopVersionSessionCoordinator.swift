@@ -509,7 +509,7 @@ final class DevelopVersionSessionCoordinator {
                 self.storage = storage
             } catch {
                 guard sessionID == session else { return }
-                log.error("Develop versions could not follow a metadata-only source rewrite: \(error.localizedDescription, privacy: .public)")
+                log.error("Develop versions could not follow a metadata-only source rewrite: \(error.localizedDescription, privacy: .private)")
                 notice = "Named versions could not follow this photo's saved Develop settings: \(error.localizedDescription)"
             }
         }

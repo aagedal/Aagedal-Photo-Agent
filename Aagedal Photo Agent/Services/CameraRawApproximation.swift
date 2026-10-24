@@ -241,7 +241,7 @@ enum CameraRawApproximation {
     nonisolated private static func fallbackOrRefuse(to input: CIImage, settings: CameraRawSettings) -> CIImage? {
         guard fallbackCanReproduce(settings) else {
             Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")
-                .error("GPU render failed; CIFilter fallback refused (redaction=\(settings.hasActiveRedaction, privacy: .public)): it can't render masks, the Anonymizer or watermarks")
+                .error("GPU render failed; CIFilter fallback refused (redaction=\(settings.hasActiveRedaction)): it can't render masks, the Anonymizer or watermarks")
             return nil
         }
         return metalUnavailableFallback(to: input, settings: settings)

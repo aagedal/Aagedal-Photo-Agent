@@ -687,7 +687,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 }
                 for warning in warnings {
                     swiftExifLog.warning(
-                        "copyMetadataToRenderedFile: \(destination.lastPathComponent, privacy: .private(mask: .hash)): \(warning, privacy: .public)"
+                        "copyMetadataToRenderedFile: \(destination.lastPathComponent, privacy: .private(mask: .hash)): \(warning, privacy: .private)"
                     )
                 }
             } catch {

@@ -761,13 +761,13 @@ enum EditExportPipeline {
         let log = Logger(subsystem: "com.aagedal.photo-agent", category: "ExportPipeline")
         if saved.embeddedReadFailed {
             if cameraRaw?.hasActiveRedaction == true || saved.sidecar?.hasActiveRedaction == true {
-                log.error("Refused render of \(sourceURL.lastPathComponent, privacy: .public): embedded develop settings unreadable for a redacted photo")
+                log.error("Refused render of \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)): embedded develop settings unreadable for a redacted photo")
                 throw SavedRedactionUnreadableError(filename: sourceURL.lastPathComponent)
             }
-            log.warning("Embedded develop settings of \(sourceURL.lastPathComponent, privacy: .public) couldn't be read; no redaction known, rendering")
+            log.warning("Embedded develop settings of \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) couldn't be read; no redaction known, rendering")
         }
         guard RedactionUnion.covers(render: cameraRaw, saved: [saved.persisted]) else {
-            log.error("Refused render of \(sourceURL.lastPathComponent, privacy: .public): a saved redaction is missing from the render settings")
+            log.error("Refused render of \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)): a saved redaction is missing from the render settings")
             throw RedactionMissingFromRenderError(filename: sourceURL.lastPathComponent)
         }
     }

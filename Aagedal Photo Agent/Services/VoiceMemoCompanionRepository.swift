@@ -1535,7 +1535,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
                 } catch {
                     // The photo is already in the Trash; a stranded sidecar is not a reason
                     // to report the photo itself as not deleted.
-                    voiceMemoTrashLog.error("Could not trash sidecar \(sidecar.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .public)")
+                    voiceMemoTrashLog.error("Could not trash sidecar \(sidecar.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .private)")
                 }
             }
             return
