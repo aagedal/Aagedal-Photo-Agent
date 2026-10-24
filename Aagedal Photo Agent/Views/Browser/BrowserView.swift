@@ -46,6 +46,12 @@ struct BrowserView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: viewModel.fileOperationNotice)
+            // Selected photos are what Clean Feed shows and what gets dragged out; read their
+            // develop settings now rather than when the folder's metadata batch reaches them.
+            .onChange(of: viewModel.selectedImageIDs) { _, selected in
+                let active = viewModel.lastClickedImageURL.map { [$0] } ?? []
+                viewModel.ensureDevelopSettingsLoaded(for: active + selected.prefix(24))
+            }
             .sheet(isPresented: $showingDescriptionBatch) {
                 BatchDescriptionAssistantView(urls: descriptionBatchURLs, browser: viewModel)
             }

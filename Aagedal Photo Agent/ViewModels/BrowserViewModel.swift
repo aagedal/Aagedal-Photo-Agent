@@ -310,6 +310,8 @@ final class BrowserViewModel {
     @ObservationIgnored private var metadataLoadRequestID: UUID?
     @ObservationIgnored private var metadataProgressID: UUID?
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
+    /// Photos with an on-demand develop-settings read in flight (`ensureDevelopSettingsLoaded`).
+    @ObservationIgnored private var developSettingsReadsInFlight: Set<URL> = []
     @ObservationIgnored private var retinaPreCacheTask: Task<Void, Never>?
     @ObservationIgnored private var retinaPreCacheRequestID: UUID?
     @ObservationIgnored private var suppressImagesCascade = false
@@ -1526,6 +1528,14 @@ final class BrowserViewModel {
             }
 
             self.images = merged
+            // A rewritten file (often the app's own caption/rating write — the watcher can't
+            // tell) lost its known develop settings above. Re-read the ones that were known
+            // right away instead of queueing them behind the folder's metadata batch, so
+            // Clean Feed and drag-out don't wait on it.
+            let previouslyKnown = modifiedURLs.filter { existingByURL[$0]?.developSettingsLoaded == true }
+            if !previouslyKnown.isEmpty {
+                ensureDevelopSettingsLoaded(for: previouslyKnown)
+            }
             if creationDatesChanged && sortOrder == .dateCreated {
                 setNeedsSortRebuild(forceSort: true)
             }
@@ -1969,6 +1979,61 @@ final class BrowserViewModel {
         pendingMetadataDrainTask = Task {
             await loadBasicMetadata(for: urls)
         }
+    }
+
+    /// On-demand develop read for photos whose settings the metadata batch has not reached yet
+    /// (the selected photo, the Clean Feed photo, a dragged photo, a file just rewritten on disk).
+    /// The batch reads 50 photos at a time in grid order and queues new work behind the running
+    /// load, so in a large folder a selected photo could otherwise stay "unknown" for minutes —
+    /// leaving Clean Feed black and drag-out refused. Reads the embedded block and the sidecar
+    /// with the full parser and reconciles them exactly as the export does
+    /// (`ExportCameraRawSourcePolicy.persisted`). At most `limit` photos per call.
+    func ensureDevelopSettingsLoaded(for urls: [URL], limit: Int = 24) {
+        var targets: [URL] = []
+        var modificationDates: [URL: Date] = [:]
+        for url in urls where targets.count < limit {
+            guard let index = validImageIndex(for: url) else { continue }
+            let image = images[index]
+            guard !image.developSettingsLoaded, image.isImageFile, !image.isICloudDownloadPending,
+                  !developSettingsReadsInFlight.contains(url) else { continue }
+            targets.append(url)
+            modificationDates[url] = image.dateModified
+        }
+        guard !targets.isEmpty else { return }
+        developSettingsReadsInFlight.formUnion(targets)
+        let folderURL = currentFolderURL
+        Task { [weak self] in
+            guard let self else { return }
+            let embedded = (try? await metadataReadService.readBatchFullMetadata(
+                urls: targets, stopsWhenCancelled: false
+            )) ?? [:]
+            let sidecars = await Self.readSidecarDevelopSettings(for: targets)
+            developSettingsReadsInFlight.subtract(targets)
+            guard currentFolderURL == folderURL else { return }
+            for url in targets {
+                // A file rewritten again while this read ran waits for its own re-read.
+                guard let index = validImageIndex(for: url), !images[index].developSettingsLoaded,
+                      images[index].dateModified == modificationDates[url] else { continue }
+                images[index].cameraRawSettings = ExportCameraRawSourcePolicy.persisted(
+                    imageURL: url,
+                    sidecar: sidecars[url],
+                    embedded: embedded[url]?.cameraRaw
+                )
+                images[index].developSettingsLoaded = true
+            }
+        }
+    }
+
+    @concurrent
+    private nonisolated static func readSidecarDevelopSettings(for urls: [URL]) async -> [URL: CameraRawSettings] {
+        let service = XMPSidecarService()
+        var result: [URL: CameraRawSettings] = [:]
+        for url in urls where !Task.isCancelled {
+            if let settings = service.loadDevelopSettings(for: url), !settings.isEmpty {
+                result[url] = settings
+            }
+        }
+        return result
     }
 
     /// A file whose embedded-metadata read failed has no result dict, so the batch merge never

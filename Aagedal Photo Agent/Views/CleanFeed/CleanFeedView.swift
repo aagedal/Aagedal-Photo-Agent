@@ -69,12 +69,16 @@ struct CleanFeedContentView: View {
             return
         }
 
-        // Privacy: until the metadata batch has read this photo's develop settings, nil settings
-        // mean "unknown", not "unedited" — rendering now would flash the unblurred original of a
-        // photo with Anonymizer masks. Keep the previous frame (already published) until they
-        // load; the `developSettingsLoaded` change re-runs this.
+        // Privacy: until this photo's develop settings are read, nil settings mean "unknown",
+        // not "unedited" — rendering now would flash the unblurred original of a photo with
+        // Anonymizer masks. Show black (never another photo) and read them on demand; the
+        // `developSettingsLoaded` change re-runs this.
         guard image.developSettingsLoaded || !image.isImageFile else {
             loadTask = nil
+            controller.feedImage = nil
+            controller.useEditPipeline = false
+            controller.requestFeedRedraw()
+            browserViewModel.ensureDevelopSettingsLoaded(for: [image.url])
             return
         }
 

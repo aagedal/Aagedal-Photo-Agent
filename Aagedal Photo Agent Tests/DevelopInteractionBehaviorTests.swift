@@ -3087,6 +3087,87 @@ struct RedactionPrivacyGuardTests {
         #expect(loaded != unloaded)
         #expect(ImageFile(url: URL(fileURLWithPath: "/p/b.jpg"), relocating: loaded).developSettingsLoaded)
     }
+
+    private func temporaryFolder(_ name: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    @Test("an on-demand read resolves a photo's develop settings without waiting for the batch")
+    func onDemandDevelopRead() async throws {
+        let folder = try temporaryFolder("OnDemandDevelop")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let raw = folder.appendingPathComponent("IMG_1.CR3")
+        let plain = folder.appendingPathComponent("IMG_2.CR3")
+        try Data("not a real raw".utf8).write(to: raw)
+        try Data("not a real raw".utf8).write(to: plain)
+        var settings = CameraRawSettings()
+        settings.hasSettings = true
+        settings.anonymizer = AnonymizerSettings(amount: 75, blackOut: nil)
+        var metadata = IPTCMetadata()
+        metadata.cameraRaw = settings
+        try XMPSidecarService().saveSidecar(metadata: metadata, for: raw)
+
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        model.images = [ImageFile(url: raw), ImageFile(url: plain)]
+        #expect(RedactionPrivacyGuard.knowledge(for: model.images[0]) == .unknown)
+
+        model.ensureDevelopSettingsLoaded(for: [raw, plain])
+        let deadline = ContinuousClock.now + .seconds(15)
+        while model.images.contains(where: { !$0.developSettingsLoaded }), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(RedactionPrivacyGuard.knowledge(for: try #require(model.image(at: raw))) == .redacts)
+        #expect(RedactionPrivacyGuard.knowledge(for: try #require(model.image(at: plain))) == .none)
+    }
+
+    @Test("the folder scan finds Anonymizer settings in sidecars and embedded XMP, not in RAW bytes")
+    func folderScan() throws {
+        let folder = try temporaryFolder("FolderRedactionScan")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let nested = folder.appendingPathComponent("day 2", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let marker = Data("<aaphoto:AnonymizerAmount>80.0</aaphoto:AnonymizerAmount>".utf8)
+
+        try Data("plain".utf8).write(to: folder.appendingPathComponent("a.jpg"))
+        // RAW files never carry embedded develop settings; a marker there is just bytes.
+        try marker.write(to: folder.appendingPathComponent("b.NEF"))
+        // Hidden app folders are skipped.
+        let hidden = folder.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
+        try marker.write(to: hidden.appendingPathComponent("a.xmp"))
+        #expect(FolderRedactionScanner.scan(folderURL: folder) == .clean)
+
+        try marker.write(to: nested.appendingPathComponent("c.xmp"))
+        #expect(FolderRedactionScanner.scan(folderURL: folder) == .redacts)
+        try FileManager.default.removeItem(at: nested.appendingPathComponent("c.xmp"))
+
+        var jpeg = Data([0xFF, 0xD8, 0xFF, 0xE1])
+        jpeg.append(marker)
+        try jpeg.write(to: nested.appendingPathComponent("d.jpg"))
+        #expect(FolderRedactionScanner.scan(folderURL: folder) == .redacts)
+
+        // Too many photos to check: incomplete, never "clean".
+        try FileManager.default.removeItem(at: nested.appendingPathComponent("d.jpg"))
+        try Data("plain".utf8).write(to: nested.appendingPathComponent("e.jpg"))
+        #expect(FolderRedactionScanner.scan(folderURL: folder) == .clean)
+        #expect(FolderRedactionScanner.scan(folderURL: folder, fileLimit: 1) == .incomplete)
+    }
+
+    @Test("folder drags leave the app only once the folder is known to be clean")
+    func folderOutsideDragPolicy() {
+        #expect(FolderOutsideDragPolicy.refusalMessage(for: .clean) == nil)
+        #expect(FolderOutsideDragPolicy.refusalMessage(for: .checking) == FolderOutsideDragPolicy.checkingMessage)
+        #expect(FolderOutsideDragPolicy.refusalMessage(for: .redacts) == FolderOutsideDragPolicy.redactsMessage)
+        #expect(FolderOutsideDragPolicy.state(for: .incomplete) == .tooLarge)
+        #expect(FolderOutsideDragPolicy.refusalMessage(for: .tooLarge) != nil)
+        let folder = URL(fileURLWithPath: "/shoots/2026")
+        #expect(FolderOutsideDragPolicy.folder(folder, contains: URL(fileURLWithPath: "/shoots/2026/day 1")))
+        #expect(!FolderOutsideDragPolicy.folder(folder, contains: URL(fileURLWithPath: "/shoots/2026-b")))
+    }
 }
 
 @Suite("Develop preview render coordinator")

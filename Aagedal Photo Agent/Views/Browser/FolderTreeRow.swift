@@ -40,6 +40,8 @@ struct FolderTreeRow: View {
 
     @State private var isDropHighlighted = false
     @State private var isHovered = false
+    /// AppKit drag source: SwiftUI's `.onDrag` can't refuse drops on other apps (privacy).
+    @State private var dragSource = FolderRowDragSource()
 
     private var isCurrent: Bool {
         url == currentFolderURL
@@ -168,9 +170,14 @@ struct FolderTreeRow: View {
             // they must not get duplicated into the Open Folders section.
             openFolder(url, section == .openRoot)
         }
-        .onDrag {
-            NSItemProvider(object: url as NSURL)
-        }
+        // An AppKit drag session, started from this gesture, instead of `.onDrag`: in-app folder
+        // moves still drop a file URL on `FolderDropDelegate`, but drops on other apps are
+        // refused while the folder holds face-blurred photos (`FolderRowDragSource`).
+        .background(FolderDragAnchor(source: dragSource))
+        .gesture(
+            DragGesture(minimumDistance: 4)
+                .onChanged { _ in dragSource.beginDrag(folderURL: url, browser: viewModel) }
+        )
         .onDrop(of: [.fileURL], delegate: FolderDropDelegate(
             targetURL: url,
             section: section,

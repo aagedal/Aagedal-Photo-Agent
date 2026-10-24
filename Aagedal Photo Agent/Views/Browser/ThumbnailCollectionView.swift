@@ -168,6 +168,10 @@ final class ThumbnailCollectionView: NSCollectionView {
             candidates: viewModel.images
         ).message
         outsideDragWasRefused = false
+        if outsideDragBlockMessage == RedactionPrivacyGuard.dragPendingMessage {
+            // Settings not read yet: this drag is refused, but read them now so the next works.
+            viewModel.ensureDevelopSettingsLoaded(for: urls, limit: 200)
+        }
 
         let items = makeDraggingItems(for: urls)
         beginDraggingSession(with: items, event: event, source: self)
