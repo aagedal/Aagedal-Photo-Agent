@@ -414,7 +414,8 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
         case .notRequested:
             return nil
         case let .unavailable(checkedAt: .some(checkedAt)),
-             let .existsSizeUnknown(checkedAt):
+             let .existsSizeUnknown(checkedAt),
+             let .missing(checkedAt):
             guard checkedAt >= acknowledgedAt else {
                 throw DeliveryReceiptAssemblyError.remoteEvidenceMismatch(itemIndex: itemIndex)
             }
@@ -425,7 +426,7 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
                 throw DeliveryReceiptAssemblyError.remoteEvidenceMismatch(itemIndex: itemIndex)
             }
             return checkedAt
-        case .unavailable(checkedAt: nil), .missing, .sizeMismatch:
+        case .unavailable(checkedAt: nil), .sizeMismatch:
             throw DeliveryReceiptAssemblyError.remoteEvidenceMismatch(itemIndex: itemIndex)
         }
     }
@@ -449,7 +450,13 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
                 checkedAt: checkedAt,
                 observedByteSize: observedByteCount
             )
-        case .unavailable(checkedAt: nil), .missing, .sizeMismatch:
+        case let .missing(checkedAt):
+            // Protocol-acknowledged upload that the server no longer lists.
+            return DeliveryRemoteStatAcknowledgement(
+                status: .notVisibleAfterUpload,
+                checkedAt: checkedAt
+            )
+        case .unavailable(checkedAt: nil), .sizeMismatch:
             throw DeliveryReceiptAssemblyError.remoteEvidenceMismatch(itemIndex: itemIndex)
         }
     }

@@ -5,29 +5,45 @@ import Foundation
 /// inside `FTPService`, immediately before an operation, and are never represented in a transfer,
 /// checkpoint, progress value, or outward error.
 nonisolated enum DeliveryFTPTransportFactory {
+    /// `onRenameRefused` receives the connection UUID the first time a server refuses the
+    /// temporary-name rename (see `FTPService.performUpload`), so the owner can persist
+    /// `FTPConnection.serverRefusesRename`; the transport itself skips the temporary name for
+    /// that connection for the rest of its lifetime.
     static func make(
         connections: [FTPConnection],
         secretLoader: FTPService.DeliverySecretLoader = .keychain,
-        processRunner: FTPService.DeliveryProcessRunner = .live
+        processRunner: FTPService.DeliveryProcessRunner = .live,
+        retryDelay: Duration = FTPService.transientRetryDelay,
+        onRenameRefused: @escaping @Sendable (UUID) -> Void = { _ in }
     ) -> DeliveryUploadTransport {
         let inventory = connections
         let service = FTPService()
+        let renameRefusals = DeliveryRenameRefusals(
+            Set(connections.filter(\.serverRefusesRename).map(\.id))
+        )
 
         return DeliveryUploadTransport(
             upload: { transfer in
                 do {
-                    let resolved = try resolve(transfer, in: inventory)
+                    var resolved = try resolve(transfer, in: inventory)
                     guard !resolved.requiresFirstInsecureUploadAcknowledgement else {
                         throw DeliveryFTPTransportError.insecureTransportNotAcknowledged
                     }
                     try await validateExactLocalEvidence(transfer)
-                    try await service.uploadDeliveryFile(
+                    if renameRefusals.contains(resolved.id) { resolved.serverRefusesRename = true }
+                    let outcome = try await service.uploadDeliveryFile(
                         localURL: transfer.localURL,
                         outputFilename: transfer.outputFilename,
                         connection: resolved,
                         secretLoader: secretLoader,
-                        processRunner: processRunner
+                        processRunner: processRunner,
+                        retryDelay: retryDelay
                     )
+                    if outcome.renameRefused, renameRefusals.insert(resolved.id) {
+                        onRenameRefused(resolved.id)
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch let error as DeliveryFTPTransportError {
                     throw error
                 } catch let error as FTPService.DeliveryBoundaryError {
@@ -165,9 +181,34 @@ nonisolated enum DeliveryFTPTransportFactory {
         case .credentialUnavailable: .credentialUnavailable
         case .invalidConnection: .connectionUnavailable
         case .invalidTransfer: .unsafeTransfer
-        case .processFailed, .processLaunchFailed: .uploadFailed
+        case .processLaunchFailed: .uploadFailed
+        case let .transferFailed(category):
+            switch category {
+            case .loginDenied: .loginDenied
+            case .accessDenied: .accessDenied
+            case .serverUnreachable: .serverUnreachable
+            case .ftpsUnsupported: .ftpsUnsupported
+            case .certificateUntrusted: .certificateUntrusted
+            case .secureConnectionFailed: .secureConnectionFailed
+            case .timedOut: .timedOut
+            case .fileRejected: .fileRejected
+            }
         }
     }
+}
+
+/// Connections known (from the profile or earlier in this transport's lifetime) to refuse
+/// RNFR/RNTO, so their uploads go directly to the final name.
+private nonisolated final class DeliveryRenameRefusals: @unchecked Sendable {
+    private let lock = NSLock()
+    private var identifiers: Set<UUID>
+
+    init(_ identifiers: Set<UUID>) { self.identifiers = identifiers }
+
+    func contains(_ identifier: UUID) -> Bool { lock.withLock { identifiers.contains(identifier) } }
+
+    /// Returns true when the identifier was newly recorded.
+    func insert(_ identifier: UUID) -> Bool { lock.withLock { identifiers.insert(identifier).inserted } }
 }
 
 /// Fixed, non-diagnostic errors. In particular, no underlying Keychain status, curl output,
@@ -180,6 +221,27 @@ nonisolated enum DeliveryFTPTransportError: Error, Equatable, LocalizedError, Se
     case unsafeTransfer
     case uploadFailed
     case remoteObservationUnavailable
+    // Fixed transfer categories derived from curl's exit status — never its output.
+    case loginDenied
+    case accessDenied
+    case serverUnreachable
+    case ftpsUnsupported
+    case certificateUntrusted
+    case secureConnectionFailed
+    case timedOut
+    case fileRejected
+
+    /// True when every remaining file would fail the same way, so the batch should stop.
+    var isServerLevel: Bool {
+        switch self {
+        case .invalidConnectionIdentifier, .connectionUnavailable, .credentialUnavailable,
+             .insecureTransportNotAcknowledged, .loginDenied, .accessDenied, .serverUnreachable,
+             .ftpsUnsupported, .certificateUntrusted, .secureConnectionFailed:
+            true
+        case .unsafeTransfer, .uploadFailed, .remoteObservationUnavailable, .timedOut, .fileRejected:
+            false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -197,6 +259,14 @@ nonisolated enum DeliveryFTPTransportError: Error, Equatable, LocalizedError, Se
             "The delivery server did not accept the file."
         case .remoteObservationUnavailable:
             "Remote file size information is unavailable."
+        case .loginDenied: FTPFailureCategory.loginDenied.userMessage
+        case .accessDenied: FTPFailureCategory.accessDenied.userMessage
+        case .serverUnreachable: FTPFailureCategory.serverUnreachable.userMessage
+        case .ftpsUnsupported: FTPFailureCategory.ftpsUnsupported.userMessage
+        case .certificateUntrusted: FTPFailureCategory.certificateUntrusted.userMessage
+        case .secureConnectionFailed: FTPFailureCategory.secureConnectionFailed.userMessage
+        case .timedOut: FTPFailureCategory.timedOut.userMessage
+        case .fileRejected: FTPFailureCategory.fileRejected.userMessage
         }
     }
 }
@@ -241,7 +311,7 @@ extension FTPService {
         }
 
         nonisolated static let live = Self { executableURL, arguments in
-            try await FTPDeliveryProcessExecutor.run(
+            try await FTPCurlProcessExecutor.run(
                 executableURL: executableURL,
                 arguments: arguments
             )
@@ -259,18 +329,26 @@ extension FTPService {
         case invalidConnection
         case invalidTransfer
         case processLaunchFailed
-        case processFailed
+        /// curl ran and failed; only the fixed category crosses this boundary, never output.
+        case transferFailed(FTPFailureCategory)
     }
 
     /// Delivery-only upload entry point. Legacy password-taking callers remain source-compatible,
     /// while new workflow code has no API through which it can receive a credential.
+    ///
+    /// Uses the same temporary-name-then-rename upload as the legacy path
+    /// (`FTPService.performUpload`), so the remote stat that follows targets the final name and
+    /// a cancelled or broken transfer never leaves a truncated file under it. Cancelling the
+    /// calling task terminates curl.
+    @discardableResult
     nonisolated func uploadDeliveryFile(
         localURL: URL,
         outputFilename: String,
         connection: FTPConnection,
         secretLoader: DeliverySecretLoader = .keychain,
-        processRunner: DeliveryProcessRunner = .live
-    ) async throws {
+        processRunner: DeliveryProcessRunner = .live,
+        retryDelay: Duration = FTPService.transientRetryDelay
+    ) async throws -> FTPUploadOutcome {
         // macOS's /usr/bin/curl has no sftp protocol; refuse before touching the credential.
         guard !connection.useSFTP else { throw DeliveryBoundaryError.invalidConnection }
         guard localURL.lastPathComponent == outputFilename,
@@ -284,20 +362,23 @@ extension FTPService {
         let netrcURL = try makeDeliveryNetrc(connection: connection, credential: credential)
         defer { try? FileManager.default.removeItem(at: netrcURL) }
 
-        let arguments = Self.curlArguments(
-            localPath: localURL.path,
-            remoteURL: Self.remoteUploadURL(for: outputFilename, connection: connection),
-            netrcPath: netrcURL.path,
-            connection: connection
-        )
-        let result: DeliveryProcessResult
+        let curlURL = URL(fileURLWithPath: "/usr/bin/curl")
         do {
-            result = try await processRunner.run(URL(fileURLWithPath: "/usr/bin/curl"), arguments)
+            return try await Self.performUpload(
+                localPath: localURL.path,
+                filename: outputFilename,
+                connection: connection,
+                netrcPath: netrcURL.path,
+                retryDelay: retryDelay
+            ) { arguments, _ in
+                try await processRunner.run(curlURL, arguments)
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as FTPError {
+            throw DeliveryBoundaryError.transferFailed(error.category ?? .fileRejected)
         } catch {
             throw DeliveryBoundaryError.processLaunchFailed
-        }
-        guard result.terminationStatus == 0 else {
-            throw DeliveryBoundaryError.processFailed
         }
     }
 
@@ -413,113 +494,6 @@ extension FTPService {
             try? handle.close()
             try? FileManager.default.removeItem(at: url)
             throw DeliveryBoundaryError.processLaunchFailed
-        }
-    }
-}
-
-private nonisolated final class FTPDeliveryProcessBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage = Data()
-    private let limit = 64 * 1024
-
-    func append(_ data: Data) {
-        lock.withLock {
-            storage.append(data)
-            if storage.count > limit { storage = storage.suffix(limit) }
-        }
-    }
-
-    var string: String {
-        lock.withLock { String(decoding: storage, as: UTF8.self) }
-    }
-}
-
-private nonisolated final class FTPDeliveryProcessState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var resumed = false
-    private var cancelled = false
-    private var process: Process?
-
-    func install(_ process: Process) -> Bool {
-        lock.withLock {
-            self.process = process
-            return cancelled
-        }
-    }
-
-    func cancel() {
-        let process = lock.withLock { () -> Process? in
-            cancelled = true
-            return self.process
-        }
-        if process?.isRunning == true { process?.terminate() }
-    }
-
-    func claim() -> (claimed: Bool, cancelled: Bool) {
-        lock.withLock {
-            guard !resumed else { return (false, cancelled) }
-            resumed = true
-            return (true, cancelled)
-        }
-    }
-}
-
-private nonisolated enum FTPDeliveryProcessExecutor {
-    static func run(
-        executableURL: URL,
-        arguments: [String]
-    ) async throws -> FTPService.DeliveryProcessResult {
-        try Task.checkCancellation()
-        let process = Process()
-        process.executableURL = executableURL
-        process.arguments = arguments
-        let stdout = Pipe()
-        let stderr = Pipe()
-        let stdoutBuffer = FTPDeliveryProcessBuffer()
-        let stderrBuffer = FTPDeliveryProcessBuffer()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        stdout.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if !data.isEmpty { stdoutBuffer.append(data) }
-        }
-        stderr.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if !data.isEmpty { stderrBuffer.append(data) }
-        }
-        let state = FTPDeliveryProcessState()
-
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                process.terminationHandler = { process in
-                    stdout.fileHandleForReading.readabilityHandler = nil
-                    stderr.fileHandleForReading.readabilityHandler = nil
-                    let outcome = state.claim()
-                    guard outcome.claimed else { return }
-                    if outcome.cancelled {
-                        continuation.resume(throwing: CancellationError())
-                    } else {
-                        continuation.resume(returning: FTPService.DeliveryProcessResult(
-                            terminationStatus: process.terminationStatus,
-                            standardOutput: stdoutBuffer.string,
-                            standardError: stderrBuffer.string
-                        ))
-                    }
-                }
-                do {
-                    try process.run()
-                    if state.install(process), process.isRunning { process.terminate() }
-                } catch {
-                    stdout.fileHandleForReading.readabilityHandler = nil
-                    stderr.fileHandleForReading.readabilityHandler = nil
-                    let outcome = state.claim()
-                    if outcome.claimed {
-                        continuation.resume(throwing: outcome.cancelled ? CancellationError() : error)
-                    }
-                }
-            }
-        } onCancel: {
-            state.cancel()
         }
     }
 }

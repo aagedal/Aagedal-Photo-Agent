@@ -715,6 +715,7 @@ private struct DeliveryReceiptEvidenceRow: View {
         case .unavailable: "unavailable"
         case .matchesDeliveredByteSize: "matches delivered size"
         case .doesNotMatchDeliveredByteSize: "does not match delivered size"
+        case .notVisibleAfterUpload: "sent, not visible on the server (drop box or hot folder)"
         }
     }
 
