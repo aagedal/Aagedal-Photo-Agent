@@ -530,7 +530,11 @@ struct ContentView: View {
             .sheet(isPresented: $isShowingVariableRecovery) {
                 VariableConflictRecoveryHost(viewModel: metadataViewModel)
             }
-            .sheet(isPresented: $isShowingSaveTemplateName) { saveTemplateSheet }
+            .sheet(isPresented: $isShowingSaveTemplateName, onDismiss: {
+                // Template palette → Save New… ends here; hand Caption its field focus (and
+                // Tab traversal) back the way closing the palette does.
+                if mainViewMode == .caption { commandRouter.send(.restoreCaptionEditorFocus) }
+            }) { saveTemplateSheet }
             .sheet(isPresented: $isShowingSaveDevelopTemplateName) { saveDevelopTemplateSheet }
             .sheet(item: $ftpUploadItem) { item in
                 FTPUploadView(
