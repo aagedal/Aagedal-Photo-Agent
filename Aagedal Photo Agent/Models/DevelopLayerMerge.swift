@@ -66,6 +66,16 @@ extension MaskAdjustment {
     nonisolated var isRedaction: Bool { anonymizer?.isEmpty == false }
 }
 
+extension CameraRawSettings {
+    /// True when rendering these settings redacts pixels: an enabled Anonymizer mask (face blur /
+    /// Black Out) or a global Anonymizer. Privacy decisions (which settings copy an export uses,
+    /// whether a C2PA manifest may embed the unredacted parent) key off this.
+    nonisolated var hasActiveRedaction: Bool {
+        if anonymizer?.isEmpty == false { return true }
+        return localAdjustments?.contains { $0.enabled && $0.isRedaction } == true
+    }
+}
+
 extension AnonymizerSettings {
     /// The global Anonymizer a paste/template leaves when the target already redacts: it may be
     /// turned on or strengthened from the source, never turned off or weakened (privacy rule).

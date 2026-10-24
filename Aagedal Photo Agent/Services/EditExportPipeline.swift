@@ -27,12 +27,77 @@ actor MetadataFailureTracker: Sendable {
 }
 
 /// Immutable input for one export Camera Raw resolution pass. Live workspace settings are
-/// captured on MainActor before this value crosses to the filesystem actor; only RAW files that
-/// lack a live value need an XMP sidecar read.
+/// captured on MainActor before this value crosses to the filesystem actor. Every requested
+/// photo's persisted develop settings are read fresh (RAW: its XMP sidecar; other files: the
+/// sidecar block when it owns one, else the embedded block from `embeddedSettingsByImageURL`),
+/// and `ExportCameraRawSourcePolicy` picks between the persisted and the live copy.
 nonisolated struct ExportCameraRawResolutionRequest: Equatable, Sendable {
     let requestID: UUID
     let imageURLs: [URL]
     let liveSettingsByImageURL: [URL: CameraRawSettings]
+    /// Develop settings parsed from each file's embedded XMP by the caller's full metadata read.
+    let embeddedSettingsByImageURL: [URL: CameraRawSettings]
+    /// Photos whose live copy is authoritative: the photo open in Develop, whose newest edits
+    /// may not have reached disk yet. Every other live copy is only a redaction safety net.
+    let liveAuthoritativeImageURLs: Set<URL>
+
+    init(
+        requestID: UUID,
+        imageURLs: [URL],
+        liveSettingsByImageURL: [URL: CameraRawSettings],
+        embeddedSettingsByImageURL: [URL: CameraRawSettings] = [:],
+        liveAuthoritativeImageURLs: Set<URL> = []
+    ) {
+        self.requestID = requestID
+        self.imageURLs = imageURLs
+        self.liveSettingsByImageURL = liveSettingsByImageURL
+        self.embeddedSettingsByImageURL = embeddedSettingsByImageURL
+        self.liveAuthoritativeImageURLs = liveAuthoritativeImageURLs
+    }
+}
+
+/// Chooses which develop settings an export, upload or signing render uses (privacy-critical:
+/// the chosen copy decides whether Anonymizer redactions reach the published pixels).
+///
+/// The persisted settings — read fresh from the file/sidecar with the complete parser — are the
+/// default. The Browser's in-memory copy can be stale or incomplete (an older parser, a reload
+/// that raced a write), so it only wins for the photo open in Develop, whose newest edits may not
+/// be on disk yet. Whichever copy is chosen, a redaction present only in the other copy is never
+/// dropped: over-redacting is recoverable, publishing an unredacted face is not.
+nonisolated enum ExportCameraRawSourcePolicy {
+    static func resolve(
+        live: CameraRawSettings?,
+        persisted: CameraRawSettings?,
+        liveIsAuthoritative: Bool
+    ) -> CameraRawSettings? {
+        let live = (live?.isEmpty == false) ? live : nil
+        let persisted = (persisted?.isEmpty == false) ? persisted : nil
+        guard let live else { return persisted }
+        guard let persisted else { return live }
+        let preferred = liveIsAuthoritative ? live : persisted
+        let other = liveIsAuthoritative ? persisted : live
+        if !preferred.hasActiveRedaction && other.hasActiveRedaction {
+            return other
+        }
+        return preferred
+    }
+
+    /// The develop settings a photo persists: a RAW's sidecar is authoritative; any other file
+    /// shows its sidecar block when it owns one (`sidecar` is already ownership-filtered, so a
+    /// RAW+JPEG pair's JPEG passes nil) and otherwise its embedded block.
+    static func persisted(
+        imageURL: URL,
+        sidecar: CameraRawSettings?,
+        embedded: CameraRawSettings?
+    ) -> CameraRawSettings? {
+        if SupportedImageFormats.isRaw(url: imageURL) {
+            return (sidecar?.isEmpty == false) ? sidecar : nil
+        }
+        let reconciled = EffectiveMetadataResolver.reconciledDevelopSettings(
+            sidecar: sidecar, embedded: embedded
+        )
+        return (reconciled?.isEmpty == false) ? reconciled : nil
+    }
 }
 
 /// A complete result contains both the captured live values and every usable sidecar fallback.
@@ -229,9 +294,10 @@ actor ExportCameraRawResolutionService {
     }
 
     func resolve(_ request: ExportCameraRawResolutionRequest) -> ExportCameraRawResolutionResult {
-        let sidecarURLs = request.imageURLs.filter {
-            request.liveSettingsByImageURL[$0] == nil && SupportedImageFormats.isRaw(url: $0)
-        }
+        // Every photo's persisted settings are re-read: a live copy is never trusted blindly,
+        // and a non-RAW file may keep its develop in its own sidecar.
+        var seenURLs = Set<URL>()
+        let sidecarURLs = request.imageURLs.filter { seenURLs.insert($0).inserted }
         let signpostID = signposter.makeSignpostID()
         let interval = signposter.beginInterval("Resolve", id: signpostID)
 
@@ -258,11 +324,17 @@ actor ExportCameraRawResolutionService {
                 )
             }
 
-            let settings = access.load(imageURL)
+            let persisted = ExportCameraRawSourcePolicy.persisted(
+                imageURL: imageURL,
+                sidecar: access.load(imageURL),
+                embedded: request.embeddedSettingsByImageURL[imageURL]
+            )
             inspectedURLs.append(imageURL)
-            if let settings {
-                settingsByURL[imageURL] = settings
-            }
+            settingsByURL[imageURL] = ExportCameraRawSourcePolicy.resolve(
+                live: request.liveSettingsByImageURL[imageURL],
+                persisted: persisted,
+                liveIsAuthoritative: request.liveAuthoritativeImageURLs.contains(imageURL)
+            )
 
             guard !Task.isCancelled else {
                 return cancelledResult(
@@ -372,22 +444,29 @@ enum EditExportPipeline {
             collisionPolicy: collisionPolicy, metadataFailurePolicy: .rejectForDelivery)
     }
 
-    /// Populates `cameraRaw` on each entry in `map`, preferring the live in-memory edit
-    /// settings (kept in sync by the edit workspace) and falling back to the XMP sidecar
-    /// for RAW files edited in a previous session. The in-memory lookup is injected so this
-    /// stays decoupled from `BrowserViewModel`.
+    /// Populates `cameraRaw` on each entry in `map` with the settings the render must use.
+    /// `map` arrives holding each file's embedded settings (from a full metadata read). The
+    /// persisted settings are re-read fresh (sidecar, else embedded) and preferred over the live
+    /// in-memory copy, which wins only for `liveDevelopImageURL` — the photo open in Develop —
+    /// and never drops a redaction present in the other copy (`ExportCameraRawSourcePolicy`).
+    /// The in-memory lookup is injected so this stays decoupled from `BrowserViewModel`.
     @MainActor
     static func resolveCameraRaw(
         into map: inout [URL: IPTCMetadata],
         urls: [URL],
         inMemory: @MainActor (URL) -> CameraRawSettings?,
+        liveDevelopImageURL: URL? = nil,
         service: ExportCameraRawResolutionService = .shared
     ) async throws {
         var liveSettingsByURL: [URL: CameraRawSettings] = [:]
+        var embeddedSettingsByURL: [URL: CameraRawSettings] = [:]
         liveSettingsByURL.reserveCapacity(urls.count)
         for url in urls {
             if let crs = inMemory(url) {
                 liveSettingsByURL[url] = crs
+            }
+            if let embedded = map[url]?.cameraRaw {
+                embeddedSettingsByURL[url] = embedded
             }
         }
 
@@ -395,7 +474,9 @@ enum EditExportPipeline {
         let result = await service.resolve(ExportCameraRawResolutionRequest(
             requestID: requestID,
             imageURLs: urls,
-            liveSettingsByImageURL: liveSettingsByURL
+            liveSettingsByImageURL: liveSettingsByURL,
+            embeddedSettingsByImageURL: embeddedSettingsByURL,
+            liveAuthoritativeImageURLs: liveDevelopImageURL.map { [$0] } ?? []
         ))
         guard case .complete(let snapshot) = result,
               snapshot.requestID == requestID else {

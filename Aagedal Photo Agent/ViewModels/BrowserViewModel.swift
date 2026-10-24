@@ -1997,18 +1997,14 @@ final class BrowserViewModel {
                 updated[index].isNativeHDR = nativeHDRByURL[sourceURL] == true
                     || (AppDefaults.store.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
                 updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
-                // Preserve in-memory localAdjustments — these are set by the edit
-                // workspace and written to the image directly, not parsed from
-                // batch XMP output.
-                let existingLocalAdjustments = updated[index].cameraRawSettings?.localAdjustments
-                var newSettings = cameraRawSettings(in: dict)
-                if (existingLocalAdjustments?.isEmpty == false) && newSettings == nil {
-                    newSettings = CameraRawSettings()
-                }
-                if let masks = existingLocalAdjustments, !masks.isEmpty {
-                    newSettings?.localAdjustments = masks
-                }
-                updated[index].cameraRawSettings = newSettings
+                // The file's embedded develop block, parsed with the shared full parser so
+                // masks (incl. Anonymizer redactions), the global Anonymizer, watermark layers,
+                // film emulation and layer order survive a reload. Under Professional (and
+                // always for a RAW+JPEG pair's JPEG) this is where a JPEG's develop lives;
+                // every thumbnail, preview and export fallback reads this copy.
+                let parsedFromFile = iptcMetadataFromDict(dict)
+                let embeddedSettings = parsedFromFile.cameraRaw
+                updated[index].cameraRawSettings = embeddedSettings
 
                 // XMP I/O and XML parsing completed off-main before this model merge.
                 let xmpMeta = xmpMetadataMap[sourceURL]
@@ -2020,12 +2016,9 @@ final class BrowserViewModel {
                 // through nil sidecar fields (e.g. Adobe omitting Temperature).
                 if SupportedImageFormats.isRaw(url: sourceURL) {
                     if let xmpCRS = xmpMeta?.cameraRaw, !xmpCRS.isEmpty {
-                        var finalCRS = xmpCRS
-                        // Preserve in-memory localAdjustments (written to image, not sidecar)
-                        if (xmpCRS.localAdjustments?.isEmpty ?? true),
-                           let masks = updated[index].cameraRawSettings?.localAdjustments, !masks.isEmpty {
-                            finalCRS.localAdjustments = masks
-                        }
+                        // The sidecar is parsed with the full parser (masks included), so it
+                        // replaces the in-memory copy wholesale.
+                        let finalCRS = xmpCRS
                         updated[index].cameraRawSettings = finalCRS
                         applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
                     } else {
@@ -2044,11 +2037,12 @@ final class BrowserViewModel {
                     // embedded crs (empty for sidecar-only edits). Unlike RAW we DON'T clear
                     // on an absent/empty sidecar: a non-RAW file can legitimately carry
                     // embedded crs (e.g. an ACR-edited JPEG), already loaded from the dict above.
-                    var finalCRS = xmpCRS
-                    if (xmpCRS.localAdjustments?.isEmpty ?? true),
-                       let masks = updated[index].cameraRawSettings?.localAdjustments, !masks.isEmpty {
-                        finalCRS.localAdjustments = masks
-                    }
+                    // Same reconciliation as the inspector, Develop paste and export: embedded
+                    // masks show through a sidecar block that has none. (A RAW+JPEG pair's JPEG
+                    // never gets here — `applyingDevelopOwnership` dropped the RAW's crs.)
+                    let finalCRS = EffectiveMetadataResolver.reconciledDevelopSettings(
+                        sidecar: xmpCRS, embedded: embeddedSettings
+                    )
                     updated[index].cameraRawSettings = finalCRS
                     applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
                 }
@@ -2093,7 +2087,7 @@ final class BrowserViewModel {
                 // metadata"). Mirror the inspector's merge (`loadMetadataSnapshot`): a
                 // descriptive sidecar IS the record (clears stick), a develop-only sidecar
                 // overlays additively.
-                var descriptive = iptcMetadataFromDict(dict)
+                var descriptive = parsedFromFile
                 if let xmpMeta {
                     descriptive = xmpMeta.hasDescriptiveContent
                         ? descriptive.replacingDescriptiveFields(from: xmpMeta)
@@ -2244,81 +2238,6 @@ final class BrowserViewModel {
     // parseIntValue did an unguarded `Int(doubleValue)` that traps on a crafted/corrupt
     // metadata value of inf/nan/overflow — the shared version routes through `safeInt`.
     // Don't reintroduce private copies; reuse the shared, hardened helpers.
-
-    private func parseToneCurve(_ value: Any?) -> [ToneCurvePoint]? {
-        guard let array = value as? [String], array.count >= 2 else { return nil }
-        let points = array.compactMap { str -> ToneCurvePoint? in
-            let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            guard parts.count == 2,
-                  let x = Double(parts[0]),
-                  let y = Double(parts[1]) else { return nil }
-            return ToneCurvePoint(acr255: x, y)
-        }
-        return points.isIdentityToneCurve ? nil : points
-    }
-
-    private func cameraRawSettings(in dict: [String: Any]) -> CameraRawSettings? {
-        // crs values are Adobe's un-rotated-frame corner encoding; decode to the
-        // app's upright-rect convention (identity at angle 0).
-        let crop = CameraRawCrop(
-            top: parseDoubleValue(dict[MetadataDictKey.crsCropTop]),
-            left: parseDoubleValue(dict[MetadataDictKey.crsCropLeft]),
-            bottom: parseDoubleValue(dict[MetadataDictKey.crsCropBottom]),
-            right: parseDoubleValue(dict[MetadataDictKey.crsCropRight]),
-            angle: parseDoubleValue(dict[MetadataDictKey.crsCropAngle]),
-            hasCrop: parseBoolValue(dict[MetadataDictKey.crsHasCrop])
-        ).decodedFromACR(aspect: metadataDictPixelAspect(dict))
-        let cropValue = crop.isEmpty ? nil : crop
-
-        let tcMaster = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012])
-        let tcRed = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012Red])
-        let tcGreen = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012Green])
-        let tcBlue = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012Blue])
-        let toneCurve: ToneCurve? = {
-            let tc = ToneCurve(master: tcMaster, red: tcRed, green: tcGreen, blue: tcBlue)
-            return tc.isEmpty ? nil : tc
-        }()
-
-        let settings = CameraRawSettings(
-            version: dict[MetadataDictKey.crsVersion] as? String,
-            processVersion: dict[MetadataDictKey.crsProcessVersion] as? String,
-            whiteBalance: dict[MetadataDictKey.crsWhiteBalance] as? String,
-            temperature: parseIntValue(dict[MetadataDictKey.crsTemperature]),
-            tint: parseIntValue(dict[MetadataDictKey.crsTint]),
-            incrementalTemperature: parseIntValue(dict[MetadataDictKey.crsIncrementalTemperature]),
-            incrementalTint: parseIntValue(dict[MetadataDictKey.crsIncrementalTint]),
-            exposure2012: parseDoubleValue(dict[MetadataDictKey.crsExposure2012]),
-            contrast2012: parseIntValue(dict[MetadataDictKey.crsContrast2012]),
-            highlights2012: parseIntValue(dict[MetadataDictKey.crsHighlights2012]),
-            shadows2012: parseIntValue(dict[MetadataDictKey.crsShadows2012]),
-            whites2012: parseIntValue(dict[MetadataDictKey.crsWhites2012]),
-            blacks2012: parseIntValue(dict[MetadataDictKey.crsBlacks2012]),
-            saturation: parseIntValue(dict[MetadataDictKey.crsSaturation]),
-            vibrance: parseIntValue(dict[MetadataDictKey.crsVibrance]),
-            globalDensity: parseIntValue(dict[MetadataDictKey.globalDensity]),
-            sharpness: parseIntValue(dict[MetadataDictKey.crsSharpness]),
-            clarity2012: parseIntValue(dict[MetadataDictKey.crsClarity2012]),
-            dehaze: parseIntValue(dict[MetadataDictKey.crsDehaze]),
-            hasSettings: parseBoolValue(dict[MetadataDictKey.crsHasSettings]),
-            crop: cropValue,
-            hdrEditMode: parseIntValue(dict[MetadataDictKey.crsHDREditMode]),
-            hdrMaxValue: dict[MetadataDictKey.crsHDRMaxValue] as? String,
-            sdrBrightness: parseIntValue(dict[MetadataDictKey.crsSDRBrightness]),
-            sdrContrast: parseIntValue(dict[MetadataDictKey.crsSDRContrast]),
-            sdrClarity: parseIntValue(dict[MetadataDictKey.crsSDRClarity]),
-            sdrHighlights: parseIntValue(dict[MetadataDictKey.crsSDRHighlights]),
-            sdrShadows: parseIntValue(dict[MetadataDictKey.crsSDRShadows]),
-            sdrWhites: parseIntValue(dict[MetadataDictKey.crsSDRWhites]),
-            sdrBlend: parseIntValue(dict[MetadataDictKey.crsSDRBlend]),
-            toneCurve: toneCurve,
-            hslAdjustments: decodeHSLAdjustments { parseIntValue(dict[$0]) }
-        )
-        // A crs block marked AlreadyApplied="True" is baked into the pixels (our own
-        // export, or an ACR-rendered-from-RAW JPEG) — treat it as unedited so the
-        // settings aren't applied a second time on top of the already-baked render.
-        if crsIsAlreadyApplied(in: dict) { return nil }
-        return settings.isEmpty ? nil : settings
-    }
 
     // MARK: - Arrow Key Navigation
 

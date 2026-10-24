@@ -1895,6 +1895,13 @@ struct ContentView: View {
         }
     }
 
+    /// The photo open in Develop. Only its in-memory develop settings may be newer than disk,
+    /// so exports let them win over the persisted copy (redactions are never dropped either way).
+    private var liveDevelopImageURL: URL? {
+        guard mainViewMode == .editing, metadataViewModel.selectedCount == 1 else { return nil }
+        return metadataViewModel.selectedURLs.first
+    }
+
     private func performAfterDevelopFlush(
         reason: DevelopVersionFlushReason,
         _ transition: @escaping @MainActor () -> Void
@@ -3642,6 +3649,7 @@ struct ContentView: View {
 
         // Capture the pane that started the sign so the final refresh targets it.
         let browserViewModel = browserViewModel
+        let liveDevelopURL = liveDevelopImageURL
         renderExportTask = Task {
             defer { renderExportTask = nil }
             let urls = selected.map(\.url)
@@ -3654,7 +3662,8 @@ struct ContentView: View {
                 try await EditExportPipeline.resolveCameraRaw(
                     into: &metadataByURL,
                     urls: urls,
-                    inMemory: browserViewModel.currentCameraRawSettings
+                    inMemory: browserViewModel.currentCameraRawSettings,
+                    liveDevelopImageURL: liveDevelopURL
                 )
             } catch is CancellationError {
                 // Release the export gate, or every later Export/Save As/Sign is a no-op.
@@ -3709,8 +3718,11 @@ struct ContentView: View {
                     // Step 2: Build C2PA actions from edit settings
                     let actions = C2PAAction.fromSettings(cameraRaw)
 
-                    // Step 3: Sign — preserve history if source already had C2PA
-                    if image.hasC2PA {
+                    // Step 3: Sign — preserve history if source already had C2PA, unless the
+                    // render redacts: the parent ingredient would embed the unredacted original.
+                    let signingMode = C2PARenderSigningMode.forRender(
+                        sourceHasC2PA: image.hasC2PA, renderedSettings: cameraRaw)
+                    if signingMode == .signWithParentIngredient {
                         try await C2PASigningService.signWithParentIngredient(
                             imageURL: renderedURL,
                             parentURL: image.url,
@@ -4319,6 +4331,7 @@ struct ContentView: View {
         renderExportCurrent = 0
         renderExportTotal = urls.count
 
+        let liveDevelopURL = liveDevelopImageURL
         renderExportTask = Task {
             defer { renderExportTask = nil }
             let failureTracker = MetadataFailureTracker()
@@ -4330,7 +4343,8 @@ struct ContentView: View {
                 try await EditExportPipeline.resolveCameraRaw(
                     into: &metadataByURL,
                     urls: urls,
-                    inMemory: browser.currentCameraRawSettings
+                    inMemory: browser.currentCameraRawSettings,
+                    liveDevelopImageURL: liveDevelopURL
                 )
             } catch is CancellationError {
                 // Release the export gate, or every later Export/Save As/Sign is a no-op.
@@ -4754,6 +4768,7 @@ struct ContentView: View {
 
         // Capture the pane that started the export so the final refresh targets it.
         let browserViewModel = browserViewModel
+        let liveDevelopURL = liveDevelopImageURL
         renderExportTask = Task {
             defer { renderExportTask = nil }
             let failureTracker = MetadataFailureTracker()
@@ -4764,7 +4779,8 @@ struct ContentView: View {
                 try await EditExportPipeline.resolveCameraRaw(
                     into: &metadataByURL,
                     urls: urls,
-                    inMemory: browserViewModel.currentCameraRawSettings
+                    inMemory: browserViewModel.currentCameraRawSettings,
+                    liveDevelopImageURL: liveDevelopURL
                 )
             } catch is CancellationError {
                 // Release the export gate, or every later Export/Save As/Sign is a no-op.

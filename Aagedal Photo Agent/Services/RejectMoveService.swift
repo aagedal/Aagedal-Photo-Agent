@@ -70,6 +70,10 @@ nonisolated struct RejectMoveService: Sendable {
         // source. A RAW+JPEG pair shares one stem `.xmp`: the first image copies it (its partner
         // still needs it) and the partner reuses that copy so the pair keeps one name.
         var transferredXMPSources: [URL: URL] = [:]
+        // Both halves of every RAW+JPEG `.xmp` this batch split (the copy and the original).
+        // Checked once the batch is done: a half left beside only a non-RAW photo loses the
+        // RAW's develop block so the JPEG keeps its own embedded develop and redactions.
+        var splitPairSidecars: [URL] = []
 
         // Sidecar files we move alongside the image:
         // - JSON sidecar at <folder>/.photo_metadata/<file>.meta.json
@@ -104,6 +108,9 @@ nonisolated struct RejectMoveService: Sendable {
             var xmpMoved = false
             var xmpCopied = false
             var xmpReplacedPartnerCopy = false
+            // Decided before anything moves, while the pair is still together.
+            let xmpBelongsToRAW = !xmpAlreadyTransferred && fm.fileExists(atPath: xmpSource.path)
+                && PhotoSidecarOwnership.stemGroupIncludesRAW(url)
 
             do {
                 let receipt = try voiceMemoRepository.moveImagePreservingCompanion(from: url, to: dest) {
@@ -150,6 +157,9 @@ nonisolated struct RejectMoveService: Sendable {
                 if xmpMoved || xmpCopied || xmpAlreadyTransferred, fm.fileExists(atPath: xmpDestination.path) {
                     transferredXMPSources[xmpDestination.standardizedFileURL] = xmpSource.standardizedFileURL
                 }
+                if xmpCopied && xmpBelongsToRAW {
+                    splitPairSidecars += [xmpDestination, xmpSource]
+                }
                 if !receipt.cleanupResidualURLs.isEmpty {
                     failed.append((url, "Photo moved successfully; private source backups need cleanup: "
                         + receipt.cleanupResidualURLs.map(\.path).joined(separator: ", ")))
@@ -168,6 +178,11 @@ nonisolated struct RejectMoveService: Sendable {
             // Production uses the no-op default, so cancellation remains observable only between
             // transactional bundles and can never interrupt image/sidecar commit or rollback.
             bundleDidCommit(dest)
+        }
+
+        for (sidecar, error) in PhotoSidecarOwnership.detachRawDevelopAfterSplit(splitPairSidecars) {
+            failed.append((sidecar, "Photo moved, but the RAW's develop settings could not be removed from "
+                + "\(sidecar.lastPathComponent), so the JPEG beside it may show them: \(error.localizedDescription)"))
         }
 
         rejectLog.info("Rejected move complete: \(moved.count) moved, \(failed.count) failed")

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftMediaMetadata
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -392,6 +393,38 @@ struct RejectMoveServiceTests {
         #expect(try Data(contentsOf: rejected.appendingPathComponent("photo.xmp")) == Data("shared xmp".utf8))
         #expect(!FileManager.default.fileExists(atPath: rejected.appendingPathComponent("photo-1.JPG").path))
         #expect(!FileManager.default.fileExists(atPath: xmp.path))
+    }
+
+    @Test("Rejecting one half of a RAW+JPEG pair leaves the RAW's develop only beside the RAW",
+          arguments: ["JPG", "ARW"])
+    func rejectOneHalfDetachesRawDevelopFromJPEG(rejectedExtension: String) async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        let xmp = root.appendingPathComponent("photo.xmp")
+        try Data("raw".utf8).write(to: raw)
+        try Data("jpeg".utf8).write(to: jpeg)
+        var shared = XMPData()
+        shared.description = "Pair caption"
+        var develop = CameraRawSettings()
+        develop.exposure2012 = 1.25
+        develop.anonymizer = AnonymizerSettings(amount: 50, blackOut: nil)
+        XMPDataBuilder.applyCameraRaw(develop, imageAspect: nil, into: &shared)
+        let sharedBytes = Data(XMPWriter.generateXML(shared).utf8)
+        try sharedBytes.write(to: xmp)
+
+        let rejectedURL = rejectedExtension == "ARW" ? raw : jpeg
+        let result = await FileSystemService().moveRejectedItems([rejectedURL], in: root)
+
+        #expect(result.failedFiles.isEmpty)
+        let rejectedXMP = root.appendingPathComponent(RejectMoveService.rejectedFolderName)
+            .appendingPathComponent("photo.xmp")
+        let (besideJPEG, besideRAW) = rejectedExtension == "JPG" ? (rejectedXMP, xmp) : (xmp, rejectedXMP)
+        let jpegSide = try #require(XMPMetadataReader.read(try Data(contentsOf: besideJPEG)))
+        #expect(jpegSide.cameraRaw == nil, "the JPEG must keep its own embedded develop, not the RAW's")
+        #expect(jpegSide.description == "Pair caption")
+        #expect(try Data(contentsOf: besideRAW) == sharedBytes)
     }
 
     @Test("Name collisions keep image and sidecars associated")
