@@ -5542,6 +5542,20 @@ struct BrushRasterizationTests {
         )
         #expect(pipeline.aiMaskTextureDecodeCount == 3)
         #expect(restored == first)
+        #expect(pipeline.cachedAIMaskTextureCount == 1)
+
+        // No raster masks left: nothing is retained.
+        _ = pipeline.rebuildMaskAlpha([], size: size)
+        #expect(pipeline.cachedAIMaskTextureCount == 0)
+
+        // A new image session releases the previous image's mattes.
+        _ = pipeline.rebuildMaskAlpha([.ai(ai)], size: size)
+        #expect(pipeline.cachedAIMaskTextureCount == 1)
+        pipeline.beginSourceImageSession(1)
+        #expect(pipeline.cachedAIMaskTextureCount == 0)
+        _ = pipeline.rebuildMaskAlpha([.ai(ai)], size: size)
+        pipeline.clearSourceTexture()
+        #expect(pipeline.cachedAIMaskTextureCount == 0)
     }
 
     @Test("AI matte black and white points remap confidence values")

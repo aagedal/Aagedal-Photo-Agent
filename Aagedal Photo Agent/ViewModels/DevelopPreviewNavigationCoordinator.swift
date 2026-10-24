@@ -13,6 +13,34 @@ nonisolated enum EditZoomBehavior {
         if scale > scaleRange.upperBound { return scaleRange.upperBound }
         return scale
     }
+
+    /// The image's native pixel dimensions in the displayed frame: stored dimensions with the
+    /// axes swapped for the transposing EXIF orientations 5–8.
+    static func displayPixelSize(nativePixelSize: CGSize, orientation: Int) -> CGSize {
+        (5...8).contains(orientation)
+            ? CGSize(width: nativePixelSize.height, height: nativePixelSize.width)
+            : nativePixelSize
+    }
+
+    /// Zoom scale (relative to fit-to-view) at which one native image pixel covers one physical
+    /// screen pixel. Computed from the file's native dimensions, not the source texture, which
+    /// is screen-resolution until a zoom upgrade loads full resolution. May be below 1 for
+    /// images smaller than the fitted view; `clampedScale` then keeps the preview at fit.
+    static func actualPixelsScale(
+        containerSize: CGSize,
+        displayPixelSize: CGSize,
+        backingScale: CGFloat
+    ) -> CGFloat {
+        guard containerSize.width > 0, containerSize.height > 0,
+              displayPixelSize.width > 0, displayPixelSize.height > 0,
+              backingScale > 0 else { return 1.0 }
+        let fittedScale = min(
+            containerSize.width / displayPixelSize.width,
+            containerSize.height / displayPixelSize.height
+        )
+        // At this zoom, 1 image pixel = 1 physical screen pixel.
+        return 1.0 / (fittedScale * backingScale)
+    }
 }
 
 /// The normalized source region sampled by the Develop preview. Keeping the paired values in
