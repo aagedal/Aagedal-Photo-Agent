@@ -377,6 +377,14 @@ final class MetadataViewModel {
     /// The editor value each scalar text intent in `batchFieldMutations` was recorded against.
     /// Typing into the field afterwards replaces the template's intent with the typed value.
     @ObservationIgnored private var batchTextIntentEditorValues: [MetadataFieldID: String?] = [:]
+    /// Identity of each pending `.appendText` intent. A later template append that extends a
+    /// still-pending intent keeps its token, so `textAppendLedger` can tell which part of it
+    /// each photo's records already received.
+    @ObservationIgnored private var batchTextAppendTokens: [MetadataFieldID: UUID] = [:]
+    /// Which template text appends each photo's records already received. Shared by reference
+    /// with captured batch mutations, which consult it when they are applied, so a save queued
+    /// behind (or retried after) a partial save, or a dual-write XMP phase, never appends twice.
+    @ObservationIgnored private let textAppendLedger = BatchTextAppendLedger()
     private(set) var batchLocationsShownMutation: BatchLocationsShownMutation = .untouched
     private(set) var batchImageSupplierMutation: EditorialImageSupplierMutation = .untouched
     var isLoadingBatchMetadata = false
@@ -2404,7 +2412,7 @@ final class MetadataViewModel {
                     }
                 }
 
-                if isBatch, explicitBatchMutations.contains(where: { entry in
+                if let batchMutation = draftMutation?.mutation, explicitBatchMutations.contains(where: { entry in
                     if case .appendText = entry.value { return true }
                     return false
                 }) {
@@ -2417,10 +2425,11 @@ final class MetadataViewModel {
                         } else {
                             base = try await self.readService.readFullMetadata(url: url)
                         }
-                        let photoFields = Self.perPhotoBatchTextFields(explicitBatchMutations, base: base)
+                        let photoFields = batchMutation.embeddedTextFields(for: url, base: base)
                         guard !photoFields.isEmpty else { continue }
                         do {
                             try await writeEngine.writeFields(photoFields, to: [url])
+                            batchMutation.markDelivered(to: url, channel: .embedded)
                         } catch let batch as EmbeddedMetadataBatchRefusal {
                             lossRefusals += batch.refusals
                         }
@@ -2498,7 +2507,8 @@ final class MetadataViewModel {
                         fallback.cameraRaw = nil
                         installedRawRecords[url] = try await self.xmpSidecarService.updateSidecarSerialized(
                             for: url, fallback: fallback, preservesDevelopSettings: true,
-                            mutation: draftMutation.mutation)
+                            mutation: draftMutation.mutation.closure(for: url, channel: .xmpSidecar))
+                        draftMutation.mutation.markDelivered(to: url, channel: .xmpSidecar)
                     } else {
                         _ = try await self.descriptiveWriteBoundary.write(
                             metadata: edited, for: url, requestedMode: .writeToFile, semantics: .replace)
@@ -2508,7 +2518,12 @@ final class MetadataViewModel {
                 let refusedURLs = Set(lossRefusals.map(\.imageURL))
                 // Refused files whose change actually landed in a pending draft.
                 var draftedRefusedURLs: Set<URL> = []
-                await self.mirrorEmbeddedStateToExistingSidecars(for: writableEmbedURLs())
+                let mirroredURLs = await self.mirrorEmbeddedStateToExistingSidecars(for: writableEmbedURLs())
+                if let draftMutation {
+                    // The mirror copied each file's complete post-write record, appended text
+                    // included, into its existing .xmp: a dual-write XMP phase must not append again.
+                    for url in mirroredURLs { draftMutation.mutation.markDelivered(to: url, channel: .xmpSidecar) }
+                }
 
                 // A pending draft is the photo's record until it is written. Apply the same batch
                 // change to it (keeping it pending) so a later Write All cannot revert this write.
@@ -2534,7 +2549,8 @@ final class MetadataViewModel {
                         fallback.cameraRaw = nil
                         if (try? await self.sidecarService.updateMetadataSerialized(
                             for: url, in: writeFolderURL, fallback: fallback, pendingChanges: true,
-                            timestamp: Date(), mutation: draftMutation.mutation)) != nil {
+                            timestamp: Date(), mutation: draftMutation.mutation.closure(for: url, channel: .jsonDraft))) != nil {
+                            draftMutation.mutation.markDelivered(to: url, channel: .jsonDraft)
                             draftedRefusedURLs.insert(url)
                         }
                     }
@@ -2556,14 +2572,12 @@ final class MetadataViewModel {
                         if let draftMutation {
                             for (url, record) in resolvedBatchSnapshot where !refusedURLs.contains(url) {
                                 var written = record
-                                draftMutation.mutation(&written)
+                                draftMutation.mutation.applyIgnoringDeliveries(to: &written)
                                 self.batchMetadataByURL[url] = installedRawRecords[url] ?? written
                             }
                         }
                         self.previousEditingMetadata = edited
-                        if self.batchFieldMutations == explicitBatchMutations {
-                            self.batchFieldMutations = [:]
-                        }
+                        self.clearSavedBatchFieldMutations(explicitBatchMutations)
                         if self.batchLocationsShownMutation == explicitLocationsShownMutation {
                             self.batchLocationsShownMutation = .untouched
                         }
@@ -2771,19 +2785,21 @@ final class MetadataViewModel {
     /// don't track per-file post-state, so read it back from each file that has a
     /// sidecar. The sidecar's Camera Raw settings and orientation are preserved —
     /// develop edits (RAW especially) live in the sidecar, not the embedded read-back.
-    private func mirrorEmbeddedStateToExistingSidecars(for urls: [URL]) async {
+    @discardableResult
+    private func mirrorEmbeddedStateToExistingSidecars(for urls: [URL]) async -> Set<URL> {
         guard let sidecarURLs = try? await MetadataSidecarMirrorPreflight.shared.existingImageURLs(urls) else {
-            return
+            return []
         }
-        guard !sidecarURLs.isEmpty else { return }
+        guard !sidecarURLs.isEmpty else { return [] }
         // Not cancellable: the embedded write already happened, so skipping the read-back
         // would leave the sidecar shadowing it with stale values.
         guard let postWrite = try? await readService.readBatchFullMetadata(
             urls: sidecarURLs, stopsWhenCancelled: false
         ) else {
             logger.error("Sidecar mirror: post-write metadata read-back failed; existing .xmp sidecars left untouched")
-            return
+            return []
         }
+        var mirrored: Set<URL> = []
         for url in sidecarURLs {
             guard let record = postWrite[url] else { continue }
             do {
@@ -2793,10 +2809,12 @@ final class MetadataViewModel {
                     onlyIfExisting: true,
                     preserveExistingOrientationIfMissing: true
                 )
+                mirrored.insert(url)
             } catch {
                 logger.error("Sidecar mirror failed for \(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
+        return mirrored
     }
 
     /// Everything an XMP sidecar write needs, captured when the save is requested so a write
@@ -2805,7 +2823,7 @@ final class MetadataViewModel {
         let urls: [URL]
         let folder: URL?
         let edited: IPTCMetadata
-        let mutation: @Sendable (inout IPTCMetadata) -> Void
+        let mutation: BatchRecordMutation
         let baselines: [URL: IPTCMetadata]
     }
 
@@ -2866,8 +2884,9 @@ final class MetadataViewModel {
                     for: imageURL,
                     fallback: fallback,
                     preservesDevelopSettings: true,
-                    mutation: capture.mutation
+                    mutation: capture.mutation.closure(for: imageURL, channel: .xmpSidecar)
                 )
+                capture.mutation.markDelivered(to: imageURL, channel: .xmpSidecar)
                 if selectedURLs == urls {
                     batchMetadataByURL[imageURL] = installed
                 }
@@ -3429,7 +3448,7 @@ final class MetadataViewModel {
             // An intent recorded by an earlier template is current only while the editor still
             // shows the value it was recorded against; a typed value supersedes it.
             var prior = batchFieldMutations[field]
-            if prior != nil, (batchTextIntentEditorValues[field] ?? nil) != beforeValue {
+            if prior != nil, !Self.sameEditorText(batchTextIntentEditorValues[field] ?? nil, beforeValue) {
                 prior = nil
             }
             let afterIsEmpty = (after ?? "").isEmpty
@@ -3439,13 +3458,19 @@ final class MetadataViewModel {
                 }
                 switch prior {
                 case .appendText(let earlier)?:
-                    setBatchTextIntent(.appendText(MetadataTemplateText.appending(earlier, value)), for: field,
-                                       restoring: beforeValue, path: path)
+                    // Extends the pending append, keeping its token. A mixed field keeps showing
+                    // its mixed state; a shared one shows the combined value that will be written.
+                    let combined = MetadataFieldMutation.appendText(MetadataTemplateText.appending(earlier, value))
+                    if batchDifferingFields.contains(key) {
+                        setBatchTextIntent(combined, for: field, restoring: beforeValue, path: path, keepsToken: true)
+                    } else {
+                        setBatchTextIntent(combined, for: field, editorValue: after, keepsToken: true)
+                    }
                 case .overwrite?, .clear?:
                     setBatchTextIntent(.overwrite(.scalar(after ?? value)), for: field, editorValue: after)
                 default:
                     let commonValue = previousEditingMetadata?[keyPath: path]
-                    if (beforeValue ?? "") != (commonValue ?? "") {
+                    if !Self.sameEditorText(beforeValue, commonValue) {
                         // The user typed a value for every photo; the template extends it.
                         setBatchTextIntent(.overwrite(.scalar(after ?? value)), for: field, editorValue: after)
                     } else if batchDifferingFields.contains(key) {
@@ -3467,10 +3492,21 @@ final class MetadataViewModel {
     private func setBatchTextIntent(
         _ mutation: MetadataFieldMutation,
         for field: MetadataFieldID,
-        editorValue: String?
+        editorValue: String?,
+        keepsToken: Bool = false
     ) {
         batchFieldMutations[field] = mutation
         batchTextIntentEditorValues[field] = .some(editorValue)
+        if case .appendText = mutation {
+            if !keepsToken || batchTextAppendTokens[field] == nil { batchTextAppendTokens[field] = UUID() }
+        } else {
+            batchTextAppendTokens.removeValue(forKey: field)
+        }
+    }
+
+    /// The panel stores an emptied text field as nil; a template sets "". Both mean empty.
+    private nonisolated static func sameEditorText(_ lhs: String?, _ rhs: String?) -> Bool {
+        (lhs ?? "") == (rhs ?? "")
     }
 
     /// Records an append on a mixed field and puts the editor back to its mixed (empty) state.
@@ -3478,10 +3514,11 @@ final class MetadataViewModel {
         _ mutation: MetadataFieldMutation,
         for field: MetadataFieldID,
         restoring editorValue: String?,
-        path: WritableKeyPath<IPTCMetadata, String?>
+        path: WritableKeyPath<IPTCMetadata, String?>,
+        keepsToken: Bool = false
     ) {
         editingMetadata[keyPath: path] = editorValue
-        setBatchTextIntent(mutation, for: field, editorValue: editorValue)
+        setBatchTextIntent(mutation, for: field, editorValue: editorValue, keepsToken: keepsToken)
     }
 
     /// Drops scalar text intents whose field the user has since edited, so the typed value is
@@ -3491,9 +3528,10 @@ final class MetadataViewModel {
             guard mutation != .untouched else { continue }
             let path = MetadataEditorFieldPaths.scalarText(for: field.rawValue)
             let current = path.map { editingMetadata[keyPath: $0] } ?? nil
-            if (batchTextIntentEditorValues[field] ?? nil) != current {
+            if !Self.sameEditorText(batchTextIntentEditorValues[field] ?? nil, current) {
                 batchFieldMutations.removeValue(forKey: field)
                 batchTextIntentEditorValues.removeValue(forKey: field)
+                batchTextAppendTokens.removeValue(forKey: field)
             }
         }
     }
@@ -3504,7 +3542,7 @@ final class MetadataViewModel {
               let mutation = batchFieldMutations[field] else { return nil }
         let path = MetadataEditorFieldPaths.scalarText(for: key)
         let current = path.map { editingMetadata[keyPath: $0] } ?? nil
-        guard (batchTextIntentEditorValues[field] ?? nil) == current else { return nil }
+        guard Self.sameEditorText(batchTextIntentEditorValues[field] ?? nil, current) else { return nil }
         return mutation
     }
 
@@ -4979,13 +5017,13 @@ final class MetadataViewModel {
         let savedFieldMutations: [MetadataFieldID: MetadataFieldMutation]
         let savedLocationsShownMutation: BatchLocationsShownMutation
         let savedImageSupplierMutation: EditorialImageSupplierMutation
-        let mutation: @Sendable (inout IPTCMetadata) -> Void
+        let mutation: BatchRecordMutation
         let overridesSuppliers: Bool
     }
 
     private func captureBatchSidecars(
         targetURLs: [URL]? = nil,
-        capturedMutation: (mutation: @Sendable (inout IPTCMetadata) -> Void, overridesSuppliers: Bool)? = nil
+        capturedMutation: (mutation: BatchRecordMutation, overridesSuppliers: Bool)? = nil
     ) -> BatchSidecarCapture {
         pruneStaleBatchTextIntents()
         return BatchSidecarCapture(
@@ -5006,7 +5044,7 @@ final class MetadataViewModel {
         pendingChanges: Bool = true,
         targetURLs: [URL]? = nil,
         updateState: Bool = true,
-        capturedMutation: (mutation: @Sendable (inout IPTCMetadata) -> Void, overridesSuppliers: Bool)? = nil
+        capturedMutation: (mutation: BatchRecordMutation, overridesSuppliers: Bool)? = nil
     ) async {
         _ = await saveBatchSidecars(
             folderURL: folderURL,
@@ -5046,8 +5084,9 @@ final class MetadataViewModel {
                     fallback: baselines[imageURL] ?? IPTCMetadata(),
                     pendingChanges: pendingChanges,
                     timestamp: now,
-                    mutation: mutation
+                    mutation: mutation.closure(for: imageURL, channel: .jsonDraft)
                 )
+                mutation.markDelivered(to: imageURL, channel: .jsonDraft)
                 if selectedURLs == selectedAtStart {
                     batchMetadataByURL[imageURL] = installed.metadata
                 }
@@ -5062,6 +5101,8 @@ final class MetadataViewModel {
                         mergeWithExisting: true,
                         imageSuppliersOverride: overridesSuppliers ? installed.metadata.imageSuppliers : nil
                     )
+                    // The .xmp now carries the complete record, appended text included.
+                    mutation.markDelivered(to: imageURL, channel: .xmpSidecar)
                 }
             } catch {
                 allSaved = false
@@ -5075,7 +5116,7 @@ final class MetadataViewModel {
             previousEditingMetadata = savedEditing
             batchCommonMetadata = savedEditing
             reconcileBatchPartials(afterSaving: savedEditing)
-            if batchFieldMutations == savedFieldMutations { batchFieldMutations = [:] }
+            clearSavedBatchFieldMutations(savedFieldMutations)
             if batchLocationsShownMutation == savedLocationsShownMutation {
                 batchLocationsShownMutation = .untouched
             }
@@ -5093,22 +5134,30 @@ final class MetadataViewModel {
         return failure
     }
 
-    private func capturedBatchMutation() -> @Sendable (inout IPTCMetadata) -> Void {
+    private func capturedBatchMutation() -> BatchRecordMutation {
         pruneStaleBatchTextIntents()
-        let batchMeta = editingMetadata
-        let previousCommon = previousEditingMetadata
-        let fields = batchFieldMutations
-        let locations = batchLocationsShownMutation
-        let suppliers = batchImageSupplierMutation
-        let keywordsMode = multiSelectMode(for: "keywords")
-        let personMode = multiSelectMode(for: "personShown")
-        return { metadata in
-            Self.applyBatchEdits(
-                batchMeta, to: &metadata, previousCommon: previousCommon,
-                batchFieldMutations: fields, batchLocationsShownMutation: locations,
-                batchImageSupplierMutation: suppliers,
-                keywordsMode: keywordsMode, personMode: personMode
-            )
+        return BatchRecordMutation(
+            batchMeta: editingMetadata,
+            previousCommon: previousEditingMetadata,
+            fields: batchFieldMutations,
+            appendTokens: batchTextAppendTokens,
+            locations: batchLocationsShownMutation,
+            suppliers: batchImageSupplierMutation,
+            keywordsMode: multiSelectMode(for: "keywords"),
+            personMode: multiSelectMode(for: "personShown"),
+            ledger: textAppendLedger
+        )
+    }
+
+    /// After a save, drops each intent it saved that is still unchanged, key by key. Clearing
+    /// only when the whole set matched left a saved `.appendText` in place whenever anything
+    /// else was edited during the save, and the next save appended it again. An append the
+    /// user extended meanwhile stays; the ledger knows which part each photo already has.
+    private func clearSavedBatchFieldMutations(_ saved: [MetadataFieldID: MetadataFieldMutation]) {
+        for (field, mutation) in saved where batchFieldMutations[field] == mutation {
+            batchFieldMutations.removeValue(forKey: field)
+            batchTextIntentEditorValues.removeValue(forKey: field)
+            batchTextAppendTokens.removeValue(forKey: field)
         }
     }
 
@@ -5126,7 +5175,7 @@ final class MetadataViewModel {
         value = write.isEmpty ? nil : write
     }
 
-    private nonisolated static func applyBatchEdits(
+    nonisolated static func applyBatchEdits(
         _ batchMeta: IPTCMetadata,
         to metadata: inout IPTCMetadata,
         previousCommon: IPTCMetadata? = nil,
@@ -6159,5 +6208,118 @@ nonisolated enum MetadataEditorFieldPaths {
         case "instructions": \.instructions
         default: nil
         }
+    }
+}
+
+
+/// Which record of a photo a batch mutation is being applied to.
+nonisolated enum BatchRecordChannel: Hashable, Sendable {
+    /// The image file itself (embedded IPTC/XMP).
+    case embedded
+    /// The photo's `.xmp` sidecar.
+    case xmpSidecar
+    /// The app's JSON metadata draft.
+    case jsonDraft
+}
+
+/// Remembers which template text appends each record of each photo already received, keyed by
+/// the intent's token. Appending is the one batch operation that is not idempotent, so every
+/// path that applies a captured mutation consults this when it applies it, not when the save was
+/// requested: a dual-write XMP phase after the embedded phase (which already wrote RAW sidecars
+/// and mirrored existing ones), a save queued behind a slow one, and a retry after a partial
+/// failure each append only what that record still lacks.
+nonisolated final class BatchTextAppendLedger: @unchecked Sendable {
+    private struct Key: Hashable {
+        let url: URL
+        let field: MetadataFieldID
+        let channel: BatchRecordChannel
+    }
+
+    private let lock = NSLock()
+    private var delivered: [Key: (token: UUID, text: String)] = [:]
+
+    func effective(
+        _ fields: [MetadataFieldID: MetadataFieldMutation],
+        tokens: [MetadataFieldID: UUID],
+        url: URL,
+        channel: BatchRecordChannel
+    ) -> [MetadataFieldID: MetadataFieldMutation] {
+        lock.withLock {
+            var result = fields
+            for (field, mutation) in fields {
+                guard case .appendText(let text) = mutation, let token = tokens[field],
+                      let done = delivered[Key(url: url.standardizedFileURL, field: field, channel: channel)],
+                      done.token == token else { continue }
+                if text == done.text {
+                    result.removeValue(forKey: field)
+                } else if text.hasPrefix(done.text + " ") {
+                    result[field] = .appendText(String(text.dropFirst(done.text.count + 1)))
+                }
+            }
+            return result
+        }
+    }
+
+    func markDelivered(
+        _ fields: [MetadataFieldID: MetadataFieldMutation],
+        tokens: [MetadataFieldID: UUID],
+        url: URL,
+        channel: BatchRecordChannel
+    ) {
+        lock.withLock {
+            // Entries are tiny and keyed by one-off tokens; bound growth over a long session.
+            if delivered.count > 20_000 { delivered.removeAll() }
+            for (field, mutation) in fields {
+                guard case .appendText(let text) = mutation, let token = tokens[field] else { continue }
+                delivered[Key(url: url.standardizedFileURL, field: field, channel: channel)] = (token, text)
+            }
+        }
+    }
+}
+
+/// A batch editor change captured when a save is requested, applied per photo and per record.
+nonisolated struct BatchRecordMutation: Sendable {
+    let batchMeta: IPTCMetadata
+    let previousCommon: IPTCMetadata?
+    let fields: [MetadataFieldID: MetadataFieldMutation]
+    let appendTokens: [MetadataFieldID: UUID]
+    let locations: BatchLocationsShownMutation
+    let suppliers: EditorialImageSupplierMutation
+    let keywordsMode: MultiSelectFieldMode
+    let personMode: MultiSelectFieldMode
+    let ledger: BatchTextAppendLedger
+
+    /// Applies the change to one record, appending only text that record has not received yet.
+    func apply(to metadata: inout IPTCMetadata, url: URL, channel: BatchRecordChannel) {
+        apply(to: &metadata, fields: ledger.effective(fields, tokens: appendTokens, url: url, channel: channel))
+    }
+
+    /// The full change, for computing a baseline that starts from a pre-save snapshot.
+    func applyIgnoringDeliveries(to metadata: inout IPTCMetadata) {
+        apply(to: &metadata, fields: fields)
+    }
+
+    func closure(for url: URL, channel: BatchRecordChannel) -> @Sendable (inout IPTCMetadata) -> Void {
+        { metadata in self.apply(to: &metadata, url: url, channel: channel) }
+    }
+
+    /// The embedded-write fields for one photo's text appends, from that photo's own record.
+    func embeddedTextFields(for url: URL, base: IPTCMetadata) -> [MetadataFieldKey: String] {
+        MetadataViewModel.perPhotoBatchTextFields(
+            ledger.effective(fields, tokens: appendTokens, url: url, channel: .embedded), base: base
+        )
+    }
+
+    func markDelivered(to url: URL, channel: BatchRecordChannel) {
+        ledger.markDelivered(fields, tokens: appendTokens, url: url, channel: channel)
+    }
+
+    private func apply(to metadata: inout IPTCMetadata, fields: [MetadataFieldID: MetadataFieldMutation]) {
+        MetadataViewModel.applyBatchEdits(
+            batchMeta, to: &metadata, previousCommon: previousCommon,
+            batchFieldMutations: fields, batchLocationsShownMutation: locations,
+            batchImageSupplierMutation: suppliers,
+            keywordsMode: keywordsMode, personMode: personMode
+        )
     }
 }

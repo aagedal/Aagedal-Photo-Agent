@@ -118,27 +118,57 @@ final class PreferencesSyncService {
         applyRemoteToLocal(keys: Self.syncedKeys)
     }
 
-    /// Turns preference sync on or off. On enable, settings already in iCloud win: they are
-    /// applied to this Mac first, and only keys the cloud doesn't have yet are seeded from local
-    /// values. Turning sync on for a second Mac therefore adopts the first Mac's settings
-    /// instead of overwriting them (or removing keys this Mac never set).
+    /// Cloud key naming the device that last pushed preferences, and when.
+    /// Not in `syncedKeys`, so it is never copied into local defaults.
+    static let lastWriterKey = "preferencesSync.lastWriter"
+    /// Local-only identity of this Mac for `lastWriterKey`.
+    static let deviceIDKey = "preferencesSync.deviceID"
+    /// Local-only time of this Mac's last push.
+    static let lastPushTimeKey = "preferencesSync.lastPushTime"
+
+    private var deviceID: String {
+        if let id = defaults.string(forKey: Self.deviceIDKey) { return id }
+        let id = UUID().uuidString
+        defaults.set(id, forKey: Self.deviceIDKey)
+        return id
+    }
+
+    /// Turns preference sync on or off.
+    ///
+    /// On enable, whoever pushed last decides the direction. When this Mac wrote the cloud copy
+    /// last (sync is being turned back on here), local values are pushed as before, so settings
+    /// changed while sync was off are not reverted to the old cloud copy. When another Mac wrote
+    /// last (or the cloud copy predates the marker), the cloud wins: its values are applied
+    /// here first and only keys the cloud lacks are seeded, so a second Mac adopts the first
+    /// Mac's settings instead of overwriting them or removing keys it never set.
     @discardableResult
     func setEnabled(_ enabled: Bool) -> Bool {
         defaults.set(enabled, forKey: UserDefaultsKeys.preferencesICloudEnabled)
         if enabled {
             kvs.synchronize()
-            let cloudKeys = Self.syncedKeys.filter { kvs.object(forKey: $0) != nil }
-            if !cloudKeys.isEmpty {
-                applyRemoteToLocal(keys: cloudKeys)
+            let lastWriter = (kvs.object(forKey: Self.lastWriterKey) as? [String: Any])?["device"] as? String
+            if lastWriter == deviceID {
+                pushLocalToRemote(keys: Self.syncedKeys)
+            } else {
+                let cloudKeys = Self.syncedKeys.filter { kvs.object(forKey: $0) != nil }
+                if !cloudKeys.isEmpty {
+                    applyRemoteToLocal(keys: cloudKeys)
+                }
+                let missingInCloud = Self.syncedKeys.filter { kvs.object(forKey: $0) == nil }
+                seedRemote(keys: missingInCloud)
             }
-            let missingInCloud = Self.syncedKeys.filter { kvs.object(forKey: $0) == nil }
-            seedRemote(keys: missingInCloud)
             kvs.synchronize()
             installObservers()
         } else {
             removeObservers()
         }
         return true
+    }
+
+    private func stampLastWriter() {
+        let now = Date().timeIntervalSince1970
+        kvs.set(["device": deviceID, "time": now], forKey: Self.lastWriterKey)
+        defaults.set(now, forKey: Self.lastPushTimeKey)
     }
 
     // MARK: - Observers
@@ -213,11 +243,15 @@ final class PreferencesSyncService {
 
     /// Writes local values for keys the cloud lacks; never removes anything from the cloud.
     private func seedRemote(keys: [String]) {
+        var wrote = false
         for key in keys {
             if let value = defaults.object(forKey: key) {
                 kvs.set(value, forKey: key)
+                wrote = true
             }
         }
+        // Adopting the cloud copy without adding anything leaves the other Mac as last writer.
+        if wrote { stampLastWriter() }
     }
 
     private func pushLocalToRemote(keys: [String]) {
@@ -228,6 +262,7 @@ final class PreferencesSyncService {
                 kvs.removeObject(forKey: key)
             }
         }
+        stampLastWriter()
     }
 
     private func applyRemoteToLocal(keys: [String]) {

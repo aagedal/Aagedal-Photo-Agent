@@ -1466,3 +1466,153 @@ extension MetadataBatchSelectionTests {
         #expect(TemplateEditorView.unrecognizedVariableTokens(in: "By {initals}") == ["{initals}"])
     }
 }
+
+// MARK: - Batch template append is applied exactly once per record (3.0 follow-up)
+
+extension MetadataBatchSelectionTests {
+    private func waitForCommit(_ result: () -> MetadataCommitResult?) async throws -> MetadataCommitResult {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while result() == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        return try #require(result())
+    }
+
+    @Test("dual-write (file + XMP sidecar) appends once to every file and sidecar, RAW included")
+    func dualWriteAppendsOncePerRecord() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let withSidecar = try makeJPEG(in: folder, name: "a.jpg")
+        let plain = try makeJPEG(in: folder, name: "b.jpg")
+        let raw = try makeJPEG(in: folder, name: "c.nef")
+        try #require(SupportedImageFormats.isRaw(url: raw))
+        try await write(IPTCMetadata(description: "Alpha"), to: withSidecar)
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(description: "Alpha"), for: withSidecar)
+        try await write(IPTCMetadata(description: "Beta"), to: plain)
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(description: "Gamma"), for: raw)
+
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: [withSidecar, plain, raw].map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        try #require(model.batchDifferingFields.contains("description"))
+
+        model.applyTemplateFields(["description": "(NTB)"], append: true)
+        var result: MetadataCommitResult?
+        model.commitEditsReportingResult(mode: .writeToFileAndXMPSidecar) { result = $0 }
+        #expect(try await waitForCommit { result } == .succeeded)
+
+        let read = SwiftExifReadService()
+        #expect(try await read.readFullMetadata(url: withSidecar).description == "Alpha (NTB)")
+        #expect(XMPSidecarService().loadSidecar(for: withSidecar)?.description == "Alpha (NTB)")
+        #expect(try await read.readFullMetadata(url: plain).description == "Beta (NTB)")
+        #expect(XMPSidecarService().loadSidecar(for: plain)?.description == "Beta (NTB)")
+        #expect(XMPSidecarService().loadSidecar(for: raw)?.description == "Gamma (NTB)")
+    }
+
+    @Test("a save queued behind another, or after other edits during a save, never appends twice")
+    func queuedAndInterleavedSavesAppendOnce() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await threeCaptionFixture(in: folder)
+        let model = try await loadedBatch(urls, in: folder)
+
+        model.applyTemplateFields(["description": "(NTB)"], append: true)
+        // Two writes requested back to back: the second is captured before the first finishes.
+        model.writeMetadata()
+        // Another template during the save changes the intent set, so it no longer matches the
+        // saved one as a whole; the saved append must still be retired.
+        model.applyTemplateFields(["city": "Oslo"])
+        model.writeMetadata()
+        try await waitForSave(model)
+        #expect(model.batchFieldMutations[.description] == nil)
+
+        model.markChanged()
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        for (url, caption) in zip(urls, ["First caption", "Second caption", "Third caption"]) {
+            let read = try await SwiftExifReadService().readFullMetadata(url: url)
+            #expect(read.description == caption + " (NTB)")
+            #expect(read.city == "Oslo")
+        }
+    }
+
+    @Test("two appends on a shared field show and save the combined value")
+    func twoAppendsOnSharedFieldShowCombinedValue() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await threeCaptionFixture(in: folder)
+        let model = try await loadedBatch(urls, in: folder)
+        try #require(model.editingMetadata.credit == "Desk")
+
+        model.applyTemplateFields(["credit": "A"], append: true)
+        model.applyTemplateFields(["credit": "B"], append: true)
+        #expect(model.editingMetadata.credit == "Desk A B")
+        #expect(model.batchFieldMutations[.credit] == .appendText("A B"))
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        #expect(model.editingMetadata.credit == "Desk A B")
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).credit == "Desk A B")
+        }
+    }
+
+    @Test("a template clear survives the panel storing the emptied field as nil")
+    func clearIntentSurvivesNilEmptyField() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await threeCaptionFixture(in: folder)
+        let model = try await loadedBatch(urls, in: folder)
+
+        model.applyTemplateFields(["description": ""])
+        // What the panel's text binding does with an empty string.
+        model.editingMetadata.description = nil
+        model.markChanged()
+        #expect(model.batchTextIntent(for: "description") == .clear)
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).description == nil)
+        }
+    }
+
+    @Test("the append ledger hands each record only the text it has not received")
+    func appendLedgerRemainder() {
+        let ledger = BatchTextAppendLedger()
+        let token = UUID()
+        let url = URL(fileURLWithPath: "/virtual/ledger/a.jpg")
+        ledger.markDelivered([.description: .appendText("A")], tokens: [.description: token],
+                             url: url, channel: .embedded)
+        let extended: [MetadataFieldID: MetadataFieldMutation] = [.description: .appendText("A B")]
+        #expect(ledger.effective(extended, tokens: [.description: token], url: url, channel: .embedded)
+            == [.description: .appendText("B")])
+        // Another record of the same photo, or a new intent, still gets the full text.
+        #expect(ledger.effective(extended, tokens: [.description: token], url: url, channel: .xmpSidecar) == extended)
+        #expect(ledger.effective(extended, tokens: [.description: UUID()], url: url, channel: .embedded) == extended)
+        #expect(ledger.effective([.description: .appendText("A")], tokens: [.description: token],
+                                 url: url, channel: .embedded).isEmpty)
+    }
+}
+
+extension MetadataBatchSelectionTests {
+    @Test("a RAW sidecar receives a queued second save's append only once")
+    func queuedSaveAppendsOnceToRawSidecar() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let jpeg = try makeJPEG(in: folder, name: "a.jpg")
+        let raw = try makeJPEG(in: folder, name: "b.nef")
+        try await write(IPTCMetadata(description: "Alpha"), to: jpeg)
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(description: "Gamma"), for: raw)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: [ImageFile(url: jpeg), ImageFile(url: raw)], folderURL: folder)
+        try await waitForBatchLoad(model)
+
+        model.applyTemplateFields(["description": "(NTB)"], append: true)
+        model.writeMetadata()
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        #expect(XMPSidecarService().loadSidecar(for: raw)?.description == "Gamma (NTB)")
+        #expect(try await SwiftExifReadService().readFullMetadata(url: jpeg).description == "Alpha (NTB)")
+    }
+}
