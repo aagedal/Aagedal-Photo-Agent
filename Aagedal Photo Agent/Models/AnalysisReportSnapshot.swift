@@ -104,8 +104,11 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
     let disclosure: String
     let capturedAt: Date
 
+    /// `folderMapAnnotations` are the folder-wide map document's annotations, which the live map
+    /// draws alongside the case; visible ones are frozen with the case's own annotations.
     init?(
         state: AnalysisMapState,
+        folderMapAnnotations: [AnalysisMapAnnotation] = [],
         solarEvidence: AnalysisReportSolarEvidence? = nil,
         capturedAt: Date
     ) {
@@ -114,8 +117,9 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
         self.viewport = viewport
         self.liveMapStyle = state.style
         self.investigationLocation = state.investigationLocation
-        self.visibleAnnotations = state.annotations
-            .filter(\.isVisible)
+        var seenAnnotationIDs = Set<UUID>()
+        self.visibleAnnotations = (state.annotations + folderMapAnnotations)
+            .filter { $0.isVisible && seenAnnotationIDs.insert($0.id).inserted }
         self.solarEvidence = solarEvidence
         self.liveMapReference = Self.makeLiveMapReference(
             viewport: viewport,
@@ -340,6 +344,7 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
         appVersion: String,
         appBuild: String,
         originalDisplayEvidenceCrop: CGRect? = nil,
+        folderMapAnnotations: [AnalysisMapAnnotation] = [],
         id: UUID = UUID(),
         now: Date = Date()
     ) async throws -> AnalysisReportSnapshot {
@@ -355,6 +360,7 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
             appVersion: appVersion,
             appBuild: appBuild,
             originalDisplayEvidenceCrop: originalDisplayEvidenceCrop,
+            folderMapAnnotations: folderMapAnnotations,
             id: id,
             now: now
         )
@@ -366,6 +372,7 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
         appVersion: String,
         appBuild: String,
         originalDisplayEvidenceCrop: CGRect? = nil,
+        folderMapAnnotations: [AnalysisMapAnnotation] = [],
         id: UUID = UUID(),
         now: Date = Date()
     ) throws -> AnalysisReportSnapshot {
@@ -456,6 +463,7 @@ nonisolated struct AnalysisReportSnapshot: Codable, Equatable, Sendable {
             },
             mapEvidence: AnalysisReportMapEvidence(
                 state: analysisCase.mapState,
+                folderMapAnnotations: folderMapAnnotations,
                 solarEvidence: solarEvidence,
                 capturedAt: now
             )

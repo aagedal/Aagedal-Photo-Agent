@@ -592,7 +592,18 @@ struct AnalysisWorkspaceView: View {
     @ViewBuilder
     private var workspaceDetail: some View {
         switch model.loadState {
-        case .idle, .loading:
+        case .idle:
+            // Reached when the open case was invalidated (for example by a failed rename);
+            // nothing is loading, so offer a way out instead of an endless spinner.
+            ContentUnavailableView {
+                Label("No Photo Selected", systemImage: "photo")
+            } description: {
+                Text("Choose a photo in the rail to analyze it, or close Image Analysis.")
+            } actions: {
+                Button("Close", action: requestClose)
+            }
+
+        case .loading:
             VStack(spacing: 12) {
                 ProgressView()
                 Text("Validating source revision…")
@@ -730,6 +741,7 @@ struct AnalysisWorkspaceView: View {
         let evidenceCropRect = options.includeSelectedEvidenceCrop
             ? reportEvidenceCropRect
             : nil
+        let folderMapAnnotations = model.globalMapAnnotations.map(\.annotation)
         let requestID = UUID()
         reportExportRequestID = requestID
         reportExportProgress = 0
@@ -747,7 +759,8 @@ struct AnalysisWorkspaceView: View {
                     sourceURL: sourceURL,
                     appVersion: appVersion,
                     appBuild: appBuild,
-                    originalDisplayEvidenceCrop: evidenceCropRect
+                    originalDisplayEvidenceCrop: evidenceCropRect,
+                    folderMapAnnotations: folderMapAnnotations
                 )
                 try Task.checkCancellation()
                 reportExportProgress = 0.08
@@ -859,6 +872,7 @@ struct AnalysisWorkspaceView: View {
         guard let analysisCase = model.analysisCase,
               let evidence = AnalysisReportMapEvidence(
                   state: analysisCase.mapState,
+                  folderMapAnnotations: model.globalMapAnnotations.map(\.annotation),
                   capturedAt: Date()
               ), evidenceExportTask == nil else { return }
         guard let outputURL = chooseJPEGDestination(
@@ -942,13 +956,19 @@ struct AnalysisWorkspaceView: View {
                     return
                 }
                 try Task.checkCancellation()
+                // Read-only folders keep their cases and folder map in Application Support, so
+                // export what the repository holds rather than only the folder's own files.
+                let analysisDocuments = await model.persistedDocumentsForProjectExport()
+                try Task.checkCancellation()
                 _ = try await ImageAnalysisProjectArchive.export(
                     sourceFolderURL: sourceFolder,
                     imageURLs: folderImages.map(\.url),
                     title: sourceFolder.lastPathComponent,
                     destinationURL: destination,
                     appVersion: appVersion,
-                    appBuild: appBuild
+                    appBuild: appBuild,
+                    analysisCases: analysisDocuments.cases,
+                    folderMapDocument: analysisDocuments.folderMap
                 )
                 // The archive is committed; report it even if Cancel arrived during the final move.
                 exportConfirmation = AnalysisExportConfirmation(
@@ -1139,7 +1159,14 @@ struct AnalysisWorkspaceView: View {
                     onSetTrafficVisible: model.setMapTrafficVisible,
                     onSet3DContentVisible: model.setMap3DContentVisible,
                     onSetViewport: model.setMapViewport,
-                    onSetInvestigationLocation: model.setInvestigationLocation,
+                    onSetInvestigationLocation: { model.setInvestigationLocation($0) },
+                    caseID: model.analysisCase?.id,
+                    onSetLookedUpInvestigationLocation: {
+                        model.setInvestigationLocation($0, requestedForCaseID: $1)
+                    },
+                    onApplyReverseGeocodedPlaceName: {
+                        model.applyReverseGeocodedPlaceName($0, at: $1, requestedForCaseID: $2)
+                    },
                     timestampEvidence: model.timestampEvidence,
                     onSetSolarOverlay: model.setSolarOverlay,
                     onClearSolarOverlay: model.clearSolarOverlay,
@@ -3230,6 +3257,7 @@ private struct AnalysisRailThumbnail: View {
     let isSelected: Bool
     let thumbnailService: ThumbnailService
     @State private var thumbnail: NSImage?
+    @State private var thumbnailUnavailable = false
 
     var body: some View {
         ZStack {
@@ -3240,6 +3268,10 @@ private struct AnalysisRailThumbnail: View {
                 Image(nsImage: thumbnail)
                     .resizable()
                     .scaledToFill()
+            } else if thumbnailUnavailable {
+                Image(systemName: "photo")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -3255,10 +3287,13 @@ private struct AnalysisRailThumbnail: View {
                 )
         }
         .task(id: image.url) {
+            thumbnailUnavailable = false
             if let cached = thumbnailService.thumbnail(for: image.url) {
                 thumbnail = cached
             } else {
                 thumbnail = await thumbnailService.loadThumbnail(for: image.url)
+                // A failed load shows a placeholder instead of spinning forever.
+                thumbnailUnavailable = thumbnail == nil && !Task.isCancelled
             }
         }
     }

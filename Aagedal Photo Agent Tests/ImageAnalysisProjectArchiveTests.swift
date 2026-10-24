@@ -81,6 +81,64 @@ struct ImageAnalysisProjectArchiveTests {
         ))
     }
 
+    @Test("pint export includes repository cases and the folder map kept outside the folder")
+    func exportIncludesRepositoryAnalysisDocuments() async throws {
+        let fixture = try ProjectArchiveFixture()
+        defer { fixture.remove() }
+        let imageURL = try fixture.write("evidence.jpg", contents: "read-only folder image")
+        let revision = try await SourceImageRevision.capture(at: imageURL)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.source,
+            applicationSupportURL: fixture.root.appendingPathComponent("Support", isDirectory: true),
+            sourceFolderIsWritable: false
+        )
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        analysisCase.setAnnotation(AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Fallback only"
+        ))
+        #expect(try await repository.save(analysisCase) == .applicationSupport)
+        var folderMap = AnalysisFolderMapDocument.create()
+        folderMap.setAnnotation(AnalysisGlobalMapAnnotation(annotation: AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.75)),
+            text: "Shared landmark"
+        )))
+        #expect(try await repository.saveFolderMapDocument(folderMap) == .applicationSupport)
+        // A stale folder-local file at the same path loses to the repository's document.
+        _ = try fixture.write(".photo_analysis/folder-map.analysis.json", contents: "stale")
+        let repositoryFolderMap = await repository.loadFolderMapDocument()
+
+        let archiveURL = fixture.root.appendingPathComponent("Project.pint")
+        let manifest = try await ImageAnalysisProjectArchive.export(
+            sourceFolderURL: fixture.source,
+            imageURLs: [imageURL],
+            title: "Read-only Project",
+            destinationURL: archiveURL,
+            appVersion: "3.0",
+            appBuild: "1",
+            analysisCases: await repository.loadAllCases(),
+            folderMapDocument: repositoryFolderMap
+        )
+        let casePath = ".photo_analysis/cases/\(analysisCase.id.uuidString.lowercased()).analysis.json"
+        #expect(Set(manifest.files.map(\.path)) == [
+            "evidence.jpg", casePath, ".photo_analysis/folder-map.analysis.json",
+        ])
+
+        let destination = fixture.root.appendingPathComponent("Imported", isDirectory: true)
+        try await ImageAnalysisProjectArchive.importProject(from: archiveURL, to: destination)
+        let imported = try await AnalysisCaseRepository.open(
+            sourceFolderURL: destination,
+            applicationSupportURL: fixture.root.appendingPathComponent("ImportSupport", isDirectory: true),
+            sourceFolderIsWritable: true
+        )
+        let importedCases = await imported.loadAllCases()
+        #expect(importedCases.map(\.id) == [analysisCase.id])
+        #expect(importedCases.first?.annotations.map(\.text) == ["Fallback only"])
+        let importedMap = await imported.loadFolderMapDocumentWithStorage()
+        #expect(importedMap.storage == .folderLocal)
+        #expect(importedMap.document == repositoryFolderMap)
+    }
+
     @Test("import refuses to merge a project into a non-empty folder")
     func refusesNonEmptyDestination() async throws {
         let fixture = try ProjectArchiveFixture()
