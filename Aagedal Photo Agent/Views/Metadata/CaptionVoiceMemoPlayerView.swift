@@ -7,7 +7,10 @@ import UniformTypeIdentifiers
 struct CaptionVoiceMemoPlayerView: View {
     let imageURL: URL?
     let isMetadataReviewOrSaveBusy: Bool
-    var onVoiceMemoChange: () -> Void = {}
+    /// Called with the photo whose voice-memo badge may have changed (relationship created,
+    /// recovered or replaced; transcript appeared or was cleared). Only that photo's filmstrip
+    /// badge is re-queried.
+    var onVoiceMemoChange: (URL) -> Void = { _ in }
     let openTranscriptionSettings: () -> Void
     @State private var model = CaptionVoiceMemoPlaybackModel()
     @State private var recoveryModel = CaptionVoiceMemoRecoveryModel()
@@ -45,6 +48,11 @@ struct CaptionVoiceMemoPlayerView: View {
     private var isPlaying: Bool {
         if case .available(let playback) = model.state { return playback.isPlaying }
         return false
+    }
+
+    private func notifyVoiceMemoChange() {
+        guard let imageURL else { return }
+        onVoiceMemoChange(imageURL.standardizedFileURL)
     }
 
     var body: some View {
@@ -201,7 +209,11 @@ struct CaptionVoiceMemoPlayerView: View {
                   !transcriptModel.isSavingTranscript, !transcriptModel.isDownloading else { return }
             Task { await transcriptModel.reloadPersistedDraftIfIdle(for: url) }
         }
-        .onChange(of: transcriptModel.draft) { _, _ in onVoiceMemoChange() }
+        // Badge-relevant projection only: re-loading a draft, or a draft change that keeps
+        // whether reviewed text exists, must not re-query filmstrip badges.
+        .onChange(of: transcriptModel.draft.map {
+            !$0.reviewedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) { _, _ in notifyVoiceMemoChange() }
         .onChange(of: whisperSetup.detachedTranscription) { finished, current in
             // A transcription that kept running after the user left this photo saved its draft
             // without this panel; show it now that the user is back on that photo.
@@ -209,7 +221,7 @@ struct CaptionVoiceMemoPlayerView: View {
                   finished.imageURL == imageURL?.standardizedFileURL else { return }
             Task { await transcriptModel.refreshPersistedDraftIfEmpty(for: finished.imageURL) }
         }
-        .onChange(of: refreshID) { _, _ in onVoiceMemoChange() }
+        .onChange(of: refreshID) { _, _ in notifyVoiceMemoChange() }
         .fileImporter(
             isPresented: $isSelectingRecoveryMemo,
             allowedContentTypes: [UTType(filenameExtension: "wav") ?? .audio],

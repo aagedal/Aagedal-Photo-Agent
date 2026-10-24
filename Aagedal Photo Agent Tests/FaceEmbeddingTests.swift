@@ -2214,6 +2214,49 @@ struct FaceFolderLoadServiceTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("Document loads reuse the decoded document until the file or the app's own write changes it")
+    func documentLoadCachesDecodedDocument() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(makeFaceFolderData(folder: folder, faceIDs: [UUID()]))
+        let probe = FaceDataPersistenceProbe()
+        // The clock runs ahead so the freshly written document counts as settled.
+        let service = FaceDataFolderLoadService(
+            loadFaceData: { url in
+                probe.record("read")
+                return FaceDataStorageService().loadFaceData(for: url)
+            },
+            currentDate: { Date().addingTimeInterval(60) },
+            cachesDocuments: true
+        )
+        func faceCount() async -> Int? {
+            guard case .complete(let evidence) = await service.loadDocument(folderURL: folder) else { return nil }
+            return evidence.faceData?.faces.count
+        }
+
+        #expect(await faceCount() == 1)
+        #expect(await faceCount() == 1)
+        #expect(probe.events == ["read"])
+
+        // An external (atomic) rewrite changes the file identity and is read again.
+        try storage.saveFaceData(makeFaceFolderData(folder: folder, faceIDs: [UUID(), UUID()]))
+        #expect(await faceCount() == 2)
+        #expect(probe.events == ["read", "read"])
+        #expect(await faceCount() == 2)
+        #expect(probe.events == ["read", "read"])
+
+        // The service's own commit drops the cached document.
+        let threeFaces = makeFaceFolderData(folder: folder, faceIDs: [UUID(), UUID(), UUID()])
+        guard case .committed = await service.persist(threeFaces) else {
+            Issue.record("Expected the face-data commit to succeed"); return
+        }
+        #expect(await faceCount() == 3)
+        #expect(probe.events == ["read", "read", "read"])
+    }
+
     @Test @MainActor
     func folderLoadReadsEveryThumbnailOffMainActor() async throws {
         let folder = URL(fileURLWithPath: "/faces/current")

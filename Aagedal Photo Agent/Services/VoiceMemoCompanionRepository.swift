@@ -272,13 +272,18 @@ nonisolated struct VoiceMemoCompanionCopyIO: Sendable {
 nonisolated struct VoiceMemoCompanionRepository: Sendable {
     private let recordIO: any VoiceMemoCompanionRecordIO
     private let copyIO: VoiceMemoCompanionCopyIO
+    /// Source revisions go through the shared capture service so its digest cache (file ID,
+    /// size, mtime and ctime) answers repeated revalidation of unchanged photos and memos.
+    private let revisionCapture: SourceImageRevisionCaptureService
 
     init(
         recordIO: any VoiceMemoCompanionRecordIO = SystemVoiceMemoCompanionRecordIO(),
-        copyIO: VoiceMemoCompanionCopyIO = .system
+        copyIO: VoiceMemoCompanionCopyIO = .system,
+        revisionCapture: SourceImageRevisionCaptureService = .shared
     ) {
         self.recordIO = recordIO
         self.copyIO = copyIO
+        self.revisionCapture = revisionCapture
     }
 
     enum RepositoryError: Error, LocalizedError, Equatable, Sendable {
@@ -1236,12 +1241,17 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
     }
 
     private func copyRevision(at url: URL) throws -> CopyRevision {
-        let before = try copyFileSnapshot(at: url)
-        let digest = try SourceImageRevisionCaptureIO.system.hash(url)
-        guard try before.matches(copyFileSnapshot(at: url)) else {
+        // Same stat-hash-stat transaction as before, on this exact (non-canonicalized) path so a
+        // symbolic-link leaf is still refused. An unchanged, settled stat identity answers from
+        // the digest cache; any change in file ID, size, mtime or ctime re-reads the bytes.
+        let verified: SourceImageRevisionVerifiedDigest
+        do {
+            verified = try revisionCapture.verifiedDigestSynchronously(
+                at: URL(fileURLWithPath: url.path), canonicalize: false)
+        } catch SourceImageRevisionError.sourceChangedDuringHash {
             throw RepositoryError.copySourceChanged
         }
-        return CopyRevision(snapshot: before, digest: digest)
+        return CopyRevision(snapshot: verified.snapshot, digest: verified.digest)
     }
 
     private func contentIdentity(for revision: CopyRevision) -> VoiceMemoCompanionContentIdentity {

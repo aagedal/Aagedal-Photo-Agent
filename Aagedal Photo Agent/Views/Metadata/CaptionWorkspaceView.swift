@@ -8,6 +8,11 @@ private enum CaptionPreviewMode: Hashable {
     case actualSize
 }
 
+private struct CaptionPreviewLoadID: Equatable {
+    let url: URL?
+    let maxPixelSize: CGFloat?
+}
+
 /// A focused, sidecar-first metadata workspace. `MetadataPanel` remains the editor and
 /// `MetadataViewModel` remains the only persistence owner; this view only coordinates safe
 /// transitions, validation status, and preview state.
@@ -25,9 +30,17 @@ struct CaptionWorkspaceView: View {
     @State private var photoList: CaptionPhotoList
     /// Transient, non-blocking feedback (for example "nothing to copy").
     @State private var inlineNotice: String?
-    @State private var voiceMemoBadgeRefreshToken: UInt64 = 0
+    /// Per-photo badge refresh tokens: a voice-memo change re-queries only that photo's
+    /// filmstrip badge instead of every visible item.
+    @State private var voiceMemoBadgeRefreshTokens: [URL: UInt64] = [:]
     @State private var preview: NSImage?
     @State private var previewFailed = false
+    /// The request the displayed `preview` was decoded for (nil for a thumbnail fallback).
+    @State private var displayedPreview: CaptionPreviewPipeline.Request?
+    @State private var previewPipeline = CaptionPreviewPipeline()
+    @State private var previewPaneLongestPoints: CGFloat = 0
+    @State private var lastPreviewIndex: Int?
+    @Environment(\.displayScale) private var displayScale
     @State private var validationReport = MetadataValidationReport(issues: [])
     @State private var errorMessage: String?
     @State private var isWorkspaceActive = false
@@ -739,11 +752,17 @@ struct CaptionWorkspaceView: View {
                     mode: previewMode,
                     confirmedPeople: showsConfirmedFaces ? confirmedFaceOverlays : []
                 )
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    max(proxy.size.width, proxy.size.height)
+                } action: { longest in
+                    previewPaneLongestPoints = longest
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .task(id: session.currentURL) {
-                await loadCurrentPreview()
+            .task(id: CaptionPreviewLoadID(url: session.currentURL, maxPixelSize: previewTargetPixels)) {
+                await loadCurrentPreview(maxPixelSize: previewTargetPixels)
             }
+            .onDisappear { previewPipeline.removeAll() }
 
             Divider()
             CaptionVoiceMemoPlayerView(
@@ -752,7 +771,7 @@ struct CaptionWorkspaceView: View {
                     || isEditorTransitioning || isCurrentPhotoUnderReview
                     || conflictReview != nil || pendingReviewPhoto != nil
                     || isConflictRecoveryBusy,
-                onVoiceMemoChange: { voiceMemoBadgeRefreshToken &+= 1 }
+                onVoiceMemoChange: { url in voiceMemoBadgeRefreshTokens[url, default: 0] &+= 1 }
             ) {
                 settingsViewModel.requestedDestination = .transcription
                 openSettings()
@@ -766,7 +785,8 @@ struct CaptionWorkspaceView: View {
                                 image: image,
                                 thumbnailService: browserViewModel.thumbnailService,
                                 isSelected: session.currentURL == image.url.standardizedFileURL,
-                                voiceMemoRefreshToken: voiceMemoBadgeRefreshToken
+                                voiceMemoRefreshToken: voiceMemoBadgeRefreshTokens[
+                                    image.url.standardizedFileURL, default: 0]
                             ) {
                                 select(image.url)
                             }
@@ -1492,12 +1512,58 @@ struct CaptionWorkspaceView: View {
         session.setReadiness(CaptionReadinessResolver.readiness(for: report), for: url)
     }
 
-    private func loadCurrentPreview() async {
-        preview = nil
-        previewFailed = false
-        confirmedPeople = []
-        confirmedFaceOverlays = []
-        guard let token = session.beginPreviewLoad() else { return }
+    /// Longest edge the preview is decoded at: the pane's backing pixels rounded up to a bucket,
+    /// or 3,840 px for the 100% view (one image pixel per point, as before). Nil until the
+    /// pane has been measured.
+    private var previewTargetPixels: CGFloat? {
+        if previewMode == .actualSize { return CaptionPreviewPipeline.actualSizePixels }
+        guard previewPaneLongestPoints > 0 else { return nil }
+        return CaptionPreviewPipeline.pixelBucket(
+            forLongestBackingPixels: previewPaneLongestPoints * max(displayScale, 1))
+    }
+
+    private func previewRequest(for image: ImageFile?, url: URL, settings: CameraRawSettings?,
+                                maxPixelSize: CGFloat) -> CaptionPreviewPipeline.Request {
+        CaptionPreviewPipeline.Request(
+            url: url,
+            orientation: image?.exifOrientation ?? 1,
+            renderToken: FullScreenImageCache.renderToken(settings: settings, isEdited: true),
+            fileSize: image?.fileSize,
+            fileModified: image?.dateModified,
+            maxPixelSize: maxPixelSize
+        )
+    }
+
+    /// The next photos in the direction of travel (one each way when there is none yet).
+    private func previewPrefetchTargets(around url: URL) -> [ImageFile] {
+        let images = visibleImages
+        guard let index = images.firstIndex(where: { $0.url.standardizedFileURL == url }) else {
+            lastPreviewIndex = nil
+            return []
+        }
+        let offsets: [Int] = switch lastPreviewIndex.map({ index - $0 }) {
+        case .some(let delta) where delta > 0: [1, 2]
+        case .some(let delta) where delta < 0: [-1, -2]
+        default: [1, -1]
+        }
+        lastPreviewIndex = index
+        return offsets.compactMap { offset in
+            let neighbour = index + offset
+            guard images.indices.contains(neighbour), images[neighbour].isImageFile else { return nil }
+            return images[neighbour]
+        }
+    }
+
+    private func loadCurrentPreview(maxPixelSize: CGFloat?) async {
+        let showsCurrentPhoto = session.currentURL != nil && displayedPreview?.url == session.currentURL
+        if !showsCurrentPhoto {
+            preview = nil
+            previewFailed = false
+            confirmedPeople = []
+            confirmedFaceOverlays = []
+            displayedPreview = nil
+        }
+        guard let maxPixelSize, let token = session.beginPreviewLoad() else { return }
         let image = currentImage
         // The editor's selection load is debounced, so right after navigating its draft still
         // belongs to the previous photo. Only trust it once it describes this photo.
@@ -1505,12 +1571,23 @@ struct CaptionWorkspaceView: View {
             ? metadataViewModel.editingMetadata.cameraRaw
             : image?.cameraRawSettings
         let orientation = image?.exifOrientation ?? 1
-        let cgImage = await FullScreenImageCache.decodedEditedPreview(
-            for: token.imageURL,
-            settings: settings,
-            orientation: orientation,
-            screenMaxPx: 3_840
-        )
+        let request = previewRequest(for: image, url: token.imageURL, settings: settings,
+                                     maxPixelSize: maxPixelSize)
+        // A pane resize or mode switch on the same photo only re-decodes to grow; the shown
+        // rendering stays up meanwhile.
+        if showsCurrentPhoto, let shown = displayedPreview, shown.rendersSameVariant(as: request),
+           shown.maxPixelSize >= maxPixelSize {
+            return
+        }
+        let neighbours = showsCurrentPhoto ? [] : previewPrefetchTargets(around: token.imageURL)
+        if !showsCurrentPhoto {
+            // Superseded decodes outside the new navigation window never start.
+            previewPipeline.retain(only: Set([token.imageURL] + neighbours.map { $0.url.standardizedFileURL }))
+        }
+        let cgImage = await previewPipeline.image(for: request, settings: settings)
+        guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }
+        // A failed upgrade keeps the rendering already on screen.
+        if cgImage == nil, showsCurrentPhoto, preview != nil { return }
         let loaded: NSImage?
         if let cgImage {
             loaded = NSImage(
@@ -1524,6 +1601,14 @@ struct CaptionWorkspaceView: View {
         // Show the photo before the folder's face data, which can be slow on large folders.
         preview = loaded
         previewFailed = loaded == nil
+        displayedPreview = cgImage == nil ? nil : request
+        for neighbour in neighbours {
+            let neighbourURL = neighbour.url.standardizedFileURL
+            previewPipeline.prefetch(
+                previewRequest(for: neighbour, url: neighbourURL, settings: neighbour.cameraRawSettings,
+                               maxPixelSize: maxPixelSize),
+                settings: neighbour.cameraRawSettings)
+        }
         let folderURL = token.imageURL.deletingLastPathComponent()
         let faceDataResult = await FaceDataFolderLoadService.shared.loadDocument(
             folderURL: folderURL

@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import os
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -45,6 +46,36 @@ struct FFmpegWhisperJobRunnerTests {
         let job = try String(contentsOf: witness, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(!FileManager.default.fileExists(atPath: job))
         #expect(FileManager.default.fileExists(atPath: request.audio.url.path))
+    }
+
+    @Test("Verified executable and model snapshots are reused across jobs and re-verified after a change")
+    func snapshotReuse() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let snapshots = FFmpegWhisperVerifiedSnapshotCache()
+        defer { snapshots.removeAll() }
+        let request = try request("printf '%s' '{\"start\":0,\"end\":100,\"text\":\"Hei!\"}' > output.json\n",
+                                  directory: directory)
+        let hashed = OSAllocatedUnfairLock(initialState: [String]())
+        try await FFmpegWhisperHashObserver.$current.withValue({ url in
+            hashed.withLock { $0.append(url.lastPathComponent) }
+        }) {
+            for _ in 0..<3 {
+                let result = try await FFmpegWhisperJobRunner(snapshots: snapshots).run(request)
+                #expect(result.transcript.editableText == "Hei!")
+            }
+        }
+        let names = hashed.withLock { $0 }
+        #expect(names.filter { $0 == "producer" }.count == 1)
+        #expect(names.filter { $0 == "model.bin" }.count == 1)
+        #expect(names.filter { $0 == "audio.wav" }.count == 3)
+
+        // A same-size rewrite changes the source identity: the snapshot is discarded, the new
+        // bytes are verified against the pin and refused before execution.
+        try Data("MODEL fixture".utf8).write(to: request.model.url)
+        await #expect(throws: FFmpegWhisperJobError.identityMismatch) {
+            try await FFmpegWhisperJobRunner(snapshots: snapshots).run(request)
+        }
     }
 
     @Test("A valid-looking output cannot override failed process termination")

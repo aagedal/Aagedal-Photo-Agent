@@ -12,7 +12,7 @@ nonisolated enum FaceDataDeletionSelection: Sendable {
 nonisolated struct FaceDataStorageService: Sendable {
 
     static let faceDataDirectoryName = ".face_data"
-    private static let dataFileName = "face_data.json"
+    static let dataFileName = "face_data.json"
     private static let thumbnailsDirectoryName = "thumbnails"
 
     // MARK: - Directory Helpers
@@ -482,6 +482,37 @@ actor FaceDataFolderLoadService {
     private let deleteThumbnail: ThumbnailDeleter
     private let currentDate: CurrentDate
 
+    /// Stat identity of a folder's face-data document; see `cachedDocumentFaceData`.
+    private struct DocumentFileIdentity: Equatable {
+        let device: Int32
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int
+        let modifiedNanos: Int
+        let changedSeconds: Int
+        let changedNanos: Int
+
+        init(_ info: stat) {
+            device = info.st_dev; inode = info.st_ino; size = info.st_size
+            modifiedSeconds = info.st_mtimespec.tv_sec; modifiedNanos = info.st_mtimespec.tv_nsec
+            changedSeconds = info.st_ctimespec.tv_sec; changedNanos = info.st_ctimespec.tv_nsec
+        }
+
+        func isSettled(at now: Date) -> Bool {
+            let latest = TimeInterval(max(modifiedSeconds, changedSeconds)) + 1
+            return now.timeIntervalSince1970 - latest >= 2.5
+        }
+    }
+
+    private struct DocumentCacheEntry {
+        let identity: DocumentFileIdentity
+        let faceData: FolderFaceData
+    }
+
+    private let cachesDocuments: Bool
+    private var documentCache: [String: DocumentCacheEntry] = [:]
+    private static let documentCacheCapacity = 8
+
     init(
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.face-data-storage", qos: .utility
@@ -504,7 +535,8 @@ actor FaceDataFolderLoadService {
         deleteThumbnail: @escaping ThumbnailDeleter = { faceID, folderURL in
             try FaceDataStorageService().deleteThumbnail(for: faceID, folderURL: folderURL)
         },
-        currentDate: @escaping CurrentDate = Date.init
+        currentDate: @escaping CurrentDate = Date.init,
+        cachesDocuments: Bool? = nil
     ) {
         self.filesystemQueue = filesystemQueue
         self.writeCapabilityFactory = writeCapabilityFactory
@@ -523,6 +555,8 @@ actor FaceDataFolderLoadService {
         self.saveThumbnail = saveThumbnail ?? { try FaceDataStorageService().saveThumbnail($0, for: $1, folderURL: $2) }
         self.deleteThumbnail = deleteThumbnail
         self.currentDate = currentDate
+        // Injected loaders are uncached unless a test explicitly opts in.
+        self.cachesDocuments = cachesDocuments ?? (loadFaceData == nil)
     }
 
     /// Bind the retained scan's write destination on the filesystem worker before any
@@ -547,7 +581,7 @@ actor FaceDataFolderLoadService {
         guard !Task.isCancelled else {
             return .cancelled(folderURL: standardizedFolderURL)
         }
-        let faceData = loadDocumentFaceData(folderURL)
+        let faceData = cachedDocumentFaceData(folderURL)
         guard !Task.isCancelled else {
             return .cancelled(folderURL: standardizedFolderURL)
         }
@@ -556,6 +590,46 @@ actor FaceDataFolderLoadService {
             documentExisted: existed,
             faceData: faceData
         ))
+    }
+
+    /// `loadDocument` runs on every Caption navigation, and a busy folder's document is over a
+    /// megabyte of JSON. Reuse the decoded document while the data file's stat identity
+    /// (device, inode, size, mtime, ctime) is unchanged; atomic saves replace the inode and
+    /// in-place writes advance mtime/ctime, so any change on disk (including another process)
+    /// misses. This actor's own mutations also drop the folder's entry. Only the production
+    /// loader is cached; injected test loaders keep their per-call behavior.
+    private func cachedDocumentFaceData(_ folderURL: URL) -> FolderFaceData? {
+        guard cachesDocuments else { return loadDocumentFaceData(folderURL) }
+        let key = folderURL.standardizedFileURL.path
+        guard let before = Self.documentIdentity(folderURL) else {
+            documentCache[key] = nil
+            return loadDocumentFaceData(folderURL)
+        }
+        if let cached = documentCache[key], cached.identity == before {
+            return cached.faceData
+        }
+        documentCache[key] = nil
+        let faceData = loadDocumentFaceData(folderURL)
+        // Remember only a document that did not change while it was read and whose timestamps
+        // have settled (coarse-timestamp volumes could otherwise hide a same-tick rewrite).
+        if let faceData, Self.documentIdentity(folderURL) == before, before.isSettled(at: currentDate()) {
+            if documentCache.count >= Self.documentCacheCapacity { documentCache.removeAll(keepingCapacity: true) }
+            documentCache[key] = DocumentCacheEntry(identity: before, faceData: faceData)
+        }
+        return faceData
+    }
+
+    private func invalidateDocumentCache(_ folderURL: URL) {
+        documentCache[folderURL.standardizedFileURL.path] = nil
+    }
+
+    private static func documentIdentity(_ folderURL: URL) -> DocumentFileIdentity? {
+        let path = folderURL
+            .appendingPathComponent(FaceDataStorageService.faceDataDirectoryName)
+            .appendingPathComponent(FaceDataStorageService.dataFileName).path
+        var info = stat()
+        guard stat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        return DocumentFileIdentity(info)
     }
 
     func loadThumbnailData(faceID: UUID, folderURL: URL) -> FaceThumbnailLoadResult {
@@ -609,6 +683,7 @@ actor FaceDataFolderLoadService {
         writeCapability: FaceDataWriteCapability? = nil
     ) -> FaceDataPersistenceResult {
         let folderURL = faceData.folderURL.standardizedFileURL
+        invalidateDocumentCache(folderURL)
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(folderURL: folderURL)
         }
@@ -725,6 +800,7 @@ actor FaceDataFolderLoadService {
 
     func deleteAll(for folderURL: URL, effectAuthority: EffectAuthority? = nil,
                    writeCapability: FaceDataWriteCapability? = nil) -> FaceDataDeletionResult {
+        invalidateDocumentCache(folderURL)
         if let writeCapability {
             guard writeCapability.folderURL == folderURL.standardizedFileURL else {
                 return .failed(folderURL: folderURL, message: "Reset capability does not match the approved folder.")
@@ -854,6 +930,8 @@ actor FaceDataFolderLoadService {
         readOnlyRecovery: Bool = false
     ) -> FaceDataFolderLoadResult {
         let standardizedFolderURL = folderURL.standardizedFileURL
+        // This path may relocate a corrupt document or expire old results.
+        invalidateDocumentCache(standardizedFolderURL)
         guard !Task.isCancelled else {
             return .cancelled(CancelledFaceDataFolderLoadEvidence(
                 folderURL: standardizedFolderURL,

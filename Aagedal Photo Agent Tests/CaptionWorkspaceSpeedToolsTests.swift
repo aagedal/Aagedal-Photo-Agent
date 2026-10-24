@@ -42,6 +42,91 @@ struct CaptionVoiceMemoStatusTests {
     }
 }
 
+@Suite("Caption preview pipeline")
+@MainActor
+struct CaptionPreviewPipelineTests {
+    private actor DecodeLog {
+        private(set) var decoded: [URL] = []
+        private var running = 0
+        private(set) var maximumConcurrent = 0
+        func begin(_ url: URL) { decoded.append(url); running += 1; maximumConcurrent = max(maximumConcurrent, running) }
+        func end() { running -= 1 }
+    }
+
+    private nonisolated static func bitmap(_ size: Int) -> CGImage {
+        let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        return context.makeImage()!
+    }
+
+    private func request(_ name: String, size: CGFloat = 2_048) -> CaptionPreviewPipeline.Request {
+        .init(url: URL(fileURLWithPath: "/caption/\(name).jpg"), orientation: 1, renderToken: "none",
+              fileSize: 10, fileModified: .distantPast, maxPixelSize: size)
+    }
+
+    private func pipeline(_ log: DecodeLog, delay: Duration = .zero) -> CaptionPreviewPipeline {
+        CaptionPreviewPipeline { url, _, _, maxPixelSize in
+            await log.begin(url)
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            await log.end()
+            return Self.bitmap(Int(maxPixelSize / 64))
+        }
+    }
+
+    @Test("Pane sizes round up to a small set of decode buckets")
+    func buckets() {
+        #expect(CaptionPreviewPipeline.pixelBucket(forLongestBackingPixels: 900) == 1_024)
+        #expect(CaptionPreviewPipeline.pixelBucket(forLongestBackingPixels: 1_500) == 1_536)
+        #expect(CaptionPreviewPipeline.pixelBucket(forLongestBackingPixels: 2_049) == 2_560)
+        #expect(CaptionPreviewPipeline.pixelBucket(forLongestBackingPixels: 9_000) == 3_840)
+    }
+
+    @Test("Returning to a photo, or asking for a smaller size, is served from memory")
+    func cacheHits() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log)
+        #expect(await pipeline.image(for: request("a", size: 2_560), settings: nil) != nil)
+        #expect(await pipeline.image(for: request("a", size: 2_560), settings: nil) != nil)
+        #expect(await pipeline.image(for: request("a", size: 1_536), settings: nil) != nil)
+        #expect(await log.decoded.count == 1)
+        // A larger request or different edits decode again.
+        _ = await pipeline.image(for: request("a", size: 3_840), settings: nil)
+        let edited = CaptionPreviewPipeline.Request(url: request("a").url, orientation: 1, renderToken: "edited",
+            fileSize: 10, fileModified: .distantPast, maxPixelSize: 2_048)
+        _ = await pipeline.image(for: edited, settings: nil)
+        #expect(await log.decoded.count == 3)
+    }
+
+    @Test("Decodes run one at a time and prefetched photos are ready on arrival")
+    func serialPrefetch() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(20))
+        pipeline.prefetch(request("b"), settings: nil)
+        pipeline.prefetch(request("c"), settings: nil)
+        _ = await pipeline.image(for: request("a"), settings: nil)
+        #expect(await pipeline.image(for: request("b"), settings: nil) != nil)
+        #expect(await pipeline.image(for: request("c"), settings: nil) != nil)
+        #expect(await log.decoded.count == 3)
+        #expect(await log.maximumConcurrent == 1)
+    }
+
+    @Test("Requests that left the navigation window never start decoding")
+    func supersededRequestsAreSkipped() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(50))
+        pipeline.prefetch(request("a"), settings: nil)
+        pipeline.prefetch(request("b"), settings: nil)
+        pipeline.prefetch(request("c"), settings: nil)
+        pipeline.retain(only: [request("c").url])
+        #expect(await pipeline.image(for: request("c"), settings: nil) != nil)
+        let decoded = await log.decoded
+        #expect(!decoded.contains(request("b").url))
+        #expect(decoded.last == request("c").url)
+        #expect(await log.maximumConcurrent == 1)
+    }
+}
+
 @Suite("Browser transcript badge notifications")
 struct BrowserTranscriptBadgeNotificationTests {
     @MainActor
@@ -1725,6 +1810,15 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(abs(straightened.midX - 0.5) < 1e-9)
         #expect(abs(straightened.midY - 0.5) < 1e-9)
         #expect(straightened.width > 0.125)
+
+        // Pane-sized previews: the mapping depends only on the rendered aspect ratio, so a
+        // 1,024 px and a 3,840 px rendering of the same crop place faces identically.
+        let angled = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.8, right: 0.9, angle: 7, hasCrop: true)
+        let small = try #require(CaptionPreviewGeometry.croppedVisionRect(face, crop: angled,
+            displayOrientation: 6, renderedSize: CGSize(width: 1_024, height: 768)))
+        let large = try #require(CaptionPreviewGeometry.croppedVisionRect(face, crop: angled,
+            displayOrientation: 6, renderedSize: CGSize(width: 3_840, height: 2_880)))
+        #expect(approx(small, large))
     }
 
     @Test("write and next advances only after success for the unchanged image")
