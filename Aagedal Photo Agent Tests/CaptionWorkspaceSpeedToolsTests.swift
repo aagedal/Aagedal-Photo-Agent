@@ -1688,6 +1688,45 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(face == CGRect(x: 75, y: 112.5, width: 150, height: 75))
     }
 
+    @Test("face rectangles follow the Develop crop the Caption preview renders")
+    func previewFaceRectsFollowCrop() throws {
+        func approx(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+            abs(lhs.minX - rhs.minX) < 1e-9 && abs(lhs.minY - rhs.minY) < 1e-9
+                && abs(lhs.width - rhs.width) < 1e-9 && abs(lhs.height - rhs.height) < 1e-9
+        }
+        let face = CGRect(x: 0.6, y: 0.7, width: 0.1, height: 0.1)
+        // No effective crop: the rect is unchanged.
+        #expect(CaptionPreviewGeometry.croppedVisionRect(face, crop: nil, displayOrientation: 1,
+            renderedSize: CGSize(width: 1000, height: 1000)) == face)
+        #expect(CaptionPreviewGeometry.croppedVisionRect(face,
+            crop: CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true),
+            displayOrientation: 1, renderedSize: CGSize(width: 1000, height: 1000)) == face)
+
+        // Right half: x is rescaled into the crop, y is untouched.
+        let rightHalf = CameraRawCrop(top: 0, left: 0.5, bottom: 1, right: 1, angle: 0, hasCrop: true)
+        let mapped = try #require(CaptionPreviewGeometry.croppedVisionRect(face, crop: rightHalf,
+            displayOrientation: 1, renderedSize: CGSize(width: 500, height: 1000)))
+        #expect(approx(mapped, CGRect(x: 0.2, y: 0.7, width: 0.2, height: 0.1)))
+        // A face in the cropped-away half is dropped.
+        #expect(CaptionPreviewGeometry.croppedVisionRect(CGRect(x: 0.1, y: 0.4, width: 0.1, height: 0.1),
+            crop: rightHalf, displayOrientation: 1, renderedSize: CGSize(width: 500, height: 1000)) == nil)
+
+        // Top half (crop is top-left origin, Vision is bottom-left).
+        let topHalf = CameraRawCrop(top: 0, left: 0, bottom: 0.5, right: 1, angle: 0, hasCrop: true)
+        let top = try #require(CaptionPreviewGeometry.croppedVisionRect(face, crop: topHalf,
+            displayOrientation: 1, renderedSize: CGSize(width: 1000, height: 500)))
+        #expect(approx(top, CGRect(x: 0.6, y: 0.4, width: 0.1, height: 0.2)))
+
+        // A straightened crop keeps a centred face centred and boxes its rotated corners.
+        let straightened = try #require(CaptionPreviewGeometry.croppedVisionRect(
+            CGRect(x: 0.45, y: 0.45, width: 0.1, height: 0.1),
+            crop: CameraRawCrop(top: 0.1, left: 0.1, bottom: 0.9, right: 0.9, angle: 10, hasCrop: true),
+            displayOrientation: 1, renderedSize: CGSize(width: 800, height: 800)))
+        #expect(abs(straightened.midX - 0.5) < 1e-9)
+        #expect(abs(straightened.midY - 0.5) < 1e-9)
+        #expect(straightened.width > 0.125)
+    }
+
     @Test("write and next advances only after success for the unchanged image")
     func writeAndNextGate() {
         let current = URL(fileURLWithPath: "/caption/a.jpg")

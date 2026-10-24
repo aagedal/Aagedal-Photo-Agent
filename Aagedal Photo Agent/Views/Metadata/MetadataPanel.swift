@@ -68,6 +68,14 @@ final class MetadataEditorBufferRegistry {
         return .changed
     }
 
+    /// Whether the focused buffer holds text not yet in `metadata` — or cannot be read safely
+    /// (marked text, or a buffer registered for another load). Never mutates `metadata`.
+    func hasUncommittedText(key: String?, loadID: UUID?, hasMarkedText: Bool,
+                            metadata: IPTCMetadata) -> Bool {
+        var scratch = metadata
+        return capture(key: key, loadID: loadID, hasMarkedText: hasMarkedText, metadata: &scratch) != .unchanged
+    }
+
     // Match the actual EditableTextField/BufferedTextEditor bindings exactly: preserve whitespace,
     // turn only the empty string into nil, and leave specialized controls to their own editors.
     private static func keyPath(for key: String) -> WritableKeyPath<IPTCMetadata, String?>? {
@@ -1137,6 +1145,15 @@ struct MetadataPanel: View {
         return result != .unavailable
     }
 
+    /// While loading: whether the editor holds anything the user typed or changed for this load
+    /// (model edits, an uncommitted field buffer, or marked text). Only then must a flush refuse.
+    private func hasEditsDuringLoad() -> Bool {
+        if viewModel.hasUnpersistedEditorChanges { return true }
+        let marked = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true
+        return editorBuffers.hasUncommittedText(key: focusedField, loadID: viewModel.editorBufferLoadID,
+            hasMarkedText: marked, metadata: viewModel.editingMetadata)
+    }
+
     /// The shared field editor is reused by AppKit, so spell/grammar state must be reset on every
     /// focus change. Names, identifiers, codes, and controlled vocabulary fields deliberately do
     /// not receive prose corrections.
@@ -1458,6 +1475,15 @@ struct MetadataPanel: View {
     /// JSON/XMP I/O. The ordinary metadata panel keeps its configured write mode.
     private func flushCaptionEditorBuffer() throws {
         commitDebounceTask?.cancel()
+        if viewModel.isLoading, !hasEditsDuringLoad() {
+            // A load owns the editor, so buffered text could not be published — but nothing was
+            // typed for it either. Treat it as nothing to flush rather than blocking navigation,
+            // Close, or app deactivation behind a slow (or hung) load.
+            guard viewModel.currentFolderURL != nil else {
+                throw CaptionWorkspaceFlushError.sidecarUnavailable
+            }
+            return
+        }
         guard flushBufferedFields() else {
             throw CaptionWorkspaceFlushError.persistenceFailed(
                 "Finish the active text composition or wait for the photo to load before saving Caption edits."

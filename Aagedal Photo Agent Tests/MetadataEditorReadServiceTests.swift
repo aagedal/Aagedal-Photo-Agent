@@ -269,6 +269,27 @@ struct MetadataEditorReadServiceTests {
         #expect(field.historyValue(in: metadata) == nil)
     }
 
+    @Test("A loading editor has nothing to flush unless its buffer holds typed or unreadable text")
+    @MainActor
+    func loadingEditorUncommittedTextDetection() {
+        let buffers = MetadataEditorBufferRegistry()
+        let loadID = UUID()
+        var localText = ""
+        buffers.register(key: "description", owner: UUID(), loadID: loadID, read: { localText })
+        let placeholder = IPTCMetadata()
+        #expect(!buffers.hasUncommittedText(key: nil, loadID: loadID, hasMarkedText: false, metadata: placeholder))
+        #expect(!buffers.hasUncommittedText(key: "description", loadID: loadID, hasMarkedText: false,
+            metadata: placeholder))
+        localText = "Typed while loading"
+        #expect(buffers.hasUncommittedText(key: "description", loadID: loadID, hasMarkedText: false,
+            metadata: placeholder))
+        localText = ""
+        #expect(buffers.hasUncommittedText(key: "description", loadID: loadID, hasMarkedText: true,
+            metadata: placeholder))
+        #expect(buffers.hasUncommittedText(key: "description", loadID: UUID(), hasMarkedText: false,
+            metadata: placeholder))
+    }
+
     @Test("A synchronous Quick List model update wins over the not-yet-refreshed local buffer")
     @MainActor
     func bufferedFieldCapturePreservesProgrammaticPick() {

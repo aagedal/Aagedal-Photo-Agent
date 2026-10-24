@@ -259,6 +259,28 @@ struct CaptionSessionTests {
         #expect(session.accepts(load: current))
     }
 
+    @Test("In-place actions keep the preview load; only a focus change invalidates it")
+    func previewLoadSurvivesInPlaceActions() async throws {
+        let session = CaptionSession(imageURLs: urls)
+        let preview = try #require(session.beginPreviewLoad())
+        for action in [CaptionSessionAction.write, .applyTemplate, .copyPrevious, .codeReplacement] {
+            let editorLoad = try #require(session.beginLoad())
+            try await session.prepare(for: action) {}
+            #expect(!session.accepts(load: editorLoad))
+            #expect(session.acceptsPreview(load: preview))
+        }
+        // A list refresh that keeps the focused photo keeps its preview too.
+        session.replaceImages([urls[0], urls[2], urls[1]])
+        #expect(session.acceptsPreview(load: preview))
+
+        #expect(try await session.goNext {})
+        #expect(!session.acceptsPreview(load: preview))
+        let next = try #require(session.beginPreviewLoad())
+        #expect(session.acceptsPreview(load: next))
+        session.replaceImages([urls[0], urls[1]])
+        #expect(!session.acceptsPreview(load: next))
+    }
+
     @Test("Navigation returns while serialized sidecar persistence is still blocked")
     func navigationDoesNotAwaitPersistence() async throws {
         let session = CaptionSession(imageURLs: urls)

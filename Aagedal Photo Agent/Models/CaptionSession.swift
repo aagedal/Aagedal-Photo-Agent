@@ -524,6 +524,7 @@ final class CaptionSession {
     private(set) var isTransitioning = false
 
     @ObservationIgnored private var loadGeneration = UUID()
+    @ObservationIgnored private var previewGeneration = UUID()
 
     var currentURL: URL? {
         guard let currentIndex, orderedImageURLs.indices.contains(currentIndex) else { return nil }
@@ -595,6 +596,7 @@ final class CaptionSession {
             selectedURLs = [currentURL]
         }
         invalidateLoads()
+        if currentURL != oldURL { previewGeneration = UUID() }
     }
 
     func markCurrentDirty() {
@@ -626,6 +628,19 @@ final class CaptionSession {
 
     func invalidateLoads() {
         loadGeneration = UUID()
+    }
+
+    /// Starts the preview/face load for the focused image. Unlike ``beginLoad()``, this token is
+    /// only invalidated when focus moves to another image: an in-place action (Write, Apply
+    /// Template, Copy Previous, code replacement) re-invalidates editor loads but must not strand
+    /// the preview of the photo still on screen, whose `.task(id:)` would never rerun.
+    func beginPreviewLoad() -> CaptionLoadToken? {
+        guard let currentURL else { return nil }
+        return CaptionLoadToken(imageURL: currentURL, generation: previewGeneration)
+    }
+
+    func acceptsPreview(load: CaptionLoadToken) -> Bool {
+        load.generation == previewGeneration && load.imageURL == currentURL
     }
 
     /// Flushes buffered editor state before an action that does not itself change focus.
@@ -702,8 +717,10 @@ final class CaptionSession {
         isTransitioning = true
         defer { isTransitioning = false }
         try await flush()
+        let previousURL = currentURL
         mutation()
         invalidateLoads()
+        if currentURL != previousURL { previewGeneration = UUID() }
     }
 
     private static func uniqueStandardizedURLs(_ urls: [URL]) -> [URL] {

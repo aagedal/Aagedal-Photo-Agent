@@ -61,6 +61,9 @@ struct CaptionWorkspaceView: View {
     @State private var lastEditorField: MetadataFieldID?
     @State private var isEditorTransientPresented = false
     @State private var isAwaitingTemplatePalette = false
+    @State private var isAwaitingEditorLoad = false
+    @State private var restoresEditorFocusAfterTransition = false
+    @State private var resynchronizesListAfterTransition = false
     @FocusState private var focusedAction: CaptionActionFocus?
     @Environment(\.openSettings) private var openSettings
     @Environment(AppCommandRouter.self) private var commandRouter
@@ -280,6 +283,17 @@ struct CaptionWorkspaceView: View {
         .onChange(of: focusedAction) { _, action in
             if action != nil { activeEditorField = nil }
         }
+        .onChange(of: isEditorTransitioning) { _, isTransitioning in
+            guard !isTransitioning else { return }
+            if resynchronizesListAfterTransition {
+                resynchronizesListAfterTransition = false
+                synchronizeSessionWithBrowser(capturingDraft: true)
+            }
+            if restoresEditorFocusAfterTransition {
+                restoresEditorFocusAfterTransition = false
+                restoreLastEditorFocus()
+            }
+        }
         .onChange(of: metadataViewModel.editingMetadata) { _, _ in
             // Async selection loads assign the draft while `isLoading` is still true. Ignore that
             // persisted state, but do record edits even when an already-pending sidecar means the
@@ -312,6 +326,14 @@ struct CaptionWorkspaceView: View {
             }
         }
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
+            if case .restoreCaptionEditorFocus? = delivery?.command, isEditorTransitioning {
+                // The template palette closes before its template crosses the flush barrier, so
+                // this arrives mid-transition. Stop routing Tab to the palette now and restore
+                // the field focus once the transition finishes.
+                isAwaitingTemplatePalette = false
+                restoresEditorFocusAfterTransition = true
+                return
+            }
             guard let delivery, !isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return }
             switch delivery.command {
             case .selectPreviousImage:
@@ -771,7 +793,7 @@ struct CaptionWorkspaceView: View {
                     navigate(previous: false, announcesAdvance: true)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!session.canGoNext || isEditorTransitioning)
+                .disabled(session.currentURL == nil || isEditorTransitioning)
                 .help(shortcutHelp(for: .saveAndNext))
                 .focused($focusedAction, equals: .saveAndNext)
 
@@ -861,6 +883,39 @@ struct CaptionWorkspaceView: View {
 
     private var isEditorTransitioning: Bool { session.isTransitioning || flushCoordinator.isTransitioning }
 
+    /// The editor's selection load trails navigation, so right after moving its draft can still
+    /// belong to the previous photo (or be a load placeholder). Actions that read or write the
+    /// editor must only act once it describes the photo the header shows.
+    private var editorDescribesCurrentPhoto: Bool {
+        guard let currentURL = session.currentURL else { return false }
+        return !metadataViewModel.isLoading
+            && metadataViewModel.selectedURLs.count == 1
+            && metadataViewModel.selectedURLs.first?.standardizedFileURL == currentURL
+    }
+
+    /// Waits (once, without stacking repeated presses) for the current photo's editor load, then
+    /// confirms focus is still on `target`. Returns false with a brief notice otherwise, so an
+    /// action never lands on the previous photo's editor.
+    private func waitForEditor(describing target: URL) async -> Bool {
+        if editorDescribesCurrentPhoto, session.currentURL == target { return true }
+        guard !isAwaitingEditorLoad else {
+            inlineNotice = "The photo's metadata is still loading. Try again in a moment."
+            return false
+        }
+        isAwaitingEditorLoad = true
+        defer { isAwaitingEditorLoad = false }
+        if metadataViewModel.selectedURLs.map(\.standardizedFileURL) != [target],
+           let image = photoList.image(forStandardizedURL: target) {
+            metadataViewModel.loadSelectionMetadataNow(for: [image], folderURL: browserViewModel.currentFolderURL)
+        }
+        await metadataViewModel.waitForMetadataLoad()
+        guard session.currentURL == target, editorDescribesCurrentPhoto else {
+            inlineNotice = "The photo's metadata is still loading. Try again in a moment."
+            return false
+        }
+        return true
+    }
+
     /// Full screen is a separate window whose arrow keys change the browser selection directly,
     /// bypassing the session's flush barrier. Capture the buffered caption before it opens.
     private func openFullScreen() {
@@ -893,13 +948,26 @@ struct CaptionWorkspaceView: View {
     }
 
     private func synchronizeSessionWithBrowser(capturingDraft: Bool = false) {
-        if capturingDraft, isWorkspaceActive, !isEditorTransitioning,
+        if capturingDraft, isWorkspaceActive,
            let currentURL = session.currentURL,
            !visibleURLs.contains(where: { $0.standardizedFileURL == currentURL }) {
             // The focused photo can leave the filtered list (for example after a rating change).
-            // Capture its buffered text before the session moves focus to a neighbour.
-            try? enqueueCurrentDraftPersistence()
+            // Capture its buffered text before the session moves focus to a neighbour. Never move
+            // on without it: mid-transition, retry once the transition ends; if the capture fails,
+            // keep the editor on this photo and say so.
+            guard !isEditorTransitioning else {
+                resynchronizesListAfterTransition = true
+                return
+            }
+            do {
+                try enqueueCurrentDraftPersistence()
+            } catch {
+                resynchronizesListAfterTransition = true
+                errorMessage = "\(currentURL.lastPathComponent) left the current filter, but its caption edits could not be saved: \(error.localizedDescription) The photo stays open in Caption until they are saved."
+                return
+            }
         }
+        resynchronizesListAfterTransition = false
         session.replaceImages(visibleURLs)
         // Full screen owns the browser selection while it is open (rating, label, or delete there
         // can change the list); pushing Caption's photo back would snap it to another image.
@@ -935,6 +1003,13 @@ struct CaptionWorkspaceView: View {
         Task { @MainActor in
             guard !flushCoordinator.isTransitioning else { return }
             do {
+                if announcesAdvance, !previous, !session.canGoNext {
+                    // Save & Next on the last photo still saves; say why focus stays put.
+                    guard session.currentURL != nil, !session.isTransitioning else { return }
+                    try enqueueCurrentDraftPersistence()
+                    inlineNotice = "Saved — last photo"
+                    return
+                }
                 let moved = if previous {
                     try await session.goPrevious { try enqueueCurrentDraftPersistence() }
                 } else {
@@ -971,6 +1046,11 @@ struct CaptionWorkspaceView: View {
         let browserURL = originalBrowserURL(for: url)
         browserViewModel.selectedImageIDs = [browserURL]
         browserViewModel.lastClickedImageURL = browserURL
+        // Load the editor now rather than after the browser's selection debounce, so Write,
+        // Copy Previous and code replacement are not left waiting on (or racing) the old draft.
+        if metadataViewModel.selectedURLs != [browserURL], let image = photoList.image(forStandardizedURL: url) {
+            metadataViewModel.loadSelectionMetadataNow(for: [image], folderURL: browserViewModel.currentFolderURL)
+        }
     }
 
     private func originalBrowserURL(for sessionURL: URL) -> URL {
@@ -997,6 +1077,8 @@ struct CaptionWorkspaceView: View {
             guard !isCopyingPrevious else { return }
             isCopyingPrevious = true
             defer { isCopyingPrevious = false }
+            guard let target = session.currentURL, await waitForEditor(describing: target),
+                  !flushCoordinator.isTransitioning else { return }
 
             do {
                 let token = try flushCoordinator.reserveTransition()
@@ -1014,7 +1096,8 @@ struct CaptionWorkspaceView: View {
                     previousMetadata = try await metadataViewModel.loadCaptionCopyPreviousMetadata(
                         for: originalBrowserURL(for: previousURL))
                 }, operation: {
-                    guard let previous = previousMetadata, let loadToken, session.accepts(load: loadToken) else { return }
+                    guard let previous = previousMetadata, let loadToken, session.accepts(load: loadToken),
+                          editorDescribesCurrentPhoto else { return }
                     let configuration = CaptionCopyPreviousConfiguration(defaultMode: mode)
                     let result = CaptionCopyPreviousService().copy(
                         previous: previous,
@@ -1042,7 +1125,8 @@ struct CaptionWorkspaceView: View {
 
     private func prepareCodeReplacementPreview() {
         Task { @MainActor in
-            guard !flushCoordinator.isTransitioning else { return }
+            guard !flushCoordinator.isTransitioning, let target = session.currentURL,
+                  await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
                 guard codeReplacementStore.sourceLoadError == nil else {
                     errorMessage = codeReplacementStore.sourceLoadError
@@ -1059,7 +1143,8 @@ struct CaptionWorkspaceView: View {
                 }
 
                 try await prepareAndPerform(.codeReplacement) {
-                    guard let previewURL = session.currentURL else {
+                    guard let previewURL = session.currentURL, previewURL == target,
+                          editorDescribesCurrentPhoto else {
                         errorMessage = "The current photo is no longer available."
                         return
                     }
@@ -1122,9 +1207,11 @@ struct CaptionWorkspaceView: View {
 
     private func writeCurrent() {
         Task { @MainActor in
-            guard !flushCoordinator.isTransitioning else { return }
+            guard !flushCoordinator.isTransitioning, let target = session.currentURL,
+                  await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
                 try await prepareAndPerform(.write) {
+                    guard session.currentURL == target, editorDescribesCurrentPhoto else { return }
                     metadataViewModel.writeMetadataAndClearSidecar()
                 }
             } catch {
@@ -1135,12 +1222,18 @@ struct CaptionWorkspaceView: View {
 
     private func writeAndNext() {
         Task { @MainActor in
-            guard !flushCoordinator.isTransitioning else { return }
+            guard !flushCoordinator.isTransitioning, let target = session.currentURL,
+                  await waitForEditor(describing: target), !flushCoordinator.isTransitioning else { return }
             do {
                 try await prepareAndPerform(.write) {
-                    guard let currentURL = session.currentURL else { return }
+                    guard let currentURL = session.currentURL, currentURL == target,
+                          editorDescribesCurrentPhoto else { return }
                     pendingWriteAndNextURL = currentURL
                     metadataViewModel.writeMetadataAndClearSidecar()
+                    // A write refused before it starts (for example an unpersisted Develop edit)
+                    // sets `saveError` without toggling `isSaving`, so the completion handler
+                    // never consumes this; a later unrelated save must not advance.
+                    if !metadataViewModel.isSaving { pendingWriteAndNextURL = nil }
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -1263,7 +1356,7 @@ struct CaptionWorkspaceView: View {
                   ) else { return event }
             switch command {
             case .saveAndNext:
-                guard session.canGoNext, !isEditorTransitioning else { return nil }
+                guard session.currentURL != nil, !isEditorTransitioning else { return nil }
                 navigate(previous: false, announcesAdvance: true)
             case .writeAndNext:
                 guard session.currentURL != nil,
@@ -1301,7 +1394,7 @@ struct CaptionWorkspaceView: View {
     private func isActionAvailable(_ action: CaptionActionFocus) -> Bool {
         switch action {
         case .previous: session.canGoPrevious && !isEditorTransitioning
-        case .saveAndNext: session.canGoNext && !isEditorTransitioning
+        case .saveAndNext: session.currentURL != nil && !isEditorTransitioning
         case .writeAndNext:
             session.currentURL != nil && !isEditorTransitioning && !metadataViewModel.isSaving
         case .applyTemplate: session.currentURL != nil && !isEditorTransitioning
@@ -1347,13 +1440,10 @@ struct CaptionWorkspaceView: View {
         preview = nil
         previewFailed = false
         confirmedPeople = []
-        guard let token = session.beginLoad() else { return }
+        guard let token = session.beginPreviewLoad() else { return }
         let image = currentImage
         // The editor's selection load is debounced, so right after navigating its draft still
         // belongs to the previous photo. Only trust it once it describes this photo.
-        let editorDescribesCurrentPhoto = !metadataViewModel.isLoading
-            && metadataViewModel.selectedURLs.count == 1
-            && metadataViewModel.selectedURLs.first?.standardizedFileURL == token.imageURL
         let settings = editorDescribesCurrentPhoto
             ? metadataViewModel.editingMetadata.cameraRaw
             : image?.cameraRawSettings
@@ -1373,7 +1463,7 @@ struct CaptionWorkspaceView: View {
         } else {
             loaded = await browserViewModel.thumbnailService.loadThumbnail(for: token.imageURL)
         }
-        guard !Task.isCancelled, session.accepts(load: token) else { return }
+        guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }
         // Show the photo before the folder's face data, which can be slow on large folders.
         preview = loaded
         previewFailed = loaded == nil
@@ -1386,8 +1476,20 @@ struct CaptionWorkspaceView: View {
         } else {
             nil
         }
-        let people = CaptionConfirmedPersonOrdering.people(for: token.imageURL, in: faceData)
-        guard !Task.isCancelled, session.accepts(load: token) else { return }
+        // Face rects describe the uncropped photo; the edited preview shows the Develop crop.
+        // The fallback thumbnail's framing is unknown, so a cropped photo shows no boxes there.
+        let crop = settings?.crop
+        let people: [CaptionConfirmedPerson] = if crop?.isEffectiveCrop == true, cgImage == nil {
+            []
+        } else {
+            CaptionConfirmedPersonOrdering.people(for: token.imageURL, in: faceData).compactMap { person in
+                guard let rect = CaptionPreviewGeometry.croppedVisionRect(
+                    person.normalizedFaceRect, crop: crop, displayOrientation: orientation,
+                    renderedSize: loaded?.size ?? .zero) else { return nil }
+                return CaptionConfirmedPerson(id: person.id, name: person.name, normalizedFaceRect: rect)
+            }
+        }
+        guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }
         confirmedPeople = people
     }
 }

@@ -38,6 +38,10 @@ struct CaptionVoiceMemoPlayerView: View {
         let canAssociate: Bool
     }
 
+    private var isTranscriptBusy: Bool {
+        transcriptModel.isTranscribing || transcriptModel.isDownloading || transcriptModel.isSavingTranscript
+    }
+
     private var isPlaying: Bool {
         if case .available(let playback) = model.state { return playback.isPlaying }
         return false
@@ -54,9 +58,13 @@ struct CaptionVoiceMemoPlayerView: View {
                     refreshID = UUID()
                 }
                 .labelStyle(.iconOnly)
-                .help("Reload the saved voice-memo relationship for this photo")
+                .help(isTranscriptBusy
+                    ? "Available when the current transcription finishes"
+                    : "Reload the saved voice-memo relationship for this photo")
                 .accessibilityIdentifier("caption.voiceMemo.refresh")
-                .disabled(imageURL == nil)
+                // Reloading the same photo cancels the transcript model's running work, which
+                // would silently throw away a Whisper transcription that may take minutes.
+                .disabled(imageURL == nil || isTranscriptBusy)
             }
             switch model.state {
             case .idle, .loading:

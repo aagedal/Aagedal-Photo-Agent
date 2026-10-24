@@ -1055,7 +1055,9 @@ struct ContentView: View {
                 case .showStructuredKeywords:
                     openWindow(id: "structuredKeywords")
                 case .showKnownPeopleDatabase:
-                    openPeopleDatabase()
+                    // Settings → Known People can fire this from Caption or Develop; leave them
+                    // through their flush barriers like the toolbar toggle does.
+                    leaveEditWorkspaceIfNeeded { openPeopleDatabase() }
                 case .registerOpenFolderForSidebar(let url):
                     panes.panes[0].registerOpenFolderForSidebar(url)
                 default:
