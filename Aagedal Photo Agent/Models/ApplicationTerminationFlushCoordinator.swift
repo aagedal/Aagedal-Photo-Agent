@@ -20,7 +20,7 @@ nonisolated enum ApplicationTerminationFlushStage: String, CaseIterable, Equatab
     /// What this stage is writing, for the "still saving" prompt.
     var activityDescription: String {
         switch self {
-        case .browserEditor: "metadata panel edits and Person Shown names"
+        case .browserEditor: "metadata writes"
         case .caption: "Caption Workspace and Metadata Review drafts"
         case .analysis: "Image Analysis case and map edits"
         case .develop: "Develop edits"
@@ -36,6 +36,8 @@ nonisolated struct ApplicationTerminationFlushFailure: Equatable, Sendable {
 nonisolated enum ApplicationTerminationFlushOutcome: Equatable, Sendable {
     case succeeded
     case failed(ApplicationTerminationFlushFailure)
+    /// The attempt was cancelled (Cancel Quit, or its stage abandoned) before a later stage.
+    case cancelled
 }
 
 nonisolated enum ApplicationTerminationFailureChoice: Equatable, Sendable {
@@ -106,16 +108,26 @@ nonisolated struct ApplicationTerminationFailurePresentation: Equatable, Sendabl
 final class ApplicationTerminationWaitContext {
     /// The stage still running, or nil while an earlier, cancelled quit's writes finish.
     let stage: ApplicationTerminationFlushStage?
+    /// What is still being written, for the prompt ("Write All: 340 of 2000, Person Shown names").
+    let activityDescription: String
+    /// False while abandoning the running stage is unsafe (captured Primary Develop edits that
+    /// still need Retry Develop Writes or Review Develop Conflicts): offer only Keep Waiting and
+    /// Cancel Quit. A Quit Without Saving answer is then treated as Keep Waiting.
+    let allowsQuitWithoutSaving: Bool
     private(set) var isFlushFinished = false
     private var handler: (@MainActor () -> Void)?
     private var isShowing = true
 
-    init(stage: ApplicationTerminationFlushStage?) {
+    init(
+        stage: ApplicationTerminationFlushStage?,
+        activityDescription: String? = nil,
+        allowsQuitWithoutSaving: Bool = true
+    ) {
         self.stage = stage
-    }
-
-    var activityDescription: String {
-        stage?.activityDescription ?? "changes from the earlier quit attempt"
+        self.activityDescription = activityDescription
+            ?? stage?.activityDescription
+            ?? "changes from the earlier quit attempt"
+        self.allowsQuitWithoutSaving = allowsQuitWithoutSaving
     }
 
     func whenFlushFinishes(_ handler: @escaping @MainActor () -> Void) {
@@ -143,14 +155,32 @@ final class ApplicationTerminationWaitContext {
     }
 }
 
+/// One run through the stages. Cancelling it lets the running stage finish its writes, then
+/// stops it before any later stage starts, so an abandoned or cancelled attempt never commits
+/// editors the user has since moved on with.
+@MainActor
+final class ApplicationTerminationAttempt {
+    private(set) var isCancelled = false
+    /// The stage this attempt is running; nil before the first stage or after the last.
+    fileprivate(set) var runningStage: ApplicationTerminationFlushStage?
+
+    nonisolated init() {}
+
+    func cancel() { isCancelled = true }
+}
+
 /// Testable ordering, retry and timeout boundary for application termination. The Browser
 /// metadata editor flushes first, then Caption persistence, then pending Analysis saves, then
 /// Develop; a failure stops the later stages until the user chooses. Quit Without Saving abandons
 /// only the failed stage: later stages still flush and may raise their own prompt.
 ///
 /// With a `waitTimeout`, an attempt still running after it asks `chooseWhileWaiting` whether to
-/// keep waiting (re-arms the timeout), quit without saving, or cancel the quit. A cancelled
-/// quit leaves its writes running; `unfinishedAttempt` lets the next quit wait for them first.
+/// keep waiting (re-arms the timeout), quit without saving, or cancel the quit:
+/// - Quit Without Saving abandons only the stage that is still running. Its writes keep running
+///   (the process exits once the remaining stages are done), and a new attempt continues with
+///   the next stage, which can raise its own prompts.
+/// - Cancel Quit stops the attempt after the running stage's writes; `unfinishedAttempt` lets
+///   the next quit wait for those writes first.
 @MainActor
 final class ApplicationTerminationFlushCoordinator {
     typealias StageFlush = @MainActor () async throws -> Void
@@ -158,6 +188,8 @@ final class ApplicationTerminationFlushCoordinator {
     typealias Sleep = @MainActor (Duration) async throws -> Void
     typealias WaitPrompt = @MainActor (ApplicationTerminationWaitContext) async -> ApplicationTerminationWaitChoice
     typealias FailurePrompt = @MainActor (ApplicationTerminationFlushFailure) -> ApplicationTerminationFailureChoice
+    typealias ActivityDescription = @MainActor (ApplicationTerminationFlushStage) -> String?
+    typealias AbandonPolicy = @MainActor (ApplicationTerminationFlushStage) -> Bool
 
     private let browserEditorFlush: StageFlush
     private let captionFlush: StageFlush
@@ -166,9 +198,9 @@ final class ApplicationTerminationFlushCoordinator {
     private var precedingWork: (@MainActor () async -> Void)?
     private let waitTimeout: Duration?
     private let sleep: Sleep
+    private let describeActivity: ActivityDescription
+    private let canAbandonStage: AbandonPolicy
 
-    /// The stage the current attempt is running; nil between attempts or while `precedingWork` runs.
-    private(set) var runningStage: ApplicationTerminationFlushStage?
     /// The attempt Cancel Quit left running, if any.
     private(set) var unfinishedAttempt: Task<Void, Never>?
 
@@ -179,7 +211,9 @@ final class ApplicationTerminationFlushCoordinator {
         developFlush: @escaping DevelopFlush,
         precedingWork: (@MainActor () async -> Void)? = nil,
         waitTimeout: Duration? = nil,
-        sleep: @escaping Sleep = { try await Task.sleep(for: $0) }
+        sleep: @escaping Sleep = { try await Task.sleep(for: $0) },
+        describeActivity: @escaping ActivityDescription = { _ in nil },
+        canAbandonStage: @escaping AbandonPolicy = { _ in true }
     ) {
         self.browserEditorFlush = browserEditorFlush
         self.captionFlush = captionFlush
@@ -188,15 +222,20 @@ final class ApplicationTerminationFlushCoordinator {
         self.precedingWork = precedingWork
         self.waitTimeout = waitTimeout
         self.sleep = sleep
+        self.describeActivity = describeActivity
+        self.canAbandonStage = canAbandonStage
     }
 
-    /// Runs the stages in order, beginning with `firstStage`.
+    /// Runs the stages in order, beginning with `firstStage`. Returns `.cancelled` when
+    /// `attempt` was cancelled before a later stage could start.
     func attempt(
-        from firstStage: ApplicationTerminationFlushStage = .browserEditor
+        from firstStage: ApplicationTerminationFlushStage = .browserEditor,
+        as attempt: ApplicationTerminationAttempt = ApplicationTerminationAttempt()
     ) async -> ApplicationTerminationFlushOutcome {
-        defer { runningStage = nil }
+        defer { attempt.runningStage = nil }
         for stage in ApplicationTerminationFlushStage.allCases.drop(while: { $0 != firstStage }) {
-            runningStage = stage
+            if attempt.isCancelled { return .cancelled }
+            attempt.runningStage = stage
             if let failure = await run(stage) { return .failed(failure) }
         }
         return .succeeded
@@ -236,13 +275,14 @@ final class ApplicationTerminationFlushCoordinator {
         chooseFailure: FailurePrompt
     ) async -> Bool {
         var firstStage = ApplicationTerminationFlushStage.browserEditor
-        while true {
+        attempts: while true {
             let stageStart = firstStage
             let preceding = precedingWork
             precedingWork = nil
+            let attempt = ApplicationTerminationAttempt()
             let work = Task { @MainActor in
                 await preceding?()
-                return await self.attempt(from: stageStart)
+                return await self.attempt(from: stageStart, as: attempt)
             }
 
             var outcome: ApplicationTerminationFlushOutcome?
@@ -251,7 +291,12 @@ final class ApplicationTerminationFlushCoordinator {
                     outcome = finished
                     break
                 }
-                let context = ApplicationTerminationWaitContext(stage: runningStage)
+                let running = attempt.runningStage
+                let context = ApplicationTerminationWaitContext(
+                    stage: running,
+                    activityDescription: running.flatMap { describeActivity($0) },
+                    allowsQuitWithoutSaving: running.map { canAbandonStage($0) } ?? true
+                )
                 Task { @MainActor in
                     _ = await work.value
                     context.markFlushFinished()
@@ -262,23 +307,41 @@ final class ApplicationTerminationFlushCoordinator {
                 case .keepWaiting:
                     continue
                 case .quitWithoutSaving:
-                    return true
+                    guard context.allowsQuitWithoutSaving else { continue }
+                    // Abandon only the stage that is still running: it keeps its writes but
+                    // starts no later stage, and a fresh attempt saves the remaining stages.
+                    attempt.cancel()
+                    guard let running else {
+                        // Still waiting for an earlier cancelled quit's writes: skip that wait.
+                        continue attempts
+                    }
+                    guard let next = running.next else { return true }
+                    firstStage = next
+                    continue attempts
                 case .cancelQuit:
+                    attempt.cancel()
                     unfinishedAttempt = Task { @MainActor in _ = await work.value }
                     return false
                 }
             }
 
-            guard case let .failed(failure)? = outcome else { return true }
-            switch chooseFailure(failure) {
-            case .retry:
-                continue
-            case .keepOpen:
+            switch outcome {
+            case .succeeded?, nil:
+                return true
+            case .cancelled?:
+                // Only an attempt this loop already abandoned is cancelled; never reached.
                 return false
-            case .quitWithoutSaving:
-                // Skip only the abandoned stage; the remaining stages still get to save.
-                guard let next = failure.stage.next else { return true }
-                firstStage = next
+            case let .failed(failure)?:
+                switch chooseFailure(failure) {
+                case .retry:
+                    continue
+                case .keepOpen:
+                    return false
+                case .quitWithoutSaving:
+                    // Skip only the abandoned stage; the remaining stages still get to save.
+                    guard let next = failure.stage.next else { return true }
+                    firstStage = next
+                }
             }
         }
     }

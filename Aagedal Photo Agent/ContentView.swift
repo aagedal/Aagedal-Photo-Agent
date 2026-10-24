@@ -59,24 +59,130 @@ enum MetadataAutomaticSaveBoundary {
 /// Lets termination persist the Browser metadata panel, which (unlike Caption) has no FIFO
 /// flush coordinator: typed field text and unsaved edits would otherwise be lost on Quit.
 /// Writes that must finish before the process exits but cannot fail the quit (Person Shown
-/// batches, saves started when the main window closed) register as waits and run first.
+/// batches) register as waits and run first. Editors register per model, so a window that
+/// closed and reopened keeps the old model's entry (and its failed edit reaches the quit prompt).
 @MainActor
 final class MetadataEditorTerminationFlush {
     static let shared = MetadataEditorTerminationFlush()
-    private var handler: (@MainActor () async throws -> Void)?
     private var waits: [(key: String, wait: @MainActor () async -> Void)] = []
+    private var editorFlushes: [(key: String, flush: @MainActor () async throws -> Void)] = []
+    private var activitySources: [(key: String, describe: @MainActor () -> [String])] = []
 
-    func register(_ handler: @escaping @MainActor () async throws -> Void) { self.handler = handler }
+    /// Adds (or replaces, by key) an editor flush. Failures of several editors are combined.
+    func registerEditorFlush(_ key: String, _ flush: @escaping @MainActor () async throws -> Void) {
+        editorFlushes.removeAll { $0.key == key }
+        editorFlushes.append((key, flush))
+    }
 
-    /// Adds (or replaces, by key) a wait that runs before the editor handler.
+    /// Adds (or replaces, by key) a wait that runs before the editor flushes.
     func registerWait(_ key: String, _ wait: @escaping @MainActor () async -> Void) {
         waits.removeAll { $0.key == key }
         waits.append((key, wait))
     }
 
+    /// Adds (or replaces, by key) a description of what this stage is still writing.
+    func registerActivity(_ key: String, _ describe: @escaping @MainActor () -> [String]) {
+        activitySources.removeAll { $0.key == key }
+        activitySources.append((key, describe))
+    }
+
+    /// "Write All: 340 of 2000 and Person Shown names", or nil when nothing specific is known.
+    var pendingActivityDescription: String? {
+        let parts = activitySources.flatMap { $0.describe() }
+        return parts.isEmpty ? nil : BackgroundOperationMonitor.summary(of: parts)
+    }
+
     func flush() async throws {
         for entry in waits { await entry.wait() }
-        try await handler?()
+        var failures: [String] = []
+        for entry in editorFlushes {
+            do { try await entry.flush() }
+            catch { failures.append(error.localizedDescription) }
+        }
+        guard failures.isEmpty else {
+            throw BrowserEditorTerminationError(message: failures.joined(separator: "\n"))
+        }
+    }
+
+    /// The Browser editor's quit commit for one model: waits for an in-flight folder/workspace
+    /// boundary commit (including its discard prompt) rather than committing the same photo
+    /// again, and for every running write and metadata batch. Then it saves what is left exactly
+    /// as a folder switch would, falling back to a pending draft, so quitting never loses an
+    /// edit a folder switch would have kept. Only an edit nothing durable can hold fails it.
+    static func commitEditor(
+        _ model: MetadataViewModel,
+        c2paURLs: @MainActor ([URL]) -> Set<URL>,
+        refreshPendingStatus: @MainActor ([URL]) -> Void,
+        isOwnedElsewhere: @MainActor () -> Bool
+    ) async throws {
+        await model.waitForEditorBoundary()
+        await model.waitForPendingWritesAndBatches()
+        guard !isOwnedElsewhere() else { return }
+        let editorURLs = model.selectedURLs
+        let outcome = await departingCommit(model, c2paURLs: c2paURLs)
+        refreshPendingStatus(editorURLs)
+        switch EditorBoundaryDecision.resolve(outcome, canStay: true) {
+        case .proceed:
+            return
+        case .askToDiscard(let message):
+            model.saveError = message
+            throw BrowserEditorTerminationError(message: message)
+        }
+    }
+
+    /// Waits for saves already running (they may carry these edits, and History Only drafts
+    /// finish asynchronously), then saves whatever is still unsaved and waits for it too.
+    static func departingCommit(
+        _ model: MetadataViewModel,
+        c2paURLs: @MainActor ([URL]) -> Set<URL>
+    ) async -> EditorBoundaryCommitOutcome {
+        await model.waitForPendingWrites()
+        model.captureFocusedEditorText()
+        guard model.hasUnpersistedEditorChanges else { return .nothingToCommit }
+        let editorURLs = model.selectedURLs
+        if model.shouldDeferAutomaticCommitForVariables {
+            let failure: String? = await withCheckedContinuation { continuation in
+                model.keepUnresolvedVariablesAsPendingDraft { continuation.resume(returning: $0) }
+            }
+            guard let failure else { return .saved }
+            return .failed(message: EditorBoundaryCommitOutcome.failureMessage(
+                files: editorURLs.map(\.lastPathComponent).joined(separator: ", "), reason: failure))
+        }
+        let known = c2paURLs(editorURLs)
+        let outcome = await withCheckedContinuation { continuation in
+            model.commitDepartingEditor(knownC2PAURLs: known) { continuation.resume(returning: $0) }
+        }
+        await model.waitForPendingWrites()
+        return outcome
+    }
+}
+
+/// Rename and Move must not race a folder batch (Write All, Process Variables) that is writing
+/// the same files. Only those wait for it — with a visible status — and the operation is
+/// abandoned if the folder or selection changed meanwhile. Every other command waits only for
+/// the editor write chain.
+@MainActor
+enum MetadataBatchOverlapGate {
+    static func perform(
+        metadata: MetadataViewModel,
+        browser: BrowserViewModel,
+        targets: [URL],
+        action: String,
+        _ operation: @escaping @MainActor () -> Void
+    ) {
+        guard let kind = metadata.runningBatchOverlapping(targets) else { operation(); return }
+        let folder = browser.currentFolderURL
+        let selection = browser.selectedImageIDs
+        let notice = MetadataPanelNotice(
+            title: "Waiting for \(kind.displayName) to finish before \(action)…",
+            detail: [], severity: .info)
+        metadata.notice = notice
+        Task { @MainActor in
+            await metadata.waitForBatchOverlapping(targets)
+            if metadata.notice?.id == notice.id { metadata.notice = nil }
+            guard browser.currentFolderURL == folder, browser.selectedImageIDs == selection else { return }
+            operation()
+        }
     }
 }
 
@@ -177,6 +283,7 @@ private struct C2PADetailPresentation: Identifiable {
 /// inside its time budget.
 private struct SafetyAndCullingHandlers: ViewModifier {
     let browserViewModel: BrowserViewModel
+    let metadataViewModel: MetadataViewModel
     let commandRouter: AppCommandRouter
     let mainViewMode: MainViewMode
     let performAfterMetadataFlush: (@escaping @MainActor () -> Void) -> Void
@@ -195,7 +302,11 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                 case .backupEditedFilesForFolder(let url):
                     backupEditedFolderItem = BackupEditedItem(url: url)
                 case .moveRejectedToFolder:
-                    performAfterMetadataFlush { browserViewModel.moveRejectedToFolder() }
+                    performAfterMetadataFlush {
+                        MetadataBatchOverlapGate.perform(metadata: metadataViewModel, browser: browserViewModel,
+                            targets: browserViewModel.visibleImages.filter { $0.colorLabel == .trash }.map(\.url),
+                            action: "moving rejected photos") { browserViewModel.moveRejectedToFolder() }
+                    }
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,
                      .renderSelected, .advancedExportSelected, .renderAll,
                      .saveAsJPEG, .saveAsPNG, .archiveRAW,
@@ -1023,7 +1134,7 @@ struct ContentView: View {
                 case .renameSelected:
                     // Commit the Browser metadata panel first: a rename moves the files the
                     // panel's unsaved edits are keyed to.
-                    performAfterMetadataFileOperation { browserViewModel.renameSelected() }
+                    performAfterMetadataFileOperation { renameSelectedAfterOverlappingBatch() }
                 case .duplicateSelected:
                     performAfterCaptionFlush { browserViewModel.duplicateSelectedImages() }
                 case .resetAllEdits:
@@ -1074,6 +1185,7 @@ struct ContentView: View {
         contentWithFileOperationHandlers
             .modifier(SafetyAndCullingHandlers(
                 browserViewModel: browserViewModel,
+                metadataViewModel: metadataViewModel,
                 commandRouter: commandRouter,
                 mainViewMode: mainViewMode,
                 performAfterMetadataFlush: performAfterCaptionFlush,
@@ -1228,10 +1340,7 @@ struct ContentView: View {
                 BackgroundOperationMonitor.shared.isImporting = importViewModel.isImporting
                 BackgroundOperationMonitor.shared.isUploading = ftpViewModel.isUploading
                 BackgroundOperationMonitor.shared.isRenderingForUpload = ftpViewModel.isRendering
-                MetadataEditorTerminationFlush.shared.register { try await flushBrowserEditorForTermination() }
-                MetadataEditorTerminationFlush.shared.registerWait("personShown") { [faceRecognitionViewModel] in
-                    await faceRecognitionViewModel.waitForPendingPersonShownWritesAndRecords()
-                }
+                registerTerminationFlushes()
                 registerBackgroundOperationSources()
                 AnalysisWorkspaceTerminationFlush.shared.register(analysisWorkspaceModel)
             }
@@ -1575,25 +1684,42 @@ struct ContentView: View {
         mainViewMode == .caption || mainViewMode == .metadataReview || mainViewMode == .editing
     }
 
-    /// Quit-time Browser editor stage. Waits for an in-flight folder/workspace boundary commit
-    /// (including its discard prompt) rather than committing the same photo again, and for every
-    /// running save, in any workspace. Then it saves what is left exactly as a folder switch
-    /// would — falling back to a pending draft when the write fails — so quitting never loses an
-    /// edit that a folder switch would have kept. Only an edit nothing durable can hold fails it.
-    private func flushBrowserEditorForTermination() async throws {
-        await metadataViewModel.waitForEditorBoundary()
-        await metadataViewModel.waitForPendingWrites()
-        guard !metadataEditorIsOwnedElsewhere else { return }
-        let editorURLs = metadataViewModel.selectedURLs
-        let outcome = await commitDepartingBrowserEditor()
-        browserViewModel.refreshPendingStatusBatch(for: editorURLs)
-        switch EditorBoundaryDecision.resolve(outcome, canStay: true) {
-        case .proceed:
-            return
-        case .askToDiscard(let message):
-            metadataViewModel.saveError = message
-            throw BrowserEditorTerminationError(message: message)
+    /// Quit-time Browser editor stage registrations, keyed per model so a closed-and-reopened
+    /// window never replaces the old model's entries.
+    private func registerTerminationFlushes() {
+        let flush = MetadataEditorTerminationFlush.shared
+        let model = metadataViewModel
+        let faces = faceRecognitionViewModel
+        flush.registerEditorFlush(Self.terminationKey("editor", model)) {
+            try await MetadataEditorTerminationFlush.commitEditor(
+                model,
+                c2paURLs: { browserViewModel.c2paURLs(among: $0) },
+                refreshPendingStatus: { browserViewModel.refreshPendingStatusBatch(for: $0) },
+                isOwnedElsewhere: { metadataEditorIsOwnedElsewhere }
+            )
         }
+        flush.registerWait(Self.terminationKey("personShown", faces)) {
+            await faces.waitForPendingPersonShownWritesAndRecords()
+        }
+        flush.registerActivity(Self.terminationKey("activity", model)) {
+            var parts: [String] = []
+            if let batch = model.runningBatchDescription { parts.append(batch) }
+            if faces.hasPendingFieldMutationWrites { parts.append("Person Shown names") }
+            if model.isSaving || model.hasUnpersistedEditorChanges { parts.append("metadata panel edits") }
+            return parts
+        }
+    }
+
+    /// Rename moves files a running folder batch may be writing; wait for that batch first.
+    private func renameSelectedAfterOverlappingBatch() {
+        MetadataBatchOverlapGate.perform(metadata: metadataViewModel, browser: browserViewModel,
+            targets: Array(browserViewModel.selectedImageIDs), action: "renaming") {
+            browserViewModel.renameSelected()
+        }
+    }
+
+    private static func terminationKey(_ role: String, _ object: AnyObject) -> String {
+        "\(role)-\(ObjectIdentifier(object).hashValue)"
     }
 
     /// Lists the window-owned background writers in the quit warning.
@@ -1614,8 +1740,13 @@ struct ContentView: View {
     /// Closing the main window keeps the app running but tears this view down: Caption and
     /// Review unregister without capturing, and a failed Analysis save would vanish with its
     /// weakly registered model. Capture and start saving everything now, while the editors are
-    /// still mounted, and leave quit a wait that holds only the model. (The live editor handler
-    /// stays registered until a reopened window replaces it.)
+    /// still mounted.
+    ///
+    /// The close is not vetoed: SwiftUI's `Window` scene owns the NSWindow delegate, and
+    /// replacing or proxying it to answer `windowShouldClose` would break SwiftUI's own window
+    /// handling. Instead the model's quit entry is re-registered with the state captured here
+    /// (it holds only the models, never this dismantled view), so an edit that could not be kept
+    /// at close is retried at quit and reaches the quit prompt even after the window reopens.
     private func handleMainWindowWillClose() {
         let caption = CaptionWorkspaceFlushCoordinator.shared
         if caption.hasRegisteredHandler {
@@ -1632,9 +1763,15 @@ struct ContentView: View {
                     knownC2PAURLs: browserViewModel.c2paURLs(among: model.selectedURLs)) { _ in }
             }
         }
-        MetadataEditorTerminationFlush.shared.registerWait("closedWindowEditor-\(ObjectIdentifier(model).hashValue)") {
-            await model.waitForEditorBoundary()
-            await model.waitForPendingWrites()
+        let browser = browserViewModel
+        let ownedElsewhere = metadataEditorIsOwnedElsewhere
+        MetadataEditorTerminationFlush.shared.registerEditorFlush(Self.terminationKey("editor", model)) {
+            try await MetadataEditorTerminationFlush.commitEditor(
+                model,
+                c2paURLs: { browser.c2paURLs(among: $0) },
+                refreshPendingStatus: { browser.refreshPendingStatusBatch(for: $0) },
+                isOwnedElsewhere: { ownedElsewhere }
+            )
         }
         AnalysisWorkspaceTerminationFlush.shared.retainUntilTermination(analysisWorkspaceModel)
     }
@@ -1711,25 +1848,8 @@ struct ContentView: View {
     /// Waits for saves already running (they may carry these edits, and History Only drafts
     /// finish asynchronously), then saves whatever is still unsaved and waits for it too.
     private func commitDepartingBrowserEditor() async -> EditorBoundaryCommitOutcome {
-        await metadataViewModel.waitForPendingWrites()
-        metadataViewModel.captureFocusedEditorText()
-        guard metadataViewModel.hasUnpersistedEditorChanges else { return .nothingToCommit }
-        let editorURLs = metadataViewModel.selectedURLs
-        if metadataViewModel.shouldDeferAutomaticCommitForVariables {
-            let failure: String? = await withCheckedContinuation { continuation in
-                metadataViewModel.keepUnresolvedVariablesAsPendingDraft { continuation.resume(returning: $0) }
-            }
-            guard let failure else { return .saved }
-            return .failed(message: EditorBoundaryCommitOutcome.failureMessage(
-                files: editorURLs.map(\.lastPathComponent).joined(separator: ", "), reason: failure))
-        }
-        let outcome = await withCheckedContinuation { continuation in
-            metadataViewModel.commitDepartingEditor(
-                knownC2PAURLs: browserViewModel.c2paURLs(among: editorURLs)
-            ) { continuation.resume(returning: $0) }
-        }
-        await metadataViewModel.waitForPendingWrites()
-        return outcome
+        await MetadataEditorTerminationFlush.departingCommit(
+            metadataViewModel, c2paURLs: { browserViewModel.c2paURLs(among: $0) })
     }
 
     private func confirmDiscardAfterFailedSave(_ message: String) -> Bool {
@@ -2019,7 +2139,7 @@ struct ContentView: View {
 
         case let .renameSettings(imageURL):
             guard selectDeadlineRemediationImages(imageURL) else { return }
-            performAfterMetadataFileOperation { browserViewModel.renameSelected() }
+            performAfterMetadataFileOperation { renameSelectedAfterOverlappingBatch() }
 
         case let .exportSettings(imageURL):
             guard selectDeadlineRemediationImages(imageURL) else { return }

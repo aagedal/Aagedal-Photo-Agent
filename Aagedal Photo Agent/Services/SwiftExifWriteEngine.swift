@@ -1670,3 +1670,42 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         metadata.xmp?.setValue(.array(existing), namespace: namespace, property: property)
     }
 }
+
+/// Removes `.aagedal_primary_<UUID>` staging directories that an interrupted embedded write
+/// (a quit or crash mid-publication) left in a photo folder. Only directories whose name is
+/// exactly that prefix plus a UUID, that are not symlinks, and that are older than the age
+/// threshold are removed; nothing else is ever touched. A live write finishes in seconds, so
+/// the one-hour threshold never races one.
+nonisolated enum PrimaryStagingDirectorySweeper {
+    static let prefix = ".aagedal_primary_"
+
+    static func isStagingDirectoryName(_ name: String) -> Bool {
+        guard name.hasPrefix(prefix) else { return false }
+        let suffix = String(name.dropFirst(prefix.count))
+        guard let uuid = UUID(uuidString: suffix) else { return false }
+        return uuid.uuidString == suffix
+    }
+
+    /// Returns the directories removed.
+    @discardableResult
+    static func sweep(folder: URL, olderThan age: TimeInterval = 3600, now: Date = Date()) -> [URL] {
+        let manager = FileManager.default
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey, .creationDateKey]
+        guard let entries = try? manager.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: keys, options: []) else { return [] }
+        var removed: [URL] = []
+        for entry in entries where isStagingDirectoryName(entry.lastPathComponent) {
+            guard let values = try? entry.resourceValues(forKeys: Set(keys)),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            guard let stamp = [values.contentModificationDate, values.creationDate].compactMap({ $0 }).max(),
+                  now.timeIntervalSince(stamp) > age else { continue }
+            if (try? manager.removeItem(at: entry)) != nil { removed.append(entry) }
+        }
+        return removed
+    }
+
+    /// Off-main sweep for a folder that was just opened.
+    static func sweepInBackground(folder: URL) {
+        Task.detached(priority: .utility) { sweep(folder: folder) }
+    }
+}

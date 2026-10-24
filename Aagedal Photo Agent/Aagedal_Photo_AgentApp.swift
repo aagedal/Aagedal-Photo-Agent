@@ -519,7 +519,7 @@ final class BackgroundOperationMonitor {
         let summary = summary(of: operations)
         let subject = summary.isEmpty ? "Background work" : summary.prefix(1).uppercased() + summary.dropFirst()
         let verb = operations.count > 1 ? "are" : "is"
-        return "\(subject) \(verb) still running. Quit anyway? Metadata batch and Person Shown writes finish before the app quits; other work stops."
+        return "\(subject) \(verb) still running. Quit anyway? Quitting first waits for metadata writes, and offers to stop waiting if they take long; other work stops."
     }
 
     init() {}
@@ -596,7 +596,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await DevelopVersionFlushCoordinator.shared.flush(.applicationTermination)
             },
             precedingWork: precedingWork,
-            waitTimeout: .seconds(4)
+            waitTimeout: .seconds(4),
+            describeActivity: { stage in
+                switch stage {
+                case .browserEditor: MetadataEditorTerminationFlush.shared.pendingActivityDescription
+                default: nil
+                }
+            },
+            canAbandonStage: { stage in
+                // Captured Primary Develop edits must never be abandoned from this prompt; the
+                // failure prompt forbids it too.
+                !(stage == .develop && DevelopPrimaryLifecycleCoordinator.shared.hasPendingWork)
+            }
         )
         Task { @MainActor in
             let shouldTerminate = await coordinator.resolve(
@@ -627,11 +638,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Saving Changes…"
-        alert.informativeText = "Still saving \(context.activityDescription). Keep waiting for it to finish, quit without saving what is still being written, or cancel quitting and keep working while it finishes."
         alert.addButton(withTitle: "Keep Waiting")
-        alert.addButton(withTitle: "Quit Without Saving")
+        if context.allowsQuitWithoutSaving {
+            alert.informativeText = "Still saving \(context.activityDescription). Keep waiting for it to finish, quit without saving this (the remaining changes are still saved first), or cancel quitting and keep working."
+            alert.addButton(withTitle: "Quit Without Saving")
+            alert.buttons[1].hasDestructiveAction = true
+        } else {
+            alert.informativeText = "Still saving \(context.activityDescription). Captured Develop edits cannot be abandoned: keep waiting, or cancel quitting and use Retry Develop Writes or Review Develop Conflicts."
+        }
         alert.addButton(withTitle: "Cancel Quit")
-        alert.buttons[1].hasDestructiveAction = true
         let presence = TerminationModalPresence()
         context.whenFlushFinishes {
             guard presence.isShowing else { return }
@@ -647,7 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let response = alert.runModal()
         presence.isShowing = false
         switch response {
-        case .alertSecondButtonReturn: return .quitWithoutSaving
+        case .alertSecondButtonReturn: return context.allowsQuitWithoutSaving ? .quitWithoutSaving : .cancelQuit
         case .alertThirdButtonReturn: return .cancelQuit
         default: return .keepWaiting // Keep Waiting, or dismissed because the flush finished
         }

@@ -1157,6 +1157,9 @@ final class BrowserViewModel {
             onDidOpenRootFolder?(url)
         }
 
+        // Interrupted embedded writes can leave hidden staging folders behind; clean old ones.
+        PrimaryStagingDirectorySweeper.sweepInBackground(folder: url)
+
         loadFolderTask = Task {
             do {
                 // Security-scoped bookmark creation may synchronously contact a file

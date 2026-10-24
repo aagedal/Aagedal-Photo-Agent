@@ -978,4 +978,36 @@ struct PrimaryDevelopWriteRequestBuilderTests {
         #expect(absentSidecar.expectedXMP == .init(data: nil))
     }
 
+    @Test("Opening a folder sweeps only stale, exactly named Primary staging directories")
+    func staleStagingDirectorySweep() throws {
+        let manager = FileManager.default
+        let folder = manager.temporaryDirectory.appendingPathComponent("staging-sweep-\(UUID().uuidString)", isDirectory: true)
+        try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: folder) }
+        let now = Date()
+        let old = now.addingTimeInterval(-2 * 3600)
+        func makeDirectory(_ name: String, modified: Date) throws -> URL {
+            let url = folder.appendingPathComponent(name, isDirectory: true)
+            try manager.createDirectory(at: url, withIntermediateDirectories: false)
+            try Data("staged".utf8).write(to: url.appendingPathComponent("photo.jpg"))
+            try manager.setAttributes([.modificationDate: modified, .creationDate: modified], ofItemAtPath: url.path)
+            return url
+        }
+        let stale = try makeDirectory(".aagedal_primary_\(UUID().uuidString)", modified: old)
+        let fresh = try makeDirectory(".aagedal_primary_\(UUID().uuidString)", modified: now)
+        let lookalike = try makeDirectory(".aagedal_primary_not-a-uuid", modified: old)
+        let lowercase = try makeDirectory(".aagedal_primary_\(UUID().uuidString.lowercased())", modified: old)
+        let other = try makeDirectory("Selects", modified: old)
+        let staleFile = folder.appendingPathComponent(".aagedal_primary_\(UUID().uuidString)")
+        try Data("not a directory".utf8).write(to: staleFile)
+        try manager.setAttributes([.modificationDate: old], ofItemAtPath: staleFile.path)
+
+        let removed = PrimaryStagingDirectorySweeper.sweep(folder: folder, now: now)
+        #expect(removed.map(\.lastPathComponent) == [stale.lastPathComponent])
+        #expect(!manager.fileExists(atPath: stale.path))
+        for kept in [fresh, lookalike, lowercase, other, staleFile] {
+            #expect(manager.fileExists(atPath: kept.path), "\(kept.lastPathComponent) must never be removed")
+        }
+    }
+
 }
