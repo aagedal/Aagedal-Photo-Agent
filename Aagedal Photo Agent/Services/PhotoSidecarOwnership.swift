@@ -67,6 +67,59 @@ nonisolated enum PhotoSidecarOwnership {
         return metadata
     }
 
+    // MARK: - Splitting a RAW+JPEG pair
+
+    /// True when a RAW file named `stem` (any RAW extension, case-insensitive) is in `folder`
+    /// right now. A direct listing, never the cached stem index: callers ask right after this
+    /// process moved files.
+    static func folderContainsRAW(stem: String, in folder: URL) -> Bool {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return false }
+        let wanted = stem.lowercased()
+        return names.contains { name in
+            let url = URL(fileURLWithPath: name)
+            return url.deletingPathExtension().lastPathComponent.lowercased() == wanted
+                && SupportedImageFormats.rawExtensions.contains(url.pathExtension.lowercased())
+        }
+    }
+
+    /// True when `imageURL` is a RAW or has a same-stem RAW beside it — i.e. its stem `.xmp`'s
+    /// develop settings belong to a RAW. Ask before a split moves anything.
+    static func stemGroupIncludesRAW(_ imageURL: URL) -> Bool {
+        SupportedImageFormats.isRaw(url: imageURL) || folderContainsRAW(
+            stem: imageURL.deletingPathExtension().lastPathComponent,
+            in: imageURL.deletingLastPathComponent())
+    }
+
+    /// For a stem `.xmp` that a RAW+JPEG split copied, moved or left behind. Its Camera Raw block
+    /// belongs to the RAW; once no RAW shares its stem in its folder, the non-RAW photo beside it
+    /// would adopt that block in place of its own embedded develop — dropping the JPEG's own
+    /// Anonymizer redaction and giving it the RAW's absolute white balance and crop. So the
+    /// develop block is removed (descriptive metadata stays). A sidecar still beside a RAW keeps
+    /// it. Returns true when the file was rewritten.
+    @discardableResult
+    static func detachRawDevelopIfNoRAWBeside(sidecarURL: URL) throws -> Bool {
+        let folder = sidecarURL.deletingLastPathComponent()
+        guard FileManager.default.fileExists(atPath: sidecarURL.path),
+              !folderContainsRAW(stem: sidecarURL.deletingPathExtension().lastPathComponent, in: folder)
+        else { return false }
+        let data = try Data(contentsOf: sidecarURL)
+        guard let stripped = XMPSidecarService.removingDevelopBlock(from: data) else { return false }
+        try XMPSidecarService.installSidecarBytes(stripped, at: sidecarURL)
+        return true
+    }
+
+    /// Runs `detachRawDevelopIfNoRAWBeside` once per sidecar after a batch finished moving files
+    /// (per-item decisions mid-batch would see a half-moved pair). Returns per-sidecar failures.
+    static func detachRawDevelopAfterSplit(_ sidecarURLs: [URL]) -> [(URL, Error)] {
+        var seen = Set<String>()
+        var failures: [(URL, Error)] = []
+        for url in sidecarURLs where seen.insert(url.standardizedFileURL.path.lowercased()).inserted {
+            do { try detachRawDevelopIfNoRAWBeside(sidecarURL: url) }
+            catch { failures.append((url, error)) }
+        }
+        return failures
+    }
+
     static func hasSurvivingStemSibling(of imageURL: URL, in folderURL: URL) throws -> Bool {
         let stem = imageURL.deletingPathExtension().lastPathComponent
         return try FileManager.default.contentsOfDirectory(

@@ -655,6 +655,9 @@ actor FileSystemService {
         // their source. A RAW+JPEG pair shares one stem `.xmp`: the first image copies it (its
         // partner still needs it), and the partner must accept that copy instead of failing.
         var transferredXMPSources: [URL: URL] = [:]
+        // Both halves of every RAW+JPEG `.xmp` this batch split; see
+        // `PhotoSidecarOwnership.detachRawDevelopAfterSplit`.
+        var splitPairSidecars: [(sourceURL: URL, sidecar: URL)] = []
         for sourceURL in sourceURLs {
             if Task.isCancelled {
                 cancellationStoppedRemainingItems = true
@@ -665,6 +668,9 @@ actor FileSystemService {
             let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
             let xmpAlreadyTransferred = transferredXMPSources[xmpDestination.standardizedFileURL]
                 == xmpSource.standardizedFileURL
+            // Decided before anything moves, while the pair is still together.
+            let xmpBelongsToRAW = !xmpAlreadyTransferred && fileManager.fileExists(atPath: xmpSource.path)
+                && PhotoSidecarOwnership.stemGroupIncludesRAW(sourceURL)
             let reservedDestinations = [destinationURL]
                 + (xmpAlreadyTransferred ? [] : [xmpDestination])
                 + metadataSidecarService.relocationDestinationURLs(for: destinationURL, in: destinationFolder)
@@ -713,6 +719,9 @@ actor FileSystemService {
                         }
                     } else if survivingSibling {
                         try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)
+                        if xmpBelongsToRAW {
+                            splitPairSidecars += [(sourceURL, xmpDestination), (sourceURL, xmpSource)]
+                        }
                     } else {
                         try fileManager.moveItem(at: xmpSource, to: xmpDestination)
                     }
@@ -740,6 +749,7 @@ actor FileSystemService {
                 ))
             }
         }
+        appendSplitPairDetachFailures(splitPairSidecars, to: &failures)
         return ImageMoveResult(
             movedSourceURLs: moved,
             failures: failures,
@@ -766,6 +776,9 @@ actor FileSystemService {
         // Duplicating a RAW+JPEG pair copies one shared `.xmp`; the partner may reuse that
         // copy so the duplicates keep a common stem instead of splitting into "copy 2".
         var duplicatedXMPSources: [URL: URL] = [:]
+        // `.xmp` copies made for a duplicate whose pair includes a RAW; a copy that ends up
+        // beside only the duplicated JPEG must not hand it the RAW's develop settings.
+        var splitPairSidecars: [(sourceURL: URL, sidecar: URL)] = []
 
         for request in requests {
             if Task.isCancelled {
@@ -818,8 +831,12 @@ actor FileSystemService {
                 let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
                 if !fileManager.fileExists(atPath: xmpDestination.path) {
                     do {
+                        let xmpBelongsToRAW = PhotoSidecarOwnership.stemGroupIncludesRAW(source.url)
                         try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)
                         duplicatedXMPSources[xmpDestination.standardizedFileURL] = xmpSource.standardizedFileURL
+                        if xmpBelongsToRAW {
+                            splitPairSidecars.append((source.url, xmpDestination))
+                        }
                     } catch {
                         failures.append(ItemFailure(
                             sourceURL: source.url,
@@ -846,11 +863,30 @@ actor FileSystemService {
                 duplicate: ImageFile(url: destinationURL, copyingFrom: source)
             ))
         }
+        appendSplitPairDetachFailures(splitPairSidecars, to: &failures)
         return DuplicateResult(
             completed: completed,
             failures: failures,
             cancellationStoppedRemainingItems: cancellationStoppedRemainingItems
         )
+    }
+
+    /// After a batch that split RAW+JPEG pairs: strips the RAW's develop block from each
+    /// recorded `.xmp` left beside only non-RAW photos, reporting failures per source photo.
+    private func appendSplitPairDetachFailures(
+        _ sidecars: [(sourceURL: URL, sidecar: URL)],
+        to failures: inout [ItemFailure]
+    ) {
+        let failed = PhotoSidecarOwnership.detachRawDevelopAfterSplit(sidecars.map(\.sidecar))
+        for (sidecar, error) in failed {
+            let sourceURL = sidecars.first { $0.sidecar == sidecar }?.sourceURL ?? sidecar
+            failures.append(ItemFailure(
+                sourceURL: sourceURL,
+                stage: .xmpSidecar,
+                message: "The RAW's develop settings could not be removed from \(sidecar.lastPathComponent), "
+                    + "so the JPEG beside it may show them: \(error.localizedDescription)"
+            ))
+        }
     }
 
     private func moveFolder(

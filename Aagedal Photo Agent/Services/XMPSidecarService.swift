@@ -650,6 +650,21 @@ struct XMPSidecarService: Sendable {
         try Self.installSidecarBytes(data, at: url)
     }
 
+    /// `data` with its Camera Raw (crs) and app-private develop block removed (masks, Anonymizer,
+    /// watermarks, film, layer order); descriptive metadata and other namespaces are kept. Nil
+    /// when the bytes carry no develop settings, or don't parse (such a sidecar can't hand
+    /// develop settings to anything either).
+    nonisolated static func removingDevelopBlock(from data: Data) -> Data? {
+        guard let xmp = try? XMPReader.readFromXML(data),
+              XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil }).cameraRaw != nil
+        else { return nil }
+        var stripped = xmp
+        XMPDataBuilder.removeCRSBlock(&stripped)
+        guard let output = XMPWriter.generateXML(stripped).data(using: .utf8),
+              (try? XMPReader.readFromXML(output)) != nil else { return nil }
+        return output
+    }
+
     /// Atomic sidecar install that tells the RAW-sibling index this folder change was our own
     /// (a sidecar write never creates a RAW), so a batch of sidecar saves doesn't relist the
     /// folder after every write.

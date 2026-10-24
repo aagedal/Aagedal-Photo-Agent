@@ -1,4 +1,5 @@
 import Foundation
+import SwiftMediaMetadata
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -511,6 +512,54 @@ struct RenameExecutionServiceTests {
         #expect(result.status == .failed)
         #expect(result.rollbackStatus == .succeeded)
         #expect(fileSystem.snapshot() == original)
+    }
+
+    @Test("Splitting a RAW+JPEG pair by renaming one half leaves the RAW's develop only beside the RAW",
+          arguments: ["JPG", "ARW"])
+    func splitPairKeepsRawDevelopWithRaw(renamedExtension: String) async throws {
+        let raw = root.appendingPathComponent("IMG_5.ARW")
+        let jpeg = root.appendingPathComponent("IMG_5.JPG")
+        let xmp = root.appendingPathComponent("IMG_5.xmp")
+        let renamed = renamedExtension == "ARW" ? raw : jpeg
+        let plan = RenamePlanningService().makePlan(
+            items: [RenamePlanningItem(sourceImageURL: renamed)],
+            recipe: BatchRenameRecipe(name: "Desk", components: [.literal("desk.\(renamedExtension)")]),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseInsensitive,
+                existingURLs: [raw, jpeg, xmp]
+            )
+        )
+        #expect(plan.canExecute)
+        let sharedXMP = Self.pairSidecarXMP()
+        let fileSystem = MemoryRenameFileSystem([
+            raw: Data("raw".utf8), jpeg: Data("jpeg".utf8), xmp: sharedXMP,
+        ])
+        let result = await service(fileSystem).execute(plan)
+
+        #expect(result.succeeded)
+        #expect(result.issues.isEmpty)
+        let copied = try #require(fileSystem.dataIfPresent(at: root.appendingPathComponent("desk.xmp")))
+        let left = try #require(fileSystem.dataIfPresent(at: xmp))
+        let (besideJPEG, besideRAW) = renamedExtension == "JPG" ? (copied, left) : (left, copied)
+        // The JPEG's half keeps the shared caption but not the RAW's develop block, so the JPEG
+        // goes on rendering (and redacting) with its own embedded develop.
+        let jpegSide = try #require(XMPMetadataReader.read(besideJPEG))
+        #expect(jpegSide.cameraRaw == nil)
+        #expect(jpegSide.description == "Pair caption")
+        // The RAW's half is untouched.
+        #expect(besideRAW == sharedXMP)
+    }
+
+    /// A RAW+JPEG stem sidecar: a shared caption plus the RAW's develop (incl. a redaction).
+    static func pairSidecarXMP() -> Data {
+        var xmp = XMPData()
+        xmp.description = "Pair caption"
+        var develop = CameraRawSettings()
+        develop.exposure2012 = 1.25
+        develop.temperature = 3200
+        develop.anonymizer = AnonymizerSettings(amount: 50, blackOut: nil)
+        XMPDataBuilder.applyCameraRaw(develop, imageAspect: nil, into: &xmp)
+        return Data(XMPWriter.generateXML(xmp).utf8)
     }
 
     private func service(_ fileSystem: MemoryRenameFileSystem) -> RenameExecutionService {

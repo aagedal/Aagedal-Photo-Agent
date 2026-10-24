@@ -19,6 +19,71 @@ struct C2PASigningImportTests {
         #expect(manifest["alg"] as? String == "es256")
     }
 
+    @Test("A redacted render of a camera-signed photo is signed without the unredacted parent")
+    func redactedRenderOmitsParentIngredient() {
+        var maskBlur = CameraRawSettings()
+        maskBlur.localAdjustments = [MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 80, blackOut: nil))]
+        var blackOut = CameraRawSettings()
+        blackOut.localAdjustments = [MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: nil, blackOut: true))]
+        var globalBlur = CameraRawSettings()
+        globalBlur.anonymizer = AnonymizerSettings(amount: 40, blackOut: nil)
+        var ordinaryEdit = CameraRawSettings()
+        ordinaryEdit.exposure2012 = 0.5
+        ordinaryEdit.localAdjustments = [MaskAdjustment(name: "Sky", exposure: -0.5)]
+        var disabledRedaction = CameraRawSettings()
+        var disabledMask = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 80, blackOut: nil))
+        disabledMask.enabled = false
+        disabledRedaction.localAdjustments = [disabledMask]
+
+        for redacted in [maskBlur, blackOut, globalBlur] {
+            #expect(redacted.hasActiveRedaction)
+            #expect(C2PARenderSigningMode.forRender(sourceHasC2PA: true, renderedSettings: redacted)
+                == .signOmittingRedactedParent)
+            #expect(C2PARenderSigningMode.forRender(sourceHasC2PA: false, renderedSettings: redacted) == .sign)
+        }
+        for unredacted in [ordinaryEdit, disabledRedaction, CameraRawSettings()] {
+            #expect(!unredacted.hasActiveRedaction)
+            #expect(C2PARenderSigningMode.forRender(sourceHasC2PA: true, renderedSettings: unredacted)
+                == .signWithParentIngredient)
+        }
+        #expect(C2PARenderSigningMode.forRender(sourceHasC2PA: true, renderedSettings: nil) == .signWithParentIngredient)
+        #expect(C2PARenderSigningMode.forRender(sourceHasC2PA: false, renderedSettings: nil) == .sign)
+    }
+
+    @Test("Plain signing arguments never reference a parent ingredient")
+    func signingArgumentConstruction() {
+        let plain = C2PASigningService.signArguments(
+            imagePath: "/out/render.jpg", manifestPath: "/tmp/m.json", outputPath: "/tmp/o.jpg")
+        #expect(plain == ["/out/render.jpg", "-m", "/tmp/m.json", "-o", "/tmp/o.jpg", "-f"])
+        #expect(!plain.contains("-p"))
+        #expect(!plain.contains("--ingredient"))
+
+        let withParent = C2PASigningService.signArguments(
+            imagePath: "/out/render.jpg", manifestPath: "/tmp/m.json", outputPath: "/tmp/o.jpg",
+            parentIngredientDirectoryPath: "/tmp/ingredient")
+        #expect(withParent == ["/out/render.jpg", "-m", "/tmp/m.json", "-p", "/tmp/ingredient", "-o", "/tmp/o.jpg", "-f"])
+        #expect(C2PASigningService.ingredientExtractionArguments(
+            parentPath: "/src/camera.jpg", ingredientDirectoryPath: "/tmp/ingredient")
+            == ["/src/camera.jpg", "--ingredient", "-o", "/tmp/ingredient"])
+    }
+
+    @Test("A redacted render records the redaction in the manifest's actions")
+    func redactionIsRecordedInActions() throws {
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 80, blackOut: nil))]
+        let actions = C2PAAction.fromSettings(settings)
+        #expect(actions.contains { $0.action == "c2pa.edited" && $0.description == C2PAAction.redactionDescription })
+
+        var plain = CameraRawSettings()
+        plain.exposure2012 = 1
+        #expect(!C2PAAction.fromSettings(plain).contains { $0.description == C2PAAction.redactionDescription })
+
+        let manifest = try C2PASigningService.buildManifestJSON(
+            title: "render.jpg", author: nil, actions: actions, certificatePath: "",
+            claimGenerator: "Aagedal Photo Agent/1.0")
+        #expect(String(decoding: manifest, as: UTF8.self).contains("Regions redacted"))
+    }
+
     @Test("Private-key export failure leaves the prior pair untouched")
     func keyExportFailurePreservesExistingPair() async throws {
         let fixture = try Fixture(importer: .failure)

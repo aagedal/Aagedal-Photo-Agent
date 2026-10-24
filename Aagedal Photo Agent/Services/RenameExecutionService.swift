@@ -95,6 +95,9 @@ nonisolated struct RenameExecutionIssue: Equatable, Sendable {
         case metadataUpdateFailed
         case rollbackMoveFailed
         case rollbackMetadataRestoreFailed
+        /// Post-commit, non-fatal: a split RAW+JPEG `.xmp` left beside only the JPEG kept the
+        /// RAW's develop block.
+        case pairedDevelopDetachFailed
     }
 
     let code: Code
@@ -389,12 +392,33 @@ nonisolated struct RenameExecutionService: Sendable {
             await Task.yield()
         }
 
+        // A RAW renamed away from its JPEG left the shared `.xmp` beside only the JPEG: strip the
+        // RAW's develop block there too (the renamed copy already carries it). Best effort after
+        // commit — the rename itself succeeded — but a failure is reported.
+        var postCommitIssues: [RenameExecutionIssue] = []
+        for state in states where state.action.detachesRawDevelopAtSourceAfterCommit {
+            let action = state.action
+            do {
+                let data = try fileSystem.data(at: action.artifact.sourceURL)
+                if let stripped = XMPSidecarService.removingDevelopBlock(from: data) {
+                    try fileSystem.writeDataAtomically(stripped, to: action.artifact.sourceURL)
+                }
+            } catch {
+                postCommitIssues.append(Self.issue(
+                    .pairedDevelopDetachFailed,
+                    action: action,
+                    detail: "The RAW's develop settings could not be removed from the sidecar left with its JPEG: "
+                        + error.localizedDescription
+                ))
+            }
+        }
+
         return RenameExecutionResult(
             status: .succeeded,
             rollbackStatus: .notNeeded,
             bundles: Self.bundleResults(plan: plan, states: states),
             moves: moves,
-            issues: [],
+            issues: postCommitIssues,
             residuals: []
         )
     }
@@ -559,18 +583,30 @@ nonisolated struct RenameExecutionService: Sendable {
                 continue
             }
             do {
-                let metadata = try preparedMetadataUpdate(
+                let split = splitPairDevelopPlan(plan: plan, artifact: candidate.artifact)
+                var metadata = try preparedMetadataUpdate(
                     plan: plan,
                     entry: candidate.entry,
                     artifact: candidate.artifact
                 )
-                prepared.append(PreparedAction(
+                if split.detachAtDestination {
+                    // The copy lands beside only non-RAW photos: it carries the descriptive
+                    // record but not the RAW's develop block (the JPEG keeps its embedded one).
+                    let original = try metadata?.original ?? fileSystem.data(at: candidate.artifact.sourceURL)
+                    let base = metadata?.updated ?? original
+                    if let stripped = XMPSidecarService.removingDevelopBlock(from: base) {
+                        metadata = (original, stripped)
+                    }
+                }
+                var action = PreparedAction(
                     itemIndex: candidate.entry.itemIndex,
                     artifact: candidate.artifact,
                     temporaryURL: temporaryURL,
                     originalMetadataData: metadata?.original,
                     updatedMetadataData: metadata?.updated
-                ))
+                )
+                action.detachesRawDevelopAtSourceAfterCommit = split.detachAtSource
+                prepared.append(action)
             } catch {
                 issues.append(Self.issue(
                     candidate.artifact.originalFilenameMetadataMutation == nil
@@ -583,6 +619,54 @@ nonisolated struct RenameExecutionService: Sendable {
             }
         }
         return issues.isEmpty ? .success(prepared) : .failure(PreflightFailure(issues: issues))
+    }
+
+    /// For a stem `.xmp` copied because its RAW+JPEG pair is split by this rename: the RAW owns
+    /// its Camera Raw block, so whichever half ends up beside only non-RAW photos must lose it —
+    /// otherwise that JPEG adopts the RAW's develop in place of its own embedded settings (and
+    /// its own redactions). The half that stays with a RAW keeps it.
+    private func splitPairDevelopPlan(
+        plan: RenamePlan,
+        artifact: RenameArtifactAction
+    ) -> (detachAtDestination: Bool, detachAtSource: Bool) {
+        guard artifact.identifier == "xmp", artifact.preservesSource else { return (false, false) }
+        let sourceStem = artifact.sourceURL.deletingPathExtension().lastPathComponent
+        let sourceFolder = artifact.sourceURL.deletingLastPathComponent()
+        // Probed before anything moves: does this pair include a RAW at all?
+        guard !rawImageURLs(stem: sourceStem, in: sourceFolder).isEmpty else { return (false, false) }
+        let destinationStem = artifact.destinationURL.deletingPathExtension().lastPathComponent
+        let destinationFolder = artifact.destinationURL.deletingLastPathComponent()
+        return (
+            !rawWillRemain(stem: destinationStem, in: destinationFolder, plan: plan),
+            !rawWillRemain(stem: sourceStem, in: sourceFolder, plan: plan)
+        )
+    }
+
+    /// Whether a RAW named `stem` sits in `folder` once the plan has run: one renamed onto that
+    /// stem, or one already there that the plan doesn't move away.
+    private func rawWillRemain(stem: String, in folder: URL, plan: RenamePlan) -> Bool {
+        func stemKey(_ url: URL) -> String {
+            Self.path(url.deletingPathExtension()).lowercased()
+        }
+        let key = stemKey(folder.appendingPathComponent(stem))
+        let renamed = plan.entries.filter { $0.disposition == .rename }
+        if renamed.contains(where: { entry in
+            guard let destination = entry.plannedDestinationImageURL else { return false }
+            return SupportedImageFormats.isRaw(url: destination) && stemKey(destination) == key
+        }) {
+            return true
+        }
+        let movingAway = Set(renamed.map { Self.path($0.sourceImageURL).lowercased() })
+        return rawImageURLs(stem: stem, in: folder).contains { !movingAway.contains(Self.path($0).lowercased()) }
+    }
+
+    /// Existing RAW files named `stem` in `folder`, probed through the injected file system.
+    private func rawImageURLs(stem: String, in folder: URL) -> [URL] {
+        SupportedImageFormats.rawExtensions.sorted().flatMap { ext in
+            Set([ext.lowercased(), ext.uppercased()]).map {
+                folder.appendingPathComponent(stem).appendingPathExtension($0)
+            }
+        }.filter { fileSystem.itemExists(at: $0) }
     }
 
     private func preparedMetadataUpdate(
@@ -864,6 +948,8 @@ nonisolated struct RenameExecutionService: Sendable {
         let temporaryURL: URL
         let originalMetadataData: Data?
         let updatedMetadataData: Data?
+        /// A split RAW+JPEG `.xmp` whose source stays beside only non-RAW photos.
+        var detachesRawDevelopAtSourceAfterCommit = false
     }
 
     private struct ActionState: Sendable {

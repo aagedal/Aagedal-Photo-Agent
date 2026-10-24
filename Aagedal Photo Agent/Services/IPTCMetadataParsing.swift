@@ -1142,7 +1142,7 @@ nonisolated func encodeHSLAdjustments(_ hsl: HSLAdjustments) -> [(name: String, 
 /// Decode per-color HSL adjustments from a property-name → signed-int `lookup` —
 /// the exact inverse of `encodeHSLAdjustments`. Returns nil when no channel
 /// carries a value. Shared by the embedded-file dict parsers
-/// (`iptcMetadataFromDict`, `BrowserViewModel.cameraRawSettings`) and the .xmp
+/// (`iptcMetadataFromDict`, which the Browser grid also uses) and the .xmp
 /// sidecar reader so every read path reconstructs HSL identically.
 nonisolated func decodeHSLAdjustments(_ lookup: (String) -> Int?) -> HSLAdjustments? {
     var hsl = HSLAdjustments()
