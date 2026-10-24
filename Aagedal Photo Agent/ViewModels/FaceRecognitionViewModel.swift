@@ -634,6 +634,9 @@ final class FaceRecognitionViewModel {
     /// folder was displayed when their background scan completed.
     @ObservationIgnored private var deferredPostprocessingFolders: Set<URL> = []
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
+    /// Person Shown write batches admitted and not yet finished (quit warns about and awaits them).
+    @ObservationIgnored private var activeFieldMutationWriteCount = 0
+    var hasPendingFieldMutationWrites: Bool { activeFieldMutationWriteCount > 0 }
     @ObservationIgnored private let injectedFieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)?
     @ObservationIgnored private let fieldMutationModeResolver: @MainActor (Bool, Bool) -> MetadataWriteMode
     private(set) var fieldMutationResults: [MetadataFieldMutationWriteResult] = []
@@ -3152,10 +3155,12 @@ final class FaceRecognitionViewModel {
         if !appliedNameUpdates.isEmpty {
             inFlightAppliedNameChanges.append((inFlightID, Self.fieldMutationFolderIdentity(folderURL), appliedNameUpdates))
         }
+        activeFieldMutationWriteCount += 1
         metadataWriteTask = Task {
             // The completion closure releases FaceBar's busy state, including failures. Success
             // is represented by immutable results and change notifications, never this callback.
             defer { onComplete?() }
+            defer { activeFieldMutationWriteCount -= 1 }
             await previous?.value
             // Content-credential status by path (URL spellings of one file may differ). Photos the
             // caller could not describe are read from disk; an unreadable photo is refused below.
@@ -3261,6 +3266,17 @@ final class FaceRecognitionViewModel {
     }
 
     func waitForPendingFieldMutationWrites() async { await metadataWriteTask?.value }
+
+    /// Quit-time barrier: every admitted Person Shown write (including ones queued meanwhile) and
+    /// the face-data record of the names it applied, so a quit cannot leave photos written but
+    /// their applied names unrecorded.
+    func waitForPendingPersonShownWritesAndRecords() async {
+        while let task = metadataWriteTask {
+            await task.value
+            if metadataWriteTask == task { break }
+        }
+        await waitForCurrentFaceDataPersistence()
+    }
 
     /// A face group (or confirmed player) is one person: its name is written as a single
     /// Person Shown entry. Splitting on commas broke Photo Mechanic style "Last, First" names.

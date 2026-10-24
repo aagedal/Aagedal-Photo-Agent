@@ -1256,7 +1256,7 @@ struct MetadataReviewPersistenceTests {
 
 @Suite("Variable draft lifecycle integration")
 struct VariableDraftLifecycleIntegrationTests {
-    @Test("Close and Quit block before capturing another editor until variable drafts are durable")
+    @Test("Close blocks before capturing until variable drafts are durable; Quit captures first and still reports them")
     @MainActor
     func unpersistedVariableDraftBlocksLifecycle() async throws {
         let lifecycle = VariableDraftLifecycleCoordinator()
@@ -1278,10 +1278,12 @@ struct VariableDraftLifecycleIntegrationTests {
         } catch {
             #expect(error.localizedDescription == "Variable draft is not saved")
         }
-        #expect(captures == 0)
+        // Quit captures every editor before checking variable drafts, so Quit Without Saving on
+        // the Caption stage abandons only the variable draft, never the other editors' buffers.
+        #expect(captures == 1)
         lifecycle.unregister(ownerID: owner)
         try await termination.flush()
-        #expect(captures == 1)
+        #expect(captures == 1, "a retry drains the retained capture without recapturing")
         #expect(!coordinator.hasPendingPersistence)
     }
 }

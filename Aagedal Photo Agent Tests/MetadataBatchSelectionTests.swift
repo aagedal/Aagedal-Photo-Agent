@@ -1040,6 +1040,31 @@ extension MetadataBatchSelectionTests {
         #expect(draft.metadata.description == "Must survive")
     }
 
+    @Test("waitForPendingWrites returns only once a boundary's fallback draft is durable")
+    func boundaryDraftFallbackIsPartOfWriteChain() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = try makeJPEG(in: folder, name: "quit-during-boundary.jpg")
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: FailingDescriptiveWriteEngine())
+        try await loadSingle(model, url, in: folder)
+        model.editingMetadata.description = "Durable before quit"
+        model.markChanged()
+        var outcome: EditorBoundaryCommitOutcome?
+        await withProfessionalPreset {
+            model.commitDepartingEditor { outcome = $0 }
+        }
+        // Quit (and rename / Paste IPTC) wait on the write chain; the draft must already be on
+        // disk when that wait returns, not land later from a detached task.
+        await model.waitForPendingWrites()
+        guard case .keptAsDraft = try #require(outcome) else {
+            Issue.record("Expected a pending draft, got \(String(describing: outcome))")
+            return
+        }
+        let draft = try #require(MetadataSidecarService().loadSidecar(for: url, in: folder))
+        #expect(draft.pendingChanges)
+        #expect(draft.metadata.description == "Durable before quit")
+    }
+
     @Test("resolving a description conflict to the shown value still saves it")
     func descriptionConflictChoiceIsSaved() async throws {
         let folder = try makeFolder()

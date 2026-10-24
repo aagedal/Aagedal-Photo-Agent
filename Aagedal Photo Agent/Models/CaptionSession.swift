@@ -1020,8 +1020,9 @@ final class CaptionWorkspaceFlushCoordinator {
         try variableLifecycle.requirePersisted()
     }
 
+    /// Termination drains first and checks variable drafts separately afterwards, so a retained
+    /// variable draft cannot keep already captured caption drafts from being written.
     fileprivate func drainQueuedPersistenceForTermination() async throws {
-        try requireVariableDraftsPersisted()
         try await persistenceQueue.drainAsync()
     }
 }
@@ -1040,15 +1041,20 @@ final class CaptionWorkspaceTerminationFlushOperation {
     }
 
     func flush() async throws {
-        try coordinator.requireVariableDraftsPersisted()
-        // Every mounted editor (Caption and each Review pane) is captured, not only the latest.
-        // One editor's refusal does not stop the others; their drafts are still drained before
-        // the combined failure is reported.
+        // Every mounted editor (Caption and each Review pane) is captured, not only the latest,
+        // and the FIFO is drained, before anything can fail the stage: a retained variable draft
+        // or one editor's refusal must not stop the others' edits from becoming durable (Quit
+        // Without Saving on this stage would otherwise drop them). Failures are reported together.
+        var failures: [any Error] = []
         let pending = coordinator.registeredOwnerIDs.filter { !capturedOwners.contains($0) }
         let result = coordinator.enqueueFlush(owners: pending)
         capturedOwners.formUnion(result.captured)
-        try await coordinator.drainQueuedPersistenceForTermination()
-        try CaptionWorkspaceFlushCoordinator.throwCombined(result.failures)
+        failures.append(contentsOf: result.failures)
+        do { try await coordinator.drainQueuedPersistenceForTermination() }
+        catch { failures.append(error) }
+        do { try coordinator.requireVariableDraftsPersisted() }
+        catch { failures.append(error) }
+        try CaptionWorkspaceFlushCoordinator.throwCombined(failures)
     }
 }
 

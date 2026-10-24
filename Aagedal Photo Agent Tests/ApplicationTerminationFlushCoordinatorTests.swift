@@ -213,6 +213,294 @@ struct ApplicationTerminationFlushCoordinatorTests {
         #expect(await queue.pendingCountWhenIdle() == 0)
     }
 
+    @Test("Stages run Browser editor, Caption, Analysis, Develop")
+    func fullStageOrder() async {
+        #expect(ApplicationTerminationFlushStage.allCases == [.browserEditor, .caption, .analysis, .develop])
+        #expect(ApplicationTerminationFlushStage.browserEditor.next == .caption)
+        #expect(ApplicationTerminationFlushStage.develop.next == nil)
+        var stages: [ApplicationTerminationFlushStage] = []
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            browserEditorFlush: { stages.append(.browserEditor) },
+            captionFlush: { stages.append(.caption) },
+            analysisFlush: { stages.append(.analysis) },
+            developFlush: {
+                stages.append(.develop)
+                return .succeeded
+            }
+        )
+        #expect(await coordinator.attempt() == .succeeded)
+        #expect(stages == [.browserEditor, .caption, .analysis, .develop])
+    }
+
+    @Test("Quit Without Saving on the Browser editor still flushes Caption, and on Caption still flushes the rest")
+    func abandoningOneEditorNeverSkipsTheOther() async {
+        var stages: [ApplicationTerminationFlushStage] = []
+        var failing: Set<ApplicationTerminationFlushStage> = [.browserEditor]
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            browserEditorFlush: {
+                stages.append(.browserEditor)
+                if failing.contains(.browserEditor) { throw InjectedTerminationFailure.browserEditor }
+            },
+            captionFlush: {
+                stages.append(.caption)
+                if failing.contains(.caption) { throw InjectedTerminationFailure.caption }
+            },
+            analysisFlush: { stages.append(.analysis) },
+            developFlush: {
+                stages.append(.develop)
+                return .succeeded
+            }
+        )
+
+        var presented: [ApplicationTerminationFlushFailure] = []
+        #expect(await coordinator.resolve { failure in
+            presented.append(failure)
+            return .quitWithoutSaving
+        })
+        #expect(stages == [.browserEditor, .caption, .analysis, .develop])
+        #expect(presented == [ApplicationTerminationFlushFailure(
+            stage: .browserEditor, message: InjectedTerminationFailure.browserEditor.localizedDescription)])
+
+        stages = []
+        presented = []
+        failing = [.caption]
+        #expect(await coordinator.resolve { failure in
+            presented.append(failure)
+            return .quitWithoutSaving
+        })
+        #expect(stages == [.browserEditor, .caption, .analysis, .develop])
+        #expect(presented.map(\.stage) == [.caption])
+    }
+
+    @Test("Caption stage captures every editor and drains the FIFO before a variable-draft failure fails it")
+    func captionStageCapturesAndDrainsBeforeVariableCheck() async throws {
+        let queue = CaptionDraftPersistenceQueue(label: "caption-termination-test.variables")
+        // A retained caption draft whose first write failed; the drain's retry now succeeds.
+        let written = TerminationPersistenceGate()
+        queue.enqueue { try written.attempt() }
+        #expect(await queue.pendingCountWhenIdle() == 1)
+        written.shouldFail = false
+        let variables = VariableDraftLifecycleCoordinator()
+        let variableOwner = UUID()
+        variables.register(ownerID: variableOwner) { throw InjectedTerminationFailure.variables }
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue, variableLifecycle: variables)
+        let owner = UUID()
+        var editorCaptures = 0
+        coordinator.register(owner: owner) { editorCaptures += 1 }
+        defer { coordinator.unregister(owner: owner) }
+
+        do {
+            try await CaptionWorkspaceTerminationFlushOperation(coordinator: coordinator).flush()
+            Issue.record("Expected the retained variable draft to fail the Caption stage")
+        } catch {
+            #expect(error.localizedDescription == InjectedTerminationFailure.variables.localizedDescription)
+        }
+        // Quit Without Saving on this stage would abandon only the variable draft: the editor was
+        // captured and the already queued caption draft is on disk.
+        #expect(editorCaptures == 1)
+        #expect(written.attempts == 2)
+        #expect(await queue.pendingCountWhenIdle() == 0)
+    }
+
+    @Test("Failure alerts describe the stage that failed, even while Develop has pending work")
+    func failurePresentationFollowsFailedStage() {
+        let expectedTitles: [ApplicationTerminationFlushStage: String] = [
+            .browserEditor: "Metadata Edits Not Saved",
+            .caption: "Caption Save Failed",
+            .analysis: "Analysis Save Failed",
+        ]
+        for (stage, title) in expectedTitles {
+            let presentation = ApplicationTerminationFailurePresentation.make(
+                for: ApplicationTerminationFlushFailure(stage: stage, message: "Injected \(stage)"),
+                developHasPendingPrimaryWork: true
+            )
+            #expect(presentation.title == title)
+            #expect(presentation.message.contains("Injected \(stage)"))
+            #expect(presentation.offersRetryAndQuit, "a \(stage) failure keeps Retry / Quit Without Saving")
+        }
+
+        let developPending = ApplicationTerminationFailurePresentation.make(
+            for: ApplicationTerminationFlushFailure(stage: .develop, message: "Injected develop"),
+            developHasPendingPrimaryWork: true
+        )
+        #expect(developPending.title == "Develop Save Failed")
+        #expect(!developPending.offersRetryAndQuit)
+
+        let developVersion = ApplicationTerminationFailurePresentation.make(
+            for: ApplicationTerminationFlushFailure(stage: .develop, message: "Injected develop"),
+            developHasPendingPrimaryWork: false
+        )
+        #expect(developVersion.title == "Named Version Save Failed")
+        #expect(developVersion.offersRetryAndQuit)
+    }
+
+    @Test("A flush that finishes before the timeout never shows the saving prompt")
+    func fastFlushDoesNotPrompt() async {
+        let clock = TerminationManualClock()
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            captionFlush: {},
+            developFlush: { .succeeded },
+            waitTimeout: .seconds(4),
+            sleep: { _ in await clock.sleep() }
+        )
+        var prompts = 0
+        let shouldTerminate = await coordinator.resolve(
+            chooseWhileWaiting: { _ in
+                prompts += 1
+                return .keepWaiting
+            },
+            chooseFailure: { _ in .keepOpen }
+        )
+        #expect(shouldTerminate)
+        #expect(prompts == 0)
+        clock.fire()
+    }
+
+    @Test("A slow flush prompts after the timeout; Keep Waiting re-arms it and completion dismisses the prompt")
+    func slowFlushPromptsAndKeepsWaiting() async {
+        let clock = TerminationManualClock()
+        let gate = TerminationManualGate()
+        var stages: [ApplicationTerminationFlushStage] = []
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            captionFlush: {
+                stages.append(.caption)
+                await gate.wait()
+            },
+            developFlush: {
+                stages.append(.develop)
+                return .succeeded
+            },
+            waitTimeout: .seconds(4),
+            sleep: { duration in
+                #expect(duration == .seconds(4))
+                await clock.sleep()
+            }
+        )
+        var promptedStages: [ApplicationTerminationFlushStage?] = []
+        var dismissedByCompletion = false
+        let resolution = Task { @MainActor in
+            await coordinator.resolve(
+                chooseWhileWaiting: { context in
+                    promptedStages.append(context.stage)
+                    #expect(context.activityDescription == ApplicationTerminationFlushStage.caption.activityDescription)
+                    if promptedStages.count == 1 { return .keepWaiting }
+                    // The modal stays up until the flush finishes and the coordinator dismisses it.
+                    return await withCheckedContinuation { continuation in
+                        context.whenFlushFinishes {
+                            dismissedByCompletion = true
+                            continuation.resume(returning: .keepWaiting)
+                        }
+                        gate.open()
+                    }
+                },
+                chooseFailure: { _ in
+                    Issue.record("No failure expected")
+                    return .keepOpen
+                }
+            )
+        }
+
+        await clock.waitForSleeps(1)
+        clock.fire()
+        await clock.waitForSleeps(2)
+        clock.fire()
+        #expect(await resolution.value)
+        #expect(promptedStages == [.caption, .caption])
+        #expect(dismissedByCompletion)
+        #expect(stages == [.caption, .develop])
+        clock.fire()
+    }
+
+    @Test("Quit Without Saving from the saving prompt terminates without waiting for the stalled stage")
+    func waitingQuitWithoutSaving() async {
+        let clock = TerminationManualClock()
+        let gate = TerminationManualGate()
+        var developCalls = 0
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            captionFlush: { await gate.wait() },
+            developFlush: {
+                developCalls += 1
+                return .succeeded
+            },
+            waitTimeout: .seconds(4),
+            sleep: { _ in await clock.sleep() }
+        )
+        let resolution = Task { @MainActor in
+            await coordinator.resolve(chooseWhileWaiting: { _ in .quitWithoutSaving },
+                                      chooseFailure: { _ in .keepOpen })
+        }
+        await clock.waitForSleeps(1)
+        clock.fire()
+        #expect(await resolution.value)
+        #expect(developCalls == 0)
+        #expect(coordinator.unfinishedAttempt == nil)
+        gate.open()
+        clock.fire()
+    }
+
+    @Test("Cancel Quit keeps the writes running, and the next quit waits for them first")
+    func waitingCancelQuitKeepsWorkRunning() async throws {
+        let clock = TerminationManualClock()
+        let gate = TerminationManualGate()
+        var events: [String] = []
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            captionFlush: {
+                await gate.wait()
+                events.append("caption")
+            },
+            developFlush: {
+                events.append("develop")
+                return .succeeded
+            },
+            waitTimeout: .seconds(4),
+            sleep: { _ in await clock.sleep() }
+        )
+        let resolution = Task { @MainActor in
+            await coordinator.resolve(chooseWhileWaiting: { _ in .cancelQuit },
+                                      chooseFailure: { _ in .keepOpen })
+        }
+        await clock.waitForSleeps(1)
+        clock.fire()
+        #expect(await resolution.value == false)
+        let unfinished = try #require(coordinator.unfinishedAttempt)
+        #expect(events.isEmpty)
+
+        let next = ApplicationTerminationFlushCoordinator(
+            browserEditorFlush: { events.append("next quit") },
+            captionFlush: {},
+            developFlush: { .succeeded },
+            precedingWork: { await unfinished.value }
+        )
+        let nextResolution = Task { @MainActor in
+            await next.resolve { _ in .keepOpen }
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(events.isEmpty, "the next quit must not start while the earlier writes run")
+        gate.open()
+        #expect(await nextResolution.value)
+        #expect(events == ["caption", "develop", "next quit"])
+        clock.fire()
+    }
+
+    @Test("Quit warning lists every running background writer")
+    func backgroundOperationSummary() {
+        let monitor = BackgroundOperationMonitor()
+        #expect(!monitor.hasActiveOperation)
+        var scanning = true
+        monitor.registerSource("test") { scanning ? ["a face scan"] : [] }
+        monitor.isImporting = true
+        #expect(monitor.activeOperations == ["an import", "a face scan"])
+        #expect(monitor.activeOperationSummary == "an import and a face scan")
+        #expect(BackgroundOperationMonitor.quitWarningText(for: monitor.activeOperations)
+            .hasPrefix("An import and a face scan are still running."))
+        monitor.isImporting = false
+        #expect(BackgroundOperationMonitor.quitWarningText(for: monitor.activeOperations)
+            .hasPrefix("A face scan is still running."))
+        scanning = false
+        #expect(!monitor.hasActiveOperation)
+        #expect(BackgroundOperationMonitor.summary(of: ["a", "b", "c"]) == "a, b and c")
+    }
+
     @Test("Transient presentation restores the owning workspace focus only when requested")
     func focusRestorePolicy() {
         #expect(CaptionWorkspaceFocusRestorePolicy.target(
@@ -231,16 +519,65 @@ struct ApplicationTerminationFlushCoordinatorTests {
 }
 
 private enum InjectedTerminationFailure: LocalizedError {
+    case browserEditor
     case caption
     case analysis
     case sidecar
+    case variables
 
     var errorDescription: String? {
         switch self {
+        case .browserEditor: "Injected Browser editor failure"
         case .caption: "Injected caption failure"
         case .analysis: "Injected analysis failure"
         case .sidecar: "Injected sidecar failure"
+        case .variables: "Injected variable draft failure"
         }
+    }
+}
+
+/// Injected termination clock: each `sleep` suspends until `fire()`.
+@MainActor
+private final class TerminationManualClock {
+    private(set) var sleepCount = 0
+    private var sleepers: [CheckedContinuation<Void, Never>] = []
+
+    func sleep() async {
+        sleepCount += 1
+        await withCheckedContinuation { sleepers.append($0) }
+    }
+
+    func fire() {
+        let pending = sleepers
+        sleepers.removeAll()
+        pending.forEach { $0.resume() }
+    }
+
+    /// Bounded: records an issue instead of hanging when the expected timer never starts.
+    func waitForSleeps(_ count: Int) async {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while sleepCount < count, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        if sleepCount < count { Issue.record("Timer \(count) never started") }
+    }
+}
+
+@MainActor
+private final class TerminationManualGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
     }
 }
 

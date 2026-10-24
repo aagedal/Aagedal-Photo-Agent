@@ -58,14 +58,67 @@ enum MetadataAutomaticSaveBoundary {
 
 /// Lets termination persist the Browser metadata panel, which (unlike Caption) has no FIFO
 /// flush coordinator: typed field text and unsaved edits would otherwise be lost on Quit.
+/// Writes that must finish before the process exits but cannot fail the quit (Person Shown
+/// batches, saves started when the main window closed) register as waits and run first.
 @MainActor
 final class MetadataEditorTerminationFlush {
     static let shared = MetadataEditorTerminationFlush()
     private var handler: (@MainActor () async throws -> Void)?
+    private var waits: [(key: String, wait: @MainActor () async -> Void)] = []
 
     func register(_ handler: @escaping @MainActor () async throws -> Void) { self.handler = handler }
 
-    func flush() async throws { try await handler?() }
+    /// Adds (or replaces, by key) a wait that runs before the editor handler.
+    func registerWait(_ key: String, _ wait: @escaping @MainActor () async -> Void) {
+        waits.removeAll { $0.key == key }
+        waits.append((key, wait))
+    }
+
+    func flush() async throws {
+        for entry in waits { await entry.wait() }
+        try await handler?()
+    }
+}
+
+/// Calls `onWillClose` when the window hosting this view starts closing, while its content is
+/// still mounted (SwiftUI tears the main window's views down after close; the app keeps running).
+struct MainWindowCloseObserver: NSViewRepresentable {
+    let onWillClose: @MainActor () -> Void
+
+    func makeNSView(context: Context) -> ObserverView {
+        let view = ObserverView()
+        view.onWillClose = onWillClose
+        return view
+    }
+
+    func updateNSView(_ nsView: ObserverView, context: Context) {
+        nsView.onWillClose = onWillClose
+    }
+
+    final class ObserverView: NSView {
+        var onWillClose: (@MainActor () -> Void)?
+        private var observer: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = nil
+            guard let window else { return }
+            observer = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.onWillClose?() }
+            }
+        }
+        // Leaving the window (window == nil above) removes the observer, so no deinit is needed.
+    }
+}
+
+/// Browser editor quit stage failure: nothing durable holds the edit (the write and its pending
+/// draft fallback both failed). The message already names the photos and the reason.
+nonisolated struct BrowserEditorTerminationError: LocalizedError, Sendable {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 enum TemplateCommandTarget: Equatable {
@@ -1175,7 +1228,11 @@ struct ContentView: View {
                 BackgroundOperationMonitor.shared.isImporting = importViewModel.isImporting
                 BackgroundOperationMonitor.shared.isUploading = ftpViewModel.isUploading
                 BackgroundOperationMonitor.shared.isRenderingForUpload = ftpViewModel.isRendering
-                MetadataEditorTerminationFlush.shared.register { try await commitBrowserMetadataEditor() }
+                MetadataEditorTerminationFlush.shared.register { try await flushBrowserEditorForTermination() }
+                MetadataEditorTerminationFlush.shared.registerWait("personShown") { [faceRecognitionViewModel] in
+                    await faceRecognitionViewModel.waitForPendingPersonShownWritesAndRecords()
+                }
+                registerBackgroundOperationSources()
                 AnalysisWorkspaceTerminationFlush.shared.register(analysisWorkspaceModel)
             }
     }
@@ -1188,6 +1245,8 @@ struct ContentView: View {
         } detail: {
             detailContent
         }
+        // Kept off the long `base`/`body` modifier chains (type-checker budget).
+        .background(MainWindowCloseObserver(onWillClose: handleMainWindowWillClose))
     }
 
     @ViewBuilder
@@ -1251,8 +1310,12 @@ struct ContentView: View {
                         analysisWorkspaceModel.requestOpenInCurrentWorkspace(image)
                     },
                     onOpenImportedProject: { folderURL in
-                        openFolderInActivePane(folderURL, addToOpenFolders: true)
-                        mainViewMode = .browser
+                        // Close through the unsaved-changes gate, like the Close button: a failed
+                        // Analysis save raises Retry Save / Discard / Cancel before leaving.
+                        performAfterAnalysisClose {
+                            openFolderInActivePane(folderURL, addToOpenFolders: true)
+                            mainViewMode = .browser
+                        }
                     },
                     onClose: {
                         mainViewMode = .browser
@@ -1474,11 +1537,12 @@ struct ContentView: View {
     /// and saves unsaved edits with the configured write mode, waiting for the write to finish.
     /// Literal variable tokens are kept as a pending draft rather than embedded.
     private func commitBrowserMetadataEditor() async throws {
-        guard mainViewMode == .browser || mainViewMode == .faceManagement else { return }
-        metadataViewModel.captureFocusedEditorText()
-        // Quit, rename and Copy/Paste IPTC must also wait for saves already running, even when
-        // the editor itself has nothing new to commit.
+        // Rename and Copy/Paste IPTC must wait for saves already running in every workspace —
+        // Caption's Write / Write & Next and deactivation commits share this write chain — even
+        // when the editor itself has nothing new to commit.
         await metadataViewModel.waitForPendingWrites()
+        guard !metadataEditorIsOwnedElsewhere else { return }
+        metadataViewModel.captureFocusedEditorText()
         guard metadataViewModel.hasUnpersistedEditorChanges else { return }
         let editorURLs = metadataViewModel.selectedURLs
         if metadataViewModel.shouldDeferAutomaticCommitForVariables {
@@ -1501,6 +1565,78 @@ struct ContentView: View {
         case .failed(let message), .cancelled(let message):
             throw CaptionWorkspaceFlushError.persistenceFailed(message)
         }
+    }
+
+    /// Workspaces whose shared editor state another owner persists: Caption and Metadata Review
+    /// through the Caption FIFO (its own quit stage), and Develop through its sidecar-only
+    /// Primary/named-version writes (the Develop stage). A generic metadata commit there would
+    /// capture a second copy of those edits with the wrong write mode.
+    private var metadataEditorIsOwnedElsewhere: Bool {
+        mainViewMode == .caption || mainViewMode == .metadataReview || mainViewMode == .editing
+    }
+
+    /// Quit-time Browser editor stage. Waits for an in-flight folder/workspace boundary commit
+    /// (including its discard prompt) rather than committing the same photo again, and for every
+    /// running save, in any workspace. Then it saves what is left exactly as a folder switch
+    /// would — falling back to a pending draft when the write fails — so quitting never loses an
+    /// edit that a folder switch would have kept. Only an edit nothing durable can hold fails it.
+    private func flushBrowserEditorForTermination() async throws {
+        await metadataViewModel.waitForEditorBoundary()
+        await metadataViewModel.waitForPendingWrites()
+        guard !metadataEditorIsOwnedElsewhere else { return }
+        let editorURLs = metadataViewModel.selectedURLs
+        let outcome = await commitDepartingBrowserEditor()
+        browserViewModel.refreshPendingStatusBatch(for: editorURLs)
+        switch EditorBoundaryDecision.resolve(outcome, canStay: true) {
+        case .proceed:
+            return
+        case .askToDiscard(let message):
+            metadataViewModel.saveError = message
+            throw BrowserEditorTerminationError(message: message)
+        }
+    }
+
+    /// Lists the window-owned background writers in the quit warning.
+    private func registerBackgroundOperationSources() {
+        let metadata = metadataViewModel
+        let faces = faceRecognitionViewModel
+        let voiceMemos = voiceMemoBatchModel
+        BackgroundOperationMonitor.shared.registerSource("mainWindow") {
+            var running: [String] = []
+            if metadata.isProcessingFolder { running.append("a metadata batch write") }
+            if faces.hasPendingFieldMutationWrites { running.append("a Person Shown write") }
+            if voiceMemos.isRunning { running.append("a voice memo transcription batch") }
+            if faces.isScanning { running.append("a face scan") }
+            return running
+        }
+    }
+
+    /// Closing the main window keeps the app running but tears this view down: Caption and
+    /// Review unregister without capturing, and a failed Analysis save would vanish with its
+    /// weakly registered model. Capture and start saving everything now, while the editors are
+    /// still mounted, and leave quit a wait that holds only the model. (The live editor handler
+    /// stays registered until a reopened window replaces it.)
+    private func handleMainWindowWillClose() {
+        let caption = CaptionWorkspaceFlushCoordinator.shared
+        if caption.hasRegisteredHandler {
+            do { try caption.enqueueFlushAll() }
+            catch { metadataViewModel.saveError = error.localizedDescription }
+        }
+        let model = metadataViewModel
+        if !metadataEditorIsOwnedElsewhere {
+            model.captureFocusedEditorText()
+            if model.shouldDeferAutomaticCommitForVariables {
+                model.keepUnresolvedVariablesAsPendingDraft()
+            } else if model.hasUnpersistedEditorChanges {
+                model.commitDepartingEditor(
+                    knownC2PAURLs: browserViewModel.c2paURLs(among: model.selectedURLs)) { _ in }
+            }
+        }
+        MetadataEditorTerminationFlush.shared.registerWait("closedWindowEditor-\(ObjectIdentifier(model).hashValue)") {
+            await model.waitForEditorBoundary()
+            await model.waitForPendingWrites()
+        }
+        AnalysisWorkspaceTerminationFlush.shared.retainUntilTermination(analysisWorkspaceModel)
     }
 
     private func resumeDeadlineWorkflow(_ identifier: UUID) async -> Bool {
@@ -1549,7 +1685,9 @@ struct ContentView: View {
         }
         guard !isCommittingBrowserEditor else { return }
         isCommittingBrowserEditor = true
-        Task { @MainActor in
+        // Tracked so a quit during this commit (or its discard prompt) waits for it instead of
+        // committing the same photo again and stacking a second prompt.
+        metadataViewModel.trackEditorBoundary(Task { @MainActor in
             defer { isCommittingBrowserEditor = false }
             let editorURLs = metadataViewModel.selectedURLs
             let outcome = await commitDepartingBrowserEditor()
@@ -1567,7 +1705,7 @@ struct ContentView: View {
                 guard mainViewMode == workspace else { return }
                 performAfterCaptionFlush(operation)
             }
-        }
+        })
     }
 
     /// Waits for saves already running (they may carry these edits, and History Only drafts
@@ -2219,7 +2357,8 @@ struct ContentView: View {
     private func openComparisonFromFullScreen(renderEdits: Bool) {
         guard browserViewModel.isFullScreen,
               let fullScreenComparisonImages else { return }
-        performAfterCaptionFlush {
+        // Compare leaves the Browser editor's photos like any workspace exit: save them first.
+        performAfterBrowserEditorCommit {
             guard browserViewModel.isFullScreen else { return }
             comparisonImages = fullScreenComparisonImages
             comparisonFocusedURL = nil

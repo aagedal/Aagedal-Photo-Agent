@@ -1907,16 +1907,27 @@ nonisolated struct AnalysisTerminationSaveError: LocalizedError, Sendable {
 final class AnalysisWorkspaceTerminationFlush {
     static let shared = AnalysisWorkspaceTerminationFlush()
     private let models = NSHashTable<AnalysisWorkspaceModel>.weakObjects()
+    /// Models whose window closed while the app keeps running. Held strongly so their pending
+    /// saves and failed-save records stay reachable for the quit flush instead of vanishing
+    /// with the window.
+    private var closedWindowModels: [AnalysisWorkspaceModel] = []
 
     func register(_ model: AnalysisWorkspaceModel) {
         models.add(model)
+    }
+
+    func retainUntilTermination(_ model: AnalysisWorkspaceModel) {
+        guard !closedWindowModels.contains(where: { $0 === model }) else { return }
+        closedWindowModels.append(model)
     }
 
     /// Every window is saved before any failure is reported, so one failing window cannot stop
     /// the others' edits from becoming durable.
     func flush() async throws {
         var failures: [String] = []
-        for model in models.allObjects {
+        var all = models.allObjects
+        for model in closedWindowModels where !all.contains(where: { $0 === model }) { all.append(model) }
+        for model in all {
             if await !model.savePendingChanges(waitingForLoad: false) {
                 failures.append(model.saveError ?? "Analysis changes could not be saved.")
             }

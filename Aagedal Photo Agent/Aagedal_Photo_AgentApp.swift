@@ -483,20 +483,53 @@ final class BackgroundOperationMonitor {
     var isImporting = false
     var isUploading = false
     var isRenderingForUpload = false
+    /// Polled sources for work owned by window models (metadata batch writes, Person Shown
+    /// writes, voice memo transcriptions, face scans). Each returns descriptions of what is
+    /// running now, such as "a face scan".
+    private var sources: [(key: String, activities: @MainActor () -> [String])] = []
 
-    var hasActiveOperation: Bool {
-        isImporting || isUploading || isRenderingForUpload
+    /// Registers (or replaces, by key) a source of running background work.
+    func registerSource(_ key: String, activities: @escaping @MainActor () -> [String]) {
+        sources.removeAll { $0.key == key }
+        sources.append((key, activities))
     }
 
-    var activeOperationSummary: String {
+    var activeOperations: [String] {
         var parts: [String] = []
         if isImporting { parts.append("an import") }
         if isUploading { parts.append("an upload") }
         if isRenderingForUpload { parts.append("upload rendering") }
-        return parts.joined(separator: " and ")
+        for source in sources { parts.append(contentsOf: source.activities()) }
+        return parts
     }
 
-    private init() {}
+    var hasActiveOperation: Bool { !activeOperations.isEmpty }
+
+    var activeOperationSummary: String { Self.summary(of: activeOperations) }
+
+    /// "an import", "an import and a face scan", "an import, an upload and a face scan".
+    nonisolated static func summary(of operations: [String]) -> String {
+        guard let last = operations.last else { return "" }
+        guard operations.count > 1 else { return last }
+        return operations.dropLast().joined(separator: ", ") + " and " + last
+    }
+
+    /// Alert text for the quit warning: "A face scan is still running. …".
+    nonisolated static func quitWarningText(for operations: [String]) -> String {
+        let summary = summary(of: operations)
+        let subject = summary.isEmpty ? "Background work" : summary.prefix(1).uppercased() + summary.dropFirst()
+        let verb = operations.count > 1 ? "are" : "is"
+        return "\(subject) \(verb) still running. Quit anyway? Metadata batch and Person Shown writes finish before the app quits; other work stops."
+    }
+
+    init() {}
+}
+
+/// Whether the "still saving" alert is on screen, so a late flush completion never ends a
+/// different modal session.
+@MainActor
+private final class TerminationModalPresence {
+    var isShowing = true
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -529,12 +562,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if terminationReplyLatch.isPending { return .terminateLater }
 
         let monitor = BackgroundOperationMonitor.shared
-        if monitor.hasActiveOperation {
+        let operations = monitor.activeOperations
+        if !operations.isEmpty {
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Import or upload still in progress"
-            let summary = monitor.activeOperationSummary.isEmpty ? "background work" : monitor.activeOperationSummary
-            alert.informativeText = "Quitting now will stop \(summary). Wait for it to finish, or quit anyway?"
+            alert.messageText = "Background Work Still Running"
+            alert.informativeText = BackgroundOperationMonitor.quitWarningText(for: operations)
             alert.addButton(withTitle: "Keep Running")
             alert.addButton(withTitle: "Quit Anyway")
             if alert.runModal() == .alertFirstButtonReturn { return .terminateCancel }
@@ -542,52 +575,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard terminationReplyLatch.begin() else { return .terminateLater }
         let captionOperation = CaptionWorkspaceTerminationFlushOperation()
+        // Writes a cancelled quit left running finish before this quit starts its own, so the
+        // same photo is never committed twice concurrently.
+        var precedingWork: (@MainActor () async -> Void)?
+        if let earlierAttempt = unfinishedTerminationFlush {
+            precedingWork = { await earlierAttempt.value }
+        }
         let coordinator = ApplicationTerminationFlushCoordinator(
+            browserEditorFlush: {
+                // Its own stage, ahead of Caption: abandoning one never skips the other.
+                try await MetadataEditorTerminationFlush.shared.flush()
+            },
             captionFlush: {
                 try await captionOperation.flush()
-                // The Browser metadata panel has no Caption FIFO; save its typed/unsaved edits too.
-                try await MetadataEditorTerminationFlush.shared.flush()
             },
             analysisFlush: {
                 try await AnalysisWorkspaceTerminationFlush.shared.flush()
             },
             developFlush: {
                 await DevelopVersionFlushCoordinator.shared.flush(.applicationTermination)
-            }
+            },
+            precedingWork: precedingWork,
+            waitTimeout: .seconds(4)
         )
         Task { @MainActor in
-            let shouldTerminate = await coordinator.resolve { failure in
-                terminationChoice(for: failure)
-            }
+            let shouldTerminate = await coordinator.resolve(
+                chooseWhileWaiting: { context in terminationWaitChoice(context) },
+                chooseFailure: { failure in terminationChoice(for: failure) }
+            )
+            // Keep Open after a failure leaves nothing running; Cancel Quit may.
+            unfinishedTerminationFlush = shouldTerminate ? nil : coordinator.unfinishedAttempt
             guard terminationReplyLatch.finish() else { return }
             sender.reply(toApplicationShouldTerminate: shouldTerminate)
         }
         return .terminateLater
     }
 
+    /// The flush a Cancel Quit left running; the next quit waits for it first.
+    @MainActor private var unfinishedTerminationFlush: Task<Void, Never>?
+
+    /// Shown when a quit flush is still running after the timeout. AppKit is in its
+    /// terminate-later modal loop and further Cmd-Q presses are ignored, so without this prompt a
+    /// stalled write (an unplugged card, a hung network volume) would freeze the app for good.
+    @MainActor
+    private func terminationWaitChoice(
+        _ context: ApplicationTerminationWaitContext
+    ) -> ApplicationTerminationWaitChoice {
+        // Another prompt (a folder switch's discard question the flush is waiting on) is already
+        // asking the user; never stack this one on top of it. The timeout re-arms.
+        guard NSApp.modalWindow == nil else { return .keepWaiting }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Saving Changes…"
+        alert.informativeText = "Still saving \(context.activityDescription). Keep waiting for it to finish, quit without saving what is still being written, or cancel quitting and keep working while it finishes."
+        alert.addButton(withTitle: "Keep Waiting")
+        alert.addButton(withTitle: "Quit Without Saving")
+        alert.addButton(withTitle: "Cancel Quit")
+        alert.buttons[1].hasDestructiveAction = true
+        let presence = TerminationModalPresence()
+        context.whenFlushFinishes {
+            guard presence.isShowing else { return }
+            presence.isShowing = false
+            NSApp.stopModal(withCode: Self.flushFinishedModalResponse)
+            // stopModal takes effect when the modal loop next processes an event.
+            if let wake = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [],
+                                             timestamp: 0, windowNumber: 0, context: nil,
+                                             subtype: 0, data1: 0, data2: 0) {
+                NSApp.postEvent(wake, atStart: false)
+            }
+        }
+        let response = alert.runModal()
+        presence.isShowing = false
+        switch response {
+        case .alertSecondButtonReturn: return .quitWithoutSaving
+        case .alertThirdButtonReturn: return .cancelQuit
+        default: return .keepWaiting // Keep Waiting, or dismissed because the flush finished
+        }
+    }
+
+    private static let flushFinishedModalResponse = NSApplication.ModalResponse(rawValue: 9_001)
+
     @MainActor
     private func terminationChoice(
         for failure: ApplicationTerminationFlushFailure
     ) -> ApplicationTerminationFailureChoice {
+        let presentation = ApplicationTerminationFailurePresentation.make(
+            for: failure,
+            developHasPendingPrimaryWork: DevelopPrimaryLifecycleCoordinator.shared.hasPendingWork
+        )
         let alert = NSAlert()
         alert.alertStyle = .critical
-        if DevelopPrimaryLifecycleCoordinator.shared.hasPendingWork {
-            alert.messageText = "Develop Save Failed"
-            alert.informativeText = "Captured Primary Develop edits still need attention: \(failure.message)\n\nKeep the app open and use Retry Develop Writes, or Review Develop Conflicts to export the captured edits before discarding them."
+        alert.messageText = presentation.title
+        alert.informativeText = presentation.message
+        guard presentation.offersRetryAndQuit else {
             alert.addButton(withTitle: "Keep App Open")
             alert.runModal()
             return .keepOpen
-        }
-        switch failure.stage {
-        case .caption:
-            alert.messageText = "Caption Save Failed"
-            alert.informativeText = "Caption sidecar changes could not be saved: \(failure.message)\n\nRetry the retained drafts, keep the app open, or explicitly quit without saving them."
-        case .analysis:
-            alert.messageText = "Analysis Save Failed"
-            alert.informativeText = "The latest Image Analysis case or map edits could not be saved: \(failure.message)\n\nRetry saving, keep the app open, or explicitly quit without saving these changes."
-        case .develop:
-            alert.messageText = "Named Version Save Failed"
-            alert.informativeText = "The active Develop version could not be saved: \(failure.message)\n\nRetry saving, keep the app open, or explicitly quit without saving these changes."
         }
         alert.addButton(withTitle: "Retry Save")
         alert.addButton(withTitle: "Keep App Open")

@@ -2107,19 +2107,46 @@ final class MetadataViewModel {
                             files: names, reason: message)))
                         return
                     }
-                    Task { @MainActor in
-                        do {
-                            try await fallback.persistAsync()
-                            self?.adoptBoundaryDraft(fallback, edited: edited, loadID: loadID, folderURL: folder)
-                            onComplete(.keptAsDraft(message: "Metadata for \(names) could not be written and was kept as a pending draft. Use Write to retry. \(message)"))
-                        } catch {
+                    guard let self else {
+                        onComplete(.failed(message: EditorBoundaryCommitOutcome.failureMessage(
+                            files: names, reason: message)))
+                        return
+                    }
+                    self.enqueueBoundaryDraftFallback(fallback) { failure in
+                        if let failure {
                             onComplete(.failed(message: EditorBoundaryCommitOutcome.failureMessage(
-                                files: names, reason: "\(message) A pending draft could not be kept either: \(error.localizedDescription)")))
+                                files: names, reason: "\(message) A pending draft could not be kept either: \(failure)")))
+                            return
                         }
+                        self.adoptBoundaryDraft(fallback, edited: edited, loadID: loadID, folderURL: folder)
+                        onComplete(.keptAsDraft(message: "Metadata for \(names) could not be written and was kept as a pending draft. Use Write to retry. \(message)"))
                     }
                 }
             }
         }
+    }
+
+    /// Persists a boundary's fallback draft as part of the write chain, so `waitForPendingWrites`
+    /// (quit, rename, Paste IPTC, the next boundary) returns only once it is durable, and a later
+    /// save of the photo queues behind it instead of racing it.
+    private func enqueueBoundaryDraftFallback(
+        _ fallback: CaptionDraftPersistence,
+        onComplete: @escaping @MainActor (String?) -> Void
+    ) {
+        let priorWrite = writeTask
+        let generation = writeTaskGeneration + 1
+        isSaving = true
+        let write = Task { @MainActor in
+            defer { if writeTaskGeneration == generation { isSaving = false } }
+            await priorWrite?.value
+            do {
+                try await fallback.persistAsync()
+                onComplete(nil)
+            } catch {
+                onComplete(error.localizedDescription)
+            }
+        }
+        writeTask = Task { await write.value }
     }
 
     /// Runs `body` with `currentFolderURL` set to the folder the editor's photos were loaded
@@ -3835,11 +3862,35 @@ final class MetadataViewModel {
         supersedableSingleSave = (writeTaskGeneration, imageURL, loadID)
     }
 
-    /// Waits until the current write chain (including writes queued while waiting) finishes.
+    /// Waits until the current write chain (including writes queued while waiting) and any
+    /// metadata batch (Write All Pending, variable processing) finish. A Write All batch runs
+    /// outside `writeTask`, so quit, rename and Paste IPTC must wait for it here too.
     func waitForPendingWrites() async {
-        while let task = writeTask {
+        while true {
+            let write = writeTask
+            let batch = batchProcessTask
+            await write?.value
+            await batch?.value
+            if writeTask == write, batchProcessTask == batch { return }
+        }
+    }
+
+    /// The Browser editor boundary (folder switch, folder close, workspace exit) that is
+    /// committing the departing photos, including its discard prompt. Termination waits for it
+    /// rather than committing the same photo a second time and stacking a second prompt.
+    @ObservationIgnored private var editorBoundaryTask: Task<Void, Never>?
+
+    func trackEditorBoundary(_ task: Task<Void, Never>) {
+        editorBoundaryTask = task
+    }
+
+    func waitForEditorBoundary() async {
+        while let task = editorBoundaryTask {
             await task.value
-            if writeTask == task { return }
+            if editorBoundaryTask == task {
+                editorBoundaryTask = nil
+                return
+            }
         }
     }
 

@@ -96,6 +96,31 @@ struct PendingMetadataWriteCallerTests {
         #expect(model.saveError == outcome.attentionMessage)
     }
 
+    @Test("waitForPendingWrites also waits for a running Write All batch")
+    @MainActor
+    func waitForPendingWritesCoversWriteAllBatch() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/pending-quit-wait")
+        let photo = folder.appendingPathComponent("a.jpg")
+        let discovery = PendingWriteCallerDiscovery(.init(records: [photo: record(photo)], failures: []))
+        let executor = PendingWriteCallerExecutor(pausedNames: ["a.jpg"])
+        let model = model(discovery: discovery, executor: executor)
+        model.currentFolderURL = folder
+        model.writeAllPendingChanges(in: folder, images: [])
+        try await waitForPause(executor, name: "a.jpg")
+        var waitReturned = false
+        let waiter = Task { @MainActor in
+            await model.waitForPendingWrites()
+            waitReturned = true
+        }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(!waitReturned, "quit must not proceed while the batch is still writing")
+        await executor.resume("a.jpg")
+        await waiter.value
+        #expect(waitReturned)
+        #expect(!model.isProcessingFolder)
+        #expect(model.pendingWriteBatchOutcome?.completedCount == 1)
+    }
+
     @Test("Write All snapshots the discovered records and policy without adopting stale Browser facts")
     @MainActor
     func capturedFolderAndPolicySurviveEditorChanges() async throws {
