@@ -102,13 +102,13 @@ nonisolated enum EditedImageRenderer {
                 ? 1
                 : fileOrientation
         }
+        // Shared with every browse/preview render so they all edit in the same frame.
         // `orientationCorrection` models only the four rotations; never claim a mirrored
         // frame the pixels were not actually moved into.
-        let rotationOnly: Set<Int> = [1, 3, 6, 8]
-        let targetOrientation = rotationOnly.contains(fileOrientation)
-            && rotationOnly.contains(requestedOrientation)
-            ? requestedOrientation
-            : fileOrientation
+        let targetOrientation = FullScreenImageCache.editFrameOrientation(
+            fileOrientation: fileOrientation,
+            displayOrientation: requestedOrientation
+        )
 
         let decodeMaxPixelSize = exportDecodeMaxPixelSize(
             maximumOutputPixelSize: maximumOutputPixelSize,
@@ -181,14 +181,15 @@ nonisolated enum EditedImageRenderer {
             input = downsampledForExport(ciImage, maxPixelSize: decodeMaxPixelSize)
         }
 
-        let correction = ImageFile.orientationCorrection(from: fileOrientation, to: targetOrientation)
-        if correction != .up {
-            input = input.oriented(correction)
-        }
+        let framed = FullScreenImageCache.orientedForEditing(
+            input,
+            fileOrientation: fileOrientation,
+            displayOrientation: requestedOrientation
+        )
         return ExportSource(
-            image: input,
+            image: framed.image,
             settings: effectiveSettings,
-            pixelOrientation: correction == .up ? fileOrientation : targetOrientation
+            pixelOrientation: framed.pixelOrientation
         )
     }
 

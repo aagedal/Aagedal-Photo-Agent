@@ -946,23 +946,19 @@ struct FullScreenImageView: View {
     /// Apply CameraRaw adjustments + crop to a CGImage, preserving HDR color space.
     /// When `fileOrientation` differs from `exifOrientation`, the image pixels have
     /// the file's orientation baked in (e.g. C2PA images where the file wasn't modified).
-    /// Crop uses `fileOrientation` to match the pixel layout, then a corrective rotation
-    /// is applied to reach the target `exifOrientation`.
+    /// The pixels are rotated to `exifOrientation` before the edit, which then runs in the
+    /// display frame like Develop and export (`FullScreenImageCache.applyEditsInDisplayFrame`),
+    /// so watermarks stay upright on sidecar-rotated files.
     nonisolated private static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings?, exifOrientation: Int = 1, fileOrientation: Int = 0) -> CGImage {
         guard let settings else {
             return applyOrientationCorrection(cgImage, fileOrientation: fileOrientation, targetOrientation: exifOrientation)
         }
-        let cropOrientation = fileOrientation > 0 ? fileOrientation : exifOrientation
-        let ciImage = CIImage(cgImage: cgImage)
-        var processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: cropOrientation)
-
-        let correction = ImageFile.orientationCorrection(from: cropOrientation, to: exifOrientation)
-        if correction != .up { processed = processed.oriented(correction) }
-
-        let extent = processed.extent
-        guard extent.width > 0, extent.height > 0 else { return cgImage }
-
-        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
+        return FullScreenImageCache.applyCameraRaw(
+            to: cgImage,
+            settings: settings,
+            fileOrientation: fileOrientation > 0 ? fileOrientation : exifOrientation,
+            displayOrientation: exifOrientation
+        )
     }
 
     /// Apply gamut clipping to a CGImage by rendering through a target color space CGContext.
@@ -1012,17 +1008,14 @@ struct FullScreenImageView: View {
     }
 
     /// Apply CameraRaw adjustments + crop to a CIImage source, preserving HDR float values.
+    /// Edits in the display frame like the CGImage overload above.
     nonisolated private static func applyCameraRaw(to ciImage: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1, fileOrientation: Int = 0) -> CGImage? {
-        let cropOrientation = fileOrientation > 0 ? fileOrientation : exifOrientation
-        var processed: CIImage
-        if let settings {
-            processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: cropOrientation)
-        } else {
-            processed = ciImage
-        }
-
-        let correction = ImageFile.orientationCorrection(from: cropOrientation, to: exifOrientation)
-        if correction != .up { processed = processed.oriented(correction) }
+        let processed = FullScreenImageCache.applyEditsInDisplayFrame(
+            to: ciImage,
+            settings: settings,
+            fileOrientation: fileOrientation > 0 ? fileOrientation : exifOrientation,
+            displayOrientation: exifOrientation
+        )
 
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
