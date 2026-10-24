@@ -699,6 +699,10 @@ final class MetadataViewModel {
                 let loadStart = ContinuousClock.now
                 self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
                 do {
+                    if self.isPendingBatchWrite(imageURL) {
+                        await self.waitForPendingWrites()
+                        guard !Task.isCancelled, self.metadataLoadRequestID == requestID else { return }
+                    }
                     let sourceBefore = try? await SourceImageRevision.capture(at: imageURL)
                     // A cancelled capture is intentionally optional evidence, but must not
                     // enqueue an obsolete metadata read ahead of the next selected photo.
@@ -1801,7 +1805,9 @@ final class MetadataViewModel {
         // out of reach of a later `writeTask?.cancel()`: a cancelled batch write stops partway
         // through the selection and leaves photos half-updated.
         let priorWrite = writeTask
+        let batchTracking = isBatch ? beginBatchWriteTracking(urls) : nil
         let write = Task {
+            defer { if let batchTracking { self.endBatchWriteTracking(batchTracking) } }
             await priorWrite?.value
             do {
                 if let writeFolderURL {
@@ -2031,14 +2037,18 @@ final class MetadataViewModel {
                         // Apply the batch change to the sidecar's current record inside its
                         // transaction. Replacing it from the load-time snapshot would revert
                         // ratings, labels or face names written to the sidecar since then.
-                        let fallback: IPTCMetadata
+                        var fallback: IPTCMetadata
                         if let resolved = resolvedBatchSnapshot[url] {
                             fallback = resolved
                         } else {
                             fallback = try await self.readService.readFullMetadata(url: url)
                         }
+                        // A descriptive batch edit leaves develop settings exactly as stored, and a
+                        // new sidecar must not freeze a copy of the file's embedded Camera Raw.
+                        fallback.cameraRaw = nil
                         installedRawRecords[url] = try await self.xmpSidecarService.updateSidecarSerialized(
-                            for: url, fallback: fallback, mutation: draftMutation.mutation)
+                            for: url, fallback: fallback, preservesDevelopSettings: true,
+                            mutation: draftMutation.mutation)
                     } else {
                         _ = try await self.descriptiveWriteBoundary.write(
                             metadata: edited, for: url, requestedMode: .writeToFile, semantics: .replace)
@@ -2329,9 +2339,12 @@ final class MetadataViewModel {
         for imageURL in urls {
             guard !Task.isCancelled else { return failure }
             do {
+                var fallback = capture.baselines[imageURL] ?? IPTCMetadata()
+                fallback.cameraRaw = nil
                 let installed = try await xmpSidecarService.updateSidecarSerialized(
                     for: imageURL,
-                    fallback: capture.baselines[imageURL] ?? IPTCMetadata(),
+                    fallback: fallback,
+                    preservesDevelopSettings: true,
                     mutation: capture.mutation
                 )
                 if selectedURLs == urls {
@@ -2358,8 +2371,10 @@ final class MetadataViewModel {
             let priorWrite = writeTask
             let generation = writeTaskGeneration + 1
             isSaving = true
+            let batchTracking = capture.urls.count > 1 ? beginBatchWriteTracking(capture.urls) : nil
             let write = Task {
                 defer { if writeTaskGeneration == generation { isSaving = false } }
+                defer { if let batchTracking { endBatchWriteTracking(batchTracking) } }
                 await priorWrite?.value
                 // Judge this write by its own result: `saveError` may belong to the earlier one.
                 if let failure = await writeXMPSidecar(capture) {
@@ -2383,8 +2398,10 @@ final class MetadataViewModel {
             isSaving = true
             // The batch runs in its own task so a later `writeTask?.cancel()` cannot stop it
             // partway through the selection.
+            let batchTracking = beginBatchWriteTracking(capture.urls)
             let write = Task {
                 defer { if writeTaskGeneration == generation { isSaving = false } }
+                defer { endBatchWriteTracking(batchTracking) }
                 await priorWrite?.value
                 // Judge each phase by its own result: `saveError` may belong to the earlier write.
                 if let failure = await writeXMPSidecar(capture) {
@@ -2557,8 +2574,10 @@ final class MetadataViewModel {
             let wrapperGeneration = writeTaskGeneration + 1
             // Like the embedded write, the XMP phase runs in its own task so a later
             // `writeTask?.cancel()` cannot stop it partway through the selection.
+            let xmpTracking = xmpCapture.map { beginBatchWriteTracking($0.urls) }
             let write = Task {
                 defer { if self.writeTaskGeneration == wrapperGeneration { self.isSaving = false } }
+                defer { if let xmpTracking { self.endBatchWriteTracking(xmpTracking) } }
                 await embedWrite?.value
                 // Judge each phase by its own result: `saveError` may belong to another write.
                 if let embedFailure = self.embeddedWriteFailures.removeValue(forKey: embedGeneration) {
@@ -3151,6 +3170,26 @@ final class MetadataViewModel {
             await task.value
             if writeTask == task { return }
         }
+    }
+
+    /// Photos covered by queued or running batch writes. A single-photo load of one of them waits
+    /// for those writes, so its editor baseline includes the batch change; otherwise a later save
+    /// of that photo would rewrite its fields from the pre-batch values and undo the batch.
+    @ObservationIgnored private var pendingBatchWriteURLs: [UUID: Set<URL>] = [:]
+
+    private func beginBatchWriteTracking(_ urls: [URL]) -> UUID {
+        let id = UUID()
+        pendingBatchWriteURLs[id] = Set(urls.map(\.standardizedFileURL))
+        return id
+    }
+
+    private func endBatchWriteTracking(_ id: UUID) {
+        pendingBatchWriteURLs[id] = nil
+    }
+
+    private func isPendingBatchWrite(_ url: URL) -> Bool {
+        let key = url.standardizedFileURL
+        return pendingBatchWriteURLs.values.contains { $0.contains(key) }
     }
 
     var variableRecoveryPhotos: [URL] {
@@ -4191,7 +4230,9 @@ final class MetadataViewModel {
             let capture = captureBatchSidecars()
             let priorWrite = writeTask
             isSaving = true
+            let batchTracking = beginBatchWriteTracking(capture.urls)
             let write = Task {
+                defer { endBatchWriteTracking(batchTracking) }
                 await priorWrite?.value
                 await saveBatchSidecars(folderURL: folderURL, pendingChanges: true,
                     updateState: true, capture: capture)

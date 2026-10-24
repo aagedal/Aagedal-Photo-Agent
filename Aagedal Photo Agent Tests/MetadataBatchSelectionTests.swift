@@ -613,6 +613,39 @@ struct MetadataBatchSelectionTests {
         #expect(try await SwiftExifReadService().readFullMetadata(url: jpeg).description == "Batch caption")
     }
 
+    @Test("a batch caption save leaves a RAW sidecar's Camera Raw block exactly as stored")
+    func batchSaveKeepsRawDevelopSettingsVerbatim() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let jpeg = try makeJPEG(in: folder, name: "a.jpg")
+        let raw = try makeJPEG(in: folder, name: "b.nef")
+        try #require(SupportedImageFormats.isRaw(url: raw))
+        // A crs property the app's model doesn't know must survive a descriptive batch edit.
+        let sidecarXML = """
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+          xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+          crs:Exposure2012="+0.50" crs:FutureVendorSetting="7" photoshop:Headline="Raw headline"/>
+        </rdf:RDF></x:xmpmeta>
+        """
+        let sidecarURL = XMPSidecarService().sidecarURL(for: raw)
+        try Data(sidecarXML.utf8).write(to: sidecarURL)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: [ImageFile(url: jpeg), ImageFile(url: raw)], folderURL: folder)
+        try await waitForBatchLoad(model)
+
+        model.editingMetadata.description = "Batch caption"
+        model.markChanged()
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        let written = try String(contentsOf: sidecarURL, encoding: .utf8)
+        #expect(written.contains("FutureVendorSetting"))
+        let sidecar = try #require(XMPSidecarService().loadSidecar(for: raw))
+        #expect(sidecar.description == "Batch caption")
+        #expect(sidecar.cameraRaw?.exposure2012 == 0.5)
+    }
+
     @Test("a same-batch reload that replaces the editor drops list changes it no longer shows")
     func sameBatchReloadWithoutPreservingDropsBatchMutations() async throws {
         let folder = try makeFolder()

@@ -258,9 +258,11 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     /// settings changed for all rows at once).
     private func reconfigureVisibleItems() {
         for indexPath in collectionView.indexPathsForVisibleItems() {
+            // Index paths follow the applied snapshot, which can lag `visibleImages` inside the
+            // update throttle; resolve the URL through the snapshot so no cell shows another photo.
             guard let item = collectionView.item(at: indexPath) as? ThumbnailCollectionViewItem,
-                  viewModel.visibleImages.indices.contains(indexPath.item) else { continue }
-            configureItem(item, url: viewModel.visibleImages[indexPath.item].url)
+                  let url = dataSource.itemIdentifier(for: indexPath) else { continue }
+            configureItem(item, url: url)
         }
     }
 

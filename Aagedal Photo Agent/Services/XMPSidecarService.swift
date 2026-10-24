@@ -432,9 +432,12 @@ struct XMPSidecarService: Sendable {
     /// mutation after an external revision change. A queued edit cannot replace newer fields
     /// or Develop settings with the UI's stale batch record.
     @MetadataSidecarFilesystemActor
+    /// `preservesDevelopSettings` leaves the sidecar's Camera Raw block exactly as stored (a
+    /// descriptive-only edit must not round-trip crop, curves and masks through the model).
     func updateSidecarSerialized(
         for imageURL: URL,
         fallback: IPTCMetadata,
+        preservesDevelopSettings: Bool = false,
         beforeRevisionCheck: @escaping @Sendable (Int) -> Void = { _ in },
         mutation: @escaping @Sendable (inout IPTCMetadata) -> Void
     ) async throws -> IPTCMetadata {
@@ -458,11 +461,13 @@ struct XMPSidecarService: Sendable {
                                         property: localizedTitleClearedProperty)
                     }
                 }
-                XMPDataBuilder.applyCameraRaw(
-                    metadata.cameraRaw,
-                    imageAspect: self.imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop),
-                    into: &xmp
-                )
+                if !preservesDevelopSettings {
+                    XMPDataBuilder.applyCameraRaw(
+                        metadata.cameraRaw,
+                        imageAspect: self.imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop),
+                        into: &xmp
+                    )
+                }
                 xmp.creatorTool = SwiftExifWriteEngine.creatorTool
                 let staged = Data(XMPWriter.generateXML(xmp).utf8)
                 _ = try XMPReader.readFromXML(staged)
