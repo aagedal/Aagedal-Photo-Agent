@@ -426,7 +426,7 @@ struct DevelopPersistenceSessionCoordinatorTests {
     }
 
     @Test("history ends when another photo loads or the settings are replaced from outside")
-    func undoHistoryPolicy() {
+    func undoHistoryPolicy() throws {
         let photo = URL(fileURLWithPath: "/tmp/develop-history-a.raw")
         let other = URL(fileURLWithPath: "/tmp/develop-history-b.raw")
         var edited = CameraRawSettings(exposure2012: 1.2)
@@ -453,7 +453,7 @@ struct DevelopPersistenceSessionCoordinatorTests {
             settingsDevelopPublished: edited, loadedSettings: pasted))
         // A same-photo reload of what Develop itself published (descriptive change, own save)
         // keeps Undo, even with the loader's per-image decode facts attached.
-        var reloaded = edited
+        var reloaded = try #require(DevelopUndoHistoryPolicy.roundTripped(edited))
         reloaded.asShotNeutralTemperature = 5_200
         reloaded.sourceHasHDRHeadroom = true
         #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
@@ -519,6 +519,71 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
             historyImageURL: photo, loadedImageURL: photo,
             settingsDevelopPublished: published, loadedSettings: changed))
+    }
+
+    private func historyWorkspace() throws -> (URL, URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DevelopHistoryRoundTrip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let photo = directory.appendingPathComponent("capture.arw")
+        try Data([0x52, 0x41, 0x57, 0x00]).write(to: photo)
+        return (directory, photo)
+    }
+
+    @Test("history survives a reload of a long brush stroke at continuous coordinates")
+    func undoHistorySurvivesLongBrushStrokeRoundTrip() throws {
+        let (directory, photo) = try historyWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var generator = SystemRandomNumberGenerator()
+        for trial in 0..<5 {
+            let dabs = (0..<300).map { _ in
+                BrushDab(x: Double.random(in: 0...1, using: &generator),
+                         y: Double.random(in: 0...1, using: &generator),
+                         flow: Double.random(in: 0.05...1, using: &generator),
+                         hardness: Double.random(in: 0...1, using: &generator))
+            }
+            var brush = MaskAdjustment(name: "Stroke \(trial)", exposure: Double.random(in: -2...2, using: &generator))
+            brush.brush = BrushMaskGeometry(strokes: [BrushStroke(
+                dabs: dabs, radius: Double.random(in: 0.01...0.2, using: &generator))])
+            var published = CameraRawSettings(exposure2012: 0.25)
+            published.localAdjustments = [brush]
+
+            let service = XMPSidecarService()
+            try service.saveCameraRawOnly(published, orientation: nil, for: photo)
+            let reloaded = try #require(service.loadSidecar(for: photo)?.cameraRaw)
+            #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+                historyImageURL: photo, loadedImageURL: photo,
+                settingsDevelopPublished: published, loadedSettings: reloaded))
+        }
+    }
+
+    @Test("history survives a reload after reordering masks and keeps muted masks")
+    func undoHistorySurvivesReorderAndMutedMasks() throws {
+        let (directory, photo) = try historyWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var first = MaskAdjustment(name: "First", exposure: 0.5)
+        first.geometry.centerX = 0.2
+        var second = MaskAdjustment(name: "Second", exposure: -0.5)
+        second.geometry.centerX = 0.7
+        var muted = MaskAdjustment(name: "Muted face", anonymizer: AnonymizerSettings(amount: 70, blackOut: nil))
+        muted.enabled = false
+        var published = CameraRawSettings(exposure2012: 0.1)
+        published.localAdjustments = [first, second, muted]
+        // Reorder only changes the chain, not the array (as the layer strip does).
+        published.layerOrder = [.mask(second.id), .global, .mask(first.id), .mask(muted.id)]
+
+        let service = XMPSidecarService()
+        try service.saveCameraRawOnly(published, orientation: nil, for: photo)
+        let reloaded = try #require(service.loadSidecar(for: photo)?.cameraRaw)
+
+        #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: published, loadedSettings: reloaded))
+        // The muted mask is written (CorrectionActive=false) and comes back muted.
+        let reloadedMuted = try #require(reloaded.localAdjustments?.first { $0.name == "Muted face" })
+        #expect(!reloadedMuted.enabled)
+        #expect(reloadedMuted.anonymizer == muted.anonymizer)
+        #expect(reloaded.resolvedLayerOrder() == published.resolvedLayerOrder())
     }
 
     @Test("edit workspace delegates undo and dirty URL ownership")

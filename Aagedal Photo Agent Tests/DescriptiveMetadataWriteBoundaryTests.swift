@@ -749,6 +749,80 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(settings.anonymizer?.amount == 80)
     }
 
+    @Test("Embedded Develop paste carries the source's ACR-only masks and matches the in-memory paste")
+    func embeddedDevelopPasteCarriesACROnlyMasks() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = SwiftExifWriteEngine()
+
+        var ownMask = MaskAdjustment(name: "Own", exposure: 0.5)
+        ownMask.geometry.centerX = 0.3
+        _ = try await engine.writeDevelopFields(
+            [.crsExposure2012: "+0.30"], to: [source],
+            structuredData: StructuredWriteData(masks: [ownMask]), allowsCredentialedEmbed: false
+        )
+        let before = try #require(try await SwiftExifReadService().readFullMetadata(url: source).cameraRaw)
+
+        let crs = XMPNamespace.crs
+        let lightroomOnly = try #require(parseMaskGroupBasedCorrections([[
+            "\(crs)CorrectionActive": "true",
+            "\(crs)CorrectionName": "Lightroom erase brush",
+            "\(crs)LocalExposure2012": "0.2",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/Aggregate",
+                "\(crs)MaskName": "Brush 1",
+                "\(crs)MaskValue": "1",
+                "\(crs)MaskBrushTable": "9F8737DEECAFF5C8FE6BB4B9D438EAF2",
+                "\(crs)MaskBrushUncompressedBytes": "13258",
+            ]],
+        ]])?.preserved.first)
+        var copied = CameraRawSettings(exposure2012: 0.6)
+        copied.unparsedMaskCorrections = [lightroomOnly]
+
+        let report = try await engine.writeDevelopFields(
+            copied.developWriteFields(), to: [source],
+            structuredData: .developPaste(copied), allowsCredentialedEmbed: false
+        )
+        #expect(report.isEmpty)
+
+        let expected = CameraRawSettings.pasted(copied, onto: before, includeCrop: false)
+        let written = try #require(try await SwiftExifReadService().readFullMetadata(url: source).cameraRaw)
+        #expect(written.unparsedMaskCorrections?.count == 1)
+        #expect(written.unparsedMaskCorrections == expected.unparsedMaskCorrections)
+        #expect(written.localAdjustments == expected.localAdjustments)
+        #expect(written.exposure2012 == expected.exposure2012)
+    }
+
+    @Test("Sidecar paste onto a JPEG keeps its embedded redaction instead of hiding it")
+    func sidecarPasteCarriesEmbeddedRedaction() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var faceBlur = MaskAdjustment(name: "Face", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        faceBlur.geometry.centerX = 0.6
+        _ = try await SwiftExifWriteEngine().writeDevelopFields(
+            [.crsExposure2012: "+0.10"], to: [source],
+            structuredData: StructuredWriteData(masks: [faceBlur],
+                                                anonymizer: AnonymizerSettings(amount: 75, blackOut: nil)),
+            allowsCredentialedEmbed: false
+        )
+        // A descriptive-only sidecar: the photo displays its embedded develop.
+        let service = XMPSidecarService()
+        try service.saveSidecar(metadata: IPTCMetadata(title: "Caption only"), for: source)
+        #expect(service.loadSidecar(for: source)?.cameraRaw?.isEmpty ?? true)
+
+        var sky = MaskAdjustment(name: "Sky", exposure: -0.7)
+        sky.geometry.centerY = 0.2
+        var copied = CameraRawSettings(exposure2012: 0.9)
+        copied.localAdjustments = [sky]
+        try await service.pasteCameraRawSerialized(copied, includeCrop: false, for: source)
+
+        let settings = try #require(service.loadSidecar(for: source)?.cameraRaw)
+        #expect(settings.exposure2012 == 0.9)
+        #expect(Set(settings.localAdjustments?.map(\.name) ?? []) == ["Face", "Sky"])
+        #expect(settings.anonymizer?.amount == 75)
+        #expect(service.loadSidecar(for: source)?.title == "Caption only")
+    }
+
     @Test("Sidecar Develop paste appends to the RAW's own masks and is idempotent")
     func sidecarDevelopPasteAppendsMasks() async throws {
         let (directory, source) = try makeWorkspace(extension: "arw")

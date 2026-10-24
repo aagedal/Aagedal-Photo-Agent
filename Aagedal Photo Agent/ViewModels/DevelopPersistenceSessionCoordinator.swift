@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import SwiftMediaMetadata
 
 /// Describes whether a Develop settings transition remains transient or must cross one of the
 /// workspace's existing durable persistence boundaries.
@@ -39,10 +40,10 @@ nonisolated enum DevelopPrimaryPersistenceCompletion: Equatable, Sendable {
 /// All Edits; a multi-photo paste reload clears it directly) — Undo would otherwise bring
 /// discarded edits back and write them. Ordinary same-photo reloads (Paste IPTC, face scans,
 /// automation drafts, self-initiated saves) keep it. As a fallback for replacements the app
-/// isn't told about (an external sidecar edit), a same-photo reload whose develop settings no
-/// longer match what Develop published also ends it; that comparison is on a normalized form
-/// that survives an XMP write/read round trip (layer identities, names and order positions,
-/// number precision, tone-curve quantization, decode facts and version markers).
+/// isn't told about (an external sidecar edit), a same-photo reload whose develop settings
+/// differ from what Develop published *after the real XMP write/read round trip* also ends it.
+/// Comparing against the actual round trip (not a rounded guess) makes the check immune to
+/// encoder precision (brush dabs, crop, curve grid) and to mask reordering.
 nonisolated enum DevelopUndoHistoryPolicy {
     static func shouldClearHistory(
         historyImageURL: URL?,
@@ -52,11 +53,23 @@ nonisolated enum DevelopUndoHistoryPolicy {
         settingsReplacedExternally: Bool = false
     ) -> Bool {
         guard historyImageURL == loadedImageURL, !settingsReplacedExternally else { return true }
-        return normalizedFingerprint(settingsDevelopPublished) != normalizedFingerprint(loadedSettings)
+        return reloadComparable(roundTripped(settingsDevelopPublished)) != reloadComparable(loadedSettings)
     }
 
-    /// Develop settings content, insensitive to what an XMP round trip changes.
-    static func normalizedFingerprint(_ settings: CameraRawSettings?) -> String? {
+    /// `settings` as this app reads them back after writing them to XMP: the same encoder
+    /// (`XMPDataBuilder.applyCameraRaw`) and parser (`XMPMetadataReader.parseMetadata`) a save
+    /// and the following reload use.
+    static func roundTripped(_ settings: CameraRawSettings?) -> CameraRawSettings? {
+        guard let settings, !settings.isEmpty else { return nil }
+        var xmp = XMPData()
+        XMPDataBuilder.applyCameraRaw(settings, imageAspect: nil, into: &xmp)
+        return XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil }).cameraRaw
+    }
+
+    /// A round-tripped (or reloaded) record with the incidental differences removed: decode
+    /// facts and version markers, layer identities (as render-order positions — the writer
+    /// stores masks in render order), and angled-crop aspect conversions below 1e-4.
+    static func reloadComparable(_ settings: CameraRawSettings?) -> CameraRawSettings? {
         guard var settings else { return nil }
         settings.asShotNeutralTemperature = nil
         settings.asShotNeutralTint = nil
@@ -64,49 +77,43 @@ nonisolated enum DevelopUndoHistoryPolicy {
         settings.hasSettings = nil
         settings.version = nil
         settings.processVersion = nil
-        if settings.crop?.isEmpty == true { settings.crop = nil }
-        if settings.hslAdjustments?.isEmpty == true { settings.hslAdjustments = nil }
-        if settings.anonymizer?.isEmpty == true { settings.anonymizer = nil }
-        if settings.filmEmulation?.isEmpty == true { settings.filmEmulation = nil }
-        if var curve = settings.toneCurve {
-            // XMP stores curve points on ACR's 0–255 grid.
-            func quantized(_ points: [ToneCurvePoint]?) -> [ToneCurvePoint]? {
-                guard let points else { return nil }
-                let grid = points.map { ToneCurvePoint(x: ($0.x * 255).rounded() / 255, y: ($0.y * 255).rounded() / 255) }
-                return grid.isIdentityToneCurve ? nil : grid
-            }
-            curve.master = quantized(curve.master)
-            curve.red = quantized(curve.red)
-            curve.green = quantized(curve.green)
-            curve.blue = quantized(curve.blue)
-            settings.toneCurve = curve.isEmpty ? nil : curve
+        if var crop = settings.crop {
+            func rounded(_ value: Double?) -> Double? { value.map { ($0 * 10_000).rounded() / 10_000 } }
+            crop.top = rounded(crop.top)
+            crop.left = rounded(crop.left)
+            crop.bottom = rounded(crop.bottom)
+            crop.right = rounded(crop.right)
+            crop.angle = rounded(crop.angle)
+            settings.crop = crop.isEmpty ? nil : crop
         }
-        // Layer order as positions, so regenerated identities compare equal.
-        let masks = settings.localAdjustments ?? []
+        let masks = settings.masksInRenderOrder() ?? []
         let watermarks = settings.watermarkLayers ?? []
-        let order = settings.resolvedLayerOrder().map { ref -> String in
+        var positions: [UUID: UUID] = [:]
+        for (index, mask) in masks.enumerated() {
+            positions[mask.id] = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012x", index + 1))
+        }
+        for (index, layer) in watermarks.enumerated() {
+            positions[layer.id] = UUID(uuidString: String(format: "00000000-0000-0000-0001-%012x", index + 1))
+        }
+        let order = settings.resolvedLayerOrder().map { ref -> LayerRef in
             switch ref {
-            case .global: return "g"
-            case .mask(let id): return "m\(masks.firstIndex { $0.id == id } ?? -1)"
-            case .watermark(let id): return "w\(watermarks.firstIndex { $0.id == id } ?? -1)"
+            case .global: return .global
+            case .mask(let id): return .mask(positions[id] ?? id)
+            case .watermark(let id): return .watermark(positions[id] ?? id)
             }
         }
-        settings.layerOrder = nil
         settings.localAdjustments = masks.isEmpty ? nil : masks.map { mask in
             var copy = mask
-            copy.id = CameraRawSettings.zeroIdentity
-            copy.name = ""
+            copy.id = positions[mask.id] ?? mask.id
             return copy
         }
         settings.watermarkLayers = watermarks.isEmpty ? nil : watermarks.map { layer in
             var copy = layer
-            copy.id = CameraRawSettings.zeroIdentity
-            copy.name = ""
+            copy.id = positions[layer.id] ?? layer.id
             return copy
         }
-        guard !settings.isEmpty else { return nil }
-        let content = CameraRawSettings.canonicalJSONFingerprint(settings, scale: 1_000) ?? ""
-        return content + "|" + order.joined(separator: ",")
+        settings.layerOrder = order
+        return settings.isEmpty ? nil : settings
     }
 }
 

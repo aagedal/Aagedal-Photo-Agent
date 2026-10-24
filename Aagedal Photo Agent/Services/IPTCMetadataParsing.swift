@@ -865,10 +865,11 @@ nonisolated struct ACRMaskCorrection {
     var correctionMasks: [ACRMaskNode]? = nil
 }
 
-/// Encode enabled masks into ACR's `MaskGroupBasedCorrections` schema —
-/// the exact inverse of `parseMaskGroupBasedCorrections`.
+/// Encode masks into ACR's `MaskGroupBasedCorrections` schema — the exact inverse of
+/// `parseMaskGroupBasedCorrections`. Muted masks are written too, with
+/// `CorrectionActive=false` (ACR and our renderer skip them), so muting survives a reload.
 nonisolated func encodeMaskGroupBasedCorrections(_ masks: [MaskAdjustment]) -> [ACRMaskCorrection] {
-    masks.filter(\.enabled).enumerated().map { index, mask in
+    masks.enumerated().map { index, mask in
         let correctionFields = encodeCorrectionFields(mask)
         let appPrivateFields = encodeMaskAppPrivateFields(mask)
 
@@ -1011,7 +1012,7 @@ nonisolated private func encodeCorrectionFields(_ mask: MaskAdjustment) -> [(nam
     let tint = (mask.tint ?? 0) / 100.0
 
     return [
-        ("CorrectionActive", "true"),
+        ("CorrectionActive", mask.enabled ? "true" : "false"),
         ("CorrectionAmount", acrNum(mask.amount)),
         ("CorrectionName", mask.name),
         ("CorrectionSyncID", mask.id.uuidString.replacingOccurrences(of: "-", with: "")),

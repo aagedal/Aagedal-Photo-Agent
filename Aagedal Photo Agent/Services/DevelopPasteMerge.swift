@@ -1,5 +1,6 @@
 import Foundation
 import os
+import SwiftMediaMetadata
 
 /// A multi-image Develop paste where some files failed or were refused; the rest were written
 /// and the failed files keep their previous settings.
@@ -67,6 +68,26 @@ extension CameraRawSettings {
     }
 }
 
+extension StructuredWriteData {
+    /// The structured part of a multi-photo Develop paste into a file's embedded XMP: what the
+    /// copied settings carry, merged per file with paste semantics (`mergesLayersForPaste`),
+    /// including the source's ACR-only mask corrections so the file ends up like the in-memory
+    /// `CameraRawSettings.pasted` result.
+    nonisolated static func developPaste(_ cameraRaw: CameraRawSettings) -> StructuredWriteData {
+        StructuredWriteData(
+            toneCurve: cameraRaw.toneCurve,
+            masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
+            watermarkLayers: (cameraRaw.watermarkLayers?.isEmpty == false) ? cameraRaw.watermarkLayers : nil,
+            hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil,
+            layerOrder: cameraRaw.layerOrder,
+            anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil,
+            unparsedMaskCorrections: (cameraRaw.unparsedMaskCorrections?.isEmpty == false)
+                ? cameraRaw.unparsedMaskCorrections : nil,
+            mergesLayersForPaste: true
+        )
+    }
+}
+
 extension XMPSidecarService {
     /// Applies a Develop paste to the sidecar's current crs inside the per-URL transaction, so the
     /// merge base is the revision actually being replaced. Descriptive fields are untouched.
@@ -80,9 +101,17 @@ extension XMPSidecarService {
     ) async throws -> Int {
         try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             let skipped = OSAllocatedUnfairLock(initialState: 0)
+            // Merge onto what the photo actually displays: an embedded develop block (with its
+            // Anonymizer masks / strength) shows when the sidecar has none, and must be carried
+            // into the sidecar block this paste writes instead of being hidden by it.
+            let embedded: CameraRawSettings? = (try? ImageMetadata.read(from: imageURL))
+                .flatMap { iptcMetadataFromDict($0.asMetadataDict(fileURL: imageURL)).cameraRaw }
             try await self.updateCameraRawTransaction(for: imageURL) { existing in
+                let displayed = EffectiveMetadataResolver.reconciledDevelopSettings(
+                    sidecar: existing, embedded: embedded
+                )
                 let result = CameraRawSettings.pastedResult(
-                    source, onto: existing, includeCrop: includeCrop,
+                    source, onto: displayed, includeCrop: includeCrop,
                     maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
                 )
                 skipped.withLock { $0 = result.skippedLayerCount }

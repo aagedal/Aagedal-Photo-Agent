@@ -8199,15 +8199,7 @@ struct EditWorkspaceView: View {
             // source has some (merge-style, no replaceCameraRawBlock), merged per file
             // with paste semantics: ordinary masks / watermarks replaced, the file's
             // Anonymizer masks and active global Anonymizer always kept.
-            let structuredData = StructuredWriteData(
-                toneCurve: cameraRaw.toneCurve,
-                masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
-                watermarkLayers: (cameraRaw.watermarkLayers?.isEmpty == false) ? cameraRaw.watermarkLayers : nil,
-                hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil,
-                layerOrder: cameraRaw.layerOrder,
-                anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil,
-                mergesLayersForPaste: true
-            )
+            let structuredData = StructuredWriteData.developPaste(cameraRaw)
 
             // Camera Raw-only embed: no descriptive rewrite, never into a file whose metadata
             // wouldn't fit, and (outside Simple) never into a file with Content Credentials.
