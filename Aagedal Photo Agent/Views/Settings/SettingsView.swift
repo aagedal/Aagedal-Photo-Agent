@@ -2581,13 +2581,18 @@ struct SettingsView: View {
                                 )
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(conn.transportSecurity.isInsecure ? .orange : .green)
+                                if conn.useSFTP {
+                                    Label("SFTP isn't available with macOS's built-in curl. Edit to switch to FTPS.", systemImage: "exclamationmark.triangle.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.red)
+                                }
                             }
                             Spacer()
                             Button("Edit") {
                                 ftpViewModel.startEditingConnection(conn)
                             }
                             Button("Delete", role: .destructive) {
-                                ftpViewModel.deleteConnection(conn)
+                                ftpViewModel.pendingConnectionDeletion = conn
                             }
                         }
                     }
@@ -2606,6 +2611,22 @@ struct SettingsView: View {
         .padding()
         .sheet(isPresented: $ftpViewModel.isShowingServerForm) {
             FTPServerForm(viewModel: ftpViewModel)
+        }
+        .alert(
+            "Delete “\(ftpViewModel.pendingConnectionDeletion?.name ?? "")”?",
+            isPresented: Binding(
+                get: { ftpViewModel.pendingConnectionDeletion != nil },
+                set: { if !$0 { ftpViewModel.pendingConnectionDeletion = nil } }
+            )
+        ) {
+            Button("Delete", role: .destructive) {
+                ftpViewModel.confirmPendingConnectionDeletion()
+            }
+            Button("Cancel", role: .cancel) {
+                ftpViewModel.pendingConnectionDeletion = nil
+            }
+        } message: {
+            Text("The server and its saved password are removed from this Mac. This can't be undone.")
         }
     }
 

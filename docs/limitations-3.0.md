@@ -111,9 +111,10 @@ These are material product and evidence boundaries, not a list of unfinished int
   [metadata support table](metadata-field-support.md) before relying on a particular carrier/write mode.
 - Deadline Workspace and its profile management are deferred to 3.1 and hidden in 3.0.
   Saved profiles and delivery evidence are retained; Deadline workflow resume is unavailable.
-- FTP/FTPS/SFTP protocol success and remote existence/size are non-cryptographic acknowledgements. SFTP
-  supports password/netrc authentication, not SSH private keys, and a narrow local path
-  time-of-check/time-of-use interval remains before `curl` opens a verified staged file.
+- SFTP is not supported: the app uploads with macOS's `/usr/bin/curl`, which is built without SFTP.
+  New servers default to FTPS; existing SFTP profiles are flagged and refused until switched to FTPS.
+- FTP/FTPS protocol success and remote existence/size are non-cryptographic acknowledgements, and a
+  narrow local path time-of-check/time-of-use interval remains before `curl` opens a verified staged file.
 - Persisted voice memos support explicit Caption playback and companion-preserving Duplicate,
   alongside ingest, transactional rename, companion-aware Move/Reject and recoverable memo Trash.
   Restore the entire Trash folder to retain its hidden relationship and metadata. New relationships

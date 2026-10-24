@@ -301,9 +301,11 @@ AVIF can be encoded with native macOS Image I/O or bundled FFmpeg
 - Experimental signing of images with C2PA content credentials — certificate and private key stored in the macOS Keychain
 - Powered by bundled c2patool
 
-### FTP / SFTP Upload and Deadline Delivery
+### FTP / FTPS Upload and Deadline Delivery
 
-- Upload selected or all images via FTP or SFTP
+- Upload selected or all images via FTPS (FTP over TLS, the default for new servers) or plain FTP.
+  SFTP isn't supported: macOS's built-in `curl` has no SFTP; older SFTP profiles are flagged and
+  refused until switched to FTPS
 - Multiple connection profiles with a Test Connection button
 - Credentials stored securely in macOS Keychain
 - Pre-upload required-field check that is sidecar-aware (falls back to the XMP sidecar for RAW files)
@@ -318,12 +320,11 @@ AVIF can be encoded with native macOS Image I/O or bundled FFmpeg
   and retain preservation evidence before upload. Failed and cancelled workflows keep verified staging
   evidence for exact resume or confirmed cleanup in Activity
 
-FTP/SFTP delivery acknowledgement has deliberate limits. FTP/FTPS/SFTP protocol success and an optional
+FTP delivery acknowledgement has deliberate limits. FTP/FTPS protocol success and an optional
 remote existence/size observation are not a cryptographic remote-byte verification. The production
 adapter rechecks the local file's identity, size, and SHA-256 before requesting credentials, but there is
-still a narrow path-based time-of-check/time-of-use interval before `curl` opens that path. SFTP currently
-supports passwords supplied through a private temporary mode-0600 netrc file; SSH private-key identities
-are not supported.
+still a narrow path-based time-of-check/time-of-use interval before `curl` opens that path. Passwords are
+supplied through a private temporary mode-0600 netrc file.
 
 ### External Editor Integration
 

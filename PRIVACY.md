@@ -42,7 +42,7 @@ network service are listed below.
   source paths, and content hashes. Exact retained workflow state necessarily contains source identities,
   resolved metadata, destination details, and any retained staged derivatives needed to validate, resume,
   or clean up the delivery.
-- FTP/FTPS/SFTP passwords and C2PA signing credentials use macOS Keychain. Temporary delivery credential
+- FTP/FTPS passwords and C2PA signing credentials use macOS Keychain. Temporary delivery credential
   files are private mode-0600 files and are removed when the operation ends.
 - Exported images, reports, Known People ZIPs, and other user-selected exports are copies at locations you
   choose and are your responsibility to retain or remove. A `.pint` project specifically includes the
@@ -191,7 +191,7 @@ Photo Agent accesses a network only for a feature that needs it, including:
 - explicit Whisper model downloads from Hugging Face's whisper.cpp repository and its HTTPS
   delivery hosts; the requested model and ordinary connection information are visible to those hosts,
   but voice memos, photos and transcripts are not uploaded;
-- FTP, FTPS, or SFTP connection tests and uploads to a server/profile you configure; and
+- FTP or FTPS connection tests and uploads to a server/profile you configure; and
 - links that you explicitly open, including the project website, component sites, Adobe DNG Converter,
   Apple/Google maps, Meta Content Seal, and Google Gemini.
 

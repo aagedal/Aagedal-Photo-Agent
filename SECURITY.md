@@ -58,12 +58,12 @@ areas to look at:
 - **Path traversal.** Imports that read paths from files — e.g. keyword-list and
   Known People / Teams database (ZIP) import — must stay within their intended
   directories.
-- **Credential and key storage.** FTP/SFTP passwords and C2PA signing private
+- **Credential and key storage.** FTP/FTPS passwords and C2PA signing private
   keys are stored in the macOS Keychain and must never be written to logs,
   sidecars, exported metadata, or synced via iCloud.
 - **Content credentials (C2PA).** Signing certificate/key handling and manifest
   generation.
-- **Network paths.** FTP/FTPS/SFTP upload, geocoding and map lookups, and the
+- **Network paths.** FTP/FTPS upload, geocoding and map lookups, and the
   Sparkle auto-update channel
   (appcast over HTTPS, releases verified with an EdDSA signature).
 - **iCloud sync.** Synced categories must never include passwords, signing keys,

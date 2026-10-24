@@ -119,6 +119,9 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
     /// import, the error that stopped it after copying had started.
     let persistenceError: String?
     let files: [ActivityFileRecord]
+    /// Successful per-file rows dropped from `files` to bound the stored log. The summary counts
+    /// above are unaffected. `nil` (legacy data, or nothing dropped) means `files` is complete.
+    let omittedSuccessfulFileCount: Int?
 
     init(
         id: UUID = UUID(),
@@ -133,7 +136,8 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         importResultCounts: ActivityImportResultCounts? = nil,
         deliveryTransportSecurity: DeliveryTransportSecurity? = nil,
         persistenceError: String? = nil,
-        files: [ActivityFileRecord]
+        files: [ActivityFileRecord],
+        omittedSuccessfulFileCount: Int? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -148,6 +152,37 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         self.deliveryTransportSecurity = deliveryTransportSecurity
         self.persistenceError = persistenceError
         self.files = files
+        self.omittedSuccessfulFileCount = omittedSuccessfulFileCount
+    }
+
+    /// A copy that keeps every failed row but at most `limit` successful ones, recording how many
+    /// successes were dropped. Per-file rows (with full destination paths for imports) are the
+    /// bulk of the persisted log; failures are what the user needs to act on.
+    func cappingSuccessfulFiles(to limit: Int) -> ActivityEntry {
+        let successfulCount = files.lazy.filter(\.succeeded).count
+        guard successfulCount > limit else { return self }
+        var keptSuccesses = 0
+        let kept = files.filter { record in
+            guard record.succeeded else { return true }
+            keptSuccesses += 1
+            return keptSuccesses <= limit
+        }
+        return ActivityEntry(
+            id: id,
+            kind: kind,
+            date: date,
+            title: title,
+            successCount: successCount,
+            totalCount: totalCount,
+            verificationFailures: verificationFailures,
+            verificationEnabled: verificationEnabled,
+            wasCancelled: wasCancelled,
+            importResultCounts: importResultCounts,
+            deliveryTransportSecurity: deliveryTransportSecurity,
+            persistenceError: persistenceError,
+            files: kept,
+            omittedSuccessfulFileCount: (omittedSuccessfulFileCount ?? 0) + successfulCount - limit
+        )
     }
 
     /// Failed files (attempted but not completed). Skipped import files were deliberately
@@ -207,6 +242,9 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
 @MainActor
 final class ActivityHistoryStore {
     static let maxEntries = 50
+    /// Successful per-file rows kept per entry (all failures are kept). Totals are stored
+    /// separately on the entry, so the summary stays exact.
+    static let maxSuccessfulFileRecordsPerEntry = 200
 
     private(set) var entries: [ActivityEntry] = []
 
@@ -216,7 +254,7 @@ final class ActivityHistoryStore {
 
     /// Records a finished operation at the front of the log, trimming to the cap.
     func record(_ entry: ActivityEntry) {
-        entries.insert(entry, at: 0)
+        entries.insert(entry.cappingSuccessfulFiles(to: Self.maxSuccessfulFileRecordsPerEntry), at: 0)
         if entries.count > Self.maxEntries {
             entries = Array(entries.prefix(Self.maxEntries))
         }
@@ -235,7 +273,8 @@ final class ActivityHistoryStore {
               let decoded = try? JSONDecoder().decode([ActivityEntry].self, from: data) else {
             return
         }
-        entries = decoded
+        // Logs written before the per-entry cap shrink on their next save.
+        entries = decoded.map { $0.cappingSuccessfulFiles(to: Self.maxSuccessfulFileRecordsPerEntry) }
     }
 
     private func save() {

@@ -159,8 +159,9 @@ struct FTPUploadView: View {
         .frame(minWidth: 720)
         .onAppear {
             activeFiles = files
-            // Don't carry errors from a previous upload session into a fresh dialog.
-            viewModel.errorMessages = []
+            // Don't carry a refused request into a fresh dialog. The last run's errorMessages are
+            // left alone: they back its sidebar banner until the user dismisses it.
+            viewModel.uploadAdmissionError = nil
             viewModel.loadConnections()
             viewModel.loadHistory()
             selectedServerID = viewModel.selectedConnectionID
@@ -284,6 +285,12 @@ struct FTPUploadView: View {
                 )
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(selectedConnection.transportSecurity.isInsecure ? .orange : .green)
+                if selectedConnection.useSFTP {
+                    Label(FTPConnection.sftpUnavailableMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
 
@@ -320,15 +327,13 @@ struct FTPUploadView: View {
             }
         }
 
-        if !viewModel.errorMessages.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(viewModel.errorMessages, id: \.self) { error in
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                }
-            }
+        // Why Upload was refused before a run started. The last run's own errors stay with its
+        // sidebar banner (viewModel.errorMessages) and are not cleared or shown here.
+        if let admissionError = viewModel.uploadAdmissionError {
+            Text(admissionError)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -798,9 +803,12 @@ struct FTPUploadView: View {
             || isProcessingVariables || isSigningC2PA || activeFiles.isEmpty
             || isInspectingFiles || inspectionFailure != nil
             || metadataViolationCount(.error) > 0
+            || selectedConnection?.useSFTP == true
     }
 
     private func startUpload(renderURLs: Set<URL>) {
+        // Settings may have edited the server since this sheet opened; use the stored profile.
+        viewModel.loadConnections()
         guard let id = selectedServerID,
               let connection = viewModel.connections.first(where: { $0.id == id }) else { return }
 
@@ -821,7 +829,7 @@ struct FTPUploadView: View {
     private var firstInsecureUploadMessage: String {
         guard let id = pendingInsecureUploadConnectionID,
               let connection = viewModel.connections.first(where: { $0.id == id }) else {
-            return "SFTP or verified FTPS is recommended."
+            return "Verified FTPS is recommended."
         }
         switch connection.transportSecurity.protocolKind {
         case .ftp:
@@ -856,6 +864,7 @@ struct FTPUploadView: View {
 
         Task {
             preprocessErrors = []
+            viewModel.uploadAdmissionError = nil
             await continueUpload(renderURLs: renderURLs, connection: connection)
         }
     }
@@ -869,7 +878,7 @@ struct FTPUploadView: View {
                     for: url, in: url.deletingLastPathComponent())
             }
         } catch {
-            viewModel.errorMessages.append(error.localizedDescription)
+            preprocessErrors.append(error.localizedDescription)
             return
         }
         guard !Task.isCancelled, activeFiles == filesAtAdmission,
@@ -973,7 +982,9 @@ struct FTPUploadView: View {
     ) {
         // The view model renders only the files in renderURLs and uploads the rest as-is
         // (and short-circuits to the plain upload path when nothing needs rendering).
-        viewModel.uploadFiles(
+        // A refused request (e.g. the password is missing from this Mac's Keychain) starts no run:
+        // keep the sheet open so uploadAdmissionError is visible instead of closing silently.
+        guard viewModel.uploadFiles(
             files,
             renderURLs: renderURLs,
             to: connection,
@@ -981,7 +992,7 @@ struct FTPUploadView: View {
             writeEngine: writeEngine,
             inMemoryCameraRaw: inMemoryCameraRaw,
             signingConfiguration: signingConfiguration
-        )
+        ) else { return }
         onStartUpload?()
     }
 

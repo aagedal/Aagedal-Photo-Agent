@@ -76,6 +76,67 @@ struct FTPCurlArgumentsTests {
         if let tIndex { #expect(args[args.index(after: tIndex)] == "/tmp/photo.jpg") }
     }
 
+    @Test("uploads give up on a dead or stalled server instead of freezing")
+    func uploadHasStallTimeouts() {
+        let args = makeArgs(FTPConnection(useSFTP: false, useTLS: true))
+        func value(after flag: String) -> String? {
+            args.firstIndex(of: flag).map { args[args.index(after: $0)] }
+        }
+        #expect(value(after: "--connect-timeout") == "15")
+        #expect(value(after: "--speed-limit") == "1")
+        #expect(value(after: "--speed-time") == "60")
+    }
+
+    @Test("netrc login and password are quoted so spaces, '#', quotes and backslashes survive")
+    func netrcQuoting() throws {
+        let content = try FTPService.netrcContent(
+            host: "ftp.example.com",
+            username: "photo desk",
+            password: "p a\"s#s\\w\td\nx"
+        )
+        #expect(content == "machine ftp.example.com login \"photo desk\" password \"p a\\\"s#s\\\\w\\td\\nx\"\n")
+        #expect(throws: FTPService.FTPError.self) {
+            try FTPService.netrcContent(host: "ftp.example.com", username: "u", password: "")
+        }
+        #expect(throws: FTPService.FTPError.self) {
+            try FTPService.netrcContent(host: "bad host", username: "u", password: "p")
+        }
+    }
+
+    @Test("credential, SFTP and unsupported-protocol failures stop the whole batch")
+    func batchStoppingErrors() {
+        #expect(FTPService.FTPError.invalidCredential("password", reason: "is empty").isServerLevel)
+        #expect(FTPService.FTPError.sftpUnavailable.isServerLevel)
+        #expect(FTPService.FTPError.uploadFailed(1, "curl: (1) Protocol \"sftp\" not supported").isServerLevel)
+        #expect(FTPService.FTPError.uploadFailed(67, "").isServerLevel)
+        #expect(!FTPService.FTPError.uploadFailed(26, "").isServerLevel)
+        #expect(FTPService.FTPError.connectionTestFailed(7, "").localizedDescription
+            .hasPrefix("Connection test failed"))
+    }
+
+    @Test("an SFTP profile is refused before curl runs")
+    func sftpRefusedBeforeLaunch() async throws {
+        let sftp = FTPConnection(name: "Legacy", host: "example.invalid", port: 22,
+                                 username: "u", useSFTP: true)
+        do {
+            _ = try await FTPService().testConnection(connection: sftp, password: "p")
+            Issue.record("SFTP test unexpectedly ran")
+        } catch let error as FTPService.FTPError {
+            #expect(error.localizedDescription == FTPConnection.sftpUnavailableMessage)
+        }
+        do {
+            try await FTPService().uploadFile(
+                localURL: URL(fileURLWithPath: "/private/tmp/never-read.jpg"),
+                connection: sftp,
+                password: "p",
+                progressHandler: { _ in }
+            )
+            Issue.record("SFTP upload unexpectedly ran")
+        } catch let error as FTPService.FTPError {
+            #expect(error.isServerLevel)
+        }
+    }
+
     @Test("connection test has both connect and overall deadlines")
     func connectionTestHasOverallDeadline() {
         let args = FTPService.testConnectionArguments(
@@ -747,16 +808,34 @@ struct FTPRemoteURLTests {
 @Suite("FTPConnection Codable")
 struct FTPConnectionCodableTests {
 
-    @Test("new profiles default to verified SFTP")
+    @Test("new profiles default to verified FTPS, never SFTP (macOS curl has no sftp)")
     func newProfileSafeDefault() {
         let connection = FTPConnection.secureDefault
-        #expect(connection.useSFTP)
-        #expect(connection.port == 22)
+        #expect(!connection.useSFTP)
+        #expect(connection.useTLS)
+        #expect(!connection.allowInsecureHostVerification)
+        #expect(connection.port == 21)
         #expect(connection.transportSecurity == DeliveryTransportSecurity(
-            protocolKind: .sftp,
+            protocolKind: .explicitFTPS,
             verificationEnabled: true
         ))
         #expect(!connection.transportSecurity.isInsecure)
+        #expect(!connection.requiresFirstInsecureUploadAcknowledgement)
+    }
+
+    @Test("Save validation requires a user name, a password and a usable host")
+    func saveValidation() {
+        var connection = FTPConnection.secureDefault
+        connection.name = "Desk"
+        connection.host = "ftp.example.com"
+        connection.username = "user"
+        #expect(connection.saveValidationMessage(password: "pa ss#1") == nil)
+        #expect(connection.saveValidationMessage(password: "") != nil)
+        connection.username = ""
+        #expect(connection.saveValidationMessage(password: "secret") != nil)
+        connection.username = "user"
+        connection.host = "ftp example.com"
+        #expect(connection.saveValidationMessage(password: "secret") != nil)
     }
 
     @Test("plain FTP and disabled server verification are classified as insecure")
@@ -829,15 +908,44 @@ struct FTPViewModelTransportAcknowledgementTests {
         let viewModel = FTPViewModel()
         let connection = FTPConnection(name: "Desk", host: "example.invalid")
 
-        viewModel.uploadFiles(
+        let started = viewModel.uploadFiles(
             [URL(fileURLWithPath: "/private/tmp/should-not-upload.jpg")],
             to: connection
         )
 
-        #expect(viewModel.errorMessages == [
-            "Acknowledge this insecure delivery connection before its first upload."
-        ])
+        #expect(!started)
+        #expect(viewModel.uploadAdmissionError ==
+            "Acknowledge this insecure delivery connection before its first upload.")
+        #expect(viewModel.errorMessages.isEmpty)
         #expect(!viewModel.isUploading)
+        #expect(viewModel.uploadHistory.entries.isEmpty)
+    }
+
+    @Test("SFTP profiles and a missing password are refused without starting a run")
+    func refusedUploadsReportNotStarted() throws {
+        let suite = "FTPAdmissionTests.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let lookups = FTPPasswordLookupCounter()
+        var execution = FTPUploadExecutionAccess()
+        execution.password = { _ in
+            lookups.count += 1
+            return nil
+        }
+        execution.upload = { _, _, _, _ in Issue.record("A refused upload reached the transport") }
+        let viewModel = FTPViewModel(defaults: defaults, execution: execution)
+        let file = URL(fileURLWithPath: "/private/tmp/should-not-upload.jpg")
+
+        let sftp = FTPConnection(name: "Legacy", host: "example.invalid", port: 22, useSFTP: true)
+        #expect(!viewModel.uploadFiles([file], to: sftp))
+        #expect(viewModel.uploadAdmissionError == FTPConnection.sftpUnavailableMessage)
+        #expect(lookups.count == 0)
+
+        let ftps = FTPConnection(name: "Desk", host: "example.invalid", useTLS: true)
+        #expect(!viewModel.uploadFiles([file], to: ftps))
+        #expect(viewModel.uploadAdmissionError?.hasPrefix("No password found for Desk") == true)
+        #expect(!viewModel.isUploading && !viewModel.uploadCompleted)
+        #expect(viewModel.errorMessages.isEmpty)
         #expect(viewModel.uploadHistory.entries.isEmpty)
     }
 
@@ -847,7 +955,7 @@ struct FTPViewModelTransportAcknowledgementTests {
         let url = URL(fileURLWithPath: "/private/tmp/should-not-render.jpg")
         let connection = FTPConnection(name: "Desk", host: "example.invalid")
 
-        viewModel.uploadFiles(
+        let started = viewModel.uploadFiles(
             [url],
             renderURLs: [url],
             to: connection,
@@ -856,12 +964,71 @@ struct FTPViewModelTransportAcknowledgementTests {
             inMemoryCameraRaw: { _ in nil }
         )
 
-        #expect(viewModel.errorMessages == [
-            "Acknowledge this insecure delivery connection before its first upload."
-        ])
+        #expect(!started)
+        #expect(viewModel.uploadAdmissionError ==
+            "Acknowledge this insecure delivery connection before its first upload.")
         #expect(!viewModel.isUploading)
         #expect(!viewModel.isRendering)
         #expect(viewModel.uploadHistory.entries.isEmpty)
+    }
+}
+
+@MainActor
+private final class FTPPasswordLookupCounter {
+    var count = 0
+}
+
+@MainActor
+@Suite("FTPViewModel shared server list")
+struct FTPViewModelConnectionSyncTests {
+    private func makeDefaults() throws -> (UserDefaults, String) {
+        let suite = "FTPConnectionSyncTests.\(UUID())"
+        return (try #require(UserDefaults(suiteName: suite)), suite)
+    }
+
+    private func store(_ connections: [FTPConnection], in defaults: UserDefaults) throws {
+        defaults.set(try JSONEncoder().encode(connections), forKey: UserDefaultsKeys.ftpConnections)
+    }
+
+    @Test("a mutation re-reads the stored list instead of saving a stale cache")
+    func mutationPreservesOtherWindowsChanges() throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let plain = FTPConnection(name: "Plain", host: "a.invalid", username: "u")
+        try store([plain], in: defaults)
+        let settings = FTPViewModel(defaults: defaults)
+        settings.loadConnections()
+
+        // The other window adds a server; this instance's cache doesn't know about it yet.
+        let added = FTPConnection(name: "Added", host: "b.invalid", username: "u", useTLS: true)
+        try store([plain, added], in: defaults)
+
+        #expect(settings.acknowledgeFirstInsecureUpload(connectionID: plain.id) != nil)
+        let stored = try JSONDecoder().decode(
+            [FTPConnection].self,
+            from: try #require(defaults.data(forKey: UserDefaultsKeys.ftpConnections))
+        )
+        #expect(stored.map(\.id) == [plain.id, added.id])
+        #expect(stored.first?.requiresFirstInsecureUploadAcknowledgement == false)
+        #expect(settings.connections.map(\.id) == [plain.id, added.id])
+    }
+
+    @Test("the other instance sharing the store reloads after a save")
+    func otherInstanceReloads() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let plain = FTPConnection(name: "Plain", host: "a.invalid", username: "u")
+        try store([plain], in: defaults)
+        let settings = FTPViewModel(defaults: defaults)
+        let main = FTPViewModel(defaults: defaults)
+        settings.loadConnections()
+        main.loadConnections()
+
+        _ = settings.acknowledgeFirstInsecureUpload(connectionID: plain.id)
+        for _ in 0..<200 where main.connections.first?.requiresFirstInsecureUploadAcknowledgement == true {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(main.connections.first?.requiresFirstInsecureUploadAcknowledgement == false)
     }
 }
 
@@ -1012,6 +1179,29 @@ struct FTPUploadGenerationIsolationTests {
         }
     }
 
+    @Test("Cancelling an upload records a cancelled Activity entry with what completed")
+    func cancelRecordsActivity() async throws {
+        try await withFixture(blocked: ["upload:old.jpg", "upload:new.jpg"]) { fixture in
+            let history = ActivityHistoryStore()
+            history.clear()
+            fixture.model.activityHistory = history
+            fixture.model.uploadFiles([fixture.old, fixture.new], to: fixture.connection)
+            try await fixture.gate.waitFor("upload:old.jpg")
+            _ = fixture.captureCompletion()
+            await fixture.gate.release("upload:old.jpg")
+            try await fixture.gate.waitFor("upload:new.jpg")
+            fixture.model.cancelUpload()
+            let entry = try #require(history.entries.first)
+            #expect(entry.wasCancelled)
+            #expect(entry.kind == .upload)
+            #expect(entry.successCount == 1 && entry.totalCount == 2)
+            #expect(entry.files.map(\.fileName) == ["new.jpg", "old.jpg"])
+            #expect(entry.files.map(\.succeeded) == [false, true])
+            #expect(history.entries.count == 1)
+            history.clear()
+        }
+    }
+
     @Test("Activity history keeps the selected count and lists files that failed to prepare")
     func activityHistoryIncludesUnpreparedFiles() async throws {
         try await withFixture(blocked: ["render:new.jpg"]) { fixture in
@@ -1062,7 +1252,7 @@ private final class FTPGenerationFixture {
     let rendered: URL
     let gate: FTPGenerationGate
     let model: FTPViewModel
-    let connection = FTPConnection(name: "Isolated fixture", host: "fixture.invalid", port: 22, useSFTP: true)
+    let connection = FTPConnection(name: "Isolated fixture", host: "fixture.invalid", port: 21, useTLS: true)
     private let defaults: UserDefaults
     private let suite: String
     private let watchdog: Task<Void, Never>

@@ -89,10 +89,33 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
 
     nonisolated var keychainKey: String { "ftpConnection-\(id.uuidString)" }
 
-    /// Safe starting point for newly-created user profiles. The general initializer retains its
-    /// source-compatible FTP defaults for callers that explicitly construct protocol fixtures.
+    /// Safe starting point for newly-created user profiles: explicit FTPS with certificate
+    /// verification. SFTP is not offered because macOS's `/usr/bin/curl` is built without it.
+    /// The general initializer retains its source-compatible FTP defaults for callers that
+    /// explicitly construct protocol fixtures.
     nonisolated static var secureDefault: Self {
-        Self(port: 22, useSFTP: true)
+        Self(port: 21, useSFTP: false, useTLS: true, allowInsecureHostVerification: false)
+    }
+
+    /// macOS ships `/usr/bin/curl` without the sftp/scp protocols, so an SFTP profile can never
+    /// connect. Legacy profiles keep decoding, but Test and Upload refuse them with this message.
+    nonisolated static let sftpUnavailableMessage =
+        "SFTP isn't available with macOS's built-in curl. Edit this server and use FTPS (FTP with TLS) instead."
+
+    /// Why Save must stay disabled for the edited profile, or `nil` when it can be saved.
+    /// Credentials go into a netrc file at upload time, so an empty user name or password
+    /// would otherwise only fail later, file by file.
+    nonisolated func saveValidationMessage(password: String) -> String? {
+        if name.trimmingCharacters(in: .whitespaces).isEmpty { return "Enter a connection name." }
+        if host.isEmpty { return "Enter a host." }
+        if host.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) })
+            || host.contains("#") || host.contains("\"") {
+            return "The host can't contain spaces, '#' or quotes."
+        }
+        if !(1 ... 65_535).contains(port) { return "Enter a port between 1 and 65535." }
+        if username.isEmpty { return "Enter a user name." }
+        if password.isEmpty { return "Enter a password." }
+        return nil
     }
 
     nonisolated var transportSecurity: DeliveryTransportSecurity {

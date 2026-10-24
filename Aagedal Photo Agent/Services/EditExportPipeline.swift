@@ -397,8 +397,11 @@ enum EditExportPipeline {
             throw CancellationError()
         }
 
-        for (url, settings) in snapshot.settingsByImageURL where map[url] != nil {
-            map[url]?.cameraRaw = settings
+        // A file whose metadata read failed is missing from `map`; its live or sidecar
+        // Develop settings must still apply, or the photo would render/upload unedited.
+        let requested = Set(urls)
+        for (url, settings) in snapshot.settingsByImageURL where requested.contains(url) {
+            map[url, default: IPTCMetadata()].cameraRaw = settings
         }
     }
 

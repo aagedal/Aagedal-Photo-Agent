@@ -271,6 +271,8 @@ extension FTPService {
         secretLoader: DeliverySecretLoader = .keychain,
         processRunner: DeliveryProcessRunner = .live
     ) async throws {
+        // macOS's /usr/bin/curl has no sftp protocol; refuse before touching the credential.
+        guard !connection.useSFTP else { throw DeliveryBoundaryError.invalidConnection }
         guard localURL.lastPathComponent == outputFilename,
               validDeliveryConnection(connection) else {
             throw DeliveryBoundaryError.invalidTransfer
@@ -307,6 +309,7 @@ extension FTPService {
         secretLoader: DeliverySecretLoader = .keychain,
         processRunner: DeliveryProcessRunner = .live
     ) async throws -> DeliveryRemoteObservation {
+        guard !connection.useSFTP else { throw DeliveryBoundaryError.invalidConnection }
         guard validDeliveryConnection(connection), !outputFilename.isEmpty else {
             throw DeliveryBoundaryError.invalidTransfer
         }
@@ -376,10 +379,9 @@ extension FTPService {
         for connection: FTPConnection,
         secretLoader: DeliverySecretLoader
     ) throws -> String {
+        // Any non-empty password is usable: makeDeliveryNetrc writes it as a quoted netrc token.
         guard let credential = secretLoader.load(connection.keychainKey),
-              !credential.isEmpty,
-              !credential.unicodeScalars.contains(where: CharacterSet.whitespacesAndNewlines.contains),
-              !credential.contains("#") else {
+              !credential.isEmpty else {
             throw DeliveryBoundaryError.credentialUnavailable
         }
         return credential
@@ -392,8 +394,12 @@ extension FTPService {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("netrc")
-        guard let data = "machine \(connection.host) login \(connection.username) password \(credential)\n"
-            .data(using: .utf8) else {
+        guard let content = try? Self.netrcContent(
+                  host: connection.host,
+                  username: connection.username,
+                  password: credential
+              ),
+              let data = content.data(using: .utf8) else {
             throw DeliveryBoundaryError.credentialUnavailable
         }
         let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL, mode_t(0o600))

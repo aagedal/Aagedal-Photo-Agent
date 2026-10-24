@@ -244,6 +244,15 @@ final class FTPViewModel {
     /// The finished run ended early (preparation or signing failed) rather than running to
     /// completion; `errorMessages` says why. Only meaningful while `uploadCompleted`.
     var uploadStopped = false
+    /// Why the most recent Upload request was refused before a run started (missing password,
+    /// unacknowledged insecure transport, SFTP profile). Kept apart from `errorMessages`, which
+    /// belong to the last run and feed its sidebar banner, so the sheet can stay open showing
+    /// the reason without rewriting a finished run's result.
+    var uploadAdmissionError: String?
+    /// Save failure shown inside the server form (e.g. the Keychain refused the password).
+    var serverFormError: String?
+    /// The profile awaiting delete confirmation in Settings.
+    var pendingConnectionDeletion: FTPConnection?
 
     /// Distinct `Uploaded` sub-folders created by the most recent render-and-upload, so the
     /// owner (ContentView) can reveal them in the sidebar on completion — otherwise the
@@ -257,7 +266,8 @@ final class FTPViewModel {
     enum ConnectionTestState: Equatable {
         case idle
         case testing
-        case success
+        /// Connected; the optional note explains a caveat (e.g. the folder will be created).
+        case success(String?)
         case failure(String)
     }
     var connectionTest: ConnectionTestState = .idle
@@ -276,6 +286,18 @@ final class FTPViewModel {
     @ObservationIgnored private var completionTask: Task<Void, Never>?
     @ObservationIgnored private var connectionTestTask: Task<Void, Never>?
     @ObservationIgnored private var uploadGeneration = UUID()
+    /// What the in-flight run will report to Activity, so a cancel can still record it.
+    @ObservationIgnored private var activeRun: ActiveUploadRun?
+    /// Settings and the main window each own an `FTPViewModel`; this keeps their cached
+    /// `connections` in step when the other one saves.
+    @ObservationIgnored nonisolated(unsafe) private var connectionsObserver: NSObjectProtocol?
+
+    private struct ActiveUploadRun {
+        let connection: FTPConnection
+        let selectedCount: Int
+        var plannedFileNames: [String]
+        var unpreparedFileNames: [String] = []
+    }
 
     init(
         fileSystem: FTPUploadFileSystemBoundary = FTPUploadFileSystemBoundary(),
@@ -285,6 +307,14 @@ final class FTPViewModel {
         self.fileSystem = fileSystem
         self.defaults = defaults
         self.execution = execution
+        // Filtered on the defaults instance, so only view models sharing this store reload.
+        connectionsObserver = NotificationCenter.default.addObserver(
+            forName: .ftpConnectionsDidChange,
+            object: defaults,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.loadConnections() }
+        }
     }
 
     /// Captures one run's completion, including cleanup, even after a restart replaces it.
@@ -310,16 +340,14 @@ final class FTPViewModel {
         uploadTask?.cancel()
         completionTask?.cancel()
         connectionTestTask?.cancel()
+        if let connectionsObserver {
+            NotificationCenter.default.removeObserver(connectionsObserver)
+        }
     }
 
     func loadConnections() {
-        guard let data = defaults.data(forKey: connectionsKey) else { return }
-        do {
-            connections = try JSONDecoder().decode([FTPConnection].self, from: data)
-        } catch {
-            ftpLog.error("Failed to decode FTP connections: \(error.localizedDescription, privacy: .private)")
-            return
-        }
+        guard let stored = storedConnections() else { return }
+        if stored != connections { connections = stored }
 
         // Verify the selected connection still exists after reload
         if let id = selectedConnectionID, !connections.contains(where: { $0.id == id }) {
@@ -329,13 +357,31 @@ final class FTPViewModel {
         restoreLastUsedConnection()
     }
 
-    func saveConnections() {
+    /// The persisted list, or `nil` when nothing is stored or it can't be decoded.
+    private func storedConnections() -> [FTPConnection]? {
+        guard let data = defaults.data(forKey: connectionsKey) else { return nil }
         do {
-            let data = try JSONEncoder().encode(connections)
+            return try JSONDecoder().decode([FTPConnection].self, from: data)
+        } catch {
+            ftpLog.error("Failed to decode FTP connections: \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+    }
+
+    /// Applies one change to the freshly re-read stored list (not this instance's cache, which
+    /// another window may have made stale), persists it, and tells the other instance to reload.
+    private func mutateStoredConnections(_ change: (inout [FTPConnection]) -> Void) {
+        var updated = storedConnections() ?? connections
+        change(&updated)
+        connections = updated
+        do {
+            let data = try JSONEncoder().encode(updated)
             defaults.set(data, forKey: connectionsKey)
         } catch {
             ftpLog.error("Failed to encode FTP connections: \(error.localizedDescription, privacy: .private)")
+            return
         }
+        NotificationCenter.default.post(name: .ftpConnectionsDidChange, object: defaults)
     }
 
     func saveLastUsedConnectionID(_ id: UUID) {
@@ -357,6 +403,7 @@ final class FTPViewModel {
         editingPassword = connection.flatMap { KeychainService.load(forKey: $0.keychainKey) } ?? ""
         connectionTestTask?.cancel()
         connectionTest = .idle
+        serverFormError = nil
         isShowingServerForm = true
     }
 
@@ -377,9 +424,9 @@ final class FTPViewModel {
         connectionTestTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await ftpService.testConnection(connection: connection, password: password)
+                let note = try await ftpService.testConnection(connection: connection, password: password)
                 guard !Task.isCancelled else { return }
-                self.connectionTest = .success
+                self.connectionTest = .success(note)
             } catch is CancellationError {
                 // Superseded by a newer test or cancelled — leave state to the newer run.
             } catch {
@@ -394,6 +441,10 @@ final class FTPViewModel {
     @discardableResult
     func saveEditingConnection(acknowledgingInsecureTransport: Bool = false) -> Bool {
         editingConnection.normalizeTransportAcknowledgement()
+        if let message = editingConnection.saveValidationMessage(password: editingPassword) {
+            serverFormError = message
+            return false
+        }
         if editingConnection.transportSecurity.isInsecure,
            !acknowledgingInsecureTransport {
             return false
@@ -404,20 +455,19 @@ final class FTPViewModel {
             try KeychainService.save(password: editingPassword, forKey: editingConnection.keychainKey)
         } catch {
             ftpLog.error("Keychain save failed for \(self.editingConnection.name, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-            errorMessages = ["Failed to save password: \(error.localizedDescription)"]
+            serverFormError = "Failed to save password: \(error.localizedDescription)"
             return false
         }
 
-        if let index = connections.firstIndex(where: { $0.id == editingConnection.id }) {
-            connections[index] = editingConnection
-        } else {
-            connections.append(editingConnection)
+        let edited = editingConnection
+        mutateStoredConnections { stored in
+            if let index = stored.firstIndex(where: { $0.id == edited.id }) {
+                stored[index] = edited
+            } else {
+                stored.append(edited)
+            }
         }
-        // Keep selectedConnectionID in sync if the user edited the currently selected one
-        if selectedConnectionID == editingConnection.id {
-            selectedConnectionID = editingConnection.id
-        }
-        saveConnections()
+        serverFormError = nil
         isShowingServerForm = false
         return true
     }
@@ -426,17 +476,31 @@ final class FTPViewModel {
     /// state. The connection UUID is used instead of host or user data.
     @discardableResult
     func acknowledgeFirstInsecureUpload(connectionID: UUID) -> FTPConnection? {
-        guard let index = connections.firstIndex(where: { $0.id == connectionID }),
-              connections[index].transportSecurity.isInsecure else { return nil }
-        connections[index].acknowledgeFirstInsecureUpload()
-        saveConnections()
-        if editingConnection.id == connectionID {
-            editingConnection = connections[index]
+        var acknowledged: FTPConnection?
+        mutateStoredConnections { stored in
+            guard let index = stored.firstIndex(where: { $0.id == connectionID }),
+                  stored[index].transportSecurity.isInsecure else { return }
+            stored[index].acknowledgeFirstInsecureUpload()
+            acknowledged = stored[index]
         }
-        return connections[index]
+        if let acknowledged, editingConnection.id == connectionID {
+            editingConnection = acknowledged
+        }
+        return acknowledged
     }
 
     func cancelUpload() {
+        // Record what the cancelled run managed before tearing it down, so Activity shows it.
+        if let run = activeRun, isUploading || isRendering {
+            recordActivity(
+                connection: run.connection,
+                selectedCount: run.selectedCount,
+                plannedFileNames: run.plannedFileNames,
+                unpreparedFileNames: run.unpreparedFileNames,
+                wasCancelled: true
+            )
+        }
+        activeRun = nil
         uploadGeneration = UUID()
         uploadTask?.cancel()
         uploadTask = nil
@@ -450,8 +514,15 @@ final class FTPViewModel {
 
     func deleteConnection(_ connection: FTPConnection) {
         KeychainService.delete(forKey: connection.keychainKey)
-        connections.removeAll { $0.id == connection.id }
-        saveConnections()
+        mutateStoredConnections { $0.removeAll { $0.id == connection.id } }
+        if selectedConnectionID == connection.id { selectedConnectionID = nil }
+    }
+
+    /// Confirms the delete requested via `pendingConnectionDeletion`.
+    func confirmPendingConnectionDeletion() {
+        guard let connection = pendingConnectionDeletion else { return }
+        pendingConnectionDeletion = nil
+        deleteConnection(connection)
     }
 
     // MARK: - Upload History
@@ -505,15 +576,20 @@ final class FTPViewModel {
 
     // MARK: - Upload
 
-    func uploadFiles(_ urls: [URL], to connection: FTPConnection) {
-        guard ensureUploadTransportIsAcknowledged(connection) else { return }
-        guard let password = execution.password(connection.keychainKey) else {
-            errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
-            return
-        }
+    /// Starts uploading `urls`. Returns `false` without starting a run when the request is
+    /// refused up front; `uploadAdmissionError` then says why, and the caller should keep its
+    /// UI open instead of assuming an upload is underway.
+    @discardableResult
+    func uploadFiles(_ urls: [URL], to connection: FTPConnection) -> Bool {
+        guard let password = admitUpload(to: connection) else { return false }
 
         let historyID = UUID()
         let historyStartedAt = Date()
+        activeRun = ActiveUploadRun(
+            connection: connection,
+            selectedCount: urls.count,
+            plannedFileNames: urls.map(\.lastPathComponent)
+        )
 
         isUploading = true
         isRendering = false
@@ -589,6 +665,7 @@ final class FTPViewModel {
                 plannedFileNames: urls.map(\.lastPathComponent)
             )
         }
+        return true
     }
 
     /// Uploads `urls`, rendering to JPEG only the files in `renderURLs` and sending every other
@@ -596,6 +673,7 @@ final class FTPViewModel {
     /// folders; non-rendered originals upload in place unless a name collision forces staging a
     /// safe hard-link/copy (the user's real files are never moved or renamed). Falls back to the
     /// plain `uploadFiles(_:to:)` fast path when nothing in the batch needs rendering.
+    @discardableResult
     func uploadFiles(
         _ urls: [URL],
         renderURLs: Set<URL>,
@@ -604,20 +682,20 @@ final class FTPViewModel {
         writeEngine: any MetadataWriteEngine,
         inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?,
         signingConfiguration: C2PAUploadSigningConfiguration? = nil
-    ) {
-        guard ensureUploadTransportIsAcknowledged(connection) else { return }
+    ) -> Bool {
         let renderTargets = urls.filter { renderURLs.contains($0) }
         guard !renderTargets.isEmpty else {
-            uploadFiles(urls, to: connection)
-            return
+            return uploadFiles(urls, to: connection)
         }
-        guard let password = execution.password(connection.keychainKey) else {
-            errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
-            return
-        }
+        guard let password = admitUpload(to: connection) else { return false }
 
         let historyID = UUID()
         let historyStartedAt = Date()
+        activeRun = ActiveUploadRun(
+            connection: connection,
+            selectedCount: urls.count,
+            plannedFileNames: urls.map(\.lastPathComponent)
+        )
 
         isRendering = true
         isUploading = false
@@ -830,6 +908,8 @@ final class FTPViewModel {
             self.isUploading = true
             self.totalCount = uploadURLs.count
             self.completedCount = 0
+            self.activeRun?.plannedFileNames = uploadURLs.map(\.lastPathComponent)
+            self.activeRun?.unpreparedFileNames = unpreparedFileNames
 
             for (index, url) in uploadURLs.enumerated() {
                 guard self.ownsUpload(generation) else { return }
@@ -862,20 +942,28 @@ final class FTPViewModel {
                 unpreparedFileNames: unpreparedFileNames
             )
         }
+        return true
     }
 
-    /// This boundary is intentionally below the SwiftUI confirmation. It prevents callers,
-    /// future UI entry points, and restored actions from bypassing the first-use acknowledgement.
-    /// Check it before Keychain access, history creation, rendering, or network work.
-    @discardableResult
-    private func ensureUploadTransportIsAcknowledged(_ connection: FTPConnection) -> Bool {
-        guard !connection.requiresFirstInsecureUploadAcknowledgement else {
-            errorMessages = [
-                "Acknowledge this insecure delivery connection before its first upload."
-            ]
-            return false
+    /// Admission checks that must pass before Keychain access, history creation, rendering, or
+    /// network work. The insecure-transport check is intentionally below the SwiftUI
+    /// confirmation so callers, future UI entry points, and restored actions can't bypass the
+    /// first-use acknowledgement. Returns the password, or `nil` with `uploadAdmissionError` set.
+    private func admitUpload(to connection: FTPConnection) -> String? {
+        uploadAdmissionError = nil
+        guard !connection.useSFTP else {
+            uploadAdmissionError = FTPConnection.sftpUnavailableMessage
+            return nil
         }
-        return true
+        guard !connection.requiresFirstInsecureUploadAcknowledgement else {
+            uploadAdmissionError = "Acknowledge this insecure delivery connection before its first upload."
+            return nil
+        }
+        guard let password = execution.password(connection.keychainKey), !password.isEmpty else {
+            uploadAdmissionError = "No password found for \(connection.name). Edit the server in Settings ▸ FTP to enter it again."
+            return nil
+        }
+        return password
     }
 
     /// Reserves a de-duplicated upload filename. The potentially blocking hard-link/copy that
@@ -897,7 +985,7 @@ final class FTPViewModel {
     /// was unreachable, so the user understands why later files show no result.
     private func appendBatchAbortNotice(remaining: Int) {
         guard remaining > 0 else { return }
-        errorMessages.append("Stopped — \(remaining) more file\(remaining == 1 ? "" : "s") not uploaded (server unreachable).")
+        errorMessages.append("Stopped — \(remaining) more file\(remaining == 1 ? "" : "s") not uploaded because of the server error above.")
     }
 
     // MARK: - Progress Helpers
@@ -940,6 +1028,7 @@ final class FTPViewModel {
         plannedFileNames: [String],
         unpreparedFileNames: [String] = []
     ) {
+        activeRun = nil
         isUploading = false
         isRendering = false
         uploadCompleted = true
@@ -977,7 +1066,8 @@ final class FTPViewModel {
         connection: FTPConnection,
         selectedCount: Int,
         plannedFileNames: [String],
-        unpreparedFileNames: [String]
+        unpreparedFileNames: [String],
+        wasCancelled: Bool = false
     ) {
         func record(_ fileName: String, succeeded: Bool) -> ActivityFileRecord {
             ActivityFileRecord(
@@ -1005,9 +1095,15 @@ final class FTPViewModel {
             title: connection.name,
             successCount: completedCount,
             totalCount: max(selectedCount, records.count),
+            wasCancelled: wasCancelled,
             deliveryTransportSecurity: connection.transportSecurity,
             files: records
         )
         activityHistory?.record(entry)
     }
+}
+
+extension Notification.Name {
+    /// Posted (object: the `UserDefaults` store) after an `FTPViewModel` saves the server list.
+    nonisolated static let ftpConnectionsDidChange = Notification.Name("FTPViewModel.connectionsDidChange")
 }

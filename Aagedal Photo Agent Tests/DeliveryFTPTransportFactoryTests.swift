@@ -142,8 +142,30 @@ struct DeliveryFTPTransportFactoryTests {
         case sftp
     }
 
-    @Test("FTP, explicit FTPS, and SFTP preserve security-critical curl flags", arguments: [
-        ProtocolCase.ftp, .ftps, .sftp,
+    @Test("SFTP is refused before credential lookup because macOS curl has no sftp")
+    func sftpRefused() async throws {
+        let file = try makeFile(name: "news.jpg", bytes: Data("news".utf8))
+        defer { try? FileManager.default.removeItem(at: file) }
+        var connection = makeConnection()
+        connection.useSFTP = true
+        connection.port = 22
+        connection.acknowledgeFirstInsecureUpload()
+        let transport = DeliveryFTPTransportFactory.make(
+            connections: [connection],
+            secretLoader: .init { _ in
+                Issue.record("SFTP reached the credential lookup")
+                return Self.secret
+            },
+            processRunner: .init { _, _ in
+                Issue.record("SFTP reached the process runner")
+                return .init(terminationStatus: 0)
+            }
+        )
+        await expectUploadError(.connectionUnavailable, transport: transport, transfer: makeTransfer(file: file))
+    }
+
+    @Test("FTP and explicit FTPS preserve security-critical curl flags", arguments: [
+        ProtocolCase.ftp, .ftps,
     ])
     func protocolFlags(protocolCase: ProtocolCase) async throws {
         let file = try makeFile(name: "news.jpg", bytes: Data("news".utf8))

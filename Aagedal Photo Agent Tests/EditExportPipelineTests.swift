@@ -98,6 +98,41 @@ struct EditExportPipelineTests {
         #expect(probe.loadedURLs == [sidecarURL])
     }
 
+    @MainActor
+    @Test("resolveCameraRaw applies settings to files whose metadata read failed")
+    func resolveCameraRawFillsFilesMissingFromMetadataMap() async throws {
+        let readURL = URL(fileURLWithPath: "/virtual/read-ok.ARW")
+        let unreadableRAW = URL(fileURLWithPath: "/virtual/unreadable.ARW")
+        let unreadableLive = URL(fileURLWithPath: "/virtual/unreadable-live.jpg")
+        let notRequested = URL(fileURLWithPath: "/virtual/not-requested.ARW")
+        var sidecarSettings = CameraRawSettings()
+        sidecarSettings.exposure2012 = 1.5
+        var liveSettings = CameraRawSettings()
+        liveSettings.contrast2012 = 20
+        let probe = ExportCameraRawResolutionProbe(settingsByURL: [
+            readURL: sidecarSettings,
+            unreadableRAW: sidecarSettings,
+            notRequested: sidecarSettings,
+        ])
+        let service = ExportCameraRawResolutionService(access: probe.access)
+        // Only one file parsed; the other two were dropped by readBatchFullMetadata.
+        var map: [URL: IPTCMetadata] = [readURL: IPTCMetadata(title: "Kept caption")]
+
+        try await EditExportPipeline.resolveCameraRaw(
+            into: &map,
+            urls: [readURL, unreadableRAW, unreadableLive],
+            inMemory: { $0 == unreadableLive ? liveSettings : nil },
+            service: service
+        )
+
+        #expect(map[readURL]?.cameraRaw == sidecarSettings)
+        #expect(map[readURL]?.title == "Kept caption")
+        #expect(map[unreadableRAW]?.cameraRaw == sidecarSettings)
+        #expect(map[unreadableLive]?.cameraRaw == liveSettings)
+        #expect(map[notRequested] == nil)
+        #expect(map.count == 3)
+    }
+
     @Test("Camera Raw resolution reports the exact prefix when cancellation follows a sidecar read")
     func cameraRawResolutionReportsPostReadCancellation() async {
         let firstURL = URL(fileURLWithPath: "/virtual/first.ARW")

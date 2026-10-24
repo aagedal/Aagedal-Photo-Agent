@@ -73,12 +73,12 @@ struct FTPService: Sendable {
         progressHandler: @Sendable @escaping (FTPUploadProgress) -> Void
     ) async throws {
         try Task.checkCancellation()
-        // Reject credentials containing characters that would break netrc parsing
-        // (whitespace / newlines split tokens, so e.g. a password "my pass" would
-        // authenticate as "my", and a newline could inject extra machine entries).
-        try Self.validateNetrcField(connection.host, name: "host")
-        try Self.validateNetrcField(connection.username, name: "username")
-        try Self.validateNetrcField(password, name: "password")
+        guard !connection.useSFTP else { throw FTPError.sftpUnavailable }
+        let netrcContent = try Self.netrcContent(
+            host: connection.host,
+            username: connection.username,
+            password: password
+        )
 
         let remoteURL = Self.remoteUploadURL(for: localURL.lastPathComponent, connection: connection)
 
@@ -89,7 +89,6 @@ struct FTPService: Sendable {
         let netrcURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("netrc")
-        let netrcContent = "machine \(connection.host) login \(connection.username) password \(password)\n"
         guard let netrcData = netrcContent.data(using: .utf8) else {
             throw FTPError.encodingFailed
         }
@@ -187,35 +186,66 @@ struct FTPService: Sendable {
         progressHandler(finalProgress)
     }
 
-    /// Probes a connection without transferring a file: connect + authenticate +
-    /// list the configured remote directory. Reuses the same credential handling and
-    /// transport/security flags as the upload path so a passing test reflects what an
-    /// upload would do. Fails fast (`--connect-timeout`, no `--retry`) — a probe should
-    /// surface an unreachable server immediately rather than retrying for several seconds.
-    nonisolated func testConnection(connection: FTPConnection, password: String) async throws {
+    /// Probes a connection without transferring a file: connect + authenticate + list the
+    /// configured remote directory. Reuses the same credential handling and transport/security
+    /// flags as the upload path so a passing test reflects what an upload would do. Fails fast
+    /// (`--connect-timeout`, no `--retry`) — a probe should surface an unreachable server
+    /// immediately rather than retrying for several seconds.
+    ///
+    /// Uploads create a missing remote folder (`--ftp-create-dirs`), so when only the folder
+    /// can't be entered the server root is listed instead; if that works the test passes and
+    /// the returned note says so. Returns `nil` when the configured folder itself listed.
+    nonisolated func testConnection(connection: FTPConnection, password: String) async throws -> String? {
         try Task.checkCancellation()
-        try Self.validateNetrcField(connection.host, name: "host")
-        try Self.validateNetrcField(connection.username, name: "username")
-        try Self.validateNetrcField(password, name: "password")
-
-        let listURL = Self.remoteDirectoryURL(connection: connection)
+        guard !connection.useSFTP else { throw FTPError.sftpUnavailable }
+        let netrcContent = try Self.netrcContent(
+            host: connection.host,
+            username: connection.username,
+            password: password
+        )
 
         let netrcURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("netrc")
-        let netrcContent = "machine \(connection.host) login \(connection.username) password \(password)\n"
         guard let netrcData = netrcContent.data(using: .utf8) else {
             throw FTPError.encodingFailed
         }
         try Self.writeNetrcAtomically(netrcData, to: netrcURL)
         defer { try? FileManager.default.removeItem(at: netrcURL) }
 
-        let arguments = Self.testConnectionArguments(
-            remoteURL: listURL,
+        let directoryProbe = try await runProbe(arguments: Self.testConnectionArguments(
+            remoteURL: Self.remoteDirectoryURL(connection: connection),
             netrcPath: netrcURL.path,
             connection: connection
-        )
+        ))
+        if directoryProbe.status == 0 { return nil }
 
+        // Login worked but the folder couldn't be entered: check the root before blaming the server.
+        var root = connection
+        root.remotePath = "/"
+        if Self.isMissingDirectoryStatus(directoryProbe.status),
+           Self.remoteDirectoryURL(connection: root) != Self.remoteDirectoryURL(connection: connection) {
+            let rootProbe = try await runProbe(arguments: Self.testConnectionArguments(
+                remoteURL: Self.remoteDirectoryURL(connection: root),
+                netrcPath: netrcURL.path,
+                connection: connection
+            ))
+            if rootProbe.status == 0 {
+                return "Connected. The folder “\(connection.remotePath)” doesn't exist yet or can't be listed; uploads will try to create it."
+            }
+        }
+        throw FTPError.connectionTestFailed(directoryProbe.status, directoryProbe.stderr)
+    }
+
+    /// curl exit statuses meaning login worked but the remote folder could not be entered
+    /// (9 = server denied changing into it, 78 = it does not exist).
+    nonisolated static func isMissingDirectoryStatus(_ status: Int32) -> Bool {
+        status == 9 || status == 78
+    }
+
+    /// Runs one fail-fast curl probe and returns its exit status and captured stderr.
+    nonisolated private func runProbe(arguments: [String]) async throws -> (status: Int32, stderr: String) {
+        try Task.checkCancellation()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         process.arguments = arguments
@@ -232,17 +262,15 @@ struct FTPService: Sendable {
         }
 
         let state = CancellationState()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(status: Int32, stderr: String), any Error>) in
                 process.terminationHandler = { proc in
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
                     guard state.claimResume() else { return }
                     if state.isCancelled {
                         continuation.resume(throwing: CancellationError())
-                    } else if proc.terminationStatus == 0 {
-                        continuation.resume()
                     } else {
-                        continuation.resume(throwing: FTPError.uploadFailed(proc.terminationStatus, stderrBuffer.value))
+                        continuation.resume(returning: (proc.terminationStatus, stderrBuffer.value))
                     }
                 }
                 do {
@@ -365,6 +393,12 @@ struct FTPService: Sendable {
             // percent-encoded upstream (see remoteUploadURL); this guards the
             // remaining unencoded path (the user's remote directory).
             "--globoff",
+            // Never let a black-holed server freeze progress indefinitely: give up on a
+            // connection attempt after 15 s, and abort a transfer that moves less than
+            // 1 byte/s for 60 s. With the retries below a dead server fails in ~1 minute.
+            "--connect-timeout", "15",
+            "--speed-limit", "1",
+            "--speed-time", "60",
             "--retry", "3",
             "--retry-delay", "2",
             "--retry-all-errors",
@@ -378,17 +412,37 @@ struct FTPService: Sendable {
         return arguments
     }
 
-    /// Reject characters that would corrupt netrc parsing — whitespace splits tokens
-    /// and `#` starts a comment, so e.g. a password "my pass" silently authenticates
-    /// as "my", and a newline would inject extra `machine`/`login`/`password` entries.
-    nonisolated private static func validateNetrcField(_ value: String, name: String) throws {
-        if value.isEmpty {
-            throw FTPError.invalidCredential(name, reason: "is empty")
+    /// Builds the one-line netrc entry curl reads credentials from. The login and password are
+    /// written as quoted tokens (supported by curl ≥ 7.84, macOS ships 8.x) so spaces, `#`,
+    /// quotes and backslashes survive intact instead of splitting the token, starting a comment
+    /// or injecting extra `machine` entries. Inside quotes curl unescapes `\"`, `\\`, `\n`,
+    /// `\r` and `\t`. The host is a bare `machine` token and must not contain such characters
+    /// (no valid host name does).
+    nonisolated static func netrcContent(host: String, username: String, password: String) throws -> String {
+        if host.isEmpty { throw FTPError.invalidCredential("host", reason: "is empty") }
+        if host.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) })
+            || host.contains("#") || host.contains("\"") {
+            throw FTPError.invalidCredential("host", reason: "contains spaces, '#' or quotes")
         }
-        let invalid = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "#"))
-        if value.rangeOfCharacter(from: invalid) != nil {
-            throw FTPError.invalidCredential(name, reason: "contains whitespace or '#'")
+        if username.isEmpty { throw FTPError.invalidCredential("username", reason: "is empty") }
+        if password.isEmpty { throw FTPError.invalidCredential("password", reason: "is empty") }
+        return "machine \(host) login \(netrcQuoted(username)) password \(netrcQuoted(password))\n"
+    }
+
+    nonisolated static func netrcQuoted(_ value: String) -> String {
+        var quoted = "\""
+        for character in value {
+            switch character {
+            case "\\": quoted += "\\\\"
+            case "\"": quoted += "\\\""
+            case "\n": quoted += "\\n"
+            case "\r": quoted += "\\r"
+            case "\r\n": quoted += "\\r\\n"
+            case "\t": quoted += "\\t"
+            default: quoted.append(character)
+            }
         }
+        return quoted + "\""
     }
 
     /// Create the .netrc with mode 0o600 in a single open(2) call so the file
@@ -412,59 +466,80 @@ struct FTPService: Sendable {
 
     enum FTPError: LocalizedError {
         case uploadFailed(Int32, String)
+        case connectionTestFailed(Int32, String)
         case encodingFailed
         case invalidCredential(String, reason: String)
         case netrcCreationFailed(Int32)
+        case sftpUnavailable
 
         var errorDescription: String? {
             switch self {
             case .uploadFailed(let code, let stderr):
-                let description = Self.curlExitCodeDescription(code)
-                if let detail = Self.extractCurlError(from: stderr) {
-                    return "\(description) \u{2014} \(detail)"
-                }
-                return description
+                return Self.describe(code: code, stderr: stderr, prefix: "Upload failed")
+            case .connectionTestFailed(let code, let stderr):
+                return Self.describe(code: code, stderr: stderr, prefix: "Connection test failed")
             case .encodingFailed:
                 return "Failed to encode FTP credentials as UTF-8"
             case .invalidCredential(let field, let reason):
-                return "FTP \(field) \(reason); whitespace and '#' are not allowed"
+                return "FTP \(field) \(reason). Edit the server to fix it."
             case .netrcCreationFailed(let errno):
                 return "Failed to create temporary credential file (errno \(errno))"
+            case .sftpUnavailable:
+                return FTPConnection.sftpUnavailableMessage
             }
         }
 
         /// True when the failure means every other file in the batch would fail the
-        /// same way — the server is unreachable, rejecting auth, or refusing TLS — so
-        /// the upload loop should stop rather than retry each remaining file in turn.
-        /// File-specific failures (e.g. 23 disk write, 26 local read) stay non-fatal.
+        /// same way — the server is unreachable, rejecting auth, refusing TLS, the
+        /// credentials or protocol are unusable — so the upload loop should stop rather
+        /// than retry each remaining file in turn. File-specific failures (e.g. 23 disk
+        /// write, 26 local read) stay non-fatal.
         var isServerLevel: Bool {
-            guard case .uploadFailed(let code, _) = self else { return false }
+            switch self {
+            case .uploadFailed(let code, _), .connectionTestFailed(let code, _):
+                return Self.isServerLevelExitCode(code)
+            case .invalidCredential, .sftpUnavailable, .encodingFailed, .netrcCreationFailed:
+                return true
+            }
+        }
+
+        nonisolated static func isServerLevelExitCode(_ code: Int32) -> Bool {
             switch code {
-            case 5, 6, 7, 9, 28, 35, 51, 67:
-                // proxy refused, DNS, connect, access denied, timeout,
-                // TLS handshake, cert verify, login denied
+            case 1, 5, 6, 7, 9, 28, 35, 51, 67:
+                // unsupported protocol, proxy refused, DNS, connect, access denied,
+                // timeout, TLS handshake, cert verify, login denied
                 return true
             default:
                 return false
             }
         }
 
-        private static func curlExitCodeDescription(_ code: Int32) -> String {
+        private static func describe(code: Int32, stderr: String, prefix: String) -> String {
+            let description = curlExitCodeDescription(code, prefix: prefix)
+            if let detail = extractCurlError(from: stderr) {
+                return "\(description) \u{2014} \(detail)"
+            }
+            return description
+        }
+
+        private static func curlExitCodeDescription(_ code: Int32, prefix: String) -> String {
             switch code {
-            case 5:  return "Upload failed: proxy connection refused"
-            case 6:  return "Upload failed: could not resolve host"
-            case 7:  return "Upload failed: could not connect to server"
-            case 9:  return "Upload failed: access denied by server"
-            case 23: return "Upload failed: could not write data to disk"
-            case 25: return "Upload failed: could not start FTP upload"
-            case 26: return "Upload failed: could not read local file"
-            case 28: return "Upload failed: connection timed out"
-            case 35: return "Upload failed: SSL/TLS handshake error"
-            case 51: return "Upload failed: server certificate verification failed"
-            case 55: return "Upload failed: error sending data"
-            case 56: return "Upload failed: error receiving data"
-            case 67: return "Upload failed: login denied (check username/password)"
-            default: return "Upload failed (curl exit code \(code))"
+            case 1:  return "\(prefix): protocol not supported by macOS's curl"
+            case 5:  return "\(prefix): proxy connection refused"
+            case 6:  return "\(prefix): could not resolve host"
+            case 7:  return "\(prefix): could not connect to server"
+            case 9:  return "\(prefix): access denied by server"
+            case 23: return "\(prefix): could not write data to disk"
+            case 25: return "\(prefix): could not start FTP upload"
+            case 26: return "\(prefix): could not read local file"
+            case 28: return "\(prefix): connection timed out or stalled"
+            case 35: return "\(prefix): SSL/TLS handshake error"
+            case 51: return "\(prefix): server certificate verification failed"
+            case 55: return "\(prefix): error sending data"
+            case 56: return "\(prefix): error receiving data"
+            case 67: return "\(prefix): login denied (check username/password)"
+            case 78: return "\(prefix): remote folder not found"
+            default: return "\(prefix) (curl exit code \(code))"
             }
         }
 

@@ -35,6 +35,53 @@ struct ActivityHistoryTests {
             .deliveryTransportSecurity == nil)
     }
 
+    @Test("Stored per-file rows keep every failure but a bounded number of successes")
+    func perFileRecordsAreCapped() throws {
+        let limit = ActivityHistoryStore.maxSuccessfulFileRecordsPerEntry
+        let successes = (0 ..< limit + 25).map {
+            ActivityFileRecord(fileName: "ok-\($0).jpg", destination: "/Volumes/Photos/2026/\($0)",
+                               succeeded: true, verification: .verified)
+        }
+        let failures = (0 ..< 30).map {
+            ActivityFileRecord(fileName: "bad-\($0).jpg", destination: "/Volumes/Photos/2026",
+                               succeeded: false, verification: .failed)
+        }
+        let entry = ActivityEntry(
+            kind: .importJob,
+            date: Date(),
+            title: "Card",
+            successCount: successes.count,
+            totalCount: successes.count + failures.count,
+            files: successes + failures
+        )
+
+        let store = ActivityHistoryStore()
+        store.clear()
+        store.record(entry)
+        let stored = try #require(store.entries.first)
+
+        #expect(stored.files.filter(\.succeeded).count == limit)
+        #expect(stored.files.filter { !$0.succeeded }.count == failures.count)
+        #expect(stored.omittedSuccessfulFileCount == 25)
+        #expect(stored.successCount == successes.count)
+        #expect(stored.totalCount == successes.count + failures.count)
+        #expect(stored.failureCount == failures.count)
+
+        // Survives persistence; legacy entries without the field decode as complete.
+        let data = try JSONEncoder().encode(stored)
+        #expect(try JSONDecoder().decode(ActivityEntry.self, from: data).omittedSuccessfulFileCount == 25)
+        let legacy = dataRemovingKey("omittedSuccessfulFileCount", from: data)
+        #expect(try JSONDecoder().decode(ActivityEntry.self, from: legacy).omittedSuccessfulFileCount == nil)
+
+        // Small entries are untouched.
+        let small = ActivityEntry(kind: .upload, date: Date(), title: "Desk", successCount: 1,
+                                  totalCount: 1, files: Array(successes.prefix(1)))
+        #expect(small.cappingSuccessfulFiles(to: limit).omittedSuccessfulFileCount == nil)
+
+        store.clear()
+        #expect(store.entries.isEmpty)
+    }
+
     @Test("Partial face results remain available in the expanded manager")
     func partialFaceResultsCanBeManaged() {
         let viewModel = FaceRecognitionViewModel(
