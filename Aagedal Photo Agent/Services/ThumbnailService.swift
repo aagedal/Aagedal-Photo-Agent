@@ -264,14 +264,19 @@ final class ThumbnailService {
             await decodeGate.release()
             return nil
         }
-        var oriented: NSImage?
+        var decoded: NSImage?
         if let ql = await generateQLThumbnail(for: url) {
-            oriented = await ThumbnailImageRenderWorker().orientedToSidecar(ql, fileURL: url)
-        } else if !Task.isCancelled,
-                  let cg = await loadCGImageSourceThumbnail(for: url) {
-            oriented = await ThumbnailImageRenderWorker().orientedToSidecar(cg, fileURL: url)
+            decoded = ql
+        } else if !Task.isCancelled {
+            decoded = await loadCGImageSourceThumbnail(for: url)
         }
+        // The gate bounds decodes only. Release the slot before the sidecar lookup (JSON
+        // existence checks plus an .xmp read/parse per thumbnail — slow on NAS/SD cards) so
+        // the next decode can start. The lookup still happens after the decode, exactly as
+        // before, so a rotation written meanwhile is still picked up: sidecar orientation wins.
         await decodeGate.release()
+        guard !Task.isCancelled, let decoded else { return nil }
+        let oriented = await ThumbnailImageRenderWorker().orientedToSidecar(decoded, fileURL: url)
         return Task.isCancelled ? nil : oriented
     }
 

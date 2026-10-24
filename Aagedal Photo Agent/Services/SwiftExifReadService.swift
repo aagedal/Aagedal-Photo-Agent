@@ -61,24 +61,76 @@ final class SwiftExifReadService {
         return dicts
     }
 
+    /// Upper bound on concurrent full reads in one batch. Each read is synchronous file I/O
+    /// that occupies a cooperative-pool thread for its whole duration (a NAS/SD-card RAW can
+    /// take tens of milliseconds), so an unbounded fan-out over a 5,000-photo Cmd-A selection
+    /// would starve the inspector, thumbnails and every other Swift-concurrency task.
+    nonisolated static let batchFullReadConcurrencyLimit = 8
+
     /// Read full IPTC + XMP + EXIF metadata for a batch, keyed by URL.
     /// Files that fail to parse are omitted.
-    func readBatchFullMetadata(urls: [URL]) async throws -> [URL: IPTCMetadata] {
+    ///
+    /// Reads run at most `batchFullReadConcurrencyLimit` at a time. When `stopsWhenCancelled`
+    /// is true (the default), cancelling the calling task stops reads that have not started yet
+    /// — each is checked before it takes the per-photo `MetadataIOCoordinator` lock — and the
+    /// call throws `CancellationError` once the already-admitted reads finish. Pass false for
+    /// consistency work (post-write sidecar mirroring) that must see every file regardless.
+    func readBatchFullMetadata(
+        urls: [URL],
+        stopsWhenCancelled: Bool = true
+    ) async throws -> [URL: IPTCMetadata] {
         guard !urls.isEmpty else { return [:] }
 
-        var results: [URL: IPTCMetadata] = [:]
-        results.reserveCapacity(urls.count)
+        let results: [URL: IPTCMetadata] = await Self.boundedBatchRead(
+            urls: urls,
+            maxConcurrent: Self.batchFullReadConcurrencyLimit,
+            stopsWhenCancelled: stopsWhenCancelled
+        ) { [weak self] url in
+            await self?.lockedReadFullMetadata(for: url)
+        }
+        if stopsWhenCancelled { try Task.checkCancellation() }
+        return results
+    }
 
-        await withTaskGroup(of: (URL, IPTCMetadata?).self) { group in
-            for url in urls {
-                group.addTask { [weak self] in
-                    guard let self else { return (url, nil) }
-                    let dict = await self.lockedReadDict(for: url)?.value
-                    return (url, dict.map(iptcMetadataFromDict))
+    nonisolated private func lockedReadFullMetadata(for url: URL) async -> IPTCMetadata? {
+        guard let dict = await lockedReadDict(for: url)?.value else { return nil }
+        return iptcMetadataFromDict(dict)
+    }
+
+    /// Bounded-concurrency fan-out shared by batch reads: keeps at most `maxConcurrent`
+    /// `read` calls in flight, and — when `stopsWhenCancelled` — starts no new read once the
+    /// calling task is cancelled. Reads already admitted run to completion (the coordinator
+    /// never interrupts a started file operation); their results are still collected.
+    nonisolated static func boundedBatchRead<Value: Sendable>(
+        urls: [URL],
+        maxConcurrent: Int,
+        stopsWhenCancelled: Bool,
+        read: @escaping @Sendable (URL) async -> Value?
+    ) async -> [URL: Value] {
+        var results: [URL: Value] = [:]
+        results.reserveCapacity(urls.count)
+        let limit = max(1, maxConcurrent)
+
+        await withTaskGroup(of: (URL, Value?).self) { group in
+            var nextIndex = 0
+            var inFlight = 0
+            while true {
+                // Top up to the limit unless the caller has been superseded.
+                while inFlight < limit, nextIndex < urls.count,
+                      !(stopsWhenCancelled && Task.isCancelled) {
+                    let url = urls[nextIndex]
+                    nextIndex += 1
+                    inFlight += 1
+                    group.addTask {
+                        // Child tasks inherit the caller's cancellation; a read queued behind a
+                        // superseded selection must not take the per-photo lock at all.
+                        if stopsWhenCancelled, Task.isCancelled { return (url, nil) }
+                        return (url, await read(url))
+                    }
                 }
-            }
-            for await (url, meta) in group {
-                if let meta { results[url] = meta }
+                guard let (url, value) = await group.next() else { break }
+                inFlight -= 1
+                if let value { results[url] = value }
             }
         }
         return results

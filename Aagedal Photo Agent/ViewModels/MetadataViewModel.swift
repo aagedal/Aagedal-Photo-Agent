@@ -963,6 +963,9 @@ final class MetadataViewModel {
                 allMetadata.append(meta)
                 metadataByURL[image.url] = meta
             }
+        } catch is CancellationError {
+            // Superseded by a newer selection; its load owns the editor now.
+            return
         } catch {
             logger.error("Failed to load batch metadata: \(error.localizedDescription)")
         }
@@ -2299,7 +2302,11 @@ final class MetadataViewModel {
             return
         }
         guard !sidecarURLs.isEmpty else { return }
-        guard let postWrite = try? await readService.readBatchFullMetadata(urls: sidecarURLs) else {
+        // Not cancellable: the embedded write already happened, so skipping the read-back
+        // would leave the sidecar shadowing it with stale values.
+        guard let postWrite = try? await readService.readBatchFullMetadata(
+            urls: sidecarURLs, stopsWhenCancelled: false
+        ) else {
             logger.error("Sidecar mirror: post-write metadata read-back failed; existing .xmp sidecars left untouched")
             return
         }

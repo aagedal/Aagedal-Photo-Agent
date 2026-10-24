@@ -173,6 +173,15 @@ private struct AdvancedExportRequest {
     let configurations: [AdvancedExportConfiguration]
 }
 
+/// When the browse-mode inspector decodes its own scope source for a selection.
+enum BrowseScopeLoadPolicy {
+    /// Edit mode posts its own scope image; collapsed scopes display nothing, so the
+    /// extra 720 px decode is deferred until they are expanded.
+    static func shouldDecode(scopesExpanded: Bool, mainViewMode: MainViewMode) -> Bool {
+        scopesExpanded && mainViewMode != .editing
+    }
+}
+
 struct ContentView: View {
     @State private var panes: BrowserPanesModel
     /// The pane every single consumer follows — sidebar folder loads, metadata panel,
@@ -2923,6 +2932,9 @@ struct ContentView: View {
                         scopeViewModel: scopeViewModel,
                         isExpanded: $scopesExpanded
                     )
+                    .onChange(of: scopesExpanded) { _, expanded in
+                        if expanded { reloadBrowseScopeImage() }
+                    }
                     Divider()
                     if let meta = technicalMetadata, meta.hasC2PA {
                         C2PAMetadataView(metadata: meta, validation: c2paValidation) {
@@ -3618,14 +3630,7 @@ struct ContentView: View {
         }
 
         // Load scope for browse mode (edit mode posts its own notification)
-        if mainViewMode != .editing {
-            loadScopeImage(
-                for: image.url,
-                isNativeHDR: image.isNativeHDR,
-                settings: image.cameraRawSettings,
-                exifOrientation: image.exifOrientation
-            )
-        }
+        loadBrowseScopeImage(for: image)
 
         if let cached = technicalMetadataCache[image.url] {
             technicalMetadata = cached
@@ -3677,6 +3682,29 @@ struct ContentView: View {
         }
     }
 
+    /// Browse-mode scope source for the single selected photo. While the scopes are collapsed
+    /// nothing displays them, so the second 720 px decode (a full RAW read on a NAS) is skipped
+    /// and any stale scope image cleared; expanding them calls `reloadBrowseScopeImage()`.
+    private func loadBrowseScopeImage(for image: ImageFile) {
+        guard BrowseScopeLoadPolicy.shouldDecode(scopesExpanded: scopesExpanded, mainViewMode: mainViewMode) else {
+            if mainViewMode != .editing { loadScopeImage(for: nil) }
+            return
+        }
+        loadScopeImage(
+            for: image.url,
+            isNativeHDR: image.isNativeHDR,
+            settings: image.cameraRawSettings,
+            exifOrientation: image.exifOrientation
+        )
+    }
+
+    /// Expanding the scopes loads them for the current selection (the selection load skipped it).
+    private func reloadBrowseScopeImage() {
+        guard browserViewModel.selectedImageIDs.count == 1,
+              let image = browserViewModel.selectedImages.first else { return }
+        loadBrowseScopeImage(for: image)
+    }
+
     private func loadScopeImage(
         for url: URL?,
         isNativeHDR: Bool = false,
@@ -3700,10 +3728,15 @@ struct ContentView: View {
         let editSettings = (settings?.isEmpty == false) ? settings : nil
 
         scopeImageTask = Task {
-            let cgImage: CGImage? = await Task.detached(priority: .utility) {
+            // Detached to keep the decode at utility priority off MainActor, but forward the
+            // selection change's cancellation to it so a superseded decode stops at the next
+            // stage boundary instead of reading the rest of the file.
+            let decode = Task.detached(priority: .utility) { () -> CGImage? in
+                guard !Task.isCancelled else { return nil }
                 if isNativeHDR {
                     // HDR-preserving path: keeps float values >1.0 for correct nits waveform
                     if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 720) {
+                        guard !Task.isCancelled else { return nil }
                         let processed = editSettings.map {
                             CameraRawApproximation.applyWithCrop(to: ciImage, settings: $0, exifOrientation: exifOrientation)
                         } ?? ciImage
@@ -3714,14 +3747,21 @@ struct ContentView: View {
                         )
                     }
                 }
-                guard let base = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 720) else {
+                guard !Task.isCancelled,
+                      let base = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 720) else {
                     return nil
                 }
                 guard let editSettings else { return base }
+                guard !Task.isCancelled else { return nil }
                 return FullScreenImageCache.applyCameraRaw(
                     to: base, settings: editSettings, exifOrientation: exifOrientation
                 )
-            }.value
+            }
+            let cgImage = await withTaskCancellationHandler {
+                await decode.value
+            } onCancel: {
+                decode.cancel()
+            }
             guard !Task.isCancelled else { return }
             scopeViewModel.updateImage(cgImage)
         }

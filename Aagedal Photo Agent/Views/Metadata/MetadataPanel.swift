@@ -1519,57 +1519,10 @@ struct MetadataPanel: View {
 
     // MARK: - Rating & Label
 
-    @ViewBuilder
+    /// Observes `firstSelectedImage` (and so the whole `images` array) in its own small body,
+    /// so a rating/label change on any photo re-evaluates only this row, not the full panel.
     private var ratingAndLabelSection: some View {
-        if let image = browserViewModel.firstSelectedImage {
-            HStack(spacing: 8) {
-                HStack(spacing: 1) {
-                    ForEach(1...5, id: \.self) { star in
-                        Button {
-                            let rating = StarRating(rawValue: star) ?? .none
-                            browserViewModel.setRating(image.starRating == rating ? .none : rating)
-                        } label: {
-                            Image(systemName: star <= image.starRating.rawValue ? "star.fill" : "star")
-                                .font(.system(size: 14))
-                                .frame(width: 18)
-                                .foregroundStyle(star <= image.starRating.rawValue ? .yellow : .secondary.opacity(0.5))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(star) star rating")
-                        .accessibilityValue(image.starRating.rawValue == star ? "Selected" : "Not selected")
-                        .accessibilityHint("Select again to clear this rating")
-                    }
-                }
-
-                Divider()
-                    .frame(height: 14)
-
-                HStack(spacing: 4) {
-                    ForEach(ColorLabel.allCases.filter { $0 != .none }, id: \.self) { label in
-                        Button {
-                            browserViewModel.setLabel(image.colorLabel == label ? .none : label)
-                        } label: {
-                            Circle()
-                                .fill(label.color!.opacity(image.colorLabel == label ? 1.0 : 0.35))
-                                .frame(width: 12, height: 12)
-                        }
-                        .buttonStyle(.plain)
-                        .help(label.displayName)
-                        .accessibilityLabel("\(label.displayName) color label")
-                        .accessibilityValue(image.colorLabel == label ? "Selected" : "Not selected")
-                        .accessibilityHint("Select again to clear this label")
-                    }
-                }
-
-                Spacer()
-
-                if image.hasC2PA {
-                    Label("C2PA", systemImage: "checkmark.seal.fill")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-                }
-            }
-        }
+        MetadataRatingAndLabelRow(browserViewModel: browserViewModel)
     }
 
     // MARK: - Priority Fields
@@ -2103,7 +2056,11 @@ struct MetadataPanel: View {
 
     private var usesIncrementalWhiteBalance: Bool {
         // Non-RAW files always use incremental (relative) white balance
-        if let url = browserViewModel.firstSelectedImage?.url, !SupportedImageFormats.isRaw(url: url) {
+        // Same row as `firstSelectedImage`, resolved without reading `images` so this body
+        // doesn't re-evaluate when any photo's rating or label changes.
+        if let url = browserViewModel.selectedImageIDs.first,
+           browserViewModel.urlToImageIndex[url] != nil,
+           !SupportedImageFormats.isRaw(url: url) {
             return true
         }
         let cameraRaw = viewModel.editingMetadata.cameraRaw
@@ -2878,6 +2835,65 @@ struct MetadataPanel: View {
 }
 
 // MARK: - Keywords Editor With Diff
+
+/// Rating stars, color label dots and the C2PA badge for the first selected photo.
+/// A separate view so its observation of `BrowserViewModel.images` (via
+/// `firstSelectedImage`) doesn't invalidate the large `MetadataPanel` body.
+private struct MetadataRatingAndLabelRow: View {
+    let browserViewModel: BrowserViewModel
+
+    var body: some View {
+        if let image = browserViewModel.firstSelectedImage {
+            HStack(spacing: 8) {
+                HStack(spacing: 1) {
+                    ForEach(1...5, id: \.self) { star in
+                        Button {
+                            let rating = StarRating(rawValue: star) ?? .none
+                            browserViewModel.setRating(image.starRating == rating ? .none : rating)
+                        } label: {
+                            Image(systemName: star <= image.starRating.rawValue ? "star.fill" : "star")
+                                .font(.system(size: 14))
+                                .frame(width: 18)
+                                .foregroundStyle(star <= image.starRating.rawValue ? .yellow : .secondary.opacity(0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(star) star rating")
+                        .accessibilityValue(image.starRating.rawValue == star ? "Selected" : "Not selected")
+                        .accessibilityHint("Select again to clear this rating")
+                    }
+                }
+    
+                Divider()
+                    .frame(height: 14)
+    
+                HStack(spacing: 4) {
+                    ForEach(ColorLabel.allCases.filter { $0 != .none }, id: \.self) { label in
+                        Button {
+                            browserViewModel.setLabel(image.colorLabel == label ? .none : label)
+                        } label: {
+                            Circle()
+                                .fill(label.color!.opacity(image.colorLabel == label ? 1.0 : 0.35))
+                                .frame(width: 12, height: 12)
+                        }
+                        .buttonStyle(.plain)
+                        .help(label.displayName)
+                        .accessibilityLabel("\(label.displayName) color label")
+                        .accessibilityValue(image.colorLabel == label ? "Selected" : "Not selected")
+                        .accessibilityHint("Select again to clear this label")
+                    }
+                }
+    
+                Spacer()
+    
+                if image.hasC2PA {
+                    Label("C2PA", systemImage: "checkmark.seal.fill")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
+            }
+        }
+    }
+}
 
 struct KeywordsEditorWithDiff: View {
     let label: String

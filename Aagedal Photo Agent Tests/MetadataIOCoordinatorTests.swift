@@ -529,3 +529,116 @@ struct MetadataSidecarWorkerPathTests {
         }
     }
 }
+
+/// Multi-select (Cmd-A / Shift-extend) full-metadata reads: bounded fan-out and prompt stop
+/// when a newer selection supersedes the batch.
+@Suite("Batch full-metadata reads")
+struct BatchFullMetadataReadTests {
+    private actor ReadProbe {
+        private(set) var started = 0
+        private var current = 0
+        private(set) var maxConcurrent = 0
+
+        func enter() { started += 1; current += 1; maxConcurrent = max(maxConcurrent, current) }
+        func leave() { current -= 1 }
+    }
+
+    private static func urls(_ count: Int) -> [URL] {
+        (0..<count).map { URL(fileURLWithPath: "/nonexistent/batch-read-\($0).jpg") }
+    }
+
+    @Test("never runs more reads at once than the cap, and still reads every file")
+    func concurrencyCapRespected() async {
+        let probe = ReadProbe()
+        let urls = Self.urls(40)
+        let results = await SwiftExifReadService.boundedBatchRead(
+            urls: urls, maxConcurrent: 8, stopsWhenCancelled: true
+        ) { url in
+            await probe.enter()
+            try? await Task.sleep(for: .milliseconds(3))
+            await probe.leave()
+            return url.lastPathComponent
+        }
+        #expect(results.count == urls.count)
+        #expect(await probe.started == urls.count)
+        #expect(await probe.maxConcurrent <= 8)
+        #expect(await probe.maxConcurrent > 1)
+    }
+
+    @Test("production batch read is capped at 8")
+    func productionCap() {
+        #expect(SwiftExifReadService.batchFullReadConcurrencyLimit == 8)
+    }
+
+    @Test("cancelling the batch starts no further reads")
+    func cancellationStopsFurtherReads() async throws {
+        let probe = ReadProbe()
+        let urls = Self.urls(200)
+        let task = Task {
+            await SwiftExifReadService.boundedBatchRead(
+                urls: urls, maxConcurrent: 8, stopsWhenCancelled: true
+            ) { url in
+                await probe.enter()
+                // Admitted reads run to completion; a cancelled sleep just finishes early.
+                try? await Task.sleep(for: .seconds(5))
+                await probe.leave()
+                return url.lastPathComponent
+            }
+        }
+        // Bounded wait for the first window to be admitted.
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await probe.started < 8, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(await probe.started == 8)
+        task.cancel()
+        let results = await task.value
+        // Only the already-admitted window ran; none of the remaining 192 started.
+        #expect(await probe.started == 8)
+        #expect(results.count == 8)
+    }
+
+    @Test("without stopsWhenCancelled, a cancelled caller still reads every file")
+    func nonCancellableReadsEverything() async {
+        let probe = ReadProbe()
+        let urls = Self.urls(20)
+        let task = Task {
+            await SwiftExifReadService.boundedBatchRead(
+                urls: urls, maxConcurrent: 4, stopsWhenCancelled: false
+            ) { url in
+                await probe.enter()
+                await probe.leave()
+                return url.lastPathComponent
+            }
+        }
+        task.cancel()
+        let results = await task.value
+        #expect(results.count == urls.count)
+        #expect(await probe.started == urls.count)
+    }
+
+    @Test("a superseded readBatchFullMetadata throws CancellationError")
+    @MainActor
+    func serviceThrowsWhenCancelled() async {
+        let service = SwiftExifReadService()
+        let urls = Self.urls(50)
+        let task = Task { @MainActor in
+            try await service.readBatchFullMetadata(urls: urls)
+        }
+        task.cancel()
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+    }
+}
+
+@Suite("Browse scope load policy")
+struct BrowseScopeLoadPolicyTests {
+    @Test("collapsed scopes skip the browse-mode scope decode")
+    func collapsedSkipsDecode() {
+        #expect(!BrowseScopeLoadPolicy.shouldDecode(scopesExpanded: false, mainViewMode: .browser))
+        #expect(BrowseScopeLoadPolicy.shouldDecode(scopesExpanded: true, mainViewMode: .browser))
+        // Edit mode supplies its own scope image.
+        #expect(!BrowseScopeLoadPolicy.shouldDecode(scopesExpanded: true, mainViewMode: .editing))
+    }
+}
