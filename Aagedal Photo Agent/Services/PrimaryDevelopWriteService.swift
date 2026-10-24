@@ -294,6 +294,8 @@ nonisolated struct PrimaryDevelopPhysicalError: LocalizedError, Sendable {
     let sourceRevision: SourceImageRevision?
     let wasCancelled: Bool
     var refusedForContentCredentials = false
+    /// Refused before anything was published (credentials, or metadata that wouldn't fit).
+    var refusedBeforeWrite = false
     var errorDescription: String? { message }
 }
 nonisolated protocol PrimaryDevelopWriting: Sendable {
@@ -311,6 +313,8 @@ nonisolated struct PrimaryDevelopWriteResult: Sendable {
     var failure: String?
     /// The paired JPEG turned out to carry Content Credentials; nothing was written.
     var refusedForContentCredentials = false
+    /// Nothing was written and retrying can't succeed: never retain the request.
+    var refusedBeforeWrite = false
     var completed: Bool { completion?.completed == true && failure == nil && !wasCancelled }
     var requiresRecovery: Bool { wroteEmbedded || embeddedMayHaveBeenWritten || completion?.wroteXMPSidecar == true || completion?.committedButUnverifiedSidecarURL != nil }
 }
@@ -402,6 +406,7 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
         } catch let error as PrimaryDevelopPhysicalError {
             result.embeddedMayHaveBeenWritten = error.mayHaveWritten
             result.refusedForContentCredentials = error.refusedForContentCredentials
+            result.refusedBeforeWrite = error.refusedBeforeWrite
             result.sourceRevision = error.sourceRevision
             result.wasCancelled = error.wasCancelled; result.failure = error.localizedDescription
         } catch {

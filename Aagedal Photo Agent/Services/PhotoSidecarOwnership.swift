@@ -29,19 +29,23 @@ nonisolated enum PhotoSidecarOwnership {
     /// keeps its own in its embedded XMP). True when `imageURL` is a non-RAW file whose stem
     /// sidecar is owned, for develop purposes, by a same-stem RAW sibling. RAW files own their
     /// sidecar, so this is always false for them.
-    static func stemSidecarDevelopBelongsToRawSibling(of imageURL: URL) -> Bool {
-        developOwningRawSibling(of: imageURL) != nil
+    /// `requiringFreshListing`: write-path ownership decisions never trust a cached listing
+    /// that might predate a RAW arriving on a coarse-timestamp volume (missing the RAW would let
+    /// a JPEG write clobber the RAW's crs). Read paths may reuse the short-lived cache.
+    static func stemSidecarDevelopBelongsToRawSibling(of imageURL: URL, requiringFreshListing: Bool = false) -> Bool {
+        developOwningRawSibling(of: imageURL, requiringFreshListing: requiringFreshListing) != nil
     }
 
     /// The same-stem RAW file that owns `imageURL`'s stem sidecar develop settings, if any.
     /// Answered from a per-folder stem→RAW index (one directory listing per folder, reused
     /// while the folder's modification time is unchanged), so folder loads, saves and NAS
     /// volumes don't pay ~24 probes per photo. Extensions match case-insensitively.
-    static func developOwningRawSibling(of imageURL: URL) -> URL? {
+    static func developOwningRawSibling(of imageURL: URL, requiringFreshListing: Bool = false) -> URL? {
         guard !SupportedImageFormats.isRaw(url: imageURL) else { return nil }
         return PhotoRawStemIndex.shared.rawFile(
             forStem: imageURL.deletingPathExtension().lastPathComponent,
-            in: imageURL.deletingLastPathComponent())
+            in: imageURL.deletingLastPathComponent(),
+            allowsUnsettledReuse: !requiringFreshListing)
     }
 
     /// The stem sidecar's develop settings as they apply to `imageURL` — nil for a non-RAW file
@@ -135,7 +139,7 @@ nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
         self.now = now
     }
 
-    func rawFile(forStem stem: String, in folder: URL) -> URL? {
+    func rawFile(forStem stem: String, in folder: URL, allowsUnsettledReuse: Bool = true) -> URL? {
         let key = folder.standardizedFileURL.resolvingSymlinksInPath().path
         var status = stat()
         guard Darwin.lstat(key, &status) == 0 else { return nil }
@@ -144,7 +148,8 @@ nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
         if let cached = lock.withLock({ entries[key] }),
            cached.modification.tv_sec == modification.tv_sec,
            cached.modification.tv_nsec == modification.tv_nsec,
-           cached.settled || currentTime.timeIntervalSince(cached.listedAt) <= freshReuseInterval {
+           cached.settled
+            || (allowsUnsettledReuse && currentTime.timeIntervalSince(cached.listedAt) <= freshReuseInterval) {
             return cached.rawByStem[stem.lowercased()]
         }
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: key) else { return nil }

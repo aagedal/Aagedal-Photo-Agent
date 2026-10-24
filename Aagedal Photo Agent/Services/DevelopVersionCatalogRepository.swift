@@ -194,6 +194,24 @@ actor DevelopVersionCatalogRepository {
         return .applicationSupport
     }
 
+    /// Removes the folder-local and fallback catalogs stored under `sha256` when their recorded
+    /// source is `sourceURL` (a hash this app superseded with its own metadata-only rewrite).
+    func removeSupersededCatalog(forSHA256 sha256: String, sourceURL: URL) async {
+        let source = sourceURL.standardizedFileURL.resolvingSymlinksInPath().path
+        for directory in [catalogsDirectoryURL, fallbackCatalogsDirectoryURL] {
+            let url = catalogURL(forSHA256: sha256, in: directory)
+            let store = AtomicJSONDocumentStore<DevelopVersionCatalog>(documentURL: url)
+            guard case .document(let catalog, _)? = try? await store.load(),
+                  catalog.source.sha256 == sha256,
+                  catalog.source.canonicalURL.standardizedFileURL.resolvingSymlinksInPath().path == source else { continue }
+            try? FileManager.default.removeItem(at: url)
+            if directory == fallbackCatalogsDirectoryURL, var index = try? await loadFallbackIndex() {
+                index.entries.removeAll { $0.source.sha256 == sha256 }
+                try? await saveFallbackIndex(index)
+            }
+        }
+    }
+
     func loadAllCatalogs() async -> [DevelopVersionCatalog] {
         await loadAllRecords().compactMap { record in
             guard case .document(let catalog, _) = record.load else { return nil }

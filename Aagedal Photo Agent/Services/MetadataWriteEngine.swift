@@ -114,6 +114,18 @@ protocol MetadataWriteEngine: AnyObject, Sendable {
         structuredData: StructuredWriteData
     ) async throws
 
+    /// Camera Raw-only embedded write (Develop paste, Reset All Edits). Unlike `writeFields` it
+    /// never rewrites descriptive carriers (no IIM→XMP sync), refuses a file whose metadata
+    /// would be dropped by the container (oversized XMP), and — unless the Simple preset allows
+    /// it — refuses a file with Content Credentials. Refused files are skipped and reported;
+    /// the rest are written.
+    func writeDevelopFields(
+        _ fields: [MetadataFieldKey: String],
+        to urls: [URL],
+        structuredData: StructuredWriteData,
+        allowsCredentialedEmbed: Bool
+    ) async throws -> DevelopEmbedReport
+
     /// Add and/or remove individual list values (keywords, persons) with deduplication.
     func addRemoveListValues(
         add: [MetadataFieldKey: [String]],
@@ -145,6 +157,45 @@ protocol MetadataWriteEngine: AnyObject, Sendable {
         to destination: URL,
         bakedCameraRaw: CameraRawSettings?
     ) async throws
+}
+
+/// Files a Camera Raw-only embedded write skipped instead of degrading them.
+nonisolated struct DevelopEmbedReport: Sendable, Equatable {
+    var refusedForContentCredentials: [URL] = []
+    var refusedForMetadataSize: [URL] = []
+
+    var isEmpty: Bool { refusedForContentCredentials.isEmpty && refusedForMetadataSize.isEmpty }
+
+    var message: String? {
+        var parts: [String] = []
+        if !refusedForContentCredentials.isEmpty {
+            parts.append("Not written to \(refusedForContentCredentials.map(\.lastPathComponent).joined(separator: ", ")): "
+                + "the file has Content Credentials, which embedding Develop settings would break.")
+        }
+        if !refusedForMetadataSize.isEmpty {
+            parts.append("Not written to \(refusedForMetadataSize.map(\.lastPathComponent).joined(separator: ", ")): "
+                + "the Develop settings are too large for the file's metadata block.")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+}
+
+nonisolated struct DevelopEmbedRefusedError: LocalizedError, Sendable {
+    let report: DevelopEmbedReport
+    var errorDescription: String? { report.message }
+}
+
+extension MetadataWriteEngine {
+    /// Engines without the Camera Raw-only guarantees fall back to an ordinary field write.
+    func writeDevelopFields(
+        _ fields: [MetadataFieldKey: String],
+        to urls: [URL],
+        structuredData: StructuredWriteData,
+        allowsCredentialedEmbed: Bool
+    ) async throws -> DevelopEmbedReport {
+        try await writeFields(fields, to: urls, structuredData: structuredData)
+        return DevelopEmbedReport()
+    }
 }
 
 extension MetadataWriteEngine {

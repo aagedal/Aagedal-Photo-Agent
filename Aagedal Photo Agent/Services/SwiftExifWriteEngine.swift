@@ -22,6 +22,21 @@ nonisolated struct RawEmbeddedWriteRefusedError: LocalizedError, Equatable {
     }
 }
 
+/// The container writer would drop a metadata segment (e.g. a JPEG XMP APP1 packet above the
+/// 64 KB segment limit; ExtendedXMP isn't supported). Nothing was published.
+nonisolated struct EmbeddedMetadataLossRefusal: LocalizedError, Sendable {
+    let imageURL: URL
+    let detail: String
+    var errorDescription: String? {
+        "\(imageURL.lastPathComponent) was not changed: its metadata would not fit the file's metadata block "
+            + "(\(detail)). Simplify large masks or brush strokes and try again."
+    }
+
+    nonisolated static func isLossWarning(_ warning: String) -> Bool {
+        warning.hasPrefix("Dropped oversized")
+    }
+}
+
 /// The JPEG of a RAW+JPEG pair carries Content Credentials: embedding its Develop settings
 /// would break them, and the shared sidecar's crs belongs to the RAW.
 nonisolated struct PairedJPEGContentCredentialsRefusal: LocalizedError, Sendable {
@@ -111,20 +126,28 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     throw PairedJPEGContentCredentialsRefusal(imageURL: request.imageURL)
                 }
                 try await validatePreparedIntent()
-                var fields = request.fields
-                if request.replaceDevelop, let settings = request.edited.cameraRaw {
-                    fields.merge(settings.developWriteFields(imageAspect: { ImagePixelAspect.aspect(at: request.imageURL) })) { _, new in new }
+                let beforePublication: () throws -> Void = {
+                    try Task.checkCancellation()
+                    try validateCommitAuthority()
+                    try self.validatePrimarySource(preparedSource, at: request.imageURL)
+                    try validateCommitAuthority()
+                    attempted = true
                 }
-                try self.writeFieldsToFile(fields, structuredData: request.structured,
-                    url: request.imageURL, completeEditorial: request.embedsDevelopOnly ? nil : request.edited,
-                    synchronizesIPTC: !request.embedsDevelopOnly, verifyPrimaryTechnical: true,
-                    beforePublication: {
-                        try Task.checkCancellation()
-                        try validateCommitAuthority()
-                        try self.validatePrimarySource(preparedSource, at: request.imageURL)
-                        try validateCommitAuthority()
-                        attempted = true
-                    })
+                if request.embedsDevelopOnly {
+                    // Merge like the sidecar encoder: only the managed crs keys change, so
+                    // Lightroom settings the app doesn't model (Texture, lens profile, grain...)
+                    // survive. A Reset clears the managed keys, exactly as the sidecar path does.
+                    try self.writeDevelopBlock(request.edited.cameraRaw, to: request.imageURL,
+                        beforePublication: beforePublication)
+                } else {
+                    var fields = request.fields
+                    if request.replaceDevelop, let settings = request.edited.cameraRaw {
+                        fields.merge(settings.developWriteFields(imageAspect: { ImagePixelAspect.aspect(at: request.imageURL) })) { _, new in new }
+                    }
+                    try self.writeFieldsToFile(fields, structuredData: request.structured,
+                        url: request.imageURL, completeEditorial: request.edited, verifyPrimaryTechnical: true,
+                        beforePublication: beforePublication)
+                }
                 let written = try await SourceImageRevision.capture(at: request.imageURL)
                 revision = written
                 // A develop-only embed is verified by `verifyPrimaryTechnical` (crs + orientation);
@@ -144,7 +167,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             } catch {
                 throw PrimaryDevelopPhysicalError(message: error.localizedDescription, mayHaveWritten: attempted,
                     sourceRevision: revision, wasCancelled: error is CancellationError,
-                    refusedForContentCredentials: error is PairedJPEGContentCredentialsRefusal)
+                    refusedForContentCredentials: error is PairedJPEGContentCredentialsRefusal,
+                    refusedBeforeWrite: !attempted
+                        && (error is PairedJPEGContentCredentialsRefusal || error is EmbeddedMetadataLossRefusal))
             }
         }
     }
@@ -261,6 +286,78 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     mayHaveWritten: attempted, wasCancelled: error is CancellationError)
             }
         }
+    }
+
+    func writeDevelopFields(
+        _ fields: [MetadataFieldKey: String],
+        to urls: [URL],
+        structuredData: StructuredWriteData,
+        allowsCredentialedEmbed: Bool
+    ) async throws -> DevelopEmbedReport {
+        let rawURLs = urls.filter { SupportedImageFormats.isRaw(url: $0) }
+        guard rawURLs.isEmpty else { throw RawEmbeddedWriteRefusedError(urls: rawURLs) }
+        guard !urls.isEmpty, !fields.isEmpty || !structuredData.isEmpty else { return DevelopEmbedReport() }
+        var report = DevelopEmbedReport()
+        for url in urls {
+            try Task.checkCancellation()
+            let outcome: Int = try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+                // Under the photo's lock: the authoritative credential check for this revision.
+                if !allowsCredentialedEmbed,
+                   SwiftExifReadService.hasContentCredentials(try readMetadata(from: url)) {
+                    return 1
+                }
+                do {
+                    try self.writeFieldsToFile(fields, structuredData: structuredData, url: url,
+                        synchronizesIPTC: false, verifyPrimaryTechnical: true, beforePublication: {})
+                    return 0
+                } catch is EmbeddedMetadataLossRefusal {
+                    return 2
+                }
+            }
+            if outcome == 1 { report.refusedForContentCredentials.append(url) }
+            if outcome == 2 { report.refusedForMetadataSize.append(url) }
+        }
+        return report
+    }
+
+    /// Develop-only embed with sidecar-encoder semantics (see `XMPDataBuilder.applyCameraRaw`):
+    /// managed crs keys are set or removed, everything else in the packet (descriptive
+    /// metadata and unmodelled crs fields alike) is left exactly as it was. Published through
+    /// the guarded staging path and verified by an embedded read-back.
+    private func writeDevelopBlock(_ settings: CameraRawSettings?, to url: URL,
+                                   beforePublication: () throws -> Void) throws {
+        var metadata = try readMetadata(from: url)
+        var xmp = metadata.xmp ?? XMPData()
+        let aspect = abs(settings?.crop?.angle ?? 0) > 0.0001 ? ImagePixelAspect.aspect(at: url) : nil
+        XMPDataBuilder.applyCameraRaw(settings, imageAspect: aspect, into: &xmp)
+        if settings != nil, !xmp.properties(in: crsNamespace).isEmpty {
+            // Explicit edited markers (Bridge/ACR treat an unmarked block as not edited), and an
+            // earlier export's AlreadyApplied="True" must not hide the new settings.
+            xmp.setValue(.simple("False"), namespace: crsNamespace, property: "AlreadyApplied")
+            xmp.setValue(.simple("234881024"), namespace: crsNamespace, property: "CompatibleVersion")
+        }
+        metadata.xmp = xmp
+        try publishPrimaryMetadata(metadata, to: url, verifiesTechnical: true, beforePublication: beforePublication)
+        let actual = try readMetadata(from: url)
+        guard Self.technicalXMP(actual.xmp) == Self.technicalXMP(metadata.xmp) else {
+            throw PrimaryDevelopWriteError(message: "The image's written Develop settings could not be verified. The captured edit remains retained.")
+        }
+    }
+
+    /// Camera Raw, app-private develop and orientation properties: what a develop write owns.
+    nonisolated static func technicalXMP(_ xmp: XMPData?) -> [String: XMPValue] {
+        guard let xmp else { return [:] }
+        var result: [String: XMPValue] = [:]
+        for namespace in [crsNamespace, aaphotoNamespace] {
+            for (name, value) in xmp.properties(in: namespace) {
+                if namespace == aaphotoNamespace && name == "LocalizedTitleCleared" { continue }
+                result[namespace + name] = value
+            }
+        }
+        for namespace in [XMPNamespace.tiff, XMPNamespace.exif] {
+            result[namespace + "Orientation"] = xmp.value(namespace: namespace, property: "Orientation")
+        }
+        return result
     }
 
     func writeFieldsToRenderedFiles(
@@ -568,7 +665,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
     /// Publication uses the same Foundation replacement and metadata preservation as the library.
     /// This remains path-based; it does not grant descriptor-anchored root authority.
     private func publishPrimaryMetadata(_ metadata: ImageMetadata, to url: URL,
-        beforePublication: () throws -> Void) throws {
+        verifiesTechnical: Bool = false, beforePublication: () throws -> Void) throws {
         let manager = FileManager.default
         let values = try url.resourceValues(forKeys: [.isHiddenKey, .creationDateKey])
         let isHidden = values.isHidden ?? url.lastPathComponent.hasPrefix(".")
@@ -582,7 +679,20 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         // staging semantics. Its destination is private staging, never the admitted photo.
         var options = ImageMetadata.WriteOptions.default
         if let creationDate = values.creationDate { options.fileCreationDate = .set(creationDate) }
-        try metadata.write(to: stagedURL, options: options)
+        let warnings = try metadata.write(to: stagedURL, options: options)
+        // Never publish a degraded file: a dropped (oversized) segment, or a staged result whose
+        // XMP packet or develop block doesn't match what was intended, is refused here, before
+        // the original is touched.
+        if let loss = warnings.first(where: EmbeddedMetadataLossRefusal.isLossWarning) {
+            throw EmbeddedMetadataLossRefusal(imageURL: url, detail: loss)
+        }
+        if metadata.xmp != nil {
+            let staged = try readMetadata(from: stagedURL)
+            guard staged.xmp != nil,
+                  !verifiesTechnical || Self.technicalXMP(staged.xmp) == Self.technicalXMP(metadata.xmp) else {
+                throw EmbeddedMetadataLossRefusal(imageURL: url, detail: "the XMP packet did not survive serialization")
+            }
+        }
         try beforePublication()
         _ = try manager.replaceItemAt(url, withItemAt: stagedURL)
         var installedURL = url
@@ -722,27 +832,19 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         }
 
         if let beforePublication {
-            try publishPrimaryMetadata(metadata, to: url, beforePublication: beforePublication)
+            try publishPrimaryMetadata(metadata, to: url, verifiesTechnical: verifyPrimaryTechnical,
+                beforePublication: beforePublication)
         } else {
+            // Serialize first: a segment the container can't hold would otherwise be silently
+            // dropped from the published file.
+            if let loss = try metadata.writeToDataWithWarnings().warnings.first(where: EmbeddedMetadataLossRefusal.isLossWarning) {
+                throw EmbeddedMetadataLossRefusal(imageURL: url, detail: loss)
+            }
             try metadata.write(to: url)
         }
         if verifyPrimaryTechnical {
             let actual = try readMetadata(from: url)
-            func technical(_ xmp: XMPData?) -> [String: XMPValue] {
-                guard let xmp else { return [:] }
-                var result: [String: XMPValue] = [:]
-                for namespace in [crsNamespace, aaphotoNamespace] {
-                    for (name, value) in xmp.properties(in: namespace) {
-                        if namespace == aaphotoNamespace && name == "LocalizedTitleCleared" { continue }
-                        result[namespace + name] = value
-                    }
-                }
-                for namespace in [XMPNamespace.tiff, XMPNamespace.exif] {
-                    result[namespace + "Orientation"] = xmp.value(namespace: namespace, property: "Orientation")
-                }
-                return result
-            }
-            guard technical(actual.xmp) == technical(metadata.xmp), actual.exif?.orientation == metadata.exif?.orientation else {
+            guard Self.technicalXMP(actual.xmp) == Self.technicalXMP(metadata.xmp), actual.exif?.orientation == metadata.exif?.orientation else {
                 throw PrimaryDevelopWriteError(message: "The image's written Develop settings could not be verified. The captured edit remains retained.")
             }
         }
