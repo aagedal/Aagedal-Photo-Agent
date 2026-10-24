@@ -3620,11 +3620,28 @@ final class KnownPeopleService {
         if let database { return database.people.map(\.name) }
         let root = knownPeopleDirectory
         guard !Self.isReservedDestination(root) else { return [] }
-        return await Self.readPersonNames(in: peopleDirectory, tombstoneRetention: Self.tombstoneRetention)
+        return await Self.readPersonSummaries(in: peopleDirectory, tombstoneRetention: Self.tombstoneRetention)
+            .map(\.name)
+    }
+
+    /// People and sample counts for display (Settings) without `loadDatabase()` on the caller.
+    /// Uses the in-memory database when loaded; otherwise counts from the person files off the
+    /// main actor with the same read-only rules as `personNamesForSuggestions()`.
+    func statisticsForDisplay() async -> (peopleCount: Int, embeddingCount: Int) {
+        if let database {
+            return (database.people.count, database.people.reduce(0) { $0 + $1.embeddings.count })
+        }
+        let root = knownPeopleDirectory
+        guard !Self.isReservedDestination(root) else { return (0, 0) }
+        let people = await Self.readPersonSummaries(in: peopleDirectory, tombstoneRetention: Self.tombstoneRetention)
+        return (people.count, people.reduce(0) { $0 + $1.embeddingCount })
     }
 
     @concurrent
-    nonisolated private static func readPersonNames(in directory: URL, tombstoneRetention: TimeInterval) async -> [String] {
+    nonisolated private static func readPersonSummaries(
+        in directory: URL,
+        tombstoneRetention: TimeInterval
+    ) async -> [KnownPersonSummaryRecord] {
         let entries = (try? CloudCoordinatedIO.contentsOfDirectory(at: directory)) ?? []
         let decoder = JSONDecoder()
         let now = Date()
@@ -3643,17 +3660,29 @@ final class KnownPeopleService {
                   let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
                   !tombstoned.contains(id),
                   let data = try? CloudCoordinatedIO.readData(at: url),
-                  let record = try? decoder.decode(KnownPersonNameRecord.self, from: data),
+                  let record = try? decoder.decode(KnownPersonSummaryRecord.self, from: data),
                   record.id == id else { return nil }
-            return record.name
+            return record
         }
     }
 }
 
-/// Only the identity and name of a person file — decoding skips the embeddings payload.
-private nonisolated struct KnownPersonNameRecord: Decodable, Sendable {
+/// Identity, name and sample count of a person file. Embedding entries are counted without
+/// decoding their feature payloads.
+private nonisolated struct KnownPersonSummaryRecord: Decodable, Sendable {
     let id: UUID
     let name: String
+    let embeddingCount: Int
+
+    private enum CodingKeys: String, CodingKey { case id, name, embeddings }
+    private struct Skipped: Decodable { init(from decoder: any Decoder) throws {} }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        embeddingCount = try container.decodeIfPresent([Skipped].self, forKey: .embeddings)?.count ?? 0
+    }
 }
 
 /// Cached Known People names for the metadata panel's Person Shown suggestions. SwiftUI

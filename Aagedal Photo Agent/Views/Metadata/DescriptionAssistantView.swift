@@ -31,7 +31,7 @@ struct DescriptionAssistantModelSetupView: View {
                     set: { path in
                         guard let model = setup.availableModels.first(where: { $0.url.path == path }) else { return }
                         do { try setup.select(model.url) }
-                        catch { setup.message = error.localizedDescription }
+                        catch { setup.reportError(error.localizedDescription) }
                     }
                 )) {
                     Text("Select a model").tag("")
@@ -50,7 +50,10 @@ struct DescriptionAssistantModelSetupView: View {
                 }
                 Text("Choose a model already on this Mac. Download models or add an existing GGUF file or MLX folder in Settings → Description Models.")
                     .font(.caption).foregroundStyle(.secondary)
-                if let message = setup.message { Text(message).font(.caption).textSelection(.enabled) }
+                if let message = setup.message {
+                    Text(message).font(.caption).textSelection(.enabled)
+                        .foregroundStyle(setup.messageIsError ? .red : .primary)
+                }
             }
         }
         Section("Description Presets") {
@@ -102,6 +105,7 @@ struct DescriptionAssistantModelDownloadsView: View {
     @State private var downloadModel: DescriptionAssistantDownloadModel = .recommended
     @State private var choosingModel = false
     @State private var choosingMLX = false
+    @State private var modelPendingRemoval: DescriptionAssistantDownloadModel?
 
     var body: some View {
         Form {
@@ -120,7 +124,14 @@ struct DescriptionAssistantModelDownloadsView: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 if setup.downloadedModels.contains(downloadModel) {
-                    Label("Downloaded", systemImage: "checkmark.circle")
+                    HStack {
+                        Label("Downloaded", systemImage: "checkmark.circle")
+                        Spacer()
+                        Button("Remove Downloaded Model…", role: .destructive) {
+                            modelPendingRemoval = downloadModel
+                        }
+                        .disabled(setup.isInstalling)
+                    }
                 } else {
                     Button("Download Model (\(downloadModel.downloadSize))") { setup.install(downloadModel) }
                         .disabled(setup.isInstalling)
@@ -130,7 +141,10 @@ struct DescriptionAssistantModelDownloadsView: View {
                     ProgressView(value: setup.progress)
                     Button("Cancel Download") { setup.cancelInstall() }
                 }
-                if let message = setup.message { Text(message).font(.caption).textSelection(.enabled) }
+                if let message = setup.message {
+                    Text(message).font(.caption).textSelection(.enabled)
+                        .foregroundStyle(setup.messageIsError ? .red : .primary)
+                }
                 Link("Model and license", destination: downloadModel.sourceURL)
                 Text("Downloads use 4-bit quantization and run locally with the included llama.cpp runtime and Metal on Apple Silicon.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -146,13 +160,28 @@ struct DescriptionAssistantModelDownloadsView: View {
         }
         .formStyle(.grouped)
         .onAppear { setup.refreshDownloadedModels() }
+        .alert(
+            "Remove \(modelPendingRemoval?.title ?? "Model")?",
+            isPresented: Binding(
+                get: { modelPendingRemoval != nil },
+                set: { if !$0 { modelPendingRemoval = nil } }
+            ),
+            presenting: modelPendingRemoval
+        ) { model in
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                Task { await setup.removeDownloaded(model) }
+            }
+        } message: { model in
+            Text("The \(model.downloadSize) model file Photo Agent downloaded is deleted from this Mac. Copies in shared model caches and files you chose yourself are not affected. You can download it again later.")
+        }
         .fileImporter(isPresented: $choosingModel, allowedContentTypes: [UTType(filenameExtension: "gguf") ?? .data]) { result in
             do { try setup.select(result.get()) }
-            catch { setup.message = error.localizedDescription }
+            catch { setup.reportError(error.localizedDescription) }
         }
         .fileImporter(isPresented: $choosingMLX, allowedContentTypes: [.folder]) { result in
             do { try setup.select(result.get()) }
-            catch { setup.message = error.localizedDescription }
+            catch { setup.reportError(error.localizedDescription) }
         }
     }
 }

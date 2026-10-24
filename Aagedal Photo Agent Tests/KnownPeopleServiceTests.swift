@@ -1393,6 +1393,33 @@ struct KnownPeopleServiceTests {
         }
     }
 
+    @Test("Display statistics count a cold store off the main actor and match the loaded database")
+    func displayStatisticsFromColdStore() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        let versionKey = UserDefaultsKeys.knownPeopleEmbeddingVersion
+        let previousVersion = AppDefaults.store.object(forKey: versionKey)
+        AppDefaults.store.set(FaceRecognitionDefaults.embeddingVersion, forKey: versionKey)
+        defer {
+            if let previousVersion { AppDefaults.store.set(previousVersion, forKey: versionKey) }
+            else { AppDefaults.store.removeObject(forKey: versionKey) }
+            teardown(directory)
+        }
+        let writer = KnownPeopleService()
+        _ = try writer.addPerson(name: "Two Samples", embeddings: [embedding(1), embedding(2)])
+        _ = try writer.addPerson(name: "No Samples", embeddings: [])
+        let removed = try writer.addPerson(name: "Removed", embeddings: [embedding(3)])
+        try writer.removePerson(id: removed.id)
+
+        let cold = await KnownPeopleService().statisticsForDisplay()
+        #expect(cold.peopleCount == 2)
+        #expect(cold.embeddingCount == 2)
+
+        let loaded = KnownPeopleService().getStatistics()
+        #expect(cold.peopleCount == loaded.peopleCount)
+        #expect(cold.embeddingCount == loaded.embeddingCount)
+    }
+
     // MARK: - Fixtures
 
     private func makeTempDir() -> URL {

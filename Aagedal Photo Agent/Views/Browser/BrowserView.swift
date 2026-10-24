@@ -14,6 +14,9 @@ struct BrowserView: View {
     /// both panes are in the hierarchy, so only the active one provides them — otherwise
     /// the groups duplicate and overflow into the toolbar's "»" menu.
     var providesToolbar: Bool = true
+    /// Routes a file-visibility change through the app-wide setting (all panes + Settings).
+    /// Without it the change applies to this pane only.
+    var selectFileVisibility: ((BrowserFileVisibility) -> Void)? = nil
 
     var body: some View {
         browserContent
@@ -133,7 +136,11 @@ struct BrowserView: View {
                        viewModel.iCloudDownloadNotice == nil,
                        viewModel.fileVisibility == .photos {
                         Button("Show Videos & Other Media") {
-                            viewModel.fileVisibility = .media
+                            if let selectFileVisibility {
+                                selectFileVisibility(.media)
+                            } else {
+                                viewModel.fileVisibility = .media
+                            }
                         }
                     }
                     Button("Open Folder") {

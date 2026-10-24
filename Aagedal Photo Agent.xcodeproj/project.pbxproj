@@ -98,6 +98,7 @@
 		AB3400000000000000000002 /* RecentFoldersStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3400000000000000000001 /* RecentFoldersStoreTests.swift */; };
 		AB3500000000000000000002 /* SidebarExpansionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3500000000000000000001 /* SidebarExpansionTests.swift */; };
 		E31000000000000000000002 /* SettingsSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E31000000000000000000001 /* SettingsSearchTests.swift */; };
+		E31100000000000000000002 /* SettingsViewModelPreferencesSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E31100000000000000000001 /* SettingsViewModelPreferencesSyncTests.swift */; };
 		AB3600000000000000000002 /* FullScreenShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3600000000000000000001 /* FullScreenShortcutTests.swift */; };
 		AB3700000000000000000002 /* SourceImageRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000001 /* SourceImageRevisionTests.swift */; };
 		AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */; };
@@ -405,6 +406,7 @@
 		AB3400000000000000000001 /* RecentFoldersStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RecentFoldersStoreTests.swift; sourceTree = "<group>"; };
 		AB3500000000000000000001 /* SidebarExpansionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SidebarExpansionTests.swift; sourceTree = "<group>"; };
 		E31000000000000000000001 /* SettingsSearchTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SettingsSearchTests.swift; sourceTree = "<group>"; };
+		E31100000000000000000001 /* SettingsViewModelPreferencesSyncTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SettingsViewModelPreferencesSyncTests.swift; sourceTree = "<group>"; };
 		AB3600000000000000000001 /* FullScreenShortcutTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FullScreenShortcutTests.swift; sourceTree = "<group>"; };
 		AB3700000000000000000001 /* SourceImageRevisionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SourceImageRevisionTests.swift; sourceTree = "<group>"; };
 		AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AtomicJSONDocumentStoreTests.swift; sourceTree = "<group>"; };
@@ -767,6 +769,7 @@
 				AB3400000000000000000001 /* RecentFoldersStoreTests.swift */,
 				AB3500000000000000000001 /* SidebarExpansionTests.swift */,
 				E31000000000000000000001 /* SettingsSearchTests.swift */,
+				E31100000000000000000001 /* SettingsViewModelPreferencesSyncTests.swift */,
 				AB3600000000000000000001 /* FullScreenShortcutTests.swift */,
 				AB3700000000000000000001 /* SourceImageRevisionTests.swift */,
 				AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */,
@@ -1272,6 +1275,7 @@
 				AB3400000000000000000002 /* RecentFoldersStoreTests.swift in Sources */,
 				AB3500000000000000000002 /* SidebarExpansionTests.swift in Sources */,
 				E31000000000000000000002 /* SettingsSearchTests.swift in Sources */,
+				E31100000000000000000002 /* SettingsViewModelPreferencesSyncTests.swift in Sources */,
 				AB3600000000000000000002 /* FullScreenShortcutTests.swift in Sources */,
 				AB3700000000000000000002 /* SourceImageRevisionTests.swift in Sources */,
 				AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */,
