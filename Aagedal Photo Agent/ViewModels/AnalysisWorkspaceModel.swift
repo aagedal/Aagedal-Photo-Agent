@@ -43,7 +43,10 @@ final class AnalysisWorkspaceModel {
     /// Navigation or close requested while `saveError` is set; the workspace asks first.
     private(set) var pendingUnsavedChangesExit: AnalysisUnsavedChangesExit?
     private(set) var analysisCase: AnalysisCase? {
-        didSet { rebuildPhotoAnnotationCaseIndex() }
+        didSet {
+            rebuildPhotoAnnotationCaseIndex()
+            workingFolderMapAnnotationsCache = nil
+        }
     }
     private(set) var currentRevision: SourceImageRevision?
     private(set) var sourceChanged = false
@@ -51,10 +54,43 @@ final class AnalysisWorkspaceModel {
         didSet { rebuildPhotoAnnotationCaseIndex() }
     }
     private(set) var hasDevelopedRepresentation = false
-    private(set) var developSettings: CameraRawSettings?
+    private(set) var developSettings: CameraRawSettings? {
+        didSet {
+            developedRenderToken = FullScreenImageCache.renderToken(
+                settings: developSettings,
+                isEdited: true
+            )
+        }
+    }
+    /// Render token of `developSettings` for the developed representation, computed once per
+    /// settings change instead of JSON-encoding the settings on every view update.
+    private(set) var developedRenderToken: String? = FullScreenImageCache.renderToken(
+        settings: nil,
+        isEdited: true
+    )
     private(set) var sourceOrientation = 1
     private(set) var folderAnalysisCases: [AnalysisCase] = [] {
-        didSet { rebuildPhotoAnnotationCaseIndex() }
+        didSet {
+            rebuildPhotoAnnotationCaseIndex()
+            workingFolderMapAnnotationsCache = nil
+        }
+    }
+    @ObservationIgnored private var workingFolderMapAnnotationsCache: [AnalysisImageMapAnnotation]?
+    @ObservationIgnored private var timestampEvidenceCache: (
+        key: TimestampEvidenceCacheKey,
+        value: [AnalysisTimestampEvidence]
+    )?
+
+    private struct TimestampEvidenceCacheKey: Equatable {
+        struct Run: Equatable {
+            let analyzerID: String
+            let cacheKey: String
+            let status: AnalysisAnalyzerRunStatus
+            let completedAt: Date?
+        }
+
+        let runs: [Run]
+        let caseEvidence: [AnalysisTimestampEvidence]
     }
     private(set) var folderMapDocument = AnalysisFolderMapDocument.create()
     private(set) var caseStorage: AnalysisCaseStorage?
@@ -62,6 +98,12 @@ final class AnalysisWorkspaceModel {
     let analysisRunner: AnalysisRunner
 
     @ObservationIgnored private var repository: AnalysisCaseRepository?
+    /// The repository of the last opened folder, reused while navigating inside it so its
+    /// in-memory case index survives photo changes.
+    @ObservationIgnored private var folderRepository: (folderURL: URL, repository: AnalysisCaseRepository)?
+    /// The open case while it exists only in memory: a photo that was viewed but not yet edited.
+    /// The first `persist` writes it.
+    @ObservationIgnored private var unpersistedCaseID: UUID?
     @ObservationIgnored private var openedImage: ImageFile?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     /// Tail of the chained case-save queue. Saves are never cancelled: each waits for the one
@@ -109,8 +151,8 @@ final class AnalysisWorkspaceModel {
         self.repositoryFactory = repositoryFactory ?? {
             try await AnalysisCaseRepository.open(sourceFolderURL: $0)
         }
-        analysisRunner.onPersistableRunChanged = { [weak self] run in
-            self?.persistAnalyzerRun(run)
+        analysisRunner.onPersistableRunChanged = { [weak self] run, isUserEdit in
+            self?.persistAnalyzerRun(run, isUserEdit: isUserEdit)
         }
     }
 
@@ -253,13 +295,31 @@ final class AnalysisWorkspaceModel {
         }
     }
 
+    /// Cached; the inputs are compared cheaply on each read so SwiftUI bodies that read it
+    /// several times per update do not re-resolve and re-sort the timeline.
     var timestampEvidence: [AnalysisTimestampEvidence] {
+        let key = TimestampEvidenceCacheKey(
+            runs: analysisRunner.runs.map {
+                TimestampEvidenceCacheKey.Run(
+                    analyzerID: $0.analyzerID,
+                    cacheKey: $0.cacheKey,
+                    status: $0.status,
+                    completedAt: $0.completedAt
+                )
+            },
+            caseEvidence: analysisCase?.timestampEvidence ?? []
+        )
+        if let cached = timestampEvidenceCache, cached.key == key {
+            return cached.value
+        }
         let sourceEvidence = sourceFacts.map {
             AnalysisTimelineResolver.sourceEvidence(from: $0, rawMetadata: rawMetadata)
         } ?? []
-        return AnalysisTimelineResolver.sorted(
+        let value = AnalysisTimelineResolver.sorted(
             sourceEvidence + (analysisCase?.timestampEvidence ?? [])
         )
+        timestampEvidenceCache = (key, value)
+        return value
     }
 
     var timestampConflicts: [AnalysisTimestampConflict] {
@@ -285,7 +345,18 @@ final class AnalysisWorkspaceModel {
         folderMapDocument.annotations
     }
 
+    /// Cached until the open case or the folder's cases change (both invalidate it).
     var workingFolderMapAnnotations: [AnalysisImageMapAnnotation] {
+        // Register the observed inputs even when the cached value is returned.
+        _ = folderAnalysisCases.count
+        _ = analysisCase?.updatedAt
+        if let workingFolderMapAnnotationsCache { return workingFolderMapAnnotationsCache }
+        let value = buildWorkingFolderMapAnnotations()
+        workingFolderMapAnnotationsCache = value
+        return value
+    }
+
+    private func buildWorkingFolderMapAnnotations() -> [AnalysisImageMapAnnotation] {
         var newestCaseBySource: [URL: AnalysisCase] = [:]
         for analysisCase in folderAnalysisCases + (self.analysisCase.map { [$0] } ?? []) {
             let sourceURL = analysisCase.source.canonicalURL
@@ -438,10 +509,12 @@ final class AnalysisWorkspaceModel {
         saveTask = nil
         folderMapSaveTask = nil
         repository = nil
+        folderRepository = nil
         openedImage = nil
         sourceURL = nil
         currentRevision = nil
         analysisCase = nil
+        unpersistedCaseID = nil
         folderAnalysisCases = []
         folderMapDocument = .create()
         caseStorage = nil
@@ -610,6 +683,7 @@ final class AnalysisWorkspaceModel {
         pendingUnsavedChangesExit = nil
         pendingExternalCloseTransition = nil
         analysisCase = nil
+        unpersistedCaseID = nil
         currentRevision = nil
         sourceChanged = false
         photoAnnotationHistory.removeAll()
@@ -625,6 +699,11 @@ final class AnalysisWorkspaceModel {
         let orientation = image.exifOrientation
         let repositoryFactory = repositoryFactory
         let generation = workspaceGeneration
+        let folderURL = url.deletingLastPathComponent().standardizedFileURL
+        // One repository per folder keeps its in-memory case index across navigation.
+        let reusableRepository = folderRepository?.folderURL == folderURL
+            ? folderRepository?.repository
+            : nil
         repository = nil
 
         loadTask = Task { [weak self] in
@@ -632,21 +711,43 @@ final class AnalysisWorkspaceModel {
                 await pendingCaseSaveTask?.value
                 await pendingFolderMapSaveTask?.value
                 try Task.checkCancellation()
-                let repository = try await repositoryFactory(url.deletingLastPathComponent())
+                let repository: AnalysisCaseRepository
+                if let reusableRepository {
+                    repository = reusableRepository
+                } else {
+                    repository = try await repositoryFactory(url.deletingLastPathComponent())
+                }
                 try Task.checkCancellation()
                 guard let self, self.workspaceGeneration == generation else { return }
                 self.repository = repository
+                self.folderRepository = (folderURL, repository)
                 let revision = try await SourceImageRevision.capture(
                     at: url,
                     exifOrientation: orientation
                 )
                 try Task.checkCancellation()
-                let caseLoad = await repository.loadMostRelevantCaseWithStorage(for: revision)
+                let snapshot = await repository.loadWorkspaceSnapshot(for: revision)
                 try Task.checkCancellation()
 
                 guard self.workspaceGeneration == generation else { return }
                 self.currentRevision = revision
 
+                var caseLoad = snapshot.caseLoad
+                switch caseLoad.match {
+                case .exact:
+                    break
+                case .sourceChanged, .none:
+                    // A case whose first save failed after the photo was left is not on disk
+                    // at all. Reopen it like any other failed background save (below).
+                    if let failed = self.failedBackgroundCaseSaves.values.first(where: {
+                        $0.analysisCase.source.relationship(to: revision) == .exactRevision
+                    }) {
+                        caseLoad = AnalysisCaseLoad(
+                            match: .exact(failed.analysisCase),
+                            storage: snapshot.newDocumentStorage
+                        )
+                    }
+                }
                 self.caseStorage = caseLoad.storage
                 switch caseLoad.match {
                 case .exact(var existing):
@@ -679,9 +780,11 @@ final class AnalysisWorkspaceModel {
                     self.sourceChanged = true
                     self.configureAnalysis(for: existing, autoStart: false)
                 case .none:
+                    // Viewing a photo does not write a case. It is created on disk by the
+                    // first edit or analyzer result worth keeping (see `persist`).
                     let newCase = AnalysisCase.create(for: revision)
-                    self.caseStorage = try await repository.save(newCase)
-                    try Task.checkCancellation()
+                    self.unpersistedCaseID = newCase.id
+                    self.caseStorage = snapshot.newDocumentStorage
                     self.analysisCase = newCase
                     self.sourceChanged = false
                     self.configureAnalysis(for: newCase, autoStart: true)
@@ -692,16 +795,22 @@ final class AnalysisWorkspaceModel {
                    var preferredCase = self.analysisCase,
                    preferredCase.workspaceMode != preferredWorkspaceMode {
                     preferredCase.setWorkspaceMode(preferredWorkspaceMode)
-                    self.caseStorage = try await repository.save(preferredCase)
+                    if self.unpersistedCaseID != preferredCase.id {
+                        self.caseStorage = try await repository.save(preferredCase)
+                        try Task.checkCancellation()
+                        guard self.workspaceGeneration == generation else { return }
+                    }
                     self.analysisCase = preferredCase
                 }
-                let folderCases = await repository.loadAllCases()
-                let folderMapLoad = await repository.loadFolderMapDocumentWithStorage()
-                try Task.checkCancellation()
-                guard self.workspaceGeneration == generation else { return }
+                var folderCases = snapshot.folderCases
+                if let openCase = self.analysisCase,
+                   let index = folderCases.firstIndex(where: { $0.id == openCase.id }) {
+                    // The snapshot predates this load's own normalization/mode saves.
+                    folderCases[index] = openCase
+                }
                 self.folderAnalysisCases = folderCases
-                self.folderMapDocument = folderMapLoad.document
-                self.folderMapStorage = folderMapLoad.storage
+                self.folderMapDocument = snapshot.folderMap.document
+                self.folderMapStorage = snapshot.folderMap.storage
                 self.loadState = .ready
             } catch is CancellationError {
                 return
@@ -990,6 +1099,7 @@ final class AnalysisWorkspaceModel {
 
         let newCase = AnalysisCase.create(for: currentRevision)
         analysisCase = newCase
+        unpersistedCaseID = nil
         sourceChanged = false
         photoAnnotationHistory.removeAll()
         mapAnnotationHistory.removeAll()
@@ -1588,15 +1698,38 @@ final class AnalysisWorkspaceModel {
         }
     }
 
-    private func persistAnalyzerRun(_ run: AnalysisAnalyzerRun) {
+    /// Queued/running transitions stay in memory; only terminal results are written. A photo that
+    /// was merely viewed gets a case file only for a result worth keeping: a user edit of the run
+    /// (a finding's report inclusion) or a completed analyzer that is not cheap to recompute.
+    private func persistAnalyzerRun(_ run: AnalysisAnalyzerRun, isUserEdit: Bool) {
         guard var updatedCase = analysisCase,
               !sourceChanged else { return }
         updatedCase.setAnalyzerRun(run)
-        persist(updatedCase)
+        let isTerminal = run.status != .queued && run.status != .running
+        let createsCase = isUserEdit || (
+            run.status == .completed
+                && analyzers.first(where: { $0.identifier == run.analyzerID })?.cost != .fast
+        )
+        let isPersisted = unpersistedCaseID != updatedCase.id
+        if isUserEdit || (isTerminal && (isPersisted || createsCase)) {
+            persist(updatedCase)
+        } else {
+            replaceOpenCaseInMemory(updatedCase)
+        }
+    }
+
+    private func replaceOpenCaseInMemory(_ updatedCase: AnalysisCase) {
+        analysisCase = updatedCase
+        if let index = folderAnalysisCases.firstIndex(where: { $0.id == updatedCase.id }) {
+            folderAnalysisCases[index] = updatedCase
+        }
     }
 
     private func persist(_ updatedCase: AnalysisCase) {
         analysisCase = updatedCase
+        if unpersistedCaseID == updatedCase.id {
+            unpersistedCaseID = nil
+        }
         if let index = folderAnalysisCases.firstIndex(where: { $0.id == updatedCase.id }) {
             folderAnalysisCases[index] = updatedCase
         } else {
