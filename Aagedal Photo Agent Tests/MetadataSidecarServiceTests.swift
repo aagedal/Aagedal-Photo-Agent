@@ -438,27 +438,27 @@ struct FolderChangeMonitorServiceTests {
 
 @Suite("Photo drag pasteboard sidecars")
 struct PhotoDragPasteboardURLsTests {
-    @Test("Dragged photos carry the XMP sidecar they own, once per RAW+JPEG pair")
+    @Test("Only dragged RAW files carry their XMP sidecar, once per RAW+JPEG pair")
     func ownedSidecars() {
         let folder = URL(fileURLWithPath: "/virtual/drag", isDirectory: true)
         let raw = folder.appendingPathComponent("IMG_1.CR3")
         let pairedJPEG = folder.appendingPathComponent("IMG_1.JPG")
         let loneJPEG = folder.appendingPathComponent("IMG_2.jpg")
-        let noSidecar = folder.appendingPathComponent("IMG_3.jpg")
-        let existing: Set<String> = ["IMG_1.xmp", "IMG_2.xmp"]
+        let rawWithoutSidecar = folder.appendingPathComponent("IMG_3.NEF")
+        let withSidecar: Set<URL> = [raw, pairedJPEG, loneJPEG]
         func sidecars(_ urls: [URL]) -> [String] {
             PhotoDragPasteboardURLs.ownedSidecars(
                 for: urls,
-                sidecarExists: { existing.contains($0.lastPathComponent) },
-                sidecarBelongsToRawSibling: { $0 == pairedJPEG }
+                hasSidecar: { withSidecar.contains($0) }
             ).map(\.lastPathComponent)
         }
 
         #expect(sidecars([raw]) == ["IMG_1.xmp"])
         #expect(sidecars([pairedJPEG, raw]) == ["IMG_1.xmp"])
-        // The shared sidecar belongs to the RAW; the JPEG alone does not take it along.
+        // JPEGs carry embedded metadata; an extra .xmp would break Mail/web-upload drops.
         #expect(sidecars([pairedJPEG]).isEmpty)
-        #expect(sidecars([loneJPEG, noSidecar]) == ["IMG_2.xmp"])
+        #expect(sidecars([loneJPEG]).isEmpty)
+        #expect(sidecars([rawWithoutSidecar]).isEmpty)
     }
 
     @Test("In-app folder drops skip a dragged sidecar whose photo is moved with it")

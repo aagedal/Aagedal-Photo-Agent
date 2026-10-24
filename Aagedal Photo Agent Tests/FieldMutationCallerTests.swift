@@ -245,6 +245,119 @@ struct FieldMutationCallerTests {
         #expect(model.fullScreenImage?.url == urls[1])
     }
 
+    @Test("Deleting in full screen keeps the rest of the multi-selection and shows the next selected photo")
+    @MainActor
+    func fullScreenDeleteKeepsMultiSelection() async {
+        let model = BrowserViewModel(imageTrashHandler: ReviewDirectMutationTrash())
+        let urls = ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"].map {
+            URL(fileURLWithPath: "/virtual/full-screen-delete").appendingPathComponent($0)
+        }
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        model.applySelection(ids: [urls[1], urls[3], urls[4]], active: urls[3])
+        model.isFullScreen = true
+
+        model.confirmDeleteFullScreenImage()
+        model.deleteConfirmedImages()
+        await model.waitForPendingImageMutation()
+        #expect(model.selectedImageIDs == [urls[1], urls[4]])
+        #expect(model.fullScreenImage?.url == urls[4])
+        #expect(model.isFullScreen)
+
+        // The last selected photo goes: the viewer steps back within the selection.
+        model.confirmDeleteFullScreenImage()
+        model.deleteConfirmedImages()
+        await model.waitForPendingImageMutation()
+        #expect(model.selectedImageIDs == [urls[1]])
+        #expect(model.fullScreenImage?.url == urls[1])
+    }
+
+    @Test("A plain filter change keeps only the visible selection; Compare keeps its photo selected")
+    @MainActor
+    func filterChangeDoesNotMoveSelectionToNeighbour() async {
+        let recorder = FieldMutationCallerRecorder()
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/filter-change")
+        let urls = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.enumerated().map { index, url in
+            var image = ImageFile(url: url)
+            image.starRating = index == 1 ? .one : .four
+            return image
+        }
+        model.batchUpdate {}
+        model.applySelection(ids: [urls[1]], active: urls[1])
+        model.minimumStarRating = .three
+        model.batchUpdate {}
+        #expect(model.visibleImages.map(\.url) == [urls[0], urls[2]])
+        #expect(model.selectedImageIDs.isEmpty)
+
+        // Compare: rating its focused photo out of the filter keeps the selection on it.
+        model.applySelection(ids: [urls[0]], active: urls[0])
+        model.keepsSelectionThroughFilterChanges = true
+        model.setRating(.one, imagesToMutate: model.images.filter { $0.url == urls[0] })
+        #expect(model.visibleImages.map(\.url) == [urls[2]])
+        #expect(model.selectedImageIDs == [urls[0]])
+        #expect(model.selectedImages.map(\.url) == [urls[0]])
+        await model.waitForPendingFieldMutationWrites()
+    }
+
+    @Test("Full-screen selection commands collapse a kept multi-selection to the shown photo")
+    @MainActor
+    func fullScreenCommandsTargetShownPhoto() {
+        #expect(AppCommand.pasteIPTCMetadata.actsOnBrowserSelection)
+        #expect(AppCommand.applyTemplateShortcut(1).actsOnBrowserSelection)
+        #expect(AppCommand.renameSelected.actsOnBrowserSelection)
+        #expect(!AppCommand.setRating(.one).actsOnBrowserSelection)
+        #expect(!AppCommand.renderAll.actsOnBrowserSelection)
+        #expect(AppCommand.setRating(.one).requiresAvailableFolder)
+        #expect(!AppCommand.openFolder.requiresAvailableFolder)
+
+        let model = BrowserViewModel()
+        let urls = ["a.jpg", "b.jpg", "c.jpg"].map {
+            URL(fileURLWithPath: "/virtual/full-screen-commands").appendingPathComponent($0)
+        }
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        model.applySelection(ids: Set(urls), active: urls[1])
+        model.collapseSelectionToFullScreenImage()
+        #expect(model.selectedImageIDs == Set(urls)) // not in full screen: untouched
+        model.isFullScreen = true
+        model.collapseSelectionToFullScreenImage()
+        #expect(model.selectedImageIDs == [urls[1]])
+    }
+
+    @Test("Only user-initiated changes ask the grid to reveal the selection")
+    @MainActor
+    func revealRequestsAreUserInitiated() {
+        let model = BrowserViewModel()
+        let folder = URL(fileURLWithPath: "/virtual/reveal")
+        let urls = ["a.jpg", "b.jpg"].map { folder.appendingPathComponent($0) }
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        _ = model.consumeRevealActiveRequest()
+
+        // A background metadata re-sort is not a reason to scroll.
+        model.publishMetadataBatch(for: [urls[0]], sortKeyChanged: true)
+        #expect(!model.consumeRevealActiveRequest())
+
+        model.minimumStarRating = .one
+        #expect(model.consumeRevealActiveRequest())
+        #expect(!model.consumeRevealActiveRequest())
+        model.sortReversed.toggle()
+        #expect(model.consumeRevealActiveRequest())
+    }
+
+    @Test("Folder availability treats only a missing path as gone")
+    func folderAvailability() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("availability-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        #expect(BrowserViewModel.folderAvailabilityNow(folder) == .available)
+        try FileManager.default.removeItem(at: folder)
+        #expect(BrowserViewModel.folderAvailabilityNow(folder) == .gone)
+    }
+
     @Test("Older background metadata cannot overwrite accepted ratings or labels", arguments: [false, true], ["pending", "accepted during read", "completed during read"])
     @MainActor
     func backgroundReadPreservesPendingTag(isLabel: Bool, phase: String) async throws {

@@ -482,6 +482,11 @@ struct ContentView: View {
             // ImageIO XMP parsing races the editor's concurrent sidecar write — and tighten the
             // edited-image cache to relieve the IOSurface memory pressure that amplifies the fault.
             .onChange(of: mainViewMode) { oldMode, mode in
+                // Compare rates its focused photo; keep the Browser selection (and metadata
+                // editor) on it even when that rating takes it out of the filter.
+                for pane in panes.panes {
+                    pane.keepsSelectionThroughFilterChanges = (mode == .comparison)
+                }
                 let editing = (mode == .editing)
                 browserViewModel.fullScreenImageCache.setPrefetchSuppressed(editing)
                 browserViewModel.fullScreenImageCache.setEditingMemoryProfile(editing)
@@ -946,6 +951,10 @@ struct ContentView: View {
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
                 guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning,
                       !mainViewMode.suppressesHiddenSelectionCommand(delivery.command) else { return }
+                if browserViewModel.isCurrentFolderUnavailable, delivery.command.requiresAvailableFolder { return }
+                if delivery.command.actsOnBrowserSelection {
+                    browserViewModel.collapseSelectionToFullScreenImage()
+                }
                 switch delivery.command {
                 case .renderSelected:
                     let urls = browserViewModel.selectedImages.map(\.url)
@@ -4703,6 +4712,12 @@ struct ContentViewModifiers: ViewModifier {
     private func handleBrowserCommand(_ delivery: AppCommandDelivery?) {
         guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning,
               !mainViewMode.suppressesHiddenSelectionCommand(delivery.command) else { return }
+        // A vanished folder's hidden rows must not be rated, labelled or templated.
+        if browserViewModel.isCurrentFolderUnavailable, delivery.command.requiresAvailableFolder { return }
+        // Full-screen actions affect the photo on screen, not the hidden kept selection.
+        if delivery.command.actsOnBrowserSelection {
+            browserViewModel.collapseSelectionToFullScreenImage()
+        }
         switch delivery.command {
         case .openFolder:
             performAfterMetadataFlush { browserViewModel.openFolder() }

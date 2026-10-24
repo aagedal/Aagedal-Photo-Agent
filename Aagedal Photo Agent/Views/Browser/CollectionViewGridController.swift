@@ -305,6 +305,8 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
 
     private func applyDataUpdate(images: [ImageFile]) {
         lastDataApply = .now
+        // Consumed by every data update, so a stale request can't make a later refresh scroll.
+        let userInitiated = viewModel.consumeRevealActiveRequest()
         let showOriginals = viewModel.showOriginalThumbnails
         let showOriginalsChanged = lastShowOriginalThumbnails.map { $0 != showOriginals } ?? false
         lastShowOriginalThumbnails = showOriginals
@@ -337,7 +339,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         // Animating reorder of hundreds of items causes layout thrashing and constraint conflicts.
         let itemsAddedOrRemoved = isStructuralChange && Set(newURLs) != Set(lastSnapshotURLs)
         let keepsActiveInView = hasAppliedSnapshot && isStructuralChange
-            && shouldKeepActiveInView(oldURLs: lastSnapshotURLs, newURLs: newURLs)
+            && shouldKeepActiveInView(oldURLs: lastSnapshotURLs, userInitiated: userInitiated)
         dataSource.apply(snapshot, animatingDifferences: itemsAddedOrRemoved) { [weak self] in
             // Diffable-data-source completions can arrive while the surrounding SwiftUI
             // hosting view is still in its layout pass. Forcing AppKit layout here re-enters
@@ -362,20 +364,23 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         hasAppliedSnapshot = true
     }
 
-    /// A sort/filter change or a rating-driven re-sort moves the selected photo; keep it in
-    /// view. Pure arrivals (auto-refresh, an import adding files) only follow the selection
-    /// when it was on screen, so a user who scrolled elsewhere is not pulled back.
-    private func shouldKeepActiveInView(oldURLs: [URL], newURLs: [URL]) -> Bool {
+    /// A user-initiated change (sort/filter setting, the user's own rating/label, move or
+    /// delete) keeps the selected photo in view. Refreshes, imports and background metadata
+    /// re-sorts only follow it when it was on screen before, so a user who scrolled
+    /// elsewhere (or is mid-momentum-scroll) is never pulled back.
+    private func shouldKeepActiveInView(oldURLs: [URL], userInitiated: Bool) -> Bool {
         guard let activeURL = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first else {
             return false
         }
-        let oldSet = Set(oldURLs)
-        let additionsOnly = oldSet.isSubset(of: Set(newURLs))
-            && newURLs.filter(oldSet.contains) == oldURLs
-        guard additionsOnly else { return true }
-        guard let oldIndex = oldURLs.firstIndex(of: activeURL) else { return false }
-        return collectionView.indexPathsForVisibleItems()
-            .contains(IndexPath(item: oldIndex, section: 0))
+        if userInitiated { return true }
+        guard let oldIndex = oldURLs.firstIndex(of: activeURL),
+              let frame = collectionView.collectionViewLayout?
+                .layoutAttributesForItem(at: IndexPath(item: oldIndex, section: 0))?.frame,
+              let visibleRect = collectionView.enclosingScrollView?.documentVisibleRect else {
+            return false
+        }
+        let intersection = frame.intersection(visibleRect)
+        return !intersection.isNull && intersection.height >= frame.height / 2
     }
 
     /// Scrolls the active photo into view (minimum scroll; no-op when mostly visible).

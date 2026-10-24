@@ -119,11 +119,15 @@ actor ImportCopyService {
     /// Execute all jobs sequentially, calling `progress` after each file completes.
     /// Throws `CancellationError` if the surrounding `Task` is cancelled, after publishing
     /// any committed primary copy through `progress`, including when its backup was cancelled.
+    /// `willPlacePrimary` runs synchronously with a job's resolved primary URL before any
+    /// bytes are staged there, so a browser refresh can never see the live file before the
+    /// caller knows about it (`progress` comes only after the backup leg as well).
     func run(
         jobs: [CopyJob],
         conflictPolicy: ImportConflictPolicy,
         verificationMode: CopyVerificationMode,
         verifyBackup: Bool,
+        willPlacePrimary: (@Sendable (CopyJob, URL) -> Void)? = nil,
         progress: @Sendable (CopyResult) async -> Void
     ) async throws -> [CopyResult] {
         try Task.checkCancellation()
@@ -155,7 +159,8 @@ actor ImportCopyService {
                 job,
                 conflictPolicy: conflictPolicy,
                 verificationMode: verificationMode,
-                verifyBackup: verifyBackup
+                verifyBackup: verifyBackup,
+                willPlacePrimary: willPlacePrimary
             )
             results.append(result)
             // A committed primary must reach the caller even if cancellation stopped its backup.
@@ -212,7 +217,8 @@ actor ImportCopyService {
         _ job: CopyJob,
         conflictPolicy: ImportConflictPolicy,
         verificationMode: CopyVerificationMode,
-        verifyBackup: Bool
+        verifyBackup: Bool,
+        willPlacePrimary: (@Sendable (CopyJob, URL) -> Void)?
     ) throws -> CopyResult {
         if let reason = job.preflightSkipReason {
             return CopyResult(
@@ -273,6 +279,7 @@ actor ImportCopyService {
             )
         }
 
+        willPlacePrimary?(job, primaryURL)
         let (primaryOutcome, primaryVerification) = try copyLeg(
             source: job.source,
             destination: primaryURL,

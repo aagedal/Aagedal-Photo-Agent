@@ -497,6 +497,30 @@ nonisolated struct ImportFinishItem: Sendable {
     let sequenceIndex: Int
 }
 
+/// Image copies of the running import that the browser must not show yet, keyed by copy job.
+/// Written from the copy worker (before a primary goes live) and the finisher, read by the
+/// MainActor auto-refresh, so it is lock-protected rather than actor-bound.
+nonisolated final class ImportUnfinishedCopies: @unchecked Sendable {
+    private let lock = NSLock()
+    private var byJob: [UUID: URL] = [:]
+
+    var destinations: Set<URL> {
+        lock.withLock { Set(byJob.values) }
+    }
+
+    func insert(_ destination: URL, for jobID: UUID) {
+        lock.withLock { byJob[jobID] = destination.standardizedFileURL }
+    }
+
+    func remove(jobID: UUID) {
+        lock.withLock { _ = byJob.removeValue(forKey: jobID) }
+    }
+
+    func removeAll() {
+        lock.withLock { byJob.removeAll() }
+    }
+}
+
 /// Results and sidecar bookkeeping shared by the sequential per-file completion steps.
 nonisolated final class ImportRunState: @unchecked Sendable {
     private let lock = NSLock()
@@ -578,10 +602,11 @@ final class ImportViewModel {
         isImporting ? activeImportFolder : nil
     }
 
-    /// Verified copies whose finisher (XMP sidecar + template) has not run yet. Throttled
-    /// mid-import refreshes keep these out of the browser, so a template never lands on a
-    /// photo the user could already be captioning or rating.
-    @ObservationIgnored private(set) var unfinishedImportDestinations: Set<URL> = []
+    /// Image copies whose finisher (XMP sidecar + template) has not run yet, registered before
+    /// each primary goes live. Throttled mid-import refreshes keep these out of the browser, so
+    /// a template never lands on a photo the user could already be captioning or rating.
+    @ObservationIgnored let unfinishedImportCopies = ImportUnfinishedCopies()
+    var unfinishedImportDestinations: Set<URL> { unfinishedImportCopies.destinations }
     /// Metadata-phase progress: photos processed so far out of `metadataTotalFiles`.
     var metadataProcessedFiles: Int = 0
     var metadataTotalFiles: Int = 0
@@ -1834,7 +1859,7 @@ final class ImportViewModel {
                             guard self.importRequestID == requestID else { return nil }
                             self.importDidStartCopying = true
                             self.activeImportFolder = folderToOpen
-                            self.unfinishedImportDestinations = []
+                            self.unfinishedImportCopies.removeAll()
                             if applyMetadata {
                                 self.metadataTotalFiles = metadataJobCount
                                 self.metadataProcessedFiles = 0
@@ -1854,6 +1879,7 @@ final class ImportViewModel {
                         let boundary = DescriptiveMetadataWriteBoundary(writeEngine: self.writeEngine)
                         let c2paDetector = self.c2paDetector
                         let runState = ImportRunState()
+                        let unfinished = self.unfinishedImportCopies
                         let placeLookup = ImportPlaceLookupCache().lookup
                         let (finisherQueue, finisherInput) = AsyncStream.makeStream(of: ImportFinishItem.self)
                         let finisher = Task {
@@ -1872,9 +1898,7 @@ final class ImportViewModel {
                                     interpolator: interpolator,
                                     placeLookup: placeLookup
                                 )
-                                await MainActor.run {
-                                    _ = self.unfinishedImportDestinations.remove(item.destination.standardizedFileURL)
-                                }
+                                unfinished.remove(jobID: item.result.id)
                             }
                         }
                         var wasCancelled = false
@@ -1884,6 +1908,13 @@ final class ImportViewModel {
                                 conflictPolicy: conflictPolicy,
                                 verificationMode: verificationMode,
                                 verifyBackup: verifyBackup,
+                                willPlacePrimary: { job, primaryURL in
+                                    // Registered before the primary goes live: `progress` only
+                                    // fires after the backup leg, and a refresh may run meanwhile.
+                                    guard frozenJobContexts[job.id]?.isImage == true,
+                                          imageSources.contains(job.source) else { return }
+                                    unfinished.insert(primaryURL, for: job.id)
+                                },
                                 progress: { [weak self] result in
                                     runState.append(result)
                                     await MainActor.run {
@@ -1893,11 +1924,12 @@ final class ImportViewModel {
                                     guard let context = frozenJobContexts[result.id],
                                           context.isImage,
                                           imageSources.contains(result.source),
-                                          let destination = result.primaryURL else { return }
-                                    await MainActor.run {
-                                        guard self?.importRequestID == requestID else { return }
-                                        _ = self?.unfinishedImportDestinations.insert(destination.standardizedFileURL)
+                                          let destination = result.primaryURL else {
+                                        // Failed or skipped: nothing will be finished for it.
+                                        unfinished.remove(jobID: result.id)
+                                        return
                                     }
+                                    unfinished.insert(destination, for: result.id)
                                     finisherInput.yield(ImportFinishItem(
                                         result: result,
                                         destination: destination,

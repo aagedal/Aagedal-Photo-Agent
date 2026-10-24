@@ -58,6 +58,41 @@ enum AppCommand: Equatable, Sendable {
     case restoreCaptionEditorFocus
 }
 
+extension AppCommand {
+    /// Commands that act on the Browser selection without their own full-screen handling.
+    /// Full screen shows one photo of a possibly larger kept selection; these must affect the
+    /// photo the user sees, so the selection collapses to it first. Ratings, labels, rotation
+    /// and delete already target the shown photo; folder-wide commands are unaffected.
+    var actsOnBrowserSelection: Bool {
+        switch self {
+        case .renderSelected, .advancedExportSelected, .saveAsJPEG, .saveAsPNG, .archiveRAW,
+             .renameSelected, .duplicateSelected, .resetAllEdits, .removeAllIPTC,
+             .backupEditedFiles, .openInInternalEditor, .openInExternalEditor,
+             .uploadSelected, .processVariablesSelected, .transcribeVoiceMemosSelected,
+             .showTemplatePalette, .applyTemplateShortcut, .renderAndSignSelected,
+             .pasteIPTCMetadata:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Commands that change or read the displayed folder's photos. Ignored while that folder
+    /// is known to be gone (ejected card, unmounted share), where they would act on rows the
+    /// user can't see and whose files no longer exist.
+    var requiresAvailableFolder: Bool {
+        if actsOnBrowserSelection { return true }
+        switch self {
+        case .setRating, .setLabel, .rotateClockwise, .rotateCounterclockwise,
+             .deleteSelected, .moveRejectedToFolder, .renderAll, .uploadAll,
+             .processVariablesAll, .copyIPTCMetadata, .writeAllPendingMetadata:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 struct AppCommandDelivery: Equatable, Sendable {
     let sequence: UInt64
     let command: AppCommand

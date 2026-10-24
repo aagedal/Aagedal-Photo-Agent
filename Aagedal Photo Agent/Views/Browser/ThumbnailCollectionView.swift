@@ -823,15 +823,12 @@ final class ThumbnailCollectionView: NSCollectionView {
             items.append(item)
         }
 
-        // Photos dragged to Finder, Mail or another app keep their XMP sidecar (ratings,
+        // RAW files dragged to Finder or another app keep their XMP sidecar (ratings,
         // captions, Camera Raw edits). Sidecar items carry no visual of their own. In-app
         // folder drops skip them again (`removingCompanionSidecars`): moves bring sidecars along.
         let sidecars = PhotoDragPasteboardURLs.ownedSidecars(
             for: urls,
-            sidecarExists: { FileManager.default.fileExists(atPath: $0.path) },
-            sidecarBelongsToRawSibling: {
-                PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: $0)
-            }
+            hasSidecar: { [weak viewModel] url in viewModel?.image(at: url)?.sidecarModified != nil }
         )
         for sidecar in sidecars {
             let item = NSDraggingItem(pasteboardWriter: sidecar as NSURL)
@@ -855,26 +852,24 @@ final class ThumbnailCollectionView: NSCollectionView {
     }
 }
 
-/// Extra file URLs for dragging photos out of the grid: the stem `.xmp` sidecar each photo
-/// owns, so a Finder/Mail copy keeps its ratings, captions and Camera Raw edits.
+/// Extra file URLs for dragging photos out of the grid: the stem `.xmp` sidecar of each RAW,
+/// so a Finder copy keeps its ratings, captions and Camera Raw edits.
 nonisolated enum PhotoDragPasteboardURLs {
-    /// A RAW owns its stem sidecar. Another file owns it unless a same-stem RAW sibling does
-    /// (PhotoSidecarOwnership); that shared sidecar travels only with the RAW. A RAW+JPEG
-    /// pair dragged together therefore adds the shared `.xmp` once.
+    /// Only RAW files take their stem sidecar along: a RAW owns it (PhotoSidecarOwnership) and
+    /// has nowhere else to keep ratings, captions or Camera Raw edits. JPEG/HEIC/TIFF carry
+    /// embedded metadata, and extra `.xmp` items on every drag break Mail/Slack attachments,
+    /// web uploaders and Photoshop. A RAW+JPEG pair therefore adds the shared `.xmp` once.
+    /// `hasSidecar` answers from the folder scan, so a drag never stats per photo.
     static func ownedSidecars(
         for photoURLs: [URL],
-        sidecarExists: (URL) -> Bool,
-        sidecarBelongsToRawSibling: (URL) -> Bool
+        hasSidecar: (URL) -> Bool
     ) -> [URL] {
         var seen: Set<String> = []
         var sidecars: [URL] = []
-        for photoURL in photoURLs where photoURL.pathExtension.lowercased() != "xmp" {
+        for photoURL in photoURLs where SupportedImageFormats.isRaw(url: photoURL) {
             let sidecar = photoURL.deletingPathExtension().appendingPathExtension("xmp")
             let key = sidecar.standardizedFileURL.path.lowercased()
-            guard !seen.contains(key), sidecarExists(sidecar) else { continue }
-            if !SupportedImageFormats.isRaw(url: photoURL), sidecarBelongsToRawSibling(photoURL) {
-                continue
-            }
+            guard !seen.contains(key), hasSidecar(photoURL) else { continue }
             seen.insert(key)
             sidecars.append(sidecar)
         }

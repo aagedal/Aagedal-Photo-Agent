@@ -99,6 +99,13 @@ final class BrowserViewModel {
     /// Fixed end of a Shift-extended range (Finder/Photo Mechanic). Set by plain and
     /// Command selections; Shift extensions keep it so they can shrink as well as grow.
     @ObservationIgnored private(set) var selectionAnchorURL: URL?
+    /// Set only around rebuilds caused by the user's own mutations (rating/label changes,
+    /// moves, deletes). Those move a filtered-out active photo's selection to its neighbour;
+    /// filter, search and refresh rebuilds keep the plain visible-selection reconciliation.
+    @ObservationIgnored private var movesSelectionToNeighborOnRebuild = false
+    /// While Compare is open, the Browser selection mirrors Compare's focused photo even when
+    /// it no longer passes the filter (set by the window as it enters/leaves Compare).
+    @ObservationIgnored var keepsSelectionThroughFilterChanges = false
     var currentFolderURL: URL?
     var currentFolderName: String?
     var isLoading = false
@@ -135,6 +142,7 @@ final class BrowserViewModel {
             if sortOrder != .similarity { resetSimilaritySort() }
             AppDefaults.store.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
             guard !isBatchUpdating else { return }
+            requestRevealActive()
             setNeedsSortRebuild(forceSort: true)
             showSortFeedback()
         }
@@ -143,6 +151,7 @@ final class BrowserViewModel {
         didSet {
             AppDefaults.store.set(sortReversed, forKey: UserDefaultsKeys.thumbnailSortReversed)
             guard !isBatchUpdating else { return }
+            requestRevealActive()
             setNeedsSortRebuild(forceSort: true)
             showSortFeedback()
         }
@@ -181,6 +190,7 @@ final class BrowserViewModel {
         didSet {
             guard !isBatchUpdating else { return }
             lastSearchTextEdit = .now
+            requestRevealActive()
             searchDebounceTask?.cancel()
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 setNeedsVisibleRebuild()
@@ -194,25 +204,25 @@ final class BrowserViewModel {
         }
     }
     var minimumStarRating: StarRating = .none {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     var selectedColorLabels: Set<ColorLabel> = [] {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     var personShownFilter: PersonShownFilter = .any {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     var editedFilter: EditedFilter = .any {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     /// Completeness check against the user's required-metadata fields (configured in Settings).
     var requiredMetadataFilter: RequiredMetadataFilter = .any {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
     /// Fields the browser should filter to "missing". OR semantics, matching color-label selection:
     /// an image passes when it's missing at least one of these. Empty → inactive.
     var missingFieldFilters: Set<MetadataFieldID> = [] {
-        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+        didSet { if !isBatchUpdating { filterSettingDidChange() } }
     }
 
     @ObservationIgnored private var folderFilterStates: [URL: FolderFilterState] = [:]
@@ -640,6 +650,29 @@ final class BrowserViewModel {
         scheduleCoalescedRebuild()
     }
 
+    private func filterSettingDidChange() {
+        requestRevealActive()
+        setNeedsVisibleRebuild()
+    }
+
+    @ObservationIgnored private var revealActiveRequestedAt: ContinuousClock.Instant?
+
+    /// Marks the next grid update as caused by the user (sort/filter setting, their own
+    /// rating/label, move or delete): the grid then scrolls the active photo into view.
+    /// Refreshes and background metadata re-sorts don't request it, so they never pull a
+    /// user who scrolled elsewhere back to the selection.
+    func requestRevealActive() {
+        revealActiveRequestedAt = .now
+    }
+
+    /// Read once per grid data update. A request expires after a second so a user action
+    /// that changed nothing structural can't make a later refresh scroll.
+    func consumeRevealActiveRequest() -> Bool {
+        defer { revealActiveRequestedAt = nil }
+        guard let requested = revealActiveRequestedAt else { return false }
+        return ContinuousClock.now - requested < .seconds(1)
+    }
+
     private func scheduleCoalescedRebuild() {
         guard rebuildCoalesceTask == nil else { return }
         rebuildCoalesceTask = Task { @MainActor [weak self] in
@@ -672,6 +705,7 @@ final class BrowserViewModel {
         isBatchUpdating = true
         block()
         isBatchUpdating = false
+        requestRevealActive()
         // The per-property didSets are gated on `!isBatchUpdating`, so the changes above
         // requested no rebuild. Mark one explicitly, otherwise `rebuildNow()` finds no
         // pending flag and the grid keeps showing the pre-batch filtered set (e.g. Clear
@@ -689,13 +723,21 @@ final class BrowserViewModel {
         urlToVisibleIndex = Dictionary(uniqueKeysWithValues: filtered.enumerated().map { ($1.url, $0) })
 
         let visibleSet = Set(filtered.map(\.url))
+        if keepsSelectionThroughFilterChanges {
+            // Compare shows (and rates) its focused photo even after it left the filter; the
+            // Browser selection and metadata editor stay on it rather than a neighbour.
+            rebuildSelectedCache()
+            return
+        }
         if let anchor,
+           isFullScreen || movesSelectionToNeighborOnRebuild,
            previousVisibleURLs.contains(anchor),
            !visibleSet.contains(anchor) {
-            // Rating/labelling the active photo out of the active filter must not drop the
-            // selection: in the grid the next culling key would do nothing and → would jump
-            // to the first photo; full screen would go black. Photo Mechanic moves on to the
-            // next photo (else the previous one) in the old order.
+            // Rating/labelling (or moving/deleting) the active photo out of the active filter
+            // must not drop the selection: in the grid the next culling key would do nothing
+            // and → would jump to the first photo; full screen would go black. Photo Mechanic
+            // moves on to the next photo (else the previous one) in the old order. A plain
+            // filter or search change keeps the previous behaviour (visible selection only).
             let survivors = selectedImageIDs.intersection(visibleSet)
             if !survivors.isEmpty {
                 // A partly filtered-out multi-selection keeps its survivors (full screen keeps
@@ -710,6 +752,11 @@ final class BrowserViewModel {
                     selectedImageIDs = survivors
                 } else {
                     rebuildSelectedCache()
+                }
+                if let selectionAnchorURL, survivors.contains(selectionAnchorURL) {
+                    // The Shift anchor survived; keep extending from it.
+                } else {
+                    selectionAnchorURL = active
                 }
                 lastClickedImageURL = active
                 return
@@ -797,7 +844,16 @@ final class BrowserViewModel {
             uniqueKeysWithValues: imagesCascadeURLs.enumerated().map { ($1, $0) }
         )
         setNeedsSortRebuild(forceSort: true)
-        rebuildNow()
+        rebuildMovingSelectionToNeighbor { rebuildNow() }
+    }
+
+    /// Runs a rebuild caused by the user's own mutation (see `movesSelectionToNeighborOnRebuild`).
+    private func rebuildMovingSelectionToNeighbor(_ rebuild: () -> Void) {
+        requestRevealActive()
+        let previous = movesSelectionToNeighborOnRebuild
+        movesSelectionToNeighborOnRebuild = true
+        defer { movesSelectionToNeighborOnRebuild = previous }
+        rebuild()
     }
 
     private func preCacheSelectedRetinaImage() {
@@ -1213,11 +1269,35 @@ final class BrowserViewModel {
 
     static let folderUnavailableMessage = "This folder is no longer available — the volume may have been ejected."
 
+    nonisolated enum FolderAvailability: Equatable, Sendable {
+        case available
+        /// ENOENT/ENOTDIR: deleted, or its volume (card, share) is no longer mounted.
+        case gone
+        /// Any other stat failure (EACCES, ETIMEDOUT/ENOTCONN while SMB reconnects…): not
+        /// proof the folder is gone, so the grid stays as it is.
+        case undetermined
+    }
+
     /// Off the main actor: a stat on a dead network mount can block.
-    @concurrent nonisolated static func folderStillExists(_ url: URL) async -> Bool {
-        var isDirectory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            && isDirectory.boolValue
+    @concurrent nonisolated static func folderAvailability(_ url: URL) async -> FolderAvailability {
+        folderAvailabilityNow(url)
+    }
+
+    nonisolated static func folderAvailabilityNow(_ url: URL) -> FolderAvailability {
+        var info = stat()
+        if stat(url.path, &info) == 0 {
+            return (info.st_mode & S_IFMT) == S_IFDIR ? .available : .gone
+        }
+        switch errno {
+        case ENOENT, ENOTDIR: return .gone
+        default: return .undetermined
+        }
+    }
+
+    /// True while the displayed folder is known to be gone. Photo commands (ratings, labels,
+    /// templates…) are ignored meanwhile instead of acting on the hidden rows.
+    var isCurrentFolderUnavailable: Bool {
+        folderLoadErrorMessage == Self.folderUnavailableMessage
     }
 
     /// Shows the folder-unavailable state (Retry / Open Another Folder) when the displayed
@@ -1226,13 +1306,24 @@ final class BrowserViewModel {
     /// discarded; saving them goes through the normal write-failure path.
     func verifyCurrentFolderAvailability() async {
         guard let folderURL = currentFolderURL else { return }
-        let exists = await Self.folderStillExists(folderURL)
+        let availability = await Self.folderAvailability(folderURL)
         guard currentFolderURL == folderURL else { return }
-        if !exists {
+        switch availability {
+        case .gone:
             folderLoadErrorMessage = Self.folderUnavailableMessage
-        } else if folderLoadErrorMessage == Self.folderUnavailableMessage {
-            folderLoadErrorMessage = nil
+        case .available:
+            if isCurrentFolderUnavailable { folderLoadErrorMessage = nil }
+        case .undetermined:
+            break
         }
+    }
+
+    /// Retry from the folder-unavailable state: once the folder is back, rescan it in place
+    /// (rows, selection and editor state kept) instead of reloading from scratch.
+    func retryUnavailableFolder() async {
+        await verifyCurrentFolderAvailability()
+        guard currentFolderURL != nil, !isCurrentFolderUnavailable else { return }
+        refreshCurrentFolderIfNeeded()
     }
 
     /// `excludingNewURLs` names files a refresh must not add yet (an import's copies whose
@@ -2461,6 +2552,14 @@ final class BrowserViewModel {
         setLabel(label, imagesToMutate: [image])
     }
 
+    /// Before a selection command without its own full-screen handling (templates, Paste
+    /// IPTC, export, rename…), narrow a kept multi-selection to the photo on screen: users
+    /// expect full-screen actions to affect what they see. No-op outside full screen.
+    func collapseSelectionToFullScreenImage() {
+        guard isFullScreen, selectedImageIDs.count > 1, let url = fullScreenImage?.url else { return }
+        applySelection(ids: [url], active: url)
+    }
+
     /// Accepted field intents run in order; a later action never cancels an earlier one.
     /// Each photo captures its own expected and requested value before optimistic updates.
     private func applyBrowserFieldMutation(mutationForImage: (ImageFile) -> MetadataPhysicalFieldMutation, field: String,
@@ -2823,6 +2922,11 @@ final class BrowserViewModel {
 
     private func updateMetadataFieldPresentation(urls targetURLs: [URL], updateImage: (inout ImageFile) -> Void,
         affectsSortKey: Bool, affectsFilterKey: Bool) {
+        // The user's own rating/label change: a photo it filters out hands the selection on.
+        requestRevealActive()
+        let previousNeighborMove = movesSelectionToNeighborOnRebuild
+        movesSelectionToNeighborOnRebuild = true
+        defer { movesSelectionToNeighborOnRebuild = previousNeighborMove }
         // Phase 1: In-place mutation — skip the didSet cascade since URLs don't change
         suppressImagesCascade = true
         defer { suppressImagesCascade = false }
@@ -4386,6 +4490,7 @@ final class BrowserViewModel {
             let result = await fileSystemService.trashItems(Array(urlsToDelete), using: handler)
             let deletedURLs = result.completedSourceURLs
             if !deletedURLs.isEmpty {
+                let survivingSelection = selectedImageIDs.subtracting(deletedURLs)
                 images.removeAll { deletedURLs.contains($0.url) }
                 manualOrder.removeAll { deletedURLs.contains($0) }
                 pendingMetadataURLs.subtract(deletedURLs)
@@ -4397,9 +4502,14 @@ final class BrowserViewModel {
                 // is in the Trash but its stale thumbnail remains visible and appears undeletable.
                 reindexAfterInventoryChange()
 
+                // Deleting the shown photo of a kept full-screen multi-selection: the rebuild
+                // kept the rest of the selection and moved to the nearest selected photo.
+                let keptSurvivingSelection = !selectedImageIDs.isEmpty
+                    && selectedImageIDs.isSubset(of: survivingSelection)
+
                 // A queued delete can finish after the user navigated away or after an
                 // earlier move removed neighbours; only reselect among files still shown.
-                if currentFolderURL == folderURL {
+                if currentFolderURL == folderURL, !keptSurvivingSelection {
                     let closestURL = Self.closestSurvivingImageURL(
                         in: orderedURLs,
                         around: anchorURL,

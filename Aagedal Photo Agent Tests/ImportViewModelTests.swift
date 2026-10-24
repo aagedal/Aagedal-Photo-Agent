@@ -2353,6 +2353,43 @@ struct ImportCopyServiceTests {
         }
     }
 
+    @Test("the primary is announced before it goes live, ahead of its backup leg and progress")
+    func announcesPrimaryBeforePlacement() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportCopyTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.ARW")
+        let primary = root.appendingPathComponent("primary/DSC0001.ARW")
+        let backup = root.appendingPathComponent("backup/DSC0001.ARW")
+        try FileManager.default.createDirectory(at: primary.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("raw bytes".utf8).write(to: source)
+        let job = ImportCopyService.CopyJob(source: source, desiredPrimaryDest: primary, desiredBackupDest: backup)
+        let unfinished = ImportUnfinishedCopies()
+        let events = ImportPlacementEventLog()
+
+        _ = try await ImportCopyService().run(
+            jobs: [job],
+            conflictPolicy: .skipExisting,
+            verificationMode: .on,
+            verifyBackup: true,
+            willPlacePrimary: { placedJob, url in
+                events.append("place exists=\(FileManager.default.fileExists(atPath: url.path))")
+                unfinished.insert(url, for: placedJob.id)
+            },
+            progress: { result in
+                events.append("progress backup=\(FileManager.default.fileExists(atPath: backup.path))")
+                #expect(unfinished.destinations == [primary.standardizedFileURL])
+                unfinished.remove(jobID: result.id)
+            }
+        )
+
+        #expect(events.entries == ["place exists=false", "progress backup=true"])
+        #expect(unfinished.destinations.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: primary.path))
+    }
+
     @Test("a companion is skipped when its image copy fails")
     func companionRequiresSuccessfulImage() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -2394,6 +2431,13 @@ struct ImportCopyServiceTests {
         #expect(results[1].primary == .skipped(.associatedImageFailed))
         #expect(!FileManager.default.fileExists(atPath: memoDestination.path))
     }
+}
+
+private nonisolated final class ImportPlacementEventLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+    var entries: [String] { lock.withLock { values } }
+    func append(_ value: String) { lock.withLock { values.append(value) } }
 }
 
 /// Records embedded writes so tests can see which files the import routed into the file itself.

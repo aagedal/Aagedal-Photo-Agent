@@ -116,7 +116,12 @@ struct BrowserView: View {
                 } actions: {
                     if let folderURL = viewModel.currentFolderURL {
                         Button("Retry") {
-                            viewModel.loadFolder(url: folderURL, addToOpenFolders: false)
+                            if viewModel.isCurrentFolderUnavailable, viewModel.hasImages {
+                                // Rescan in place once it's back; rows and editor state stay.
+                                Task { await viewModel.retryUnavailableFolder() }
+                            } else {
+                                viewModel.loadFolder(url: folderURL, addToOpenFolders: false)
+                            }
                         }
                     }
                     Button("Open Another Folder") {
