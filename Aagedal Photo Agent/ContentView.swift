@@ -3319,6 +3319,8 @@ struct ContentView: View {
         renderEditedFolderSuccessCount = 0
         renderEditedFolderFailureCount = 0
 
+        // Capture the pane that started the sign so the final refresh targets it.
+        let browserViewModel = browserViewModel
         renderExportTask = Task {
             defer { renderExportTask = nil }
             let urls = selected.map(\.url)
@@ -3413,8 +3415,9 @@ struct ContentView: View {
                     signFailures.append(.init(filename: image.url.lastPathComponent, error: error))
                     // A Signed_* folder must only hold signed files: discard the unsigned
                     // render so it can't be mistaken for (or delivered as) a signed copy.
-                    if let unsignedRenderURL {
-                        try? FileManager.default.removeItem(at: unsignedRenderURL)
+                    // A metadata-incomplete render throws after finalizing, before returning.
+                    if let unsigned = unsignedRenderURL ?? (error as? ExportMetadataIncompleteError)?.renderedURL {
+                        try? FileManager.default.removeItem(at: unsigned)
                     }
                 }
             }
@@ -4445,6 +4448,8 @@ struct ContentView: View {
         renderEditedFolderSuccessCount = 0
         renderEditedFolderFailureCount = 0
 
+        // Capture the pane that started the export so the final refresh targets it.
+        let browserViewModel = browserViewModel
         renderExportTask = Task {
             defer { renderExportTask = nil }
             let failureTracker = MetadataFailureTracker()

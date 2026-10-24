@@ -450,8 +450,20 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             // Force orientation to 1 — rendered pixels are already upright.
             destMetadata.setOrientation(1)
 
+            // PNG/HEIC/AVIF/JPEG XL can't carry IPTC-IIM: the writer drops it with only a
+            // warning, so an IIM-only source (older cameras/agency files) would lose caption,
+            // credit, copyright and keywords. Mirror IIM into XMP for fields the XMP lacks.
+            if !Self.containerCarriesIIM(destMetadata) {
+                Self.mirrorIIMIntoMissingXMP(&destMetadata)
+            }
+
             do {
-                try destMetadata.write(to: destination)
+                let warnings = try destMetadata.write(to: destination)
+                for warning in warnings {
+                    swiftExifLog.warning(
+                        "copyMetadataToRenderedFile: \(destination.lastPathComponent, privacy: .private(mask: .hash)): \(warning, privacy: .public)"
+                    )
+                }
             } catch {
                 swiftExifLog.error(
                     "copyMetadataToRenderedFile: write failed for \(destination.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
@@ -459,6 +471,29 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 throw error
             }
         }
+    }
+
+    nonisolated static func containerCarriesIIM(_ metadata: ImageMetadata) -> Bool {
+        metadata.format.metadataCapabilities[.iptcIIM].write == .directlyWritable
+    }
+
+    /// Fill-only IIM → XMP mirror using the library's standard IIM↔XMP mapping. A value the
+    /// XMP already carries is never overwritten (XMP is the modern, usually richer record);
+    /// only properties the XMP lacks are taken from IIM. Object Name is mirrored to dc:title
+    /// here because, in a container without IIM, there is nowhere else for it to survive.
+    nonisolated static func mirrorIIMIntoMissingXMP(_ metadata: inout ImageMetadata) {
+        var scratch = metadata
+        scratch.synchronizeIPTCToXMP(options: IPTCXMPSynchronizationOptions(titlePolicy: .mirrorObjectName))
+        guard let synced = scratch.xmp else { return }
+        var xmp = metadata.xmp ?? XMPData()
+        var changed = false
+        for mapping in XMPNamespace.iimToXMP.values {
+            guard xmp.value(namespace: mapping.namespace, property: mapping.property) == nil,
+                  let value = synced.value(namespace: mapping.namespace, property: mapping.property) else { continue }
+            xmp.setValue(value, namespace: mapping.namespace, property: mapping.property)
+            changed = true
+        }
+        if changed { metadata.xmp = xmp }
     }
 
     private func filesReferToSameItem(_ lhs: URL, _ rhs: URL) -> Bool {

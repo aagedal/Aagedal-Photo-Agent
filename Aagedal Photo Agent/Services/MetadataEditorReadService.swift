@@ -93,7 +93,8 @@ nonisolated struct MetadataEditorReadAccess: Sendable {
                     imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) else {
                     throw CocoaError(.fileReadCorruptFile)
                 }
-                metadata = parsed
+                // A RAW+JPEG pair's stem crs belongs to the RAW; the JPEG's Develop loads embedded.
+                metadata = PhotoSidecarOwnership.applyingDevelopOwnership(parsed, for: imageURL)
             } else { metadata = nil }
             let verdict: SidecarReconciliation.Verdict?
             if reconciles, let embedded, let metadata {

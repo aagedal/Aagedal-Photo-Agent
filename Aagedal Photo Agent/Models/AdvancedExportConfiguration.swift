@@ -154,7 +154,7 @@ nonisolated struct AdvancedExportPreparationAccess: Sendable {
 
     static let live = Self(
         loadCameraRawSidecar: { imageURL in
-            XMPSidecarService().loadSidecar(for: imageURL)?.cameraRaw
+            XMPSidecarService().loadDevelopSettings(for: imageURL)
         },
         nativePixelSize: { imageURL in
             guard let size = FullScreenImageCache.nativePixelSize(of: imageURL) else {

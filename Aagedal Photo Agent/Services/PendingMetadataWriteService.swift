@@ -172,7 +172,7 @@ nonisolated struct PendingMetadataWriteService: Sendable {
             let data = try Data(contentsOf: url)
             guard let metadata = service.loadSidecar(fromData: data,
                 imageAspect: { ImagePixelAspect.aspect(at: imageURL) }) else { throw CocoaError(.fileReadCorruptFile) }
-            return (metadata, .init(data: data))
+            return (PhotoSidecarOwnership.applyingDevelopOwnership(metadata, for: imageURL), .init(data: data))
         }
     }
 

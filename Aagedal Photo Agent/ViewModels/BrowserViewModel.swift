@@ -1740,7 +1740,9 @@ final class BrowserViewModel {
                         fromData: data,
                         imageAspect: { imageAspects[url] ?? ImagePixelAspect.aspect(at: url) }
                     )
-                    return (url, metadata)
+                    // A RAW+JPEG pair's stem sidecar carries the RAW's develop settings; the
+                    // JPEG keeps its own (Adobe convention), so drop crs for it here.
+                    return (url, PhotoSidecarOwnership.applyingDevelopOwnership(metadata, for: url))
                 }
             }
 
@@ -2947,7 +2949,8 @@ final class BrowserViewModel {
     private func loadMetadataSnapshot(for url: URL) async -> IPTCMetadata? {
         do {
             var metadata = try await metadataReadService.readFullMetadata(url: url)
-            if let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
+            if let xmpMetadata = PhotoSidecarOwnership.applyingDevelopOwnership(
+                xmpSidecarService.loadSidecar(for: url), for: url) {
                 // Record semantics, matching the panel's reference read: a descriptive
                 // sidecar IS the record (clears stick — don't reseed cleared fields
                 // from embedded); develop-only sidecars overlay additively.

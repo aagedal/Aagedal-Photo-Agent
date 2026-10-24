@@ -5284,3 +5284,366 @@ private nonisolated final class GatedExportWriteEngine: MetadataWriteEngine {
         try await underlying.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
     }
 }
+
+// MARK: - 3.0 export/saving fixes (RAW+JPEG develop ownership, GPS, IIM, partial files, FTP)
+
+@Suite("Export and saving fixes for 3.0")
+struct ExportSavingReleaseFixTests {
+
+    private func makeFolder(_ name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func imageData(_ type: NSBitmapImageRep.FileType) throws -> Data {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+            isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ), let data = rep.representation(using: type, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return data
+    }
+
+    private func writeJPEG(to url: URL) throws { try imageData(.jpeg).write(to: url) }
+    private func writePNG(to url: URL) throws { try imageData(.png).write(to: url) }
+
+    /// IMG_1.ARW (placeholder bytes — never decoded here) + IMG_1.jpg + the shared IMG_1.xmp
+    /// carrying the RAW's absolute-Kelvin WB, exposure and a caption.
+    private func makeRawJpegPair() throws -> (dir: URL, raw: URL, jpeg: URL) {
+        let dir = try makeFolder("raw-jpeg-pair")
+        let raw = dir.appendingPathComponent("IMG_1.ARW")
+        try Data("not a real raw".utf8).write(to: raw)
+        let jpeg = dir.appendingPathComponent("IMG_1.jpg")
+        try writeJPEG(to: jpeg)
+        var crs = CameraRawSettings()
+        crs.temperature = 5500
+        crs.exposure2012 = 1.25
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(title: "Shared caption", cameraRaw: crs), for: raw)
+        return (dir, raw, jpeg)
+    }
+
+    // MARK: RAW+JPEG stem sidecar (finding 2)
+
+    @Test("A RAW+JPEG pair's stem sidecar develop belongs to the RAW only")
+    func stemSidecarDevelopOwnership() throws {
+        let pair = try makeRawJpegPair()
+        defer { try? FileManager.default.removeItem(at: pair.dir) }
+
+        #expect(PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: pair.jpeg))
+        #expect(!PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: pair.raw))
+        let lone = pair.dir.appendingPathComponent("Other.jpg")
+        try writeJPEG(to: lone)
+        #expect(!PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: lone))
+
+        let service = XMPSidecarService()
+        #expect(service.loadDevelopSettings(for: pair.raw)?.exposure2012 == 1.25)
+        #expect(service.loadDevelopSettings(for: pair.jpeg) == nil)
+        #expect(ExportCameraRawSidecarAccess.system.load(pair.jpeg) == nil)
+        #expect(ExportCameraRawSidecarAccess.system.load(pair.raw)?.temperature == 5500)
+        #expect(FullScreenImagePresentationFactsAccess.system.read(pair.jpeg).sidecarCameraRaw == nil)
+        #expect(AdvancedExportPreparationAccess.live.loadCameraRawSidecar(pair.jpeg) == nil)
+        #expect(FTPUploadSidecarAccess.system.load(pair.jpeg)?.cameraRaw == nil)
+        // Descriptive fields stay shared (Photo Mechanic convention).
+        #expect(FTPUploadSidecarAccess.system.load(pair.jpeg)?.title == "Shared caption")
+
+        let facts = MetadataEditorReadAccess.systemRead(imageURL: pair.jpeg, folderURL: pair.dir,
+            embedded: nil, reconciles: false)
+        #expect(facts.xmpMetadata?.title == "Shared caption")
+        #expect(facts.xmpMetadata?.cameraRaw == nil)
+        let rawFacts = MetadataEditorReadAccess.systemRead(imageURL: pair.raw, folderURL: pair.dir,
+            embedded: nil, reconciles: false)
+        #expect(rawFacts.xmpMetadata?.cameraRaw?.exposure2012 == 1.25)
+    }
+
+    @MainActor
+    @Test("Export Camera Raw resolution never hands the RAW's settings to its JPEG")
+    func exportResolutionSkipsRawOwnedSidecar() async throws {
+        let pair = try makeRawJpegPair()
+        defer { try? FileManager.default.removeItem(at: pair.dir) }
+        var map: [URL: IPTCMetadata] = [:]
+        try await EditExportPipeline.resolveCameraRaw(into: &map, urls: [pair.raw, pair.jpeg],
+            inMemory: { _ in nil })
+        #expect(map[pair.raw]?.cameraRaw?.temperature == 5500)
+        #expect(map[pair.jpeg]?.cameraRaw == nil)
+    }
+
+    @Test("Writes made for a pair's JPEG never replace the RAW's Camera Raw block")
+    func jpegWritesPreserveRawDevelop() async throws {
+        let pair = try makeRawJpegPair()
+        defer { try? FileManager.default.removeItem(at: pair.dir) }
+        let service = XMPSidecarService()
+        var jpegCRS = CameraRawSettings()
+        jpegCRS.exposure2012 = -2
+        jpegCRS.temperature = 2000
+
+        // Full-record descriptive save (XMP-sidecar mode) for the JPEG.
+        try await service.saveSidecarSerialized(
+            metadata: IPTCMetadata(title: "Edited on JPEG", cameraRaw: jpegCRS), for: pair.jpeg)
+        var stored = try #require(service.loadSidecar(for: pair.raw))
+        #expect(stored.title == "Edited on JPEG")
+        #expect(stored.cameraRaw?.exposure2012 == 1.25)
+        #expect(stored.cameraRaw?.temperature == 5500)
+
+        // The Develop/Primary write path.
+        let before = service.sidecarDataIfExists(for: pair.jpeg)
+        _ = try await service.writeMetadataInHeldTransaction(
+            IPTCMetadata(title: "Edited on JPEG", cameraRaw: jpegCRS), for: pair.jpeg,
+            expectedSnapshot: .init(data: before), onlyIfExisting: false,
+            replaceDevelopSettings: true, replaceOrientation: false)
+        stored = try #require(service.loadSidecar(for: pair.raw))
+        #expect(stored.cameraRaw?.exposure2012 == 1.25)
+
+        // Develop-only writes: a clear is a no-op, a write is refused with a clear message.
+        try await service.saveCameraRawOnlySerialized(nil, orientation: nil, for: pair.jpeg)
+        #expect(service.loadSidecar(for: pair.raw)?.cameraRaw?.exposure2012 == 1.25)
+        await #expect(throws: StemSidecarDevelopOwnedByRawError.self) {
+            try await service.saveCameraRawOnlySerialized(jpegCRS, orientation: nil, for: pair.jpeg)
+        }
+        await #expect(throws: StemSidecarDevelopOwnedByRawError.self) {
+            try await service.pasteCameraRawSerialized(jpegCRS, includeCrop: true, for: pair.jpeg)
+        }
+        #expect(service.loadSidecar(for: pair.raw)?.cameraRaw?.temperature == 5500)
+
+        // The RAW itself still owns and replaces its block.
+        try await service.saveCameraRawOnlySerialized(jpegCRS, orientation: nil, for: pair.raw)
+        #expect(service.loadSidecar(for: pair.raw)?.cameraRaw?.exposure2012 == -2)
+    }
+
+    // MARK: Sidecar-only GPS (finding 3)
+
+    @Test("A geotagged sidecar without a caption still carries GPS onto the export")
+    func sidecarOnlyGPSReachesExport() async throws {
+        let dir = try makeFolder("gps-only")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try writeJPEG(to: source)
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(latitude: -33.8688, longitude: -70.6693), for: source)
+
+        let outDir = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source, cameraRaw: nil, kind: .jpeg, outputFolder: outDir,
+            folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        let meta = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        let lat = try #require(meta.latitude)
+        let lon = try #require(meta.longitude)
+        #expect(abs(lat - (-33.8688)) < 0.001)
+        #expect(abs(lon - (-70.6693)) < 0.001)
+    }
+
+    @Test("Overlay fields add GPS additively without descriptive authority")
+    func authoritativeFieldsIncludeGPS() {
+        let gpsOnly = SidecarIPTCOverlay.authoritativeFields(from: IPTCMetadata(latitude: 59.9, longitude: -10.75))
+        #expect(gpsOnly[.gpsLatitude] == "59.9")
+        #expect(gpsOnly[.gpsLatitudeRef] == "N")
+        #expect(gpsOnly[.gpsLongitudeRef] == "W")
+        #expect(gpsOnly[.headline] == nil)
+        #expect(SidecarIPTCOverlay.authoritativeFields(from: IPTCMetadata(rating: 3)) == [.rating: "3"])
+    }
+
+    // MARK: IIM into containers without IIM (finding 4)
+
+    private func makeIIMJPEG(at url: URL, xmpDescription: String? = nil) throws {
+        try writeJPEG(to: url)
+        var metadata = try SwiftMediaMetadata.readMetadata(from: url)
+        metadata.iptc.caption = "IIM caption"
+        metadata.iptc.credit = "IIM Agency"
+        metadata.iptc.copyright = "© IIM"
+        metadata.iptc.keywords = ["alpha", "beta"]
+        if let xmpDescription {
+            var xmp = XMPData()
+            xmp.description = xmpDescription
+            metadata.xmp = xmp
+        } else {
+            metadata.xmp = nil
+        }
+        _ = try metadata.write(to: url)
+    }
+
+    @Test("IIM-only captions, credit, copyright and keywords survive a PNG export as XMP")
+    func iimMirroredIntoPNGXMP() async throws {
+        let dir = try makeFolder("iim-png")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("agency.jpg")
+        try makeIIMJPEG(at: source)
+        let reread = try SwiftMediaMetadata.readMetadata(from: source)
+        try #require(reread.iptc.caption == "IIM caption")
+        try #require(reread.xmp?.value(namespace: XMPNamespace.dc, property: "description") == nil)
+
+        let output = dir.appendingPathComponent("agency.png")
+        try writePNG(to: output)
+        try await SwiftExifWriteEngine().copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: nil)
+
+        let xmp = try #require(try SwiftMediaMetadata.readMetadata(from: output).xmp)
+        let parsed = XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil })
+        #expect(parsed.description == "IIM caption")
+        #expect(parsed.credit == "IIM Agency")
+        #expect(parsed.copyright == "© IIM")
+        #expect(parsed.keywords == ["alpha", "beta"])
+    }
+
+    @Test("Mirroring IIM never overwrites a value the source XMP already carries")
+    func iimMirrorPreservesExistingXMP() async throws {
+        let dir = try makeFolder("iim-png-xmp")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("agency.jpg")
+        try makeIIMJPEG(at: source, xmpDescription: "XMP caption wins")
+        let output = dir.appendingPathComponent("agency.png")
+        try writePNG(to: output)
+        try await SwiftExifWriteEngine().copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: nil)
+
+        let xmp = try #require(try SwiftMediaMetadata.readMetadata(from: output).xmp)
+        let parsed = XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil })
+        #expect(parsed.description == "XMP caption wins")
+        #expect(parsed.credit == "IIM Agency")
+    }
+
+    // MARK: Partial outputs (finding 6)
+
+    @Test("A failed encode leaves no partial file under the reserved name")
+    func discardOnFailureRemovesOwnedPartialOutput() async throws {
+        let dir = try makeFolder("reservation-discard")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("photo.jpg")
+        try writeJPEG(to: source)
+
+        // Partial bytes written in place (FFmpeg `-y` truncates and writes the same inode).
+        let owner = ExportOutputReservationOwner()
+        let reserved = try owner.reserveOutput(for: source, in: dir, extension: "jxl", collisionPolicy: .appendNumber)
+        let handle = try FileHandle(forWritingTo: reserved)
+        try handle.write(contentsOf: Data(repeating: 0xAB, count: 512))
+        try handle.close()
+        await owner.discardOnFailure()
+        #expect(!FileManager.default.fileExists(atPath: reserved.path))
+
+        // A pre-existing file claimed for replacement is never deleted.
+        let existing = dir.appendingPathComponent("photo.avif")
+        try Data("user file".utf8).write(to: existing)
+        let replaceOwner = ExportOutputReservationOwner()
+        let claimed = try replaceOwner.reserveOutput(for: source, in: dir, extension: "avif", collisionPolicy: .replaceExisting)
+        #expect(claimed.lastPathComponent == existing.lastPathComponent)
+        await replaceOwner.discardOnFailure()
+        #expect(try Data(contentsOf: existing) == Data("user file".utf8))
+
+        // A path whose identity changed after reservation is somebody else's file.
+        let swapOwner = ExportOutputReservationOwner()
+        let swapped = try swapOwner.reserveOutput(for: source, in: dir, extension: "tiff", collisionPolicy: .appendNumber)
+        try FileManager.default.removeItem(at: swapped)
+        try Data("replacement".utf8).write(to: swapped)
+        await swapOwner.discardOnFailure()
+        #expect(try Data(contentsOf: swapped) == Data("replacement".utf8))
+
+        // The success path still keeps encoded pixels.
+        let keepOwner = ExportOutputReservationOwner()
+        let kept = try keepOwner.reserveOutput(for: source, in: dir, extension: "heic", collisionPolicy: .appendNumber)
+        let keepHandle = try FileHandle(forWritingTo: kept)
+        try keepHandle.write(contentsOf: Data("pixels".utf8))
+        try keepHandle.close()
+        await keepOwner.release()
+        #expect(FileManager.default.fileExists(atPath: kept.path))
+    }
+
+    // MARK: Sign cleanup and pane capture (finding 5, low)
+
+    @Test("Sign discards a metadata-incomplete render and Export/Sign capture their pane")
+    func signAndExportContentViewContracts() throws {
+        let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: workspace.appendingPathComponent("Aagedal Photo Agent/ContentView.swift"),
+                                encoding: .utf8)
+        for (startMarker, endMarker) in [
+            ("private func renderAndSignSelectedAfterMetadataFlush(", "private func copyIPTCMetadata("),
+            ("private func renderAndSaveEditedFolderAfterMetadataFlush(", "private func handleBrowserCommand("),
+        ] {
+            let start = try #require(source.range(of: startMarker))
+            let end = try #require(source.range(of: endMarker, range: start.upperBound..<source.endIndex))
+            let functionSource = source[start.lowerBound..<end.lowerBound]
+            let task = try #require(functionSource.range(of: "renderExportTask = Task {"))
+            #expect(functionSource[..<task.lowerBound].contains("let browserViewModel = browserViewModel"))
+            if startMarker.contains("Sign") {
+                #expect(functionSource.contains("(error as? ExportMetadataIncompleteError)?.renderedURL"))
+            }
+        }
+    }
+
+    // MARK: FTP as-is uploads (finding 7)
+
+    @Test("FTP detects sidecar metadata and rotation an as-is upload would otherwise lose")
+    func ftpSidecarDifferenceDetection() {
+        let embedded = IPTCMetadata(title: "Same", description: "Caption")
+        #expect(!FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded,
+            sidecar: IPTCMetadata(title: "Same", description: "Caption")))
+        #expect(FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded,
+            sidecar: IPTCMetadata(title: "Same", description: "New caption")))
+        #expect(FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded,
+            sidecar: IPTCMetadata(latitude: 59.9, longitude: 10.7)))
+        #expect(FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded, sidecar: IPTCMetadata(rating: 4)))
+        // A develop-only sidecar is not a descriptive record.
+        var crs = CameraRawSettings()
+        crs.exposure2012 = 1
+        #expect(!FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded, sidecar: IPTCMetadata(cameraRaw: crs)))
+        #expect(UploadFileInfo(isRaw: false, hasDevelop: false, hasCrop: false, hasSidecarRotation: true).hasAnyEdit)
+    }
+
+    @MainActor
+    @Test("An as-is FTP upload sends a staged copy carrying the sidecar metadata; the original is untouched")
+    func ftpAsIsUploadAppliesSidecarOverlayToCopy() async throws {
+        let dir = try makeFolder("ftp-overlay")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let photo = dir.appendingPathComponent("photo.jpg")
+        try writeJPEG(to: photo)
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.headline: "Stale embedded headline"], to: [photo])
+        let originalBytes = try Data(contentsOf: photo)
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(title: "Sidecar headline", description: "Sidecar caption"), for: photo)
+
+        let suite = "ExportSavingFTPOverlay.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let probe = FTPOverlayUploadProbe()
+        var execution = FTPUploadExecutionAccess()
+        execution.password = { _ in "fixture-only" }
+        execution.upload = { url, _, _, _ in
+            let metadata = try await SwiftExifReadService().readFullMetadata(url: url)
+            await probe.record(url: url, title: metadata.title, description: metadata.description)
+        }
+        execution.render = { _, _, _, _, _, _ in
+            Issue.record("An as-is upload must not render")
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let model = FTPViewModel(fileSystem: FTPUploadFileSystemBoundary(temporaryRoot: dir),
+                                 defaults: defaults, execution: execution)
+        let connection = FTPConnection(name: "Isolated fixture", host: "fixture.invalid", port: 21, useTLS: true)
+        let started = model.uploadFiles([photo], renderURLs: [], sidecarOverlayURLs: [photo], to: connection,
+            readService: SwiftExifReadService(), writeEngine: engine, inMemoryCameraRaw: { _ in nil })
+        #expect(started)
+        await model.currentUploadCompletion()()
+
+        let uploads = await probe.uploads
+        let upload = try #require(uploads.first)
+        #expect(uploads.count == 1)
+        #expect(upload.url != photo)
+        #expect(upload.url.lastPathComponent == "photo.jpg")
+        #expect(upload.title == "Sidecar headline")
+        #expect(upload.description == "Sidecar caption")
+        #expect(try Data(contentsOf: photo) == originalBytes)
+        #expect(model.errorMessages.isEmpty)
+    }
+}
+
+private actor FTPOverlayUploadProbe {
+    struct Upload: Sendable { let url: URL; let title: String?; let description: String? }
+    private(set) var uploads: [Upload] = []
+    func record(url: URL, title: String?, description: String?) {
+        uploads.append(Upload(url: url, title: title, description: description))
+    }
+}

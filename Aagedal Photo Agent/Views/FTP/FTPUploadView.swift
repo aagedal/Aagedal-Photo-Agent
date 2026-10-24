@@ -6,8 +6,12 @@ struct UploadFileInfo: Equatable {
     var isRaw: Bool
     var hasDevelop: Bool
     var hasCrop: Bool
-    /// Any visible edit (develop adjustment or effective crop) that warrants a JPEG render.
-    var hasAnyEdit: Bool { hasDevelop || hasCrop }
+    /// The `.xmp` sidecar rotates the photo (its orientation differs from the embedded one).
+    /// The sidecar doesn't travel with an as-is upload, so the original would arrive sideways.
+    var hasSidecarRotation: Bool = false
+    /// Any visible edit (develop adjustment, effective crop or sidecar-only rotation) that
+    /// warrants a JPEG render.
+    var hasAnyEdit: Bool { hasDevelop || hasCrop || hasSidecarRotation }
 }
 
 /// Per-file metadata-requirement evaluation for the upload list: which non-optional fields are
@@ -71,6 +75,9 @@ struct FTPUploadView: View {
     /// Files that will upload as-is and whose `.xmp` sidecar holds non-optional metadata the
     /// embedded file is missing — the row offers a one-click sync from sidecar into the file.
     @State private var sidecarMergeableURLs: Set<URL> = []
+    /// As-is files whose sidecar descriptive metadata differs from the embedded copy; they
+    /// upload as a staged copy with the export overlay applied (see FTPViewModel.uploadFiles).
+    @State private var sidecarOverlayURLs: Set<URL> = []
     @State private var pendingInsecureUploadConnectionID: UUID?
     @State private var pendingInsecureUploadRenderURLs: Set<URL> = []
     @State private var inspectionRevision = UUID()
@@ -448,6 +455,7 @@ struct FTPUploadView: View {
         fileInfo = [:]
         metadataStatus = [:]
         sidecarMergeableURLs = []
+        sidecarOverlayURLs = []
 
         let urls = requestKey.files
         // Per-file read failures only drop that file from the map (evaluated as missing metadata).
@@ -500,9 +508,16 @@ struct FTPUploadView: View {
               sidecarSnapshot.requestID == requestID,
               sidecarSnapshot.requestedImageURLs == urls else { return }
         let sidecars = sidecarSnapshot.metadataByImageURL
+        for url in urls {
+            if let sidecarOrientation = sidecars[url]?.exifOrientation,
+               sidecarOrientation != (metadataMap[url]?.exifOrientation ?? 1) {
+                info[url]?.hasSidecarRotation = true
+            }
+        }
         var status: [URL: UploadMetadataStatus] = [:]
         status.reserveCapacity(urls.count)
         var mergeable: Set<URL> = []
+        var overlay: Set<URL> = []
         for url in urls {
             let embedded = metadataMap[url]
             let sidecar = sidecars[url]
@@ -525,6 +540,10 @@ struct FTPUploadView: View {
             if !renders, let sidecar, Self.sidecarFillsMissing(embedded: embedded, sidecar: sidecar, levels: levels, face: faceInfo[url]) {
                 mergeable.insert(url)
             }
+            // An as-is upload would otherwise carry stale embedded metadata.
+            if !renders, let sidecar, Self.sidecarDiffersFromEmbedded(embedded: embedded, sidecar: sidecar) {
+                overlay.insert(url)
+            }
         }
         guard !Task.isCancelled,
               inspectionRequestID == requestID,
@@ -532,7 +551,22 @@ struct FTPUploadView: View {
         fileInfo = info
         metadataStatus = status
         sidecarMergeableURLs = mergeable
+        sidecarOverlayURLs = overlay
         isInspectingFiles = false
+    }
+
+    /// True when applying the sidecar overlay (descriptive record, rating, label, GPS) to the
+    /// uploaded copy would change what the server receives.
+    nonisolated static func sidecarDiffersFromEmbedded(embedded: IPTCMetadata?, sidecar: IPTCMetadata) -> Bool {
+        let base = embedded ?? IPTCMetadata()
+        if sidecar.hasDescriptiveContent, SidecarReconciliation.descriptiveFieldsDiffer(base, sidecar) { return true }
+        if let rating = sidecar.rating, rating != base.rating { return true }
+        if let label = sidecar.label, label != (base.label ?? "") { return true }
+        if let lat = sidecar.latitude, let lon = sidecar.longitude {
+            guard let baseLat = base.latitude, let baseLon = base.longitude else { return true }
+            if abs(lat - baseLat) > 0.000001 || abs(lon - baseLon) > 0.000001 { return true }
+        }
+        return false
     }
 
     /// True when the sidecar carries a value for a non-optional field that the embedded
@@ -987,6 +1021,7 @@ struct FTPUploadView: View {
         guard viewModel.uploadFiles(
             files,
             renderURLs: renderURLs,
+            sidecarOverlayURLs: sidecarOverlayURLs,
             to: connection,
             readService: readService,
             writeEngine: writeEngine,
@@ -1216,6 +1251,12 @@ private struct UploadFileRow: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.blue)
                     .help("Cropped")
+            }
+            if info?.hasSidecarRotation == true {
+                Image(systemName: "rotate.right")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.blue)
+                    .help("Rotated in the XMP sidecar")
             }
             if willRender {
                 Image(systemName: "arrow.triangle.2.circlepath")

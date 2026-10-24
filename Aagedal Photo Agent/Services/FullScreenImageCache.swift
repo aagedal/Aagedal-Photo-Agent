@@ -54,7 +54,7 @@ nonisolated struct FullScreenImagePresentationFactsAccess: Sendable {
             }
         }
         return Snapshot(
-            sidecarCameraRaw: sidecarMetadata?.cameraRaw,
+            sidecarCameraRaw: PhotoSidecarOwnership.stemSidecarCameraRaw(sidecarMetadata?.cameraRaw, for: imageURL),
             sidecarOrientation: MetadataSidecarService().loadSidecar(for: imageURL, in: imageURL.deletingLastPathComponent())?
                 .orientationDraft?.targetOrientation ?? sidecarMetadata?.exifOrientation,
             fileOrientation: fileOrientation,
@@ -126,7 +126,7 @@ actor FullScreenPrefetchPreparationService {
 
     init(read: @escaping Read = { url, suppliedSettings, requestedOrientation, isEdited in
         let settings = suppliedSettings
-            ?? (isEdited ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw : nil)
+            ?? (isEdited ? XMPSidecarService().loadDevelopSettings(for: url) : nil)
         let orientation = FullScreenImageCache.displayOrientation(for: url, fallback: requestedOrientation ?? 1)
         return Snapshot(settings: settings,
                         cacheOrientation: requestedOrientation == nil ? nil : orientation,

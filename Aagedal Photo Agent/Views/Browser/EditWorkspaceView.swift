@@ -2650,7 +2650,7 @@ struct EditWorkspaceView: View {
                     // The first catalog write is durable. Reflect that recovery snapshot locally
                     // even when a later XMP/read-back/finalization boundary fails.
                     developVersionCatalog = preparation.catalog
-                    let actualPrimary = XMPSidecarService().loadSidecar(for: imageURL)?.cameraRaw
+                    let actualPrimary = XMPSidecarService().loadDevelopSettings(for: imageURL)
                     primaryDevelopSettings = actualPrimary
                 }
                 developVersionPersistenceState = .failed(error.localizedDescription)
@@ -7977,7 +7977,13 @@ struct EditWorkspaceView: View {
         _ urls: [URL],
         sidecarService: XMPSidecarService
     ) async -> [URL] {
-        urls.filter { SupportedImageFormats.isRaw(url: $0) || sidecarService.sidecarExists(for: $0) }
+        // The JPEG of a RAW+JPEG pair keeps its develop embedded; the shared stem sidecar's crs
+        // belongs to the RAW and must not receive the JPEG's paste.
+        urls.filter {
+            SupportedImageFormats.isRaw(url: $0)
+                || (sidecarService.sidecarExists(for: $0)
+                    && !PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: $0))
+        }
     }
 
     /// Groups files by stored pixel aspect (a header read per file) for ACR crop encoding.
