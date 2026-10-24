@@ -25,15 +25,65 @@ nonisolated struct RawEmbeddedWriteRefusedError: LocalizedError, Equatable {
 /// The container writer would drop a metadata segment (e.g. a JPEG XMP APP1 packet above the
 /// 64 KB segment limit; ExtendedXMP isn't supported). Nothing was published.
 nonisolated struct EmbeddedMetadataLossRefusal: LocalizedError, Sendable {
+    /// What the refused write was doing; it decides what the user can do about it.
+    enum Context: Sendable { case descriptive, develop, export }
+
     let imageURL: URL
     let detail: String
+    var context: Context = .descriptive
+    /// The staged result read back differently from what was written (not a size problem).
+    var isRoundTripMismatch = false
+
+    /// "XMP", "IPTC" or "Exif", parsed from the writer's "Dropped oversized <kind> segment" warning.
+    var segmentKind: String {
+        let prefix = "Dropped oversized "
+        guard detail.hasPrefix(prefix) else { return "metadata" }
+        return String(detail.dropFirst(prefix.count).prefix { $0 != " " })
+    }
+
     var errorDescription: String? {
-        "\(imageURL.lastPathComponent) was not changed: its metadata would not fit the file's metadata block "
-            + "(\(detail)). Simplify large masks or brush strokes and try again."
+        let name = imageURL.lastPathComponent
+        if isRoundTripMismatch {
+            return "\(name) was not changed: its metadata did not read back exactly as written, so the save was refused and nothing was lost."
+        }
+        switch context {
+        case .develop:
+            return "\(name) was not changed: its Develop settings would make the file's \(segmentKind) block larger than "
+                + "a JPEG metadata segment can hold (64 KB). Simplify large masks or brush strokes and try again."
+        case .descriptive:
+            return "\(name) was not changed: the file's existing \(segmentKind) metadata is too large to fit in a JPEG "
+                + "metadata segment, so the save was refused and nothing was lost. Save its metadata to an XMP sidecar "
+                + "(Professional or Custom preset) or use another file format."
+        case .export:
+            return "The exported copy of \(name) has no copied metadata: the source's \(segmentKind) metadata is too large "
+                + "for a JPEG metadata segment. Export to another format (such as TIFF or JPEG XL) to keep it."
+        }
+    }
+
+    func with(context: Context) -> EmbeddedMetadataLossRefusal {
+        var copy = self
+        copy.context = context
+        return copy
     }
 
     nonisolated static func isLossWarning(_ warning: String) -> Bool {
         warning.hasPrefix("Dropped oversized")
+    }
+}
+
+/// A multi-file write that refused some files (their metadata wouldn't fit) and wrote the rest.
+nonisolated struct EmbeddedMetadataBatchRefusal: LocalizedError, Sendable {
+    let refusals: [EmbeddedMetadataLossRefusal]
+    var refusedURLs: [URL] { refusals.map(\.imageURL) }
+
+    var errorDescription: String? {
+        guard refusals.count > 1, let first = refusals.first else { return refusals.first?.errorDescription }
+        let names = refusals.prefix(5).map(\.imageURL.lastPathComponent).joined(separator: ", ")
+            + (refusals.count > 5 ? " and \(refusals.count - 5) more" : "")
+        let advice = first.context == .develop
+            ? "Simplify large masks or brush strokes and try again."
+            : "Their existing metadata is too large for a JPEG metadata segment; save their metadata to an XMP sidecar (Professional or Custom preset) or use another file format."
+        return "\(refusals.count) files were not changed and nothing was lost (\(names)); the other files were saved. " + advice
     }
 }
 
@@ -92,11 +142,43 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         guard rawURLs.isEmpty else { throw RawEmbeddedWriteRefusedError(urls: rawURLs) }
         guard !urls.isEmpty, !fields.isEmpty || !structuredData.isEmpty else { return }
 
+        try await forEachFileContinuingPastLoss(urls) { url in
+            try self.writeFieldsToFile(fields, structuredData: structuredData, url: url)
+        }
+    }
+
+    /// Runs one locked write per file. A file whose metadata wouldn't fit is refused (and left
+    /// untouched) without stopping the rest; the refusals are thrown together at the end as an
+    /// `EmbeddedMetadataBatchRefusal`, so callers can finish the files that were written.
+    private func forEachFileContinuingPastLoss(
+        _ urls: [URL], _ body: @escaping @Sendable (URL) throws -> Void
+    ) async throws {
+        var refusals: [EmbeddedMetadataLossRefusal] = []
         for url in urls {
             try Task.checkCancellation()
-            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-                try self.writeFieldsToFile(fields, structuredData: structuredData, url: url)
+            do {
+                try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) { try body(url) }
+            } catch let refusal as EmbeddedMetadataLossRefusal {
+                refusals.append(refusal)
             }
+        }
+        if !refusals.isEmpty { throw EmbeddedMetadataBatchRefusal(refusals: refusals) }
+    }
+
+    /// The one guarded publication for direct (non-staged) writes. Only the JPEG writer can drop
+    /// a segment (`dropOversizedMetadataSegments`), so only JPEG pays for the pre-serialization.
+    @discardableResult
+    private func guardedWrite(_ metadata: ImageMetadata, to url: URL,
+                              context: EmbeddedMetadataLossRefusal.Context) throws -> [String] {
+        try Self.preflightMetadataLoss(metadata, url: url, context: context)
+        return try metadata.write(to: url)
+    }
+
+    nonisolated static func preflightMetadataLoss(_ metadata: ImageMetadata, url: URL,
+                                                  context: EmbeddedMetadataLossRefusal.Context) throws {
+        guard metadata.format == .jpeg else { return }
+        if let loss = try metadata.writeToDataWithWarnings().warnings.first(where: EmbeddedMetadataLossRefusal.isLossWarning) {
+            throw EmbeddedMetadataLossRefusal(imageURL: url, detail: loss, context: context)
         }
     }
 
@@ -121,8 +203,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 // Content Credentials is never embedded into (the editor's C2PA flag can still
                 // be unset before the batch metadata read). Simple accepts it, like every
                 // other Simple write.
-                if request.embedsDevelopOnly, !request.allowsCredentialedEmbed,
-                   SwiftExifReadService.hasContentCredentials(try readMetadata(from: request.imageURL)) {
+                let developSource = request.embedsDevelopOnly ? try readMetadata(from: request.imageURL) : nil
+                if let developSource, !request.allowsCredentialedEmbed,
+                   SwiftExifReadService.hasContentCredentials(developSource) {
                     throw PairedJPEGContentCredentialsRefusal(imageURL: request.imageURL)
                 }
                 try await validatePreparedIntent()
@@ -138,7 +221,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     // Lightroom settings the app doesn't model (Texture, lens profile, grain...)
                     // survive. A Reset clears the managed keys, exactly as the sidecar path does.
                     try self.writeDevelopBlock(request.edited.cameraRaw, to: request.imageURL,
-                        beforePublication: beforePublication)
+                        source: developSource, beforePublication: beforePublication)
                 } else {
                     var fields = request.fields
                     if request.replaceDevelop, let settings = request.edited.cameraRaw {
@@ -146,7 +229,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     }
                     try self.writeFieldsToFile(fields, structuredData: request.structured,
                         url: request.imageURL, completeEditorial: request.edited, verifyPrimaryTechnical: true,
-                        beforePublication: beforePublication)
+                        lossContext: .develop, beforePublication: beforePublication)
                 }
                 let written = try await SourceImageRevision.capture(at: request.imageURL)
                 revision = written
@@ -227,6 +310,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 let intended = value(metadata)
                 let changed = before != intended || orientationCarriersNeedRepair
                 if changed {
+                    // A refusal here happens before the file is touched (mayHaveWritten false).
+                    try Self.preflightMetadataLoss(metadata, url: url, context: .descriptive)
                     attemptedWrite = true
                     try metadata.write(to: url)
                 }
@@ -282,8 +367,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 }
                 return PendingMetadataPhysicalReceipt(metadata: metadata, sourceRevision: revision)
             } catch {
+                // A metadata-loss refusal is always raised before publication.
                 throw MetadataFieldMutationPhysicalError(message: error.localizedDescription,
-                    mayHaveWritten: attempted, wasCancelled: error is CancellationError)
+                    mayHaveWritten: attempted && !(error is EmbeddedMetadataLossRefusal),
+                    wasCancelled: error is CancellationError)
             }
         }
     }
@@ -302,13 +389,14 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             try Task.checkCancellation()
             let outcome: Int = try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
                 // Under the photo's lock: the authoritative credential check for this revision.
-                if !allowsCredentialedEmbed,
-                   SwiftExifReadService.hasContentCredentials(try readMetadata(from: url)) {
+                let current = try readMetadata(from: url)
+                if !allowsCredentialedEmbed, SwiftExifReadService.hasContentCredentials(current) {
                     return 1
                 }
                 do {
                     try self.writeFieldsToFile(fields, structuredData: structuredData, url: url,
-                        synchronizesIPTC: false, verifyPrimaryTechnical: true, beforePublication: {})
+                        source: current, synchronizesIPTC: false, verifyPrimaryTechnical: true,
+                        lossContext: .develop, beforePublication: {})
                     return 0
                 } catch is EmbeddedMetadataLossRefusal {
                     return 2
@@ -325,8 +413,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
     /// metadata and unmodelled crs fields alike) is left exactly as it was. Published through
     /// the guarded staging path and verified by an embedded read-back.
     private func writeDevelopBlock(_ settings: CameraRawSettings?, to url: URL,
+                                   source: ImageMetadata? = nil,
                                    beforePublication: () throws -> Void) throws {
-        var metadata = try readMetadata(from: url)
+        var metadata = try source ?? readMetadata(from: url)
         var xmp = metadata.xmp ?? XMPData()
         let aspect = abs(settings?.crop?.angle ?? 0) > 0.0001 ? ImagePixelAspect.aspect(at: url) : nil
         XMPDataBuilder.applyCameraRaw(settings, imageAspect: aspect, into: &xmp)
@@ -337,11 +426,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             xmp.setValue(.simple("234881024"), namespace: crsNamespace, property: "CompatibleVersion")
         }
         metadata.xmp = xmp
-        try publishPrimaryMetadata(metadata, to: url, verifiesTechnical: true, beforePublication: beforePublication)
-        let actual = try readMetadata(from: url)
-        guard Self.technicalXMP(actual.xmp) == Self.technicalXMP(metadata.xmp) else {
-            throw PrimaryDevelopWriteError(message: "The image's written Develop settings could not be verified. The captured edit remains retained.")
-        }
+        // The staged file is verified (crs, app-private develop, orientation) before it replaces
+        // the original, and that exact file is what gets installed: no second read-back needed.
+        try publishPrimaryMetadata(metadata, to: url, verifiesTechnical: true, context: .develop,
+            beforePublication: beforePublication)
     }
 
     /// Camera Raw, app-private develop and orientation properties: what a develop write owns.
@@ -374,7 +462,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 try self.writeFieldsToFile(
                     fields,
                     structuredData: structuredData,
-                    url: url
+                    url: url,
+                    lossContext: .export
                 )
             }
         }
@@ -391,9 +480,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         let hasRemove = remove.values.contains { !$0.isEmpty }
         guard hasAdd || hasRemove else { return }
 
-        for url in urls {
-            try Task.checkCancellation()
-            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+        try await forEachFileContinuingPastLoss(urls) { url in
                 var metadata = try readMetadata(from: url)
 
                 for (key, valuesToRemove) in remove {
@@ -407,8 +494,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 }
 
                 metadata.synchronizeIPTCToXMP()
-                try metadata.write(to: url)
-            }
+                try self.guardedWrite(metadata, to: url, context: .descriptive)
         }
     }
 
@@ -418,9 +504,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
 
         let value = rating == .none ? "" : String(rating.rawValue)
 
-        for url in urls {
-            try Task.checkCancellation()
-            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+        try await forEachFileContinuingPastLoss(urls) { url in
                 var metadata = try readMetadata(from: url)
                 if value.isEmpty {
                     metadata.xmp?.removeValue(namespace: XMPNamespace.xmp, property: "Rating")
@@ -428,8 +512,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     if metadata.xmp == nil { metadata.xmp = XMPData() }
                     metadata.xmp?.setValue(.simple(value), namespace: XMPNamespace.xmp, property: "Rating")
                 }
-                try metadata.write(to: url)
-            }
+                try self.guardedWrite(metadata, to: url, context: .descriptive)
         }
     }
 
@@ -439,9 +522,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
 
         let value = label.xmpLabelValue ?? ""
 
-        for url in urls {
-            try Task.checkCancellation()
-            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+        try await forEachFileContinuingPastLoss(urls) { url in
                 var metadata = try readMetadata(from: url)
                 if value.isEmpty {
                     metadata.xmp?.removeValue(namespace: XMPNamespace.xmp, property: "Label")
@@ -449,8 +530,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     if metadata.xmp == nil { metadata.xmp = XMPData() }
                     metadata.xmp?.setValue(.simple(value), namespace: XMPNamespace.xmp, property: "Label")
                 }
-                try metadata.write(to: url)
-            }
+                try self.guardedWrite(metadata, to: url, context: .descriptive)
         }
     }
 
@@ -458,13 +538,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         let urls = embeddableURLs(urls)
         guard !urls.isEmpty else { return }
 
-        for url in urls {
-            try Task.checkCancellation()
-            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+        try await forEachFileContinuingPastLoss(urls) { url in
                 var metadata = try readMetadata(from: url)
                 metadata.setOrientation(UInt16(clamping: orientation))
-                try metadata.write(to: url)
-            }
+                try self.guardedWrite(metadata, to: url, context: .descriptive)
         }
     }
 
@@ -472,14 +549,11 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         let urls = embeddableURLs(urls)
         guard !urls.isEmpty else { return }
 
-        for url in urls {
-            try Task.checkCancellation()
-            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+        try await forEachFileContinuingPastLoss(urls) { url in
                 var metadata = try readMetadata(from: url)
                 metadata.iptc = IPTCData()
                 metadata.xmp = nil
-                try metadata.write(to: url)
-            }
+                try self.guardedWrite(metadata, to: url, context: .descriptive)
         }
     }
 
@@ -580,7 +654,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             }
 
             do {
-                let warnings = try destMetadata.write(to: destination)
+                // A segment the JPEG can't hold is a refused copy for this file (reported as an
+                // export problem by the caller), never a silently degraded file.
+                let warnings = try self.guardedWrite(destMetadata, to: destination, context: .export)
                 for warning in warnings {
                     swiftExifLog.warning(
                         "copyMetadataToRenderedFile: \(destination.lastPathComponent, privacy: .private(mask: .hash)): \(warning, privacy: .public)"
@@ -665,7 +741,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
     /// Publication uses the same Foundation replacement and metadata preservation as the library.
     /// This remains path-based; it does not grant descriptor-anchored root authority.
     private func publishPrimaryMetadata(_ metadata: ImageMetadata, to url: URL,
-        verifiesTechnical: Bool = false, beforePublication: () throws -> Void) throws {
+        verifiesTechnical: Bool = false, context: EmbeddedMetadataLossRefusal.Context = .descriptive,
+        beforePublication: () throws -> Void) throws {
         let manager = FileManager.default
         let values = try url.resourceValues(forKeys: [.isHiddenKey, .creationDateKey])
         let isHidden = values.isHidden ?? url.lastPathComponent.hasPrefix(".")
@@ -684,13 +761,18 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         // XMP packet or develop block doesn't match what was intended, is refused here, before
         // the original is touched.
         if let loss = warnings.first(where: EmbeddedMetadataLossRefusal.isLossWarning) {
-            throw EmbeddedMetadataLossRefusal(imageURL: url, detail: loss)
+            throw EmbeddedMetadataLossRefusal(imageURL: url, detail: loss, context: context)
         }
-        if metadata.xmp != nil {
+        if metadata.xmp != nil || verifiesTechnical {
             let staged = try readMetadata(from: stagedURL)
-            guard staged.xmp != nil,
-                  !verifiesTechnical || Self.technicalXMP(staged.xmp) == Self.technicalXMP(metadata.xmp) else {
-                throw EmbeddedMetadataLossRefusal(imageURL: url, detail: "the XMP packet did not survive serialization")
+            if metadata.xmp != nil, staged.xmp == nil {
+                throw EmbeddedMetadataLossRefusal(imageURL: url, detail: "Dropped oversized XMP segment",
+                    context: context)
+            }
+            if verifiesTechnical, Self.technicalXMP(staged.xmp) != Self.technicalXMP(metadata.xmp)
+                || staged.exif?.orientation != metadata.exif?.orientation {
+                throw EmbeddedMetadataLossRefusal(imageURL: url, detail: "staged read-back differs",
+                    context: context, isRoundTripMismatch: true)
             }
         }
         try beforePublication()
@@ -708,12 +790,14 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         _ fields: [MetadataFieldKey: String],
         structuredData: StructuredWriteData,
         url: URL,
+        source: ImageMetadata? = nil,
         completeEditorial: IPTCMetadata? = nil,
         synchronizesIPTC: Bool = true,
         verifyPrimaryTechnical: Bool = false,
+        lossContext: EmbeddedMetadataLossRefusal.Context = .descriptive,
         beforePublication: (() throws -> Void)? = nil
     ) throws {
-        var metadata = try readMetadata(from: url)
+        var metadata = try source ?? readMetadata(from: url)
 
         // Adobe-faithful develop write: ACR replaces the file's whole crs block
         // with its live state on save, dropping settings it isn't carrying —
@@ -832,16 +916,13 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         }
 
         if let beforePublication {
+            // The staged file is verified before it replaces the original (see
+            // publishPrimaryMetadata), so the installed file needs no second read-back.
             try publishPrimaryMetadata(metadata, to: url, verifiesTechnical: verifyPrimaryTechnical,
-                beforePublication: beforePublication)
-        } else {
-            // Serialize first: a segment the container can't hold would otherwise be silently
-            // dropped from the published file.
-            if let loss = try metadata.writeToDataWithWarnings().warnings.first(where: EmbeddedMetadataLossRefusal.isLossWarning) {
-                throw EmbeddedMetadataLossRefusal(imageURL: url, detail: loss)
-            }
-            try metadata.write(to: url)
+                context: lossContext, beforePublication: beforePublication)
+            return
         }
+        try guardedWrite(metadata, to: url, context: lossContext)
         if verifyPrimaryTechnical {
             let actual = try readMetadata(from: url)
             guard Self.technicalXMP(actual.xmp) == Self.technicalXMP(metadata.xmp), actual.exif?.orientation == metadata.exif?.orientation else {

@@ -5884,3 +5884,161 @@ private actor FTPOverlayUploadProbe {
         uploads.append(Upload(url: url, title: title, description: description))
     }
 }
+
+/// A JPEG whose XMP packet is as large as the JPEG writer still accepts: any further metadata
+/// (a rating, a caption) makes the XMP APP1 segment exceed 65,533 bytes.
+enum NearLimitJPEGFixture {
+    static func make(at url: URL) throws {
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let data = rep.representation(using: .jpeg, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+        let base = try SwiftMediaMetadata.readMetadata(from: url)
+        func candidate(_ count: Int) -> ImageMetadata {
+            var metadata = base
+            var xmp = metadata.xmp ?? XMPData()
+            xmp.setValue(.simple(String(repeating: "a", count: count)), namespace: XMPNamespace.xmp, property: "Nickname")
+            metadata.xmp = xmp
+            return metadata
+        }
+        var low = 1_000, high = 70_000
+        while low < high {
+            let mid = (low + high + 1) / 2
+            let warnings = try candidate(mid).writeToDataWithWarnings().warnings
+            if warnings.contains(where: EmbeddedMetadataLossRefusal.isLossWarning) { high = mid - 1 } else { low = mid }
+        }
+        _ = try candidate(low).write(to: url)
+    }
+}
+
+@Suite("Embedded metadata loss refusals")
+struct EmbeddedMetadataLossRefusalTests {
+    private func makeFolder() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-loss-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func plainJPEG(at url: URL) throws {
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let data = rep.representation(using: .jpeg, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+    }
+
+    @Test("Refusal messages follow the segment kind and what the write was doing")
+    func messagesDependOnContext() {
+        let url = URL(fileURLWithPath: "/tmp/photo.jpg")
+        let drop = "Dropped oversized IPTC segment: 70000 bytes exceeds JPEG's 65533-byte per-segment limit."
+        let descriptive = EmbeddedMetadataLossRefusal(imageURL: url, detail: drop).localizedDescription
+        #expect(descriptive.contains("IPTC"))
+        #expect(descriptive.contains("XMP sidecar"))
+        #expect(descriptive.contains("nothing was lost"))
+        #expect(!descriptive.contains("brush"))
+        let develop = EmbeddedMetadataLossRefusal(imageURL: url, detail: drop, context: .develop).localizedDescription
+        #expect(develop.contains("brush strokes"))
+        let mismatch = EmbeddedMetadataLossRefusal(imageURL: url, detail: "x", isRoundTripMismatch: true).localizedDescription
+        #expect(mismatch.contains("did not read back"))
+        #expect(!mismatch.contains("too large"))
+        let export = EmbeddedMetadataLossRefusal(imageURL: url, detail: drop, context: .export).localizedDescription
+        #expect(export.contains("exported copy"))
+    }
+
+    @Test("Rating, label and list writes refuse a near-limit file without touching it and continue the batch")
+    func directWritersRefuseAndContinue() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let first = dir.appendingPathComponent("a.jpg"), full = dir.appendingPathComponent("b.jpg"),
+            last = dir.appendingPathComponent("c.jpg")
+        try plainJPEG(at: first); try NearLimitJPEGFixture.make(at: full); try plainJPEG(at: last)
+        let fullBytes = try Data(contentsOf: full)
+        let engine = SwiftExifWriteEngine()
+
+        do {
+            try await engine.writeRating(.three, to: [first, full, last])
+            Issue.record("The near-limit file must be refused")
+        } catch let batch as EmbeddedMetadataBatchRefusal {
+            #expect(batch.refusedURLs == [full])
+        }
+        #expect(try Data(contentsOf: full) == fullBytes)
+        #expect(try SwiftMediaMetadata.readMetadata(from: first).xmp?.rating == 3)
+        #expect(try SwiftMediaMetadata.readMetadata(from: last).xmp?.rating == 3)
+
+        await #expect(throws: EmbeddedMetadataBatchRefusal.self) {
+            try await engine.addRemoveListValues(add: [.subject: ["kw"]], remove: [:], to: [first, full, last])
+        }
+        #expect(try Data(contentsOf: full) == fullBytes)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: last).keywords == ["kw"])
+        await #expect(throws: EmbeddedMetadataBatchRefusal.self) {
+            try await engine.writeLabel(.red, to: [full])
+        }
+        #expect(try Data(contentsOf: full) == fullBytes)
+    }
+
+    @Test("A refused pending write reports that nothing may have been written")
+    func pendingWriteRefusalIsNotMaybeWritten() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let full = dir.appendingPathComponent("full.jpg")
+        try NearLimitJPEGFixture.make(at: full)
+        let before = try Data(contentsOf: full)
+        do {
+            _ = try await SwiftExifWriteEngine().writePendingMetadata(
+                IPTCMetadata(title: "Headline", description: String(repeating: "c", count: 500)), to: full,
+                validatePreparedIntent: {})
+            Issue.record("The oversized pending write must be refused")
+        } catch let error as MetadataFieldMutationPhysicalError {
+            #expect(error.mayHaveWritten == false)
+            #expect(error.localizedDescription.contains("XMP sidecar"))
+        }
+        #expect(try Data(contentsOf: full) == before)
+    }
+
+    @Test("A field mutation on a near-limit file is refused before the file is touched")
+    func fieldMutationRefusal() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let full = dir.appendingPathComponent("full.jpg")
+        try NearLimitJPEGFixture.make(at: full)
+        let before = try Data(contentsOf: full)
+        do {
+            _ = try await SwiftExifWriteEngine().writeFieldMutation(.rating(4), to: full, validatePreparedIntent: {})
+            Issue.record("The oversized mutation must be refused")
+        } catch let error as MetadataFieldMutationPhysicalError {
+            #expect(error.mayHaveWritten == false)
+        }
+        #expect(try Data(contentsOf: full) == before)
+    }
+
+    @Test("The export copier refuses a metadata copy the JPEG can't hold instead of dropping it silently")
+    func exportCopierRefusesOversizedCopy() async throws {
+        let dir = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("source.jpg")
+        try NearLimitJPEGFixture.make(at: source)
+        // A large crs block pushes the copied XMP over the limit.
+        let output = dir.appendingPathComponent("render.jpg")
+        try plainJPEG(at: output)
+        var baked = CameraRawSettings()
+        baked.exposure2012 = 0.5
+        baked.localAdjustments = [MaskAdjustment(name: "Brush",
+            brush: BrushMaskGeometry(strokes: [BrushStroke(dabs: (0..<400).map {
+                BrushDab(x: Double($0) / 400, y: 0.5, flow: 0.7, hardness: 0.4) }, radius: 0.02, density: 1, erase: false)]),
+            exposure: 0.2)]
+        do {
+            try await SwiftExifWriteEngine().copyMetadataToRenderedFile(from: source, to: output, bakedCameraRaw: baked)
+            Issue.record("The oversized copy must be refused")
+        } catch let refusal as EmbeddedMetadataLossRefusal {
+            #expect(refusal.context == .export)
+        }
+        // The rendered file itself is intact and readable.
+        #expect(try SwiftMediaMetadata.readMetadata(from: output).format == .jpeg)
+    }
+}

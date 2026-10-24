@@ -422,6 +422,36 @@ struct MetadataBatchSelectionTests {
         }
     }
 
+    @Test("A batch save writes the files that fit, refuses an oversized one and keeps its edit as a pending draft")
+    func batchContinuesPastOversizedFile() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = try makeJPEG(in: folder, name: "a.jpg")
+        let full = folder.appendingPathComponent("b.jpg")
+        try NearLimitJPEGFixture.make(at: full)
+        let last = try makeJPEG(in: folder, name: "c.jpg")
+        let fullBytes = try Data(contentsOf: full)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: [first, full, last].map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+
+        model.editingMetadata.description = "Batch caption"
+        model.markChanged()
+        model.writeMetadata()
+        let deadline = ContinuousClock.now + .seconds(10)
+        while model.isSaving, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!model.isSaving)
+
+        #expect(try await SwiftExifReadService().readFullMetadata(url: first).description == "Batch caption")
+        #expect(try await SwiftExifReadService().readFullMetadata(url: last).description == "Batch caption")
+        #expect(try Data(contentsOf: full) == fullBytes)
+        let draft = try #require(MetadataSidecarService().loadSidecar(for: full, in: folder))
+        #expect(draft.pendingChanges)
+        #expect(draft.metadata.description == "Batch caption")
+        #expect(model.saveError?.contains("b.jpg") == true)
+        #expect(MetadataSidecarService().loadSidecar(for: first, in: folder)?.pendingChanges != true)
+    }
+
     @Test("batch commit through the Browser write path finishes saving")
     func batchCommitClearsSaving() async throws {
         let folder = try makeFolder()

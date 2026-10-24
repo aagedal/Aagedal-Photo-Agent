@@ -122,10 +122,38 @@ nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
     static let shared = PhotoRawStemIndex()
 
     private struct Entry {
-        let modification: timespec
+        var modification: timespec
         let listedAt: Date
         let settled: Bool
         let rawByStem: [String: URL]
+        /// The only folder changes since this listing were this process's own sidecar writes.
+        var rolledForwardByOwnWrite = false
+    }
+
+    nonisolated static func folderKey(_ folder: URL) -> String {
+        folder.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    nonisolated static func folderModification(_ folder: URL) -> timespec? {
+        var status = stat()
+        guard Darwin.lstat(folderKey(folder), &status) == 0 else { return nil }
+        return status.st_mtimespec
+    }
+
+    /// After this process wrote a sidecar into `folder`: if the cached listing was current just
+    /// before that write, it is still correct (a sidecar is never a RAW), so carry it forward to
+    /// the folder's new modification time instead of forcing a relist.
+    func noteOwnWrite(in folder: URL, previousModification: timespec?) {
+        guard let previousModification, let current = Self.folderModification(folder) else { return }
+        let key = Self.folderKey(folder)
+        lock.withLock {
+            guard var entry = entries[key],
+                  entry.modification.tv_sec == previousModification.tv_sec,
+                  entry.modification.tv_nsec == previousModification.tv_nsec else { return }
+            entry.modification = current
+            entry.rolledForwardByOwnWrite = true
+            entries[key] = entry
+        }
     }
 
     private let lock = NSLock()
@@ -140,7 +168,7 @@ nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
     }
 
     func rawFile(forStem stem: String, in folder: URL, allowsUnsettledReuse: Bool = true) -> URL? {
-        let key = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        let key = Self.folderKey(folder)
         var status = stat()
         guard Darwin.lstat(key, &status) == 0 else { return nil }
         let modification = status.st_mtimespec
@@ -148,7 +176,7 @@ nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
         if let cached = lock.withLock({ entries[key] }),
            cached.modification.tv_sec == modification.tv_sec,
            cached.modification.tv_nsec == modification.tv_nsec,
-           cached.settled
+           cached.settled || cached.rolledForwardByOwnWrite
             || (allowsUnsettledReuse && currentTime.timeIntervalSince(cached.listedAt) <= freshReuseInterval) {
             return cached.rawByStem[stem.lowercased()]
         }

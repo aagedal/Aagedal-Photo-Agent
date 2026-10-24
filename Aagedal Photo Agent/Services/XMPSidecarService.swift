@@ -162,7 +162,7 @@ struct XMPSidecarService: Sendable {
                 guard try Self.currentData(at: url) == sourceData else { continue }
 
                 if let stagedData {
-                    try stagedData.write(to: url, options: .atomic)
+                    try Self.installSidecarBytes(stagedData, at: url)
                     let installedData = try Data(contentsOf: url)
                     guard installedData == stagedData else {
                         throw CocoaError(.fileWriteUnknown)
@@ -188,10 +188,13 @@ struct XMPSidecarService: Sendable {
         )
     }
 
+    /// `appliesCameraRaw: false` keeps the stored crs block byte-for-byte (a descriptive write);
+    /// only a write that sets or clears develop settings needs the RAW-pair ownership decision.
     nonisolated private func saveSidecar(
         metadata: IPTCMetadata,
         for imageURL: URL,
-        writesLocalizedTitleClearTombstone: Bool
+        writesLocalizedTitleClearTombstone: Bool,
+        appliesCameraRaw: Bool = true
     ) throws {
         let url = sidecarURL(for: imageURL)
         // Merge into the existing sidecar so unknown third-party XMP (namespaces / properties we
@@ -214,7 +217,7 @@ struct XMPSidecarService: Sendable {
         }
         // nil cameraRaw clears the crs block (matches the prior "nil = clear" contract) —
         // except for the JPEG of a RAW+JPEG pair, whose stem sidecar crs belongs to the RAW.
-        if ownsDevelopBlock(for: imageURL) {
+        if appliesCameraRaw, ownsDevelopBlock(for: imageURL) {
             XMPDataBuilder.applyCameraRaw(
                 metadata.cameraRaw,
                 imageAspect: imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop),
@@ -230,11 +233,9 @@ struct XMPSidecarService: Sendable {
     /// wrong for descriptive writes (rating/label/orientation/keywords) whose metadata never carries
     /// `cameraRaw`; those callers must use this so a caption change doesn't wipe the user's edits.
     nonisolated func saveSidecarPreservingDevelopSettings(metadata: IPTCMetadata, for imageURL: URL) throws {
-        var merged = metadata
-        if merged.cameraRaw == nil {
-            merged.cameraRaw = loadSidecar(for: imageURL)?.cameraRaw
-        }
-        try saveSidecar(metadata: merged, for: imageURL)
+        // No develop settings in the record: leave the stored crs block exactly as it is.
+        try saveSidecar(metadata: metadata, for: imageURL, writesLocalizedTitleClearTombstone: true,
+                        appliesCameraRaw: metadata.cameraRaw != nil)
     }
 
     /// Complete serialized descriptive transaction. The existing XMP is read and mutated only
@@ -488,7 +489,7 @@ struct XMPSidecarService: Sendable {
                 beforeRevisionCheck(attempt)
                 await Task.yield()
                 guard try Self.currentData(at: url) == sourceData else { continue }
-                try staged.write(to: url, options: .atomic)
+                try Self.installSidecarBytes(staged, at: url)
                 let installed = try Data(contentsOf: url)
                 guard installed == staged else { throw CocoaError(.fileWriteUnknown) }
                 return XMPMetadataReader.parseMetadata(
@@ -507,7 +508,6 @@ struct XMPSidecarService: Sendable {
         metadata: IPTCMetadata,
         for imageURL: URL
     ) async throws {
-        let ownsDevelop = ownsDevelopBlock(for: imageURL)
         try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
             _ = try await self.updateXMPTransaction(for: imageURL) { xmp in
                 XMPDataBuilder.applyDescriptive(metadata, into: &xmp)
@@ -525,7 +525,11 @@ struct XMPSidecarService: Sendable {
                         )
                     }
                 }
-                if ownsDevelop {
+                // Unchanged develop settings keep the stored block verbatim (no RAW-pair ownership
+                // decision, so descriptive saves don't relist the folder).
+                let stored = XMPMetadataReader.parseMetadata(from: xmp,
+                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }).cameraRaw
+                if metadata.cameraRaw != stored, self.ownsDevelopBlock(for: imageURL) {
                     XMPDataBuilder.applyCameraRaw(
                         metadata.cameraRaw,
                         imageAspect: self.imageAspectIfCropAngled(
@@ -639,7 +643,17 @@ struct XMPSidecarService: Sendable {
             throw CocoaError(.fileWriteInapplicableStringEncoding)
         }
         // `.atomic` keeps the sidecar crash-safe (XMPSidecar.write is a plain non-atomic write).
+        try Self.installSidecarBytes(data, at: url)
+    }
+
+    /// Atomic sidecar install that tells the RAW-sibling index this folder change was our own
+    /// (a sidecar write never creates a RAW), so a batch of sidecar saves doesn't relist the
+    /// folder after every write.
+    nonisolated static func installSidecarBytes(_ data: Data, at url: URL) throws {
+        let folder = url.deletingLastPathComponent()
+        let before = PhotoRawStemIndex.folderModification(folder)
         try data.write(to: url, options: .atomic)
+        PhotoRawStemIndex.shared.noteOwnWrite(in: folder, previousModification: before)
     }
 
     /// Read/merge/revision-check/stage/install/read-back loop used by every new asynchronous XMP
@@ -685,7 +699,7 @@ struct XMPSidecarService: Sendable {
 
             // No suspension separates this caller check from physical publication.
             try validateCommitAuthority()
-            try stagedData.write(to: url, options: .atomic)
+            try Self.installSidecarBytes(stagedData, at: url)
             onInstalled(XMPSidecarWriteSnapshot(data: stagedData))
             let installedData = try Data(contentsOf: url)
             guard installedData == stagedData else {

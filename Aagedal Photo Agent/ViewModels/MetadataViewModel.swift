@@ -1935,6 +1935,13 @@ final class MetadataViewModel {
                 let embedURLs = urls.filter { !SupportedImageFormats.isRaw(url: $0) }
                 let rawURLs = urls.filter { SupportedImageFormats.isRaw(url: $0) }
                 var fields: [MetadataFieldKey: String] = [:]
+                // Files refused because their metadata wouldn't fit a JPEG segment are left
+                // untouched; every later phase continues with the files that were written.
+                var lossRefusals: [EmbeddedMetadataLossRefusal] = []
+                func writableEmbedURLs() -> [URL] {
+                    let refused = Set(lossRefusals.map(\.imageURL))
+                    return embedURLs.filter { !refused.contains($0) }
+                }
 
                 if isBatch {
                     // Batch: write non-empty fields; emptying a value common to the selection clears it
@@ -2081,7 +2088,11 @@ final class MetadataViewModel {
                             : nil,
                         listValues: EditorialListWriteData(metadata: edited)
                     )
-                    try await writeEngine.writeFields(fields, to: embedURLs, structuredData: structuredData)
+                    do {
+                        try await writeEngine.writeFields(fields, to: embedURLs, structuredData: structuredData)
+                    } catch let batch as EmbeddedMetadataBatchRefusal {
+                        lossRefusals += batch.refusals
+                    }
                 }
 
                 // Handle additive list fields via += / -=
@@ -2091,17 +2102,22 @@ final class MetadataViewModel {
                         previous: prev,
                         explicitMutations: explicitBatchMutations
                     )
-                    if !embedURLs.isEmpty, !diffs.add.isEmpty || !diffs.remove.isEmpty {
-                        try await writeEngine.addRemoveListValues(
-                            add: diffs.add,
-                            remove: diffs.remove,
-                            to: embedURLs
-                        )
+                    let listTargets = writableEmbedURLs()
+                    if !listTargets.isEmpty, !diffs.add.isEmpty || !diffs.remove.isEmpty {
+                        do {
+                            try await writeEngine.addRemoveListValues(
+                                add: diffs.add,
+                                remove: diffs.remove,
+                                to: listTargets
+                            )
+                        } catch let batch as EmbeddedMetadataBatchRefusal {
+                            lossRefusals += batch.refusals
+                        }
                     }
                 }
 
                 if isBatch, explicitLocationsShownMutation != .untouched {
-                    for url in embedURLs {
+                    for url in writableEmbedURLs() {
                         let base: IPTCMetadata
                         if let resolved = resolvedBatchSnapshot[url] {
                             base = resolved
@@ -2113,13 +2129,17 @@ final class MetadataViewModel {
                             locationsShown: explicitLocationsShownMutation,
                             to: base
                         )
-                        try await writeEngine.writeFields(
-                            [:],
-                            to: [url],
-                            structuredData: StructuredWriteData(
-                                editorial: EditorialStructuredWriteData(metadata: updated)
+                        do {
+                            try await writeEngine.writeFields(
+                                [:],
+                                to: [url],
+                                structuredData: StructuredWriteData(
+                                    editorial: EditorialStructuredWriteData(metadata: updated)
+                                )
                             )
-                        )
+                        } catch let batch as EmbeddedMetadataBatchRefusal {
+                            lossRefusals += batch.refusals
+                        }
                     }
                 }
 
@@ -2127,7 +2147,7 @@ final class MetadataViewModel {
                     $0.key == .mediaTopic || $0.key == .genre
                 }
                 if isBatch, !controlledStructuredMutations.isEmpty {
-                    for url in embedURLs {
+                    for url in writableEmbedURLs() {
                         let base: IPTCMetadata
                         if let resolved = resolvedBatchSnapshot[url] {
                             base = resolved
@@ -2136,13 +2156,17 @@ final class MetadataViewModel {
                         }
                         let updated = try MetadataFieldMutationSet(controlledStructuredMutations)
                             .applying(to: base)
-                        try await writeEngine.writeFields(
-                            [:],
-                            to: [url],
-                            structuredData: StructuredWriteData(
-                                editorial: EditorialStructuredWriteData(metadata: updated)
+                        do {
+                            try await writeEngine.writeFields(
+                                [:],
+                                to: [url],
+                                structuredData: StructuredWriteData(
+                                    editorial: EditorialStructuredWriteData(metadata: updated)
+                                )
                             )
-                        )
+                        } catch let batch as EmbeddedMetadataBatchRefusal {
+                            lossRefusals += batch.refusals
+                        }
                     }
                 }
 
@@ -2170,7 +2194,8 @@ final class MetadataViewModel {
                     }
                 }
 
-                await self.mirrorEmbeddedStateToExistingSidecars(for: embedURLs)
+                let refusedURLs = Set(lossRefusals.map(\.imageURL))
+                await self.mirrorEmbeddedStateToExistingSidecars(for: writableEmbedURLs())
 
                 // A pending draft is the photo's record until it is written. Apply the same batch
                 // change to it (keeping it pending) so a later Write All cannot revert this write.
@@ -2182,6 +2207,20 @@ final class MetadataViewModel {
                         await self.saveBatchSidecars(folderURL: writeFolderURL, targetURLs: draftURLs,
                             updateState: false, capturedMutation: draftMutation)
                     }
+                    // A refused file keeps this change as a pending draft (not written, not lost),
+                    // so it can be written later or moved to a sidecar destination.
+                    for url in embedURLs where refusedURLs.contains(url) && !pendingNames.contains(url.lastPathComponent) {
+                        var fallback: IPTCMetadata
+                        if let resolved = resolvedBatchSnapshot[url] {
+                            fallback = resolved
+                        } else {
+                            fallback = (try? await self.readService.readFullMetadata(url: url)) ?? IPTCMetadata()
+                        }
+                        fallback.cameraRaw = nil
+                        _ = try? await self.sidecarService.updateMetadataSerialized(
+                            for: url, in: writeFolderURL, fallback: fallback, pendingChanges: true,
+                            timestamp: Date(), mutation: draftMutation.mutation)
+                    }
                 }
 
                 if Set(self.selectedURLs) == selectionSnapshot {
@@ -2192,7 +2231,7 @@ final class MetadataViewModel {
                         // The per-photo records advance with it: a later RAW `.replace` or
                         // structured write starts from them and would otherwise revert this one.
                         if let draftMutation {
-                            for (url, record) in resolvedBatchSnapshot {
+                            for (url, record) in resolvedBatchSnapshot where !refusedURLs.contains(url) {
                                 var written = record
                                 draftMutation.mutation(&written)
                                 self.batchMetadataByURL[url] = installedRawRecords[url] ?? written
@@ -2208,6 +2247,12 @@ final class MetadataViewModel {
                         self.batchCommonMetadata = edited
                     }
                     self.hasChanges = self.editingMetadata != edited
+                    if !refusedURLs.isEmpty { self.selectedHavePendingSidecars = true }
+                }
+                if !lossRefusals.isEmpty {
+                    let message = EmbeddedMetadataBatchRefusal(refusals: lossRefusals).localizedDescription
+                    self.saveError = message
+                    self.embeddedWriteFailures[generation] = message
                 }
             } catch is CancellationError {
                 // Superseded or torn down; not a user-facing failure.
