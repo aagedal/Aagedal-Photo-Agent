@@ -538,6 +538,31 @@ nonisolated final class ImportRunState: @unchecked Sendable {
     }
 }
 
+enum SourceVolumeEjectState: Equatable {
+    case idle
+    case ejecting
+    case ejected(String)
+    case failed(String)
+}
+
+/// A mounted volume macOS reports as ejectable or removable (memory cards, USB disks).
+nonisolated struct EjectableVolume: Equatable, Sendable {
+    let url: URL
+    let name: String
+
+    init?(containing url: URL) {
+        let keys: Set<URLResourceKey> = [.volumeURLKey, .volumeIsEjectableKey, .volumeIsRemovableKey,
+                                         .volumeIsInternalKey, .volumeIsRootFileSystemKey, .volumeLocalizedNameKey]
+        guard let values = try? url.resourceValues(forKeys: keys),
+              let volumeURL = values.volume,
+              values.volumeIsRootFileSystem != true,
+              values.volumeIsEjectable == true || values.volumeIsRemovable == true
+        else { return nil }
+        self.url = volumeURL
+        self.name = values.volumeLocalizedName ?? volumeURL.lastPathComponent
+    }
+}
+
 @Observable
 final class ImportViewModel {
     var configuration = ImportConfiguration() {
@@ -3102,7 +3127,42 @@ final class ImportViewModel {
         }
     }
 
+    /// The card or disk the finished import came from, when macOS can eject it.
+    private(set) var sourceVolumeEjectState: SourceVolumeEjectState = .idle
+
+    var ejectableSourceVolume: EjectableVolume? {
+        guard let sourceURL = configuration.sourceURL else { return nil }
+        return EjectableVolume(containing: sourceURL)
+    }
+
+    /// Ejects the import source after the import has fully finished (copies, sidecars,
+    /// templates and voice memo links). Unmounting blocks, so it runs off the main actor.
+    func ejectSourceVolume() {
+        guard importPhase == .complete || importPhase == .cancelled,
+              sourceVolumeEjectState != .ejecting,
+              let volume = ejectableSourceVolume else { return }
+        sourceVolumeEjectState = .ejecting
+        Task {
+            let failure = await Self.eject(volume.url, name: volume.name)
+            if let failure {
+                sourceVolumeEjectState = .failed(failure)
+            } else {
+                sourceVolumeEjectState = .ejected(volume.name)
+            }
+        }
+    }
+
+    @concurrent nonisolated private static func eject(_ volumeURL: URL, name: String) async -> String? {
+        do {
+            try NSWorkspace.shared.unmountAndEjectDevice(at: volumeURL)
+            return nil
+        } catch {
+            return "\(name) couldn't be ejected, usually because something is still using it. Close any folders on it in Photo Agent, Finder or other apps, then try again."
+        }
+    }
+
     func reset() {
+        sourceVolumeEjectState = .idle
         let preservedFileTypeFilter = configuration.fileTypeFilter
         let preservedConflictPolicy = configuration.conflictPolicy
         let preservedCreateSubFolders = configuration.createSubFolders

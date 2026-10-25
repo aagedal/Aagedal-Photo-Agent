@@ -3558,3 +3558,20 @@ private extension Data {
         try handle.write(contentsOf: self)
     }
 }
+
+struct EjectableVolumeTests {
+    @Test("The startup disk and its temporary folders are never offered for ejecting")
+    func internalDiskIsNotEjectable() {
+        #expect(EjectableVolume(containing: FileManager.default.temporaryDirectory) == nil)
+        #expect(EjectableVolume(containing: URL(fileURLWithPath: NSHomeDirectory())) == nil)
+    }
+
+    @Test("A finished import from the internal disk offers no Eject and ignores eject requests")
+    @MainActor func internalSourceOffersNoEject() {
+        let model = ImportViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.configuration.sourceURL = FileManager.default.temporaryDirectory
+        #expect(model.ejectableSourceVolume == nil)
+        model.ejectSourceVolume()
+        #expect(model.sourceVolumeEjectState == SourceVolumeEjectState.idle)
+    }
+}

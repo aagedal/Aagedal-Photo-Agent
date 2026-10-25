@@ -1131,6 +1131,8 @@ struct ImportView: View {
                 cancelled: cancelled
             )
 
+            ejectSourceRow
+
             HStack(spacing: 12) {
                 Button("Import More") {
                     viewModel.reset()
@@ -1143,6 +1145,35 @@ struct ImportView: View {
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.bottom)
+        }
+    }
+
+    @ViewBuilder
+    private var ejectSourceRow: some View {
+        switch viewModel.sourceVolumeEjectState {
+        case .ejected(let name):
+            Label("\(name) was ejected. You can remove it now.", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        case .failed(let message):
+            VStack(spacing: 6) {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                if let volume = viewModel.ejectableSourceVolume {
+                    Button("Try Ejecting \(volume.name) Again", systemImage: "eject") {
+                        viewModel.ejectSourceVolume()
+                    }
+                }
+            }
+            .padding(.horizontal)
+        case .idle, .ejecting:
+            if let volume = viewModel.ejectableSourceVolume {
+                Button("Eject \(volume.name)", systemImage: "eject") {
+                    viewModel.ejectSourceVolume()
+                }
+                .disabled(viewModel.sourceVolumeEjectState == .ejecting)
+                .help("Safely eject the card or disk you imported from")
+            }
         }
     }
 
