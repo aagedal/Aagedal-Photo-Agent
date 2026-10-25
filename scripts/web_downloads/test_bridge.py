@@ -10,6 +10,8 @@ from unittest.mock import patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+# The bridge lives in the app's Resources; a __pycache__ there would be bundled into the app.
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "Vendor/web-download-runtime/packages"))
 spec = importlib.util.spec_from_file_location("bridge", ROOT / "Aagedal Photo Agent/Resources/WebDownloads/web_download_bridge.py")
 bridge = importlib.util.module_from_spec(spec)
