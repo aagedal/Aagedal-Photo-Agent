@@ -86,11 +86,24 @@ struct BackupDestination: Sendable, Equatable {
 }
 
 struct ImportConfiguration {
+    /// New installs import into ~/Pictures. Earlier versions defaulted to ~/Photos; keep using it
+    /// when it already exists so imports and mirrored RAW archives stay in the same tree.
+    nonisolated static var defaultDestinationURL: URL {
+        let fileManager = FileManager.default
+        let legacy = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Photos", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: legacy.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return legacy
+        }
+        return fileManager.urls(for: .picturesDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Pictures", isDirectory: true)
+    }
+
     var sourceURL: URL?
     /// Optional second media source. Its RAW/JPEG files participate in the selected file-type
     /// filter, and its Sony WAV files can be associated with matching exposures on either source.
     var voiceMemoSourceURL: URL?
-    var destinationBaseURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Photos")
+    var destinationBaseURL: URL = ImportConfiguration.defaultDestinationURL
     var importTitle: String = ""
     var fileTypeFilter: ImportFileTypeFilter = .both {
         didSet { AppDefaults.store.set(fileTypeFilter.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter) }

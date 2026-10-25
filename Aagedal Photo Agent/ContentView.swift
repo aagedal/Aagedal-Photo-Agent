@@ -778,7 +778,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $isShowingImport) { importSheet }
             .sheet(isPresented: $isShowingWebImport) {
-                WebImportView { folder in browserViewModel.loadFolder(url: folder) }
+                WebImportView(initialFolder: browserViewModel.currentFolderURL) { folder in
+                    browserViewModel.loadFolder(url: folder)
+                }
             }
             .sheet(item: Bindable(browserViewModel).batchRenameSheetRequest) { request in
                 BatchRenameSheet(

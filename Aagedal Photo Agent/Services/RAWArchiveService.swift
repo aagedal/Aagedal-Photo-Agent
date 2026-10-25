@@ -294,8 +294,7 @@ nonisolated enum RAWArchiveService {
     }
 
     static var defaultIngestRootURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Photos", isDirectory: true)
+        ImportConfiguration.defaultDestinationURL
     }
 
     static var ingestRootURL: URL {

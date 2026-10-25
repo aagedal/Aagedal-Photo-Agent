@@ -17,6 +17,8 @@ struct WebImportView: View {
     @State private var task: Task<Void, Never>?
     @State private var completedFolder: URL?
     @State private var retainedFolder: URL?
+    /// Pre-fills the destination (the Browser's current folder) when none is remembered.
+    var initialFolder: URL? = nil
     let onImported: (URL) -> Void
 
     var body: some View {
@@ -115,7 +117,7 @@ struct WebImportView: View {
                 destination = RAWArchiveService.resolveBookmark(
                     key: UserDefaultsKeys.webImportDestinationBookmark,
                     removeOnFailure: false
-                )
+                ) ?? initialFolder
             }
         }
         .onDisappear { task?.cancel() }
