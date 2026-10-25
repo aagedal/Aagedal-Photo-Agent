@@ -145,7 +145,7 @@ nonisolated enum PhotoSidecarOwnership {
               !owner.contains("/"), !owner.contains("\\"), !owner.contains("..") else {
             throw CocoaError(.fileReadCorruptFile, userInfo: [
                 NSFilePathErrorKey: recordURL.path,
-                NSLocalizedDescriptionKey: "Cannot establish the owner of legacy metadata at \(recordURL.path). The source record was preserved."
+                NSLocalizedDescriptionKey: "An older saved edits file (\(recordURL.lastPathComponent)) doesn't say which photo it belongs to, so it was left as it is."
             ])
         }
         return owner == imageURL.lastPathComponent

@@ -69,29 +69,29 @@ nonisolated enum ImageAnalysisProjectArchive {
         var errorDescription: String? {
             switch self {
             case .noImages:
-                "The working folder does not contain any images to export."
+                "The working folder has no images to export."
             case .sourceOutsideWorkingFolder(let name):
-                "\(name) is outside the working folder and cannot be included."
+                "\(name) is outside the working folder, so it can't be included."
             case .invalidSource(let name):
-                "\(name) is not a regular project file."
+                "\(name) can't be included because it isn't a normal file (for example, it's an alias)."
             case .archiveCommandFailed(let status):
-                "The project archive operation failed with status \(status)."
+                "The archive couldn't be created or opened (error \(status)). Check that there is enough disk space, then try again."
             case .manifestMissing:
-                "This archive does not contain a Photo Intelligence manifest."
+                "This file isn't a Photo Agent analysis archive."
             case .malformedManifest(let reason):
-                "The project manifest could not be read: \(reason)"
+                "The archive is damaged and can't be opened. \(reason)"
             case .unsupportedSchemaVersion(let version):
-                "This project uses archive schema \(version), which is newer than this version of Photo Agent supports."
+                "This archive was made by a newer version of Photo Agent (format \(version)). Update Photo Agent to open it."
             case .unsafePath(let path):
-                "The project contains an unsafe path: \(path)"
+                "The archive contains a file that points outside it (\(path)), so it wasn't opened."
             case .missingPayloadFile(let path):
-                "The project is incomplete because \(path) is missing."
+                "The archive is incomplete: \(path) is missing."
             case .unexpectedPayloadFile(let path):
-                "The project contains an undeclared file: \(path)"
+                "The archive contains an unexpected file (\(path)), so it wasn't opened."
             case .fileSizeMismatch(let path):
-                "The size of \(path) does not match the project manifest."
+                "\(path) in the archive is damaged or incomplete."
             case .checksumMismatch(let path):
-                "The checksum of \(path) does not match the project manifest."
+                "\(path) in the archive is damaged or was changed."
             case .destinationNotEmpty:
                 "Choose a new or empty folder for the imported project."
             }
@@ -405,7 +405,7 @@ nonisolated enum ImageAnalysisProjectArchive {
                 )
             } catch {
                 throw ArchiveError.malformedManifest(
-                    "The analysis case \(entry.path) is invalid: \(error.localizedDescription)"
+                    "An analysis case in this archive (\(entry.path)) is damaged or from a newer version of Photo Agent, so the archive can't be opened."
                 )
             }
             let candidates = imagesByHash[analysisCase.source.sha256.lowercased()] ?? []

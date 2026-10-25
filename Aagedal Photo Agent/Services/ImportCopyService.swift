@@ -482,7 +482,7 @@ actor ImportCopyService {
             throw NSError(
                 domain: "ImportCopyService",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Could not create destination file at \(partialURL.path)."]
+                userInfo: [NSLocalizedDescriptionKey: "Couldn't create a file in \(partialURL.deletingLastPathComponent().lastPathComponent). Check that the destination disk has space and that you can write to it."]
             )
         }
 

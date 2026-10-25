@@ -96,12 +96,12 @@ struct MetadataSidecarService: Sendable {
 
     private nonisolated func ownershipChanged(_ url: URL) -> CocoaError {
         CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: url.path,
-            NSLocalizedDescriptionKey: "Metadata ownership or contents changed at \(url.path). Existing data was preserved; reload before retrying."])
+            NSLocalizedDescriptionKey: "The saved edits for \(url.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) changed while saving. Nothing was overwritten; reload the folder and try again."])
     }
 
     private nonisolated func invalidOwnership(_ url: URL) -> CocoaError {
         CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path,
-            NSLocalizedDescriptionKey: "Cannot safely establish metadata ownership at \(url.path). Existing data was preserved."])
+            NSLocalizedDescriptionKey: "The saved edits file \(url.lastPathComponent) doesn't clearly belong to one photo in this folder, so it was left as it is."])
     }
 
     private nonisolated func requireRegularFile(_ url: URL) throws {
