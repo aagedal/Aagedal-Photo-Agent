@@ -523,8 +523,15 @@ actor KnownPeopleICloudRoutingService: KnownPeopleICloudRouting {
         let local = access.localRootURL()
         guard syncEnabled else { return local }
         guard let cloud = access.cloudRootURL() else { return local }
-        return (try? await KnownPeopleCloudGenerationPublisher.shared
-            .resolveActiveGeneration(in: cloud)) ?? cloud
+        do {
+            return try await KnownPeopleCloudGenerationPublisher.shared
+                .resolveActiveGeneration(in: cloud) ?? cloud
+        } catch {
+            // A present but invalid pointer must not reactivate the legacy root records a
+            // replacement retired (KnownPeopleCloudCoordinator refuses them too). The local
+            // library is what that replacement published.
+            return local
+        }
     }
 
     func cloudRootURL(ensuringDirectory: Bool) async -> URL? {
