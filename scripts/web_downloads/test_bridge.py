@@ -43,6 +43,21 @@ class BridgeTests(unittest.TestCase):
     def post(self, url):
         return SyntheticPost(re.match(SyntheticPost.pattern, url))
 
+    def test_errors_shown_to_users_are_plain_and_never_carry_urls(self):
+        offline = OSError("<urlopen error [Errno 8] nodename nor servname provided, or not known>")
+        self.assertIn("internet connection", bridge.user_message(offline))
+        self.assertIn("internet connection", bridge.user_message(ConnectionError("reset")))
+        wrapped = RuntimeError("ERROR: Unable to download webpage: <urlopen error timed out> (caused by x)")
+        self.assertIn("internet connection", bridge.user_message(wrapped))
+        cancelled = bridge.WebDownloadCancelled("Web download cancelled or timed out")
+        self.assertEqual(bridge.user_message(cancelled), "Web download cancelled or timed out")
+        signed = ValueError("HTTP 403 for https://cdn.example/media.jpg?sig=secret")
+        message = bridge.user_message(signed)
+        self.assertNotIn("https://", message)
+        self.assertNotIn("secret", message)
+        self.assertEqual(bridge.user_message(ValueError("Paste an HTTPS Instagram or X post URL")),
+                         "Paste an HTTPS Instagram or X post URL")
+
     def test_post_urls_are_canonical_and_bounded(self):
         self.assertEqual(bridge.post_url("https://instagram.com/p/ABC/?igsh=secret"), "https://www.instagram.com/p/ABC/")
         self.assertEqual(bridge.post_url("https://twitter.com/name/status/123/photo/2"), "https://x.com/name/status/123")
