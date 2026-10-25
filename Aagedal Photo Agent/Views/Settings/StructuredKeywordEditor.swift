@@ -360,6 +360,7 @@ struct StructuredKeywordEditor: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Row actions")
+        .accessibilityLabel("Actions for \(node.name)")
     }
 
     @ViewBuilder

@@ -119,6 +119,7 @@ struct QuickListPicker: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("More quick list actions")
+            .accessibilityLabel("More quick list actions")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

@@ -619,6 +619,7 @@ struct BatchRenameSheet: View {
                 }
                 .menuStyle(.borderlessButton)
                 .help("Manage rename recipes")
+                .accessibilityLabel("Manage rename recipes")
             }
 
             if session.hasUnsavedPresetChanges {

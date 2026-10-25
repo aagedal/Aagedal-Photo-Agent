@@ -494,6 +494,7 @@ struct ImportView: View {
                                         .menuStyle(.borderlessButton)
                                         .fixedSize()
                                         .help("Use an existing folder for this capture date")
+                                        .accessibilityLabel("Use an existing folder for this capture date")
                                         .disabled(!group.isIncluded)
                                     }
 

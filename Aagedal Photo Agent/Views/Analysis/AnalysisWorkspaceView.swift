@@ -2831,6 +2831,7 @@ private struct AnalysisMapLayersView: View {
             .fixedSize()
             .disabled(isReadOnly || currentCaseID == nil)
             .help("Connect this photo annotation to working-folder map annotations")
+            .accessibilityLabel("Link photo annotation to map annotations")
 
             Button {
                 onEditPhotoAnnotation(annotation.id)
@@ -2992,6 +2993,7 @@ private struct AnalysisMapLayersView: View {
             .fixedSize()
             .disabled(isReadOnly)
             .help("Connect this folder map annotation to one or more objects in this photo")
+            .accessibilityLabel("Link folder map annotation to photo annotations")
 
             Button {
                 onSetGlobalVisible(annotation.id, !annotation.isVisible)
