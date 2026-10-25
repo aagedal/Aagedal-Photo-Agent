@@ -3130,7 +3130,13 @@ final class ImportViewModel {
     /// The card or disk the finished import came from, when macOS can eject it.
     private(set) var sourceVolumeEjectState: SourceVolumeEjectState = .idle
 
+    /// Only offered once an import has stopped for good: a failed import may have stopped
+    /// before every source read finished, but nothing still reads the card after it either.
     var ejectableSourceVolume: EjectableVolume? {
+        switch importPhase {
+        case .complete, .cancelled, .failed: break
+        default: return nil
+        }
         guard let sourceURL = configuration.sourceURL else { return nil }
         return EjectableVolume(containing: sourceURL)
     }
@@ -3138,8 +3144,7 @@ final class ImportViewModel {
     /// Ejects the import source after the import has fully finished (copies, sidecars,
     /// templates and voice memo links). Unmounting blocks, so it runs off the main actor.
     func ejectSourceVolume() {
-        guard importPhase == .complete || importPhase == .cancelled,
-              sourceVolumeEjectState != .ejecting,
+        guard sourceVolumeEjectState != .ejecting,
               let volume = ejectableSourceVolume else { return }
         sourceVolumeEjectState = .ejecting
         Task {

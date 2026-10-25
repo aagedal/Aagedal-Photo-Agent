@@ -3273,11 +3273,16 @@ struct ContentView: View {
 
             if importViewModel.showCompletionBanner, let entry = importViewModel.lastCompletionEntry {
                 Divider()
-                CompletionBannerView(
-                    isClean: entry.isClean,
-                    message: entry.summary,
-                    onConfirm: { importViewModel.dismissCompletionBanner() }
-                )
+                VStack(alignment: .leading, spacing: 6) {
+                    CompletionBannerView(
+                        isClean: entry.isClean,
+                        message: entry.summary,
+                        onConfirm: { importViewModel.dismissCompletionBanner() }
+                    )
+                    ImportEjectSourceRow(viewModel: importViewModel)
+                        .font(.caption)
+                        .controlSize(.small)
+                }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
             }

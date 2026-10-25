@@ -1131,7 +1131,7 @@ struct ImportView: View {
                 cancelled: cancelled
             )
 
-            ejectSourceRow
+            ImportEjectSourceRow(viewModel: viewModel)
 
             HStack(spacing: 12) {
                 Button("Import More") {
@@ -1148,8 +1148,19 @@ struct ImportView: View {
         }
     }
 
-    @ViewBuilder
-    private var ejectSourceRow: some View {
+    private func handleSlowThumbnailPrefetch() {
+        guard prefetchImportThumbnails else { return }
+        prefetchImportThumbnails = false
+        showSlowThumbnailWarning = true
+    }
+}
+
+/// Eject for the card or disk a finished import came from. Shown in the sidebar banner and on
+/// the Import Complete screen; hidden when the source is on an internal disk.
+struct ImportEjectSourceRow: View {
+    let viewModel: ImportViewModel
+
+    var body: some View {
         switch viewModel.sourceVolumeEjectState {
         case .ejected(let name):
             Label("\(name) was ejected. You can remove it now.", systemImage: "checkmark.circle")
@@ -1175,11 +1186,5 @@ struct ImportView: View {
                 .help("Safely eject the card or disk you imported from")
             }
         }
-    }
-
-    private func handleSlowThumbnailPrefetch() {
-        guard prefetchImportThumbnails else { return }
-        prefetchImportThumbnails = false
-        showSlowThumbnailWarning = true
     }
 }
