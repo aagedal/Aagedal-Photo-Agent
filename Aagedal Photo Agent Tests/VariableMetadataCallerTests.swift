@@ -297,7 +297,7 @@ struct VariableMetadataCallerTests {
         model.processVariablesForImages([ImageFile(url: url)])
         await model.waitForVariableProcessing()
         #expect(model.hasRetainedVariableWrites)
-        #expect(model.variableBatchOutcome?.attention?.message.contains("only while this app session remains open") == true)
+        #expect(model.variableBatchOutcome?.attention?.message.contains("available until you quit Photo Agent") == true)
         let first = try #require(await executor.requests.first)
         model.currentFolderURL = URL(fileURLWithPath: "/virtual/other-folder")
         model.retryVariableWrites()
@@ -329,14 +329,14 @@ struct VariableMetadataCallerTests {
         #expect(outcome.results.map(\.imageURL) == Array(urls.prefix(2)))
         #expect(outcome.unattemptedURLs == [urls[2]])
         #expect(outcome.wasCancelled)
-        #expect(outcome.attention?.message.contains("XMP metadata was written") == true)
+        #expect(outcome.attention?.message.contains("Already written: XMP sidecar.") == true)
         #expect(!model.isProcessingFolder)
         let uncertain = VariableCallerExecutor(responses: [.unverifiedJSON])
         let otherModel = makeModel(inputs, executor: uncertain)
         otherModel.currentFolderURL = folder
         otherModel.processVariablesForImages([ImageFile(url: urls[0])])
         await otherModel.waitForVariableProcessing()
-        #expect(otherModel.variableBatchOutcome?.attention?.message.contains(".photo_metadata/uncertain.meta.json") == true)
+        #expect(otherModel.variableBatchOutcome?.attention?.message.contains("saved edits for uncertain couldn't be checked after saving") == true)
     }
 
     @Test("Literal punctuated lists are unchanged while intentional variable lists expand")

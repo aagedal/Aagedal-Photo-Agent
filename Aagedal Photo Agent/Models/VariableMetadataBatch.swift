@@ -246,24 +246,27 @@ struct VariableMetadataBatchOutcome: Sendable {
 
     var attention: PendingMetadataWriteBatchAttention? {
         guard wasCancelled || results.contains(where: { !$0.completed }) else { return nil }
-        var lines = ["Variable processing in \(folderURL.path): completed \(results.filter(\.completed).count) of \(results.count) attempted photos."]
-        if wasCancelled { lines.append("Cancelled; \(unattemptedURLs.count) photos were not attempted.") }
+        var lines = ["Variables were filled in for \(results.filter(\.completed).count) of \(results.count) photos."]
+        if wasCancelled { lines.append("Cancelled. \(unattemptedURLs.count) photos weren't started.") }
         for item in results where !item.completed {
             let result = item.writeResult
-            var detail = "\(item.imageURL.path): " + (item.failure ?? result?.failure ?? "The operation was cancelled or did not complete.")
-            if result?.preparedSidecar != nil { detail += " The resolved pending draft was saved." }
+            var detail = "\(item.imageURL.lastPathComponent): " + (item.failure ?? result?.failure ?? "This photo was cancelled or didn't finish.")
+            if result?.preparedSidecar != nil { detail += " The filled-in values were kept as unsaved changes." }
+            var written: [String] = []
+            var uncheckedSidecar = result?.committedButUnverifiedSidecarURL
             if let physical = result?.physicalResult {
-                if physical.didWriteEmbedded { detail += " Image metadata was written." }
-                if physical.didWriteXMP { detail += " XMP metadata was written." }
-                if physical.embeddedWriteMayHaveOccurred { detail += " Image metadata may already have changed; verify it before retrying." }
-                if let url = physical.committedButUnverifiedSidecarURL { detail += " Metadata JSON could not be verified after commit: \(url.path)." }
+                if physical.didWriteEmbedded { written.append("image metadata") }
+                if physical.didWriteXMP { written.append("XMP sidecar") }
+                uncheckedSidecar = uncheckedSidecar ?? physical.committedButUnverifiedSidecarURL
             }
-            if let url = result?.committedButUnverifiedSidecarURL {
-                detail += " Metadata JSON was committed but not verified: \(url.path)."
+            if !written.isEmpty { detail += " Already written: " + written.joined(separator: " and ") + "." }
+            if result?.physicalResult?.embeddedWriteMayHaveOccurred == true { detail += " Image metadata may already have changed; check it before trying again." }
+            if let url = uncheckedSidecar {
+                detail += " The app's saved edits for \(url.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) couldn't be checked after saving. Reload the folder before editing it again."
             }
             lines.append(detail)
         }
-        lines.append("Retry Variable Writes retains the original request only while this app session remains open. After reopening, review the saved pending drafts and deliberately choose Write All to write their full metadata; that is a new destination choice, not a continuation of the original variable policy.")
+        lines.append("Retry Variable Writes is available until you quit Photo Agent. After reopening, check the unsaved changes and choose Write All to save them; Write All saves each photo's full metadata, not only the variables.")
         return .init(id: requestID, title: "Variable Processing Needs Attention: \(folderURL.lastPathComponent)",
             message: lines.joined(separator: "\n\n"))
     }

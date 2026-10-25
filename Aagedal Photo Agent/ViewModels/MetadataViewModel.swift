@@ -157,21 +157,28 @@ nonisolated struct PendingMetadataWriteBatchOutcome: Sendable {
 
     var attentionMessage: String? {
         guard wasCancelled || skippedCount > 0 || failedCount > 0 || !discoveryFailures.isEmpty else { return nil }
-        var lines = ["Write All in \(folderURL.path): wrote \(completedCount), skipped \(skippedCount), failed \(failedCount)."]
-        if wasCancelled { lines.append("Cancelled after \(results.count) attempted photos; \(unattemptedURLs.count) discovered photos were not attempted.") }
-        if discoveryWasCancelled { lines.append("Discovery did not finish; additional pending photos may remain unverified.") }
-        for failure in discoveryFailures { lines.append("\(failure.url.path): \(failure.message)") }
+        var lines = ["Write All wrote \(completedCount), skipped \(skippedCount) and failed \(failedCount)."]
+        if wasCancelled { lines.append("Cancelled after \(results.count) photos. \(unattemptedURLs.count) more photos with unsaved changes weren't started.") }
+        if discoveryWasCancelled { lines.append("The search for photos with unsaved changes didn't finish, so some may not have been written.") }
+        for failure in discoveryFailures { lines.append(Self.discoveryFailureSubject(failure.url) + ": " + failure.message) }
         for result in results where !result.completed {
-            var message = result.imageURL.path + ": " + (result.failure ?? (result.wasSkipped ? "Skipped protected photo." : "The pending write did not complete."))
+            var message = result.imageURL.lastPathComponent + ": " + (result.failure ?? (result.wasSkipped ? "Skipped because the photo is protected." : "The changes weren't written."))
             var written: [String] = []
             if result.didWriteEmbedded { written.append("image metadata") }
             if result.didWriteXMP { written.append("XMP sidecar") }
             if !written.isEmpty { message += " Already written: " + written.joined(separator: " and ") + "." }
-            if result.embeddedWriteMayHaveOccurred { message += " Image metadata may already have changed; verify it before retrying." }
+            if result.embeddedWriteMayHaveOccurred { message += " Image metadata may already have changed; check it before trying again." }
             if let path = result.committedButUnverifiedSidecarURL { message += " The app's saved edits for \(path.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) couldn't be checked after saving. Reload the folder before editing it again." }
             lines.append(message)
         }
         return lines.joined(separator: "\n\n")
+    }
+
+    /// Discovery reads the app's per-photo `.meta.json` records; name the photo, not the record.
+    private static func discoveryFailureSubject(_ url: URL) -> String {
+        let name = url.lastPathComponent
+        guard name.hasSuffix(".meta.json") else { return "This folder's saved edits" }
+        return "Saved edits for " + name.replacingOccurrences(of: ".meta.json", with: "")
     }
 }
 
