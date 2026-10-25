@@ -386,6 +386,10 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
    ```
    Before accessing signing credentials or building, it rejects a dirty worktree and verifies a successful CI run tied to the exact `HEAD` SHA. The accepted run is recorded under `build/release/`. It then archives, exports with Developer ID, notarizes and staples the app and DMG, Sparkle-signs the DMG, and inserts the appcast item. When an archive or valid exported app has matching version/build metadata **and** the source-revision marker written by the script, its terminal menu can resume from that artifact instead of rebuilding; unmarked or stale-revision artifacts are rejected. Set `RELEASE_BUILD_MODE=reuse` or `RELEASE_BUILD_MODE=rebuild` to make that choice non-interactively.
 5. Upload the DMG to `https://aagedal.me/apps/photoagent/`, using the exact filename printed by the script.
+   Also upload the FFmpeg corresponding-source companion built by
+   `python3 scripts/ffmpeg/make_source_companion.py --sources <ffmpeg build sources>` (see
+   [its provenance](docs/provenance/ffmpeg-photo-agent-9.0.2.md#corresponding-source-companion))
+   and link it from the release notes, as GPLv3 §6 requires.
 6. Commit and push the generated `appcast.xml` to GitHub, tag the release, then synchronize the website fallback appcast and legacy Codeberg copy.
 7. For stable releases, bump the cask in the `aagedal/homebrew-tap` repo.
    For public betas, publish a GitHub prerelease with tag `3.0.0-beta.2`, attach the
