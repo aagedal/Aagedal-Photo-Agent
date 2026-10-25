@@ -490,6 +490,39 @@
     "steps": "Before handoff, record candidate commit/build, architecture, test and GUI evidence and all blocker dispositions. After explicit acceptance/authorization, the release owner verifies version metadata, notarized artifact, launch/Gatekeeper behavior and authorized Sparkle/appcast/Homebrew steps.",
     "expected": "Candidate evidence matches the delivered build. No draft, incomplete checklist or automated pass count triggers distribution. Signed packaging and publication are recorded by the authorized release owner only after sign-off.",
     "cleanup": "Retain immutable candidate evidence and release artifact checksums. Remove disposable installs only; do not alter production release channels from this checklist."
+  },
+  {
+    "id": "A34",
+    "lane": "Agent computer use",
+    "priority": "P1",
+    "title": "Type exact values into Develop sliders",
+    "source": "../feature-help-3.0.md",
+    "setup": "Use a disposable RAW + XMP photo and a disposable JPEG in Develop.",
+    "steps": "Click the Exposure value, type 1,5 and press Return. Click the Temperature value, type 5200K and click the photo. Click the Contrast value, type 250 and press Return. Click the Highlights value, type 20 and press Escape. Click a value, type a number, then use Space, M and the arrow keys after clicking the photo. Use Edit ▸ Undo after each applied value. Reopen the photo.",
+    "expected": "Exposure reads +1.50, Temperature about 5200, Contrast is capped at +100; Escape leaves Highlights unchanged. Clicking the photo applies the typed value and Develop shortcuts work again immediately. Each applied value is one Undo step named after the slider and is saved in the XMP.",
+    "cleanup": "Delete the disposable photos."
+  },
+  {
+    "id": "A35",
+    "lane": "Agent computer use",
+    "priority": "P1",
+    "title": "Eject the memory card after import",
+    "source": "../limitations-3.0.md",
+    "setup": "Use a disposable SD card (or a mounted disk image) with a few photos, and a destination on the internal disk.",
+    "steps": "Import from the card. When the sidebar banner appears, choose Eject. Repeat with the card's folder open in Finder or in a Photo Agent pane, then choose Eject. Import from an external disk to a folder on the same disk.",
+    "expected": "The banner offers Eject <card name>; the card ejects and the banner says it can be removed. With the card in use, a message says what to close and Try Ejecting Again works after closing it. No Eject is offered when the destination or backup is on the source disk, or for internal and network sources.",
+    "cleanup": "Delete the imported test copies."
+  },
+  {
+    "id": "A36",
+    "lane": "Agent computer use",
+    "priority": "P2",
+    "title": "Import time-left estimate",
+    "source": "../limitations-3.0.md",
+    "setup": "Use a card with 100 or more photos, some of them already imported before.",
+    "steps": "Import all photos with Import new only on, and watch the sidebar while copying.",
+    "expected": "After a few files are copied the sidebar shows \"About N min left\" (or \"Less than a minute left\") and it updates while copying, including during a long video. Skipped earlier imports don't make it drop to nearly zero at the start. It disappears when copying ends.",
+    "cleanup": "Delete the imported test copies."
   }
 ]
 </script>
