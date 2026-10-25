@@ -747,6 +747,35 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         return decodeHidden(storedRawValues)
     }
 
+    /// Local-only (never synced) record of which default applied while no hidden-field
+    /// preference is stored, so the choice below is made once per Mac.
+    static let absentHiddenFieldsPolicyKey = "metadataFields.absentHiddenFieldsPolicy"
+
+    /// Keys only an earlier run writes. 2.x stored hidden fields only after a toggle and showed
+    /// every field while the key was absent, so an upgrade must keep showing them all.
+    static let earlierInstallationKeys = [
+        UserDefaultsKeys.recentFolders, UserDefaultsKeys.favoriteFolders,
+        UserDefaultsKeys.thumbnailScale, UserDefaultsKeys.thumbnailSortOrder,
+    ]
+
+    /// Resolves hidden editor fields from `store`: the stored preference when present;
+    /// otherwise show-all for an upgraded 2.x installation and the small default set for a
+    /// fresh one, remembered locally so later folder history cannot flip it.
+    static func resolvedHiddenEditorFields(in store: UserDefaults) -> Set<Self> {
+        if let stored = store.stringArray(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields) {
+            return decodeHidden(stored)
+        }
+        let policy: String
+        if let recorded = store.string(forKey: absentHiddenFieldsPolicyKey) {
+            policy = recorded
+        } else {
+            let upgraded = earlierInstallationKeys.contains { store.object(forKey: $0) != nil }
+            policy = upgraded ? "showAll" : "minimal"
+            store.set(policy, forKey: absentHiddenFieldsPolicyKey)
+        }
+        return policy == "showAll" ? [] : resolvedHiddenEditorFields(storedRawValues: nil)
+    }
+
     /// Resolves a durable editor order. Valid stored fields keep their relative order, duplicate
     /// and unknown values do not enter the live UI, and fields introduced by a newer build are
     /// appended in the established default order instead of disappearing.

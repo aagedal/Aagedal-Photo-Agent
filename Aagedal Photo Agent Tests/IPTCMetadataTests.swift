@@ -2832,6 +2832,33 @@ struct FieldKeyTests {
         ) == [.creator])
     }
 
+    @Test("a 2.x upgrade without a stored choice keeps every field; a fresh install stays concise")
+    func absentFieldVisibilityDependsOnEarlierInstallation() throws {
+        func withStore(_ body: (UserDefaults) throws -> Void) throws {
+            let suite = "field-visibility-\(UUID())"
+            let store = try #require(UserDefaults(suiteName: suite))
+            defer { store.removePersistentDomain(forName: suite) }
+            try body(store)
+        }
+        let concise = MetadataFieldID.resolvedHiddenEditorFields(storedRawValues: nil)
+        try withStore { store in
+            store.set(Data("[]".utf8), forKey: UserDefaultsKeys.recentFolders)
+            #expect(MetadataFieldID.resolvedHiddenEditorFields(in: store) == [])
+            #expect(store.object(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields) == nil)
+        }
+        try withStore { store in
+            #expect(MetadataFieldID.resolvedHiddenEditorFields(in: store) == concise)
+            // Opening a folder later must not flip a fresh install to show-all.
+            store.set(Data("[]".utf8), forKey: UserDefaultsKeys.recentFolders)
+            #expect(MetadataFieldID.resolvedHiddenEditorFields(in: store) == concise)
+        }
+        try withStore { store in
+            store.set(Data("[]".utf8), forKey: UserDefaultsKeys.recentFolders)
+            store.set(["creator"], forKey: UserDefaultsKeys.hiddenIPTCMetadataFields)
+            #expect(MetadataFieldID.resolvedHiddenEditorFields(in: store) == [.creator])
+        }
+    }
+
     @Test("field order defaults, persists, and repairs duplicate or missing values")
     func editorFieldOrderRecovery() {
         #expect(MetadataFieldID.resolvedEditorFieldOrder(storedRawValues: nil)

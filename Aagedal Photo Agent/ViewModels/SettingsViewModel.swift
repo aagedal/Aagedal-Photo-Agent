@@ -1528,9 +1528,7 @@ private struct SyncedPreferences {
         developSectionOrder = DevelopPanelSection.decodeOrder(
             store.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
         )
-        hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(
-            storedRawValues: store.stringArray(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields)
-        )
+        hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(in: store)
         orderedIPTCMetadataFields = MetadataFieldID.loadEditorFieldOrder()
 
         let editDestinationRaw = store.string(forKey: UserDefaultsKeys.defaultEditDestination)
