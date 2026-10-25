@@ -6179,3 +6179,35 @@ struct ExplicitXMPLabelClearTests {
         #expect(iptcMetadataFromDict([:]).label == nil)
     }
 }
+
+struct WhatsNewPresentationTests {
+    private func makeDefaults() throws -> (UserDefaults, String) {
+        let suiteName = "WhatsNewPresentationTests.\(UUID().uuidString)"
+        return (try #require(UserDefaults(suiteName: suiteName)), suiteName)
+    }
+
+    @Test("A fresh install never sees What's New and stays that way after it gains folder history")
+    func freshInstallIsMarkedSeen() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        #expect(!WhatsNewPresentation.decideAtLaunch(in: defaults))
+        defaults.set(["/Volumes/Card/DCIM"], forKey: UserDefaultsKeys.recentFolders)
+        #expect(!WhatsNewPresentation.decideAtLaunch(in: defaults))
+    }
+
+    @Test("An upgrade from 2.x sees What's New until it is shown once")
+    func upgraderSeesItOnce() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(1.2, forKey: UserDefaultsKeys.thumbnailScale)
+        #expect(WhatsNewPresentation.decideAtLaunch(in: defaults))
+        #expect(WhatsNewPresentation.decideAtLaunch(in: defaults))
+        WhatsNewPresentation.markSeen(in: defaults)
+        #expect(!WhatsNewPresentation.decideAtLaunch(in: defaults))
+    }
+
+    @Test("What's New stays on this Mac instead of syncing through iCloud")
+    func seenKeyIsNotSynced() {
+        #expect(!PreferencesSyncService.syncedKeys.contains(WhatsNewPresentation.seenReleaseKey))
+    }
+}

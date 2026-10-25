@@ -26,6 +26,10 @@ struct Aagedal_Photo_AgentApp: App {
         if uiTestConfiguration.isEnabled, let root = uiTestConfiguration.watermarkRootURL {
             WatermarkStore.storageOverrideURL = root.standardizedFileURL
         }
+        // Before this run writes folder history, which would make a new install look upgraded.
+        if !uiTestConfiguration.isEnabled {
+            WhatsNewLaunchState.shared.decide(in: AppDefaults.store)
+        }
         let history = ActivityHistoryStore()
         _activityHistory = State(initialValue: history)
         _faceRecognitionViewModel = State(initialValue: FaceRecognitionViewModel(

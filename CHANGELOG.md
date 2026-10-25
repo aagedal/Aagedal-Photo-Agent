@@ -4,6 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- People upgrading from 2.x see a one-time What's New sheet with the main new workspaces, what changed from 2.x, and links to the feature guide and known limitations. New installs don't see it.
 - Import: the sidebar shows roughly how long the copy has left ("About 4 min left") once a few files are done.
 - Import: when an import from a memory card or removable disk finishes, the sidebar import banner (and Import Complete) offers **Eject** for it, and explains what to close if macOS can't eject it yet.
 - Develop: click a slider's value to type an exact number (units such as K, % or px are optional, and a comma works as the decimal mark); Return or a click elsewhere applies it as one Undo step, Escape cancels.

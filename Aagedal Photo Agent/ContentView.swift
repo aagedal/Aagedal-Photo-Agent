@@ -4995,6 +4995,7 @@ struct ContentView: View {
 }
 
 struct ContentViewModifiers: ViewModifier {
+    @State private var isShowingWhatsNew = false
     let panes: BrowserPanesModel
     let browserViewModel: BrowserViewModel
     let metadataViewModel: MetadataViewModel
@@ -5266,6 +5267,12 @@ struct ContentViewModifiers: ViewModifier {
                 }
             }
         return base
+            .sheet(isPresented: $isShowingWhatsNew) { WhatsNewView() }
+            .task {
+                // Wait a moment so the window and its restored folder settle first.
+                try? await Task.sleep(for: .seconds(1))
+                if WhatsNewLaunchState.shared.consume(in: AppDefaults.store) { isShowingWhatsNew = true }
+            }
             .environment(\.openSettingsDestination) { [settingsViewModel] destination in
                 settingsViewModel.requestedDestination = destination
                 openSettings()

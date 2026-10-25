@@ -523,6 +523,17 @@
     "steps": "Import all photos with Import new only on, and watch the sidebar while copying.",
     "expected": "After a few files are copied the sidebar shows \"About N min left\" (or \"Less than a minute left\") and it updates while copying, including during a long video. Skipped earlier imports don't make it drop to nearly zero at the start. It disappears when copying ends.",
     "cleanup": "Delete the imported test copies."
+  },
+  {
+    "id": "A37",
+    "lane": "Agent computer use",
+    "priority": "P1",
+    "title": "What's New appears once for 2.x upgraders only",
+    "source": "../release/3.0.0-release-notes-draft.md",
+    "setup": "Use two disposable macOS user accounts: one with 2.2 installed and used (a folder opened), one with no earlier Photo Agent.",
+    "steps": "Install the candidate over 2.2 and launch it. Read the sheet, try Feature Guide and Known Limitations, then Continue. Quit and relaunch. In the clean account, launch the candidate, open a folder, quit and relaunch.",
+    "expected": "The upgraded account sees What's New once, about a second after the window opens; the links open the guide and limitations pages; it doesn't return after relaunch. The clean account never sees it, including after opening folders.",
+    "cleanup": "Remove the disposable accounts or reset their Photo Agent preferences."
   }
 ]
 </script>
