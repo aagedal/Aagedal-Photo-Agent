@@ -592,6 +592,21 @@ struct ICloudSyncCoordinatorTests {
             to: cloud.appendingPathComponent(KnownPeopleCloudGenerationPointer.fileName))
         #expect(await service.storageURL(syncEnabled: true) == local)
         #expect(await service.storageURL(syncEnabled: false) == local)
+
+        // A generation this Mac already resolved keeps serving while the pointer is unreadable.
+        let key = UserDefaultsKeys.knownPeopleICloudGenerationID
+        let previous = AppDefaults.store.object(forKey: key)
+        defer {
+            if let previous { AppDefaults.store.set(previous, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
+        }
+        let id = UUID().uuidString.lowercased()
+        let generation = cloud.appendingPathComponent(KnownPeopleCloudGenerationPointer.generationsDirectory)
+            .appendingPathComponent(id, isDirectory: true)
+        AppDefaults.store.set(id, forKey: key)
+        #expect(await service.storageURL(syncEnabled: true) == local)
+        try FileManager.default.createDirectory(at: generation, withIntermediateDirectories: true)
+        #expect(await service.storageURL(syncEnabled: true).standardizedFileURL == generation.standardizedFileURL)
     }
 
     @Test("Opt-in Known People crops follow routing without entering the managed root")

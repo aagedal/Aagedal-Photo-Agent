@@ -2438,3 +2438,15 @@ private actor HandoffProbe {
         if let title { titleAtSigning[url.lastPathComponent] = title }
     }
 }
+
+@Suite("FTP failure reasons for uncategorized curl codes")
+struct FTPUncategorizedFailureReasonTests {
+    @Test("Local, network and folder failures are not blamed on the server")
+    func reasons() {
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 25) == nil)
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 26)?.contains("couldn't be read on this Mac") == true)
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 78)?.contains("remote folder wasn't found") == true)
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 56)?.contains("connection dropped") == true)
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 99)?.contains("stopped unexpectedly") == true)
+    }
+}

@@ -94,6 +94,7 @@ struct C2PAValidationTests {
         #expect(C2PAInspectionFailure.validation(error: C2PAValidationError.malformedOutput) == .malformed)
         #expect(C2PAInspectionFailure.validation(error: C2PASigningError.c2patoolMissing) == .unavailableTool)
         #expect(C2PAInspectionFailure.validation(error: C2PASigningError.processFailed(privateDetail)) == .validationFailed)
+        #expect(C2PAInspectionFailure.validation(error: C2PAValidationError.reportFailed(privateDetail)) == .validationFailed)
 
         let failures: [C2PAInspectionFailure] = [
             .malformed,

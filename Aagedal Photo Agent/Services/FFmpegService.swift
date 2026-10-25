@@ -12,7 +12,7 @@ enum FFmpegError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .ffmpegMissing:
-            return "AVIF and JPEG XL export isn't available in this copy of the app. Reinstall Photo Agent."
+            return "AVIF and JPEG XL files can't be created in this copy of the app. Reinstall Photo Agent."
         case .processFailed, .invalidLocalInvocation, .outputMissing:
             // The process failure detail is already in the FFmpeg log.
             return "Couldn't create the AVIF or JPEG XL file. Try JPEG or TIFF instead."

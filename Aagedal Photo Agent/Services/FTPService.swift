@@ -702,6 +702,21 @@ struct FTPService: Sendable {
             FTPService.failureCategory(exitCode: code).isServerLevel
         }
 
+        /// Plain reasons for curl codes the failure categories file under `.fileRejected`, which
+        /// would otherwise blame the server for local, network or folder problems.
+        /// Returns nil where "The server did not accept the file." is accurate (code 25).
+        nonisolated static func plainReason(forUncategorizedExit code: Int32) -> String? {
+            switch code {
+            case 25: nil
+            case 21: "The server refused to rename the uploaded file."
+            case 23: "The file couldn't be written on this Mac — check disk space."
+            case 26: "The photo couldn't be read on this Mac — check that it's still there."
+            case 55, 56: "The connection dropped during the transfer. Try again."
+            case 78: "The remote folder wasn't found — check the folder in Settings → FTP."
+            default: "The upload stopped unexpectedly. Try again; if it keeps failing, use Test Connection in Settings → FTP."
+            }
+        }
+
         private static func describe(code: Int32, stderr: String, prefix: String) -> String {
             let description = curlExitCodeDescription(code, prefix: prefix)
             if let detail = extractCurlError(from: stderr) {

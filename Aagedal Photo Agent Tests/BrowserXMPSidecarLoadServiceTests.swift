@@ -412,7 +412,15 @@ struct UserFacingErrorCauseTests {
         #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
             code: NSFileNoSuchFileError)) == "The file is no longer there.")
         #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
-            code: NSFileWriteUnknownError)) == "The folder may be read-only or the disk full.")
+            code: NSFileWriteUnknownError)) == "The file couldn't be written or checked afterwards.")
+        #expect(UserFacingErrorCause.sentence(for: CocoaError(.fileReadCorruptFile))
+            == "The saved data is damaged or in an unexpected format.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileWriteFileExistsError)) == "A file with that name already exists.")
+        #expect(UserFacingErrorCause.sentence(for: DecodingError.dataCorrupted(.init(codingPath: [],
+            debugDescription: "bad"))) == "The saved data is damaged or in an unexpected format.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSPOSIXErrorDomain,
+            code: Int(EINVAL))) == "The file couldn't be read or written.")
         #expect(UserFacingErrorCause.sentence(for: Refusal())
             == "This RAW file's metadata is saved in its XMP file instead.")
         #expect(UserFacingErrorCause.sentence(for: CocoaError(.fileReadUnknown, userInfo: [

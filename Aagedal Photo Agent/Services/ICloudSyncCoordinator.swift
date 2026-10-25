@@ -527,9 +527,20 @@ actor KnownPeopleICloudRoutingService: KnownPeopleICloudRouting {
             return try await KnownPeopleCloudGenerationPublisher.shared
                 .resolveActiveGeneration(in: cloud) ?? cloud
         } catch {
-            // A present but invalid pointer must not reactivate the legacy root records a
-            // replacement retired (KnownPeopleCloudCoordinator refuses them too). The local
-            // library is what that replacement published.
+            // A present but unresolvable pointer (damaged, or synced before its generation
+            // finished downloading) must not reactivate the legacy root records a replacement
+            // retired; KnownPeopleCloudCoordinator refuses them too. Keep using the generation
+            // this Mac last resolved, else the local library that a replacement published.
+            if let id = AppDefaults.store.string(forKey: UserDefaultsKeys.knownPeopleICloudGenerationID),
+               UUID(uuidString: id) != nil {
+                let cached = cloud
+                    .appendingPathComponent(KnownPeopleCloudGenerationPointer.generationsDirectory, isDirectory: true)
+                    .appendingPathComponent(id, isDirectory: true)
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: cached.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                    return cached
+                }
+            }
             return local
         }
     }

@@ -1847,7 +1847,7 @@ final class MetadataViewModel {
             if let older = retainedPrimaryDevelopWrites.first(where: {
                 Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(request.imageURL)
             }), older.id != request.id {
-                result = .init(requestID: request.id, failure: "An earlier retained Primary Develop edit for this photo must be resolved first.")
+                result = .init(requestID: request.id, failure: PrimaryDevelopFailureText.earlierEditUnresolved)
             } else if primaryDevelopResults[request.id]?.requiresRecovery == true {
                 result = primaryDevelopResults[request.id]!
             } else if let primaryDevelopExecutor {

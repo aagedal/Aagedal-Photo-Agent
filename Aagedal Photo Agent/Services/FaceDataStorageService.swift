@@ -499,7 +499,7 @@ actor FaceScanFileSignatureService {
             }
             return nil
         } catch {
-            return .invalidInventory(error.localizedDescription)
+            return .invalidInventory(BrowserViewModel.folderLoadMessage(for: error))
         }
     }
 

@@ -14,6 +14,7 @@ nonisolated enum PrimaryDevelopFailureText {
     static let sourceRevisionUnavailable = "The loaded source revision is unavailable. This Primary Develop edit remains retained for recovery."
     static let xmpRevisionUnavailable = "The loaded XMP revision is unavailable. This Primary Develop edit remains retained for recovery."
     static let predecessorUnverified = "The earlier captured Primary Develop edit has no verified completion receipt."
+    static let earlierEditUnresolved = "An earlier retained Primary Develop edit for this photo must be resolved first."
     static let sourceEvidenceUnavailable = "The original Develop source evidence is unavailable. The captured edit remains retained for recovery."
     static let sourceChanged = "The source image changed after this Develop edit was loaded. The original edit remains retained."
     static let writerCannotVerify = "This image writer cannot safely verify a retained Develop edit."
@@ -35,6 +36,8 @@ nonisolated enum PrimaryDevelopFailureText {
             return "Your edits to \(fileName) weren't saved because its XMP file couldn't be checked when it was opened. \(reloadAndSave)"
         case predecessorUnverified?:
             return "Your edits to \(fileName) weren't saved because an earlier save of this photo didn't finish. Your edits are kept. Try again."
+        case earlierEditUnresolved?:
+            return "Your edits to \(fileName) weren't saved because an earlier unsaved edit of this photo needs attention first. Save or export that edit, then try again."
         case writerCannotVerify?:
             return "Your edits to \(fileName) weren't saved because this file type can't be saved safely here. Your edits are kept."
         case let failure?:

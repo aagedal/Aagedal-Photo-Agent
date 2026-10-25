@@ -3636,7 +3636,7 @@ struct ContentView: View {
 
     private func renderAndSignSelectedAfterMetadataFlush() {
         guard C2PASigningService.isAvailable else {
-            browserViewModel.errorMessage = "Content Credentials signing isn't available in this copy of the app. Reinstall Photo Agent."
+            browserViewModel.errorMessage = "Content Credentials aren't available in this copy of the app. Reinstall Photo Agent."
             return
         }
         guard !isRenderingEditedFolder else { return }

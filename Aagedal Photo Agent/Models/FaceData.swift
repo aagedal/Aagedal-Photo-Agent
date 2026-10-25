@@ -38,8 +38,12 @@ nonisolated enum FaceFolderScanRefusal: Sendable, Equatable {
                 "Face scanning works on folders on this Mac or a connected drive."
             case "symbolic-link images require a separate scan scope":
                 "Linked photos (aliases) can't be scanned here. Scan the folder they are stored in."
-            default:
+            case "an item is not a supported immediate folder image", "duplicate image URLs",
+                 "the image list differs from the folder contents; refresh and retry":
                 "Couldn't list every photo in this folder. Reload the folder and try again."
+            default:
+                // A folder-listing failure; its detail is Foundation's own explanation.
+                "Couldn't list the photos in this folder. \(detail)"
             }
         case .reservationFailed(let detail): detail
         case .resetFailed(let detail): detail

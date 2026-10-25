@@ -1342,6 +1342,10 @@ final class FTPViewModel {
     /// A short, user-facing reason for one failed file, shown on its row and in `errorMessages`.
     private static func failureReason(for error: any Error) -> String {
         if let ftpError = error as? FTPService.FTPError {
+            if ftpError.category == .fileRejected, case .uploadFailed(let code, _) = ftpError,
+               let reason = FTPService.FTPError.plainReason(forUncategorizedExit: code) {
+                return reason
+            }
             if let category = ftpError.category { return category.userMessage }
             return ftpError.localizedDescription
         }
