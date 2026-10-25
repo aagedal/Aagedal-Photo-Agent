@@ -90,7 +90,7 @@ struct PendingMetadataWriteCallerTests {
         #expect(outcome.discoveryFailures.count == 1)
         #expect(outcome.attentionMessage?.contains("Already written: XMP sidecar") == true)
         #expect(outcome.attentionMessage?.contains("Saved edits for " + discoveryFailure.url.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) == true)
-        #expect(outcome.attentionMessage?.contains("1 more photos with unsaved changes weren't started") == true)
+        #expect(outcome.attentionMessage?.contains("1 more photo with unsaved changes wasn't started") == true)
         #expect(!model.isProcessingFolder)
         #expect(model.folderProcessProgress.isEmpty)
         #expect(model.saveError == outcome.attentionMessage)

@@ -247,7 +247,7 @@ struct VariableMetadataBatchOutcome: Sendable {
     var attention: PendingMetadataWriteBatchAttention? {
         guard wasCancelled || results.contains(where: { !$0.completed }) else { return nil }
         var lines = ["Variables were saved for \(results.filter(\.completed).count) of \(results.count) photos."]
-        if wasCancelled { lines.append("Cancelled. \(unattemptedURLs.count) photos weren't started.") }
+        if wasCancelled { lines.append("Cancelled. \(unattemptedURLs.count) \(unattemptedURLs.count == 1 ? "photo wasn't" : "photos weren't") started.") }
         for item in results where !item.completed {
             let result = item.writeResult
             var detail = "\(item.imageURL.lastPathComponent): " + (item.failure ?? result?.failure ?? "This photo was cancelled or didn't finish.")

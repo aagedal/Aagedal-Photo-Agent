@@ -158,7 +158,7 @@ nonisolated struct PendingMetadataWriteBatchOutcome: Sendable {
     var attentionMessage: String? {
         guard wasCancelled || skippedCount > 0 || failedCount > 0 || !discoveryFailures.isEmpty else { return nil }
         var lines = ["Write All wrote \(completedCount), skipped \(skippedCount) and failed \(failedCount)."]
-        if wasCancelled { lines.append("Cancelled after \(results.count) photos. \(unattemptedURLs.count) more photos with unsaved changes weren't started.") }
+        if wasCancelled { lines.append("Cancelled after \(results.count) \(results.count == 1 ? "photo" : "photos"). \(unattemptedURLs.count) more \(unattemptedURLs.count == 1 ? "photo with unsaved changes wasn't" : "photos with unsaved changes weren't") started.") }
         if discoveryWasCancelled { lines.append("The search for photos with unsaved changes didn't finish, so some may not have been written.") }
         for failure in discoveryFailures { lines.append(Self.discoveryFailureSubject(failure.url) + ": " + failure.message) }
         for result in results where !result.completed {
