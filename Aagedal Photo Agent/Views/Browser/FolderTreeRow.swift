@@ -132,9 +132,15 @@ struct FolderTreeRow: View {
 
             Image(systemName: isCurrent || isRootOfSection ? "folder.fill" : "folder")
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+                .accessibilityHidden(true)
             Text(url.lastPathComponent)
                 .font(.callout)
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
+                // The row's tap gesture opens the folder; VoiceOver needs the same action here,
+                // separate from the expand and close buttons in the row.
+                .accessibilityLabel("Folder \(url.lastPathComponent)")
+                .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
+                .accessibilityAction { openFolder(url, section == .openRoot) }
             Spacer()
 
             if isRootOfSection && section == .openRoot && isHovered {

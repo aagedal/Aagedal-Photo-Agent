@@ -2420,6 +2420,12 @@ struct EditWorkspaceView: View {
                             let modifiers = NSEvent.modifierFlags
                             requestDevelopImageSelection(image.url, modifiers: modifiers)
                         }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(image.url.lastPathComponent)
+                        .accessibilityAddTraits(browserViewModel.selectedImageIDs.contains(image.url) ? [.isButton, .isSelected] : .isButton)
+                        .accessibilityAction {
+                            requestDevelopImageSelection(image.url, modifiers: [])
+                        }
                         .onContinuousHover { phase in
                             switch phase {
                             case .active:

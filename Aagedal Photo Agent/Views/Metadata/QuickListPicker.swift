@@ -240,6 +240,12 @@ struct QuickListPicker: View {
             focusedIndex = index
             activate(entry)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
+            focusedIndex = index
+            activate(entry)
+        }
     }
 
     private var footer: some View {

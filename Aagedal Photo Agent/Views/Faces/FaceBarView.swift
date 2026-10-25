@@ -327,6 +327,15 @@ struct FaceBarView: View {
                 selectedGroup = group
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(group.name ?? "Unnamed person")
+        .accessibilityValue("\(group.faceIDs.count) \(group.faceIDs.count == 1 ? "face" : "faces")")
+        .accessibilityAddTraits(multiSelectedGroupIDs.contains(group.id) ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint("Name or rename this person")
+        .accessibilityAction {
+            multiSelectedGroupIDs.removeAll()
+            selectedGroup = group
+        }
         .contextMenu {
             if group.name != nil {
                 Button("Reset to Unnamed") {

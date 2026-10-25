@@ -1999,6 +1999,14 @@ struct FullScreenImageView: View {
                                 guard !faceVM.faceEditingPausedForScan() else { return }
                                 renamingFace = RenamingFace(id: face.id, groupID: groupID, initialName: faceVM.groupName(groupID) ?? "")
                             }
+                            .accessibilityElement()
+                            .accessibilityLabel(faceVM.groupName(groupID).map { "Face: \($0)" } ?? "Unnamed face")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityHint("Name or rename this person")
+                            .accessibilityAction {
+                                guard !faceVM.faceEditingPausedForScan() else { return }
+                                renamingFace = RenamingFace(id: face.id, groupID: groupID, initialName: faceVM.groupName(groupID) ?? "")
+                            }
                             .popover(isPresented: Binding(
                                 get: { renamingFace?.id == face.id },
                                 set: { if !$0 { renamingFace = nil } }

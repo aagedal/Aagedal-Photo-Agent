@@ -307,6 +307,9 @@ struct ExpandedKnownPeopleView: View {
                             .onTapGesture {
                                 handlePersonTap(person)
                             }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityAddTraits(selectedPersonIDs.contains(person.id) ? [.isButton, .isSelected] : .isButton)
+                            .accessibilityAction { handlePersonTap(person) }
                         }
                     }
                     .padding(.vertical, 4)
