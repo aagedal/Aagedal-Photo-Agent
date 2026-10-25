@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Upgrading from 2.x: the metadata panel keeps showing every field it showed before, instead of only the seven fields a new installation starts with.
+- Metadata sidecars and template bundles written by 3.0 stay readable by 2.x (a Mac still on 2.x sharing a folder no longer sets 3.0's sidecars aside as corrupt).
 - Develop: the add-watermark button is disabled once a photo has four enabled watermark layers (the most that render), with a tooltip explaining the limit, instead of adding a layer that silently doesn't appear.
 - Transcription: a batch whose final status can't be read back (for example a damaged operations file) no longer stays "running" forever and blocks every later transcription; after about 25 seconds of retries it stops, keeps the drafts it saved and says the status couldn't be confirmed.
 
