@@ -227,6 +227,16 @@ struct KnownPeopleServiceTests {
 
     @Test("Cold asynchronous additions retain tombstone suppression after legacy migration")
     func backgroundLegacyMigrationRetainsTombstones() async throws {
+        // Without a stored embedding version the load treats the store as pre-ArcFace and
+        // resets it (removing the marker); the suite only passed when an earlier test had
+        // stored the current version.
+        let versionKey = UserDefaultsKeys.knownPeopleEmbeddingVersion
+        let previousVersion = AppDefaults.store.object(forKey: versionKey)
+        AppDefaults.store.set(FaceRecognitionDefaults.embeddingVersion, forKey: versionKey)
+        defer {
+            if let previousVersion { AppDefaults.store.set(previousVersion, forKey: versionKey) }
+            else { AppDefaults.store.removeObject(forKey: versionKey) }
+        }
         let directory = makeTempDir()
         activate(directory)
         defer { teardown(directory) }
