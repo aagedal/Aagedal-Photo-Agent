@@ -41,6 +41,8 @@ nonisolated struct TemplateBundle: Codable, Sendable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        // 2.x requires `version` to import a bundle.
+        try container.encode(Self.currentSchemaVersion, forKey: .version)
         try container.encode(exportedAt, forKey: .exportedAt)
         try container.encode(templates, forKey: .templates)
     }

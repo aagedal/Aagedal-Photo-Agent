@@ -960,7 +960,8 @@ struct MetadataSidecarServiceTests {
             JSONSerialization.jsonObject(with: Data(contentsOf: sidecarURL)) as? [String: Any]
         )
         #expect(savedObject["schemaVersion"] as? Int == MetadataSidecar.currentSchemaVersion)
-        #expect(savedObject["version"] == nil)
+        // Mirrored for 2.x, which requires `version` and quarantines sidecars without it.
+        #expect(savedObject["version"] as? Int == MetadataSidecar.currentSchemaVersion)
     }
 
     @Test("newer sidecars remain in place and cannot be overwritten")
