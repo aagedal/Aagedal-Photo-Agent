@@ -1,11 +1,11 @@
 # Aagedal Photo Agent 3.0 feature guide
 
 **Status:** release-candidate draft  
-**Last reviewed:** 2026-09-15
+**Last reviewed:** 2026-10-25
 
 This guide covers the new 3.0 investigation, comparison, versioning, caption, and rename
 workflows. It supplements the control-level hover help and accessibility hints in the app. Commands and
-shortcuts shown in Settings → Keyboard Shortcuts are authoritative when they differ from examples here.
+shortcuts shown in Settings → Keyboard Shortcuts are authoritative when they differ from examples here. Open this guide, the known limitations and What's New from the **Help** menu.
 
 ## Find a setting
 
