@@ -28,13 +28,13 @@ struct CaptionConflictRecoveryView: View {
             Text("\(requestCount) queued \(requestCount == 1 ? "edit" : "edits") for this photo will be included in the recovery file.")
             Text("Export the queued metadata and history before discarding these edits. The saved photo, metadata files, and queued edits for other photos will be kept.")
             if let exportURL {
-                Label("Recovery export verified", systemImage: "checkmark.circle.fill")
+                Label("Recovery file saved and checked", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 Text(exportURL.path)
                     .font(.caption)
                     .textSelection(.enabled)
             } else {
-                Text("Discard becomes available after the recovery JSON has been saved and verified.")
+                Text("Discard becomes available after the recovery file is saved.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -53,10 +53,10 @@ struct CaptionConflictRecoveryView: View {
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Export Recovery JSON…", action: onExport)
+                Button("Export Recovery File…", action: onExport)
                     .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("caption.conflictReview.export")
-                Button("Discard Exported Queued Edits", role: .destructive, action: onDiscard)
+                Button("Discard These Edits", role: .destructive, action: onDiscard)
                     .disabled(exportURL == nil)
                     .accessibilityIdentifier("caption.conflictReview.discard")
             }

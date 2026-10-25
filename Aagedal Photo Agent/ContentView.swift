@@ -2865,7 +2865,7 @@ struct ContentView: View {
                     Label("Review Develop Conflicts", systemImage: "doc.text.magnifyingglass")
                 }
                 .accessibilityIdentifier("toolbar.develop.review")
-                .help("Export retained Primary Develop edits before discarding the exported requests.")
+                .help("Review unsaved Develop edits for a photo, export a recovery file and discard them.")
             }
             ToolbarItem(id: "develop-primary-retry", placement: .secondaryAction) {
                 Button {
@@ -2879,7 +2879,7 @@ struct ContentView: View {
                     Label("Retry Develop Writes", systemImage: "arrow.clockwise")
                 }
                 .accessibilityIdentifier("toolbar.develop.retry")
-                .help("Retry captured Primary Develop edits using their original file evidence.")
+                .help("Try saving the Develop edits again to the same photos.")
             }
         }
         if let attention = metadataViewModel.variableBatchOutcome?.attention {
@@ -2891,7 +2891,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel(attention.title)
                 .accessibilityIdentifier("toolbar.processVariables.details")
-                .help("Review variable processing results and retained edits for the original folder.")
+                .help("See the full variable processing results, including photos with unsaved edits.")
             }
         }
         if metadataViewModel.hasRetainedVariableWrites {
@@ -2908,7 +2908,7 @@ struct ContentView: View {
                     Label("Review Variable Conflicts", systemImage: "doc.text.magnifyingglass")
                 }
                 .accessibilityIdentifier("toolbar.processVariables.review")
-                .help("Export and review retained variable edits for one photo before discarding them.")
+                .help("Review unsaved variable edits for a photo, export a recovery file and discard them.")
             }
             ToolbarItem(id: "folder-variable-retry", placement: .secondaryAction) {
                 Button {
@@ -2919,7 +2919,7 @@ struct ContentView: View {
                     Label("Retry Variable Writes", systemImage: "arrow.clockwise")
                 }
                 .accessibilityIdentifier("toolbar.processVariables.retry")
-                .help("Retry captured variable work with its original inputs and write mode.")
+                .help("Try saving the variable edits again, with the same values and save settings.")
                 .disabled(metadataViewModel.isProcessingFolder)
             }
         }
@@ -2932,7 +2932,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel(attention.title)
                 .accessibilityIdentifier("toolbar.writeAllPending.details")
-                .help("Review the complete Write All results, including partial writes and retained pending files.")
+                .help("See the full Write All results, including partly written photos and those with unsaved changes.")
             }
         }
         if metadataViewModel.isProcessingFolder {

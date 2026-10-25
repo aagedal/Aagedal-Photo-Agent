@@ -3777,8 +3777,8 @@ final class MetadataViewModel {
         let riskyAdmissions = retainedVariableAdmissions.filter(\.requiresPersistence)
         guard unverified.isEmpty && riskyAdmissions.isEmpty else {
             throw CaptionWorkspaceFlushError.persistenceFailed(
-                "Variable edits have not been verified in saved metadata. Use Retry Variable Writes before closing. Retained photos: "
-                + (unverified.map { $0.imageURL.path } + riskyAdmissions.map { $0.imageURL.path }).joined(separator: ", "))
+                "Some variable edits haven't been confirmed as saved. Use Retry Variable Writes before closing. Photos: "
+                + (unverified.map { $0.imageURL.lastPathComponent } + riskyAdmissions.map { $0.imageURL.lastPathComponent }).joined(separator: ", "))
         }
     }
 
@@ -4008,7 +4008,7 @@ final class MetadataViewModel {
             guard !entries.isEmpty else { throw VariableConflictRecoveryError.obsoleteReview }
             let generation = variableRecoveryGeneration
             let snapshot = try await VariableConflictRecovery.makeSnapshot(photoURL: photoURL,
-                reason: variableFailures[Self.variablePhotoKey(photoURL)] ?? "Retained variable work needs review.",
+                reason: variableFailures[Self.variablePhotoKey(photoURL)] ?? "Unsaved variable edits need review.",
                 generation: generation, entries: entries)
             try Task.checkCancellation()
             guard variableRecoveryOwnerID == owner, variableRecoveryGeneration == generation else {

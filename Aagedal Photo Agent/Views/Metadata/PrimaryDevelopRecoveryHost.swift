@@ -17,25 +17,25 @@ struct PrimaryDevelopRecoveryHost: View {
         VStack(alignment: .leading, spacing: 16) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Review Retained Develop Edits").font(.title2.bold())
+                    Text("Review Unsaved Develop Edits").font(.title2.bold())
                     if let review {
                         Text(review.photoURL.lastPathComponent).font(.headline)
                         Text(review.photoURL.path).font(.caption).textSelection(.enabled)
                         Text(review.reason).textSelection(.enabled)
-                        Text("\(review.requestCount) retained \(review.requestCount == 1 ? "request" : "requests") for this photo will be included in the recovery JSON.")
-                        Text("Export first to keep a copy of the captured Develop settings, metadata, original file evidence, history and save details. Discard removes only these exported requests from this session. It keeps saved photos, metadata files and retained requests for other photos.")
-                        Text("To reconcile with newer metadata, keep the recovery file, discard the exported requests, then review the saved photo and apply the edits you still want as a new operation.")
+                        Text("\(review.requestCount) unsaved \(review.requestCount == 1 ? "edit" : "edits") for this photo will be included in the recovery file.")
+                        Text("Export the recovery file first. It keeps a copy of the Develop settings, metadata, details of the original file, history and save details. Discard then removes only these edits from Photo Agent; your photos, saved metadata and unsaved edits for other photos are kept.")
+                        Text("To finish, keep the recovery file, discard these edits, then check the photo and redo the changes you still want.")
                             .font(.callout)
                         if let receipt {
-                            Label("Recovery export verified", systemImage: "checkmark.circle.fill")
+                            Label("Recovery file saved and checked", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                             Text(receipt.exportURL.path).font(.caption).textSelection(.enabled)
                         } else {
-                            Text("Discard becomes available after saving and verifying the recovery JSON.")
+                            Text("Discard becomes available after the recovery file is saved.")
                                 .foregroundStyle(.secondary)
                         }
                     } else {
-                        Text("Choose one photo to review. Requests for other photos remain retained.")
+                        Text("Choose a photo to review. Unsaved edits for the other photos are kept.")
                         ScrollView {
                             VStack(alignment: .leading, spacing: 10) {
                                 ForEach(viewModel.primaryDevelopRecoveryPhotos, id: \.self) { photo in
@@ -52,7 +52,7 @@ struct PrimaryDevelopRecoveryHost: View {
                         }
                         .frame(maxHeight: 230)
                         if viewModel.primaryDevelopRecoveryPhotos.isEmpty {
-                            Text("No Develop requests remain to review.").foregroundStyle(.secondary)
+                            Text("No unsaved Develop edits are left to review.").foregroundStyle(.secondary)
                         }
                     }
                     if let errorMessage {
@@ -70,10 +70,10 @@ struct PrimaryDevelopRecoveryHost: View {
                 Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
                 Spacer()
                 if review != nil {
-                    Button("Export Recovery JSON…", action: export)
+                    Button("Export Recovery File…", action: export)
                         .keyboardShortcut(.defaultAction)
                         .accessibilityIdentifier("develop.conflictReview.export")
-                    Button("Discard Exported Requests", role: .destructive, action: discard)
+                    Button("Discard These Edits", role: .destructive, action: discard)
                         .disabled(receipt == nil)
                         .accessibilityIdentifier("develop.conflictReview.discard")
                 }

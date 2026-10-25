@@ -985,11 +985,11 @@ struct SettingsView: View {
                     Button("Confirm iCloud Crop Sync") {
                         showCropSyncConsentConfirmation = true
                     }
-                    Text("Your previous iCloud consent covered embeddings and thumbnails, not reusable face crops. Crop upload is paused until you confirm.")
+                    Text("When you turned on iCloud sync, you allowed face data and thumbnails, not reusable face crops. Crops won't upload until you confirm.")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
-                LabeledContent("Retained crops") {
+                LabeledContent("Saved face crops") {
                     if let upgradeSourceInventory, let knownPeopleStats {
                         Text("\(upgradeSourceInventory.retainedCount) of \(knownPeopleStats.embeddingCount) examples · \(ByteCountFormatter.string(fromByteCount: upgradeSourceInventory.retainedBytes, countStyle: .file))")
                             .monospacedDigit()
@@ -2420,7 +2420,7 @@ struct SettingsView: View {
         ) { result in
             handleCertificateImport(result)
         }
-        .alert("PKCS#12 Password", isPresented: $showP12PasswordPrompt) {
+        .alert("Certificate Password", isPresented: $showP12PasswordPrompt) {
             SecureField("Password", text: $p12Password)
             Button("Import") {
                 guard let url = pendingP12URL else { return }
@@ -2433,7 +2433,7 @@ struct SettingsView: View {
                 pendingP12URL = nil
             }
         } message: {
-            Text("Enter the password for the PKCS#12 file.")
+            Text("Enter the password you set when exporting this certificate (.p12 or .pfx file).")
         }
         .alert("Remove Signing Certificate?", isPresented: $showC2PARemovalConfirmation) {
             Button("Cancel", role: .cancel) {}
