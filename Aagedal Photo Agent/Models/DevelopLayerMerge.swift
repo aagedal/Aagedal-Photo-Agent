@@ -35,6 +35,10 @@ nonisolated enum DevelopLayerLimits {
     static func canAddWatermark(to settings: CameraRawSettings?) -> Bool {
         enabledWatermarkCount(in: settings) < maxEnabledWatermarks
     }
+
+    static func exceedsWatermarkLimit(_ settings: CameraRawSettings?) -> Bool {
+        enabledWatermarkCount(in: settings) > maxEnabledWatermarks
+    }
 }
 
 /// The outcome of appending copied layers (masks, watermark layers) onto a target's own layers.

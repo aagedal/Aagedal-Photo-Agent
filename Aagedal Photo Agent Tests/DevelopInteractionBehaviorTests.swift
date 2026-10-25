@@ -1369,6 +1369,8 @@ struct DevelopStraightenPivotAndLimitTests {
         #expect(DevelopLayerLimits.canAddWatermark(to: settings(enabled: limit - 1, disabled: 3)))
         #expect(!DevelopLayerLimits.canAddWatermark(to: settings(enabled: limit, disabled: 0)))
         #expect(DevelopLayerLimits.enabledWatermarkCount(in: settings(enabled: 2, disabled: 5)) == 2)
+        #expect(!DevelopLayerLimits.exceedsWatermarkLimit(settings(enabled: limit, disabled: 4)))
+        #expect(DevelopLayerLimits.exceedsWatermarkLimit(settings(enabled: limit + 1, disabled: 0)))
     }
 
     @Test("oversized LUT files report a size error, not an encoding error")

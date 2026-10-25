@@ -5602,6 +5602,15 @@ struct EditWorkspaceView: View {
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
             }
+            if DevelopLayerLimits.exceedsWatermarkLimit(metadataViewModel.editingMetadata.cameraRaw) {
+                Label(
+                    "Only the first \(DevelopLayerLimits.maxEnabledWatermarks) enabled watermark layers render. Disable or delete watermarks to see the rest.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
             if let id = selectedMaskID {
                 maskActionRow(id)
             } else if let id = selectedWatermarkID {
@@ -7476,15 +7485,15 @@ struct EditWorkspaceView: View {
 
     // MARK: - Watermark layers
 
-    /// Adds a new watermark layer using the first (alphabetically) library asset, defaulting
-    /// to the bottom-right corner of the margin-inset safe area per spec. If the library is
-    /// empty, prompts the user to import one from Settings instead of adding a layer with no
-    /// image to show.
     /// The pipeline composites at most `DevelopLayerLimits.maxEnabledWatermarks` watermarks.
     private var canAddWatermarkLayer: Bool {
         DevelopLayerLimits.canAddWatermark(to: metadataViewModel.editingMetadata.cameraRaw)
     }
 
+    /// Adds a new watermark layer using the first (alphabetically) library asset, defaulting
+    /// to the bottom-right corner of the margin-inset safe area per spec. If the library is
+    /// empty, prompts the user to import one from Settings instead of adding a layer with no
+    /// image to show.
     private func addNewWatermarkLayer() {
         guard canAddWatermarkLayer else {
             workspaceSession.showNotice(DevelopLayerLimits.watermarkLimitReachedMessage)
