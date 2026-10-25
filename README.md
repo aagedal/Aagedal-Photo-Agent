@@ -197,10 +197,10 @@ privacy-labeled links to external services; Photo Agent does not upload the imag
 - Synchronize normalized pan/zoom, temporarily unlock alignment, save an offset, and reset safely
 - Enter comparison from Browser, Develop, or full-screen and present it on Clean Feed
 - Save named Develop versions in an app-private JSON catalog without multiplying XMP states
-- Duplicate, rename, delete, compare, or promote a named version to Primary; promotion first creates a
-  recovery snapshot and verifies the resulting XMP read-back
+- Duplicate, rename, delete or compare named versions, or choose **Make Main Edit…** to make one the main edit
+  (the edit saved in the photo's XMP); the previous main edit is kept as a dated version and the result is checked
 
-Named versions are not interoperable XMP edits until explicitly promoted to Primary.
+Other apps see only the main edit; named versions stay in Photo Agent until you make one the main edit.
 
 ### Export & Rendering
 
