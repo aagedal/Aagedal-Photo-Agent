@@ -613,7 +613,7 @@ struct MetadataEditorReadServiceTests {
         while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
         #expect(!fixture.model.isSaving)
         #expect(writer.writeCount == 1)
-        #expect(fixture.model.saveError?.contains("newer pending sidecar changes were retained") == true)
+        #expect(fixture.model.saveError?.contains("Newer edits you made meanwhile are kept") == true)
         #expect(fixture.model.hasChanges)
         #expect(try Data(contentsOf: jsonURL) == expected)
         #expect(!CaptionWriteAndNextGate.shouldAdvance(pendingURL: fixture.image,

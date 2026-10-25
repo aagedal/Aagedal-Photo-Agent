@@ -1724,7 +1724,7 @@ final class MetadataViewModel {
     func waitForPrimaryDevelopWrites() async { await primaryDevelopTask?.value }
     func requirePrimaryDevelopWritesPersisted() throws {
         guard !hasRetainedPrimaryDevelopWrites else {
-            throw PrimaryDevelopWriteError(message: "Primary Develop work remains retained. Retry its original save, or export and review that photo's retained work before leaving.")
+            throw PrimaryDevelopWriteError(message: "This photo has Develop edits that haven't been saved yet. Try saving again, or export them for review, before leaving.")
         }
     }
     private func synchronizePrimaryDevelopRetention() {
@@ -1971,7 +1971,7 @@ final class MetadataViewModel {
     }
     private func validatePrimaryDevelopReview(_ snapshot: VariableConflictSnapshot) throws {
         guard primaryDevelopReview?.id == snapshot.id, primaryDevelopGeneration == snapshot.generation else {
-            throw PrimaryDevelopWriteError(message: "The retained Primary Develop work changed. Review and export it again.")
+            throw PrimaryDevelopWriteError(message: "The unsaved Develop edits changed since you reviewed them. Review and export them again.")
         }
     }
     private var primaryDevelopProtectedPhotos: [URL] {
@@ -2004,7 +2004,7 @@ final class MetadataViewModel {
             $0.loadID == metadataLoadRequestID && selectedURLs == [$0.imageURL] && currentFolderURL == $0.folderURL && editingMetadata == $0.edited
         } == true
         guard !ownsUnchangedEditor || (primaryDevelopEditorBarrier != nil && !isSaving) else {
-            throw PrimaryDevelopWriteError(message: "Open this photo's Develop editor and finish its active controls before discarding the retained edit.")
+            throw PrimaryDevelopWriteError(message: "Open this photo in Develop and finish the adjustment you're making before discarding the unsaved edits.")
         }
         let mayReload = ownsUnchangedEditor
         if mayReload, let last {
@@ -2019,7 +2019,7 @@ final class MetadataViewModel {
             try validatePrimaryDevelopReview(snapshot)
             guard metadataLoadRequestID == reloadID, selectedURLs == [last.imageURL],
                   metadataLoadGeneration > beforeGeneration, !isLoading else {
-                throw PrimaryDevelopWriteError(message: "The recovery export is verified, but the editor could not reload. The captured work remains retained; finish reloading before discarding it.")
+                throw PrimaryDevelopWriteError(message: "The export is saved, but the editor couldn't reload the photo. Your unsaved edits are kept. Wait for the photo to reload before discarding them.")
             }
         }
         retainedPrimaryDevelopWrites.removeAll { ids.contains($0.id) }
@@ -5564,7 +5564,7 @@ final class MetadataViewModel {
                       currentFolderURL == folderURL, selectedURLs == [imageURL] else {
                     if writeTaskGeneration == generation, metadataLoadRequestID == loadID,
                        currentFolderURL == folderURL, selectedURLs == [imageURL] {
-                        saveError = "Metadata was written, but a newer Caption draft is still pending. Its saved baseline was retained."
+                        saveError = "Metadata was saved. Newer caption edits you made meanwhile are kept and not saved yet."
                     }
                     return
                 }
@@ -5582,7 +5582,7 @@ final class MetadataViewModel {
                 guard writeTaskGeneration == generation, metadataLoadRequestID == loadID,
                       currentFolderURL == folderURL, selectedURLs == [imageURL] else { return }
                 guard cleared else {
-                    self.saveError = "Metadata was written, but newer pending sidecar changes were retained."
+                    self.saveError = "Metadata was saved. Newer edits you made meanwhile are kept and not saved yet."
                     return
                 }
                 self.metadata = edited
@@ -6120,7 +6120,7 @@ final class MetadataViewModel {
                         restore = self.restoreToOriginal()
                     case .point(let point):
                         guard let index = self.sidecarHistory.firstIndex(of: point) else {
-                            self.saveError = "This history point is no longer available. Reload the photo and choose a retained point."
+                            self.saveError = "This history point is no longer available. Reload the photo and choose another point."
                             return
                         }
                         restore = self.restoreToHistoryPoint(at: index)
@@ -6153,7 +6153,7 @@ final class MetadataViewModel {
               sidecarHistory.indices.contains(index),
               record.history.indices.contains(index),
               record.history == sidecarHistory else {
-            saveError = "This history point is no longer available. Reload the photo and choose a retained point."
+            saveError = "This history point is no longer available. Reload the photo and choose another point."
             return nil
         }
         // Reverse only later retained transitions from the actual current record. Replaying a
