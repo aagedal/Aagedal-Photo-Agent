@@ -58,7 +58,7 @@ xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
 ### Ingest & Import
 
 - Import selected images and videos from individual Instagram or X post URLs. Preserve downloaded originals alongside working copies with source attribution and caption metadata, plus JSON provenance records. Settings → Web Downloads updates gallery-dl and yt-dlp independently of the app. This first version uses the extractor's preferred quality; video and non-JPEG metadata use adjacent XMP. See the [runtime setup and current limits](scripts/web_downloads/README.md).
-- Import from memory cards or folders with a non-blocking progress bar
+- Import from memory cards or folders with a non-blocking progress bar, a time-left estimate and Eject for the card when it finishes
 - Copy verification (SHA-256) so files are checksummed before the source is released
 - Dual-destination backup — primary and backup copies written and verified in one pass
 - Capture-date sorting into year-grouped date folders, with an Import Title applied automatically
@@ -79,7 +79,7 @@ Non-destructive RAW development with real-time Metal GPU preview:
 - Vibrance and saturation
 - Per-color HSL — Hue / Saturation / Density adjustments matched to the vectorscope channels
 - Film emulation controls for grain, halation, bloom, vignette, and edge blur
-- Customizable Develop panel with per-slider visibility preferences
+- Customizable Develop panel with per-slider visibility preferences; click a slider's value to type an exact number
 - Tone curves (Adobe Camera Raw compatible)
 - Crop, straighten, and rotation
 - Reorderable develop layer chain — a horizontal strip of cards (Global node plus local masks) that you can drag to reorder
