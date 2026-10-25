@@ -1,7 +1,7 @@
 # Aagedal Photo Agent privacy
 
 **Status:** 3.0 release-candidate draft; external legal/privacy review pending  
-**Last reviewed:** 2026-10-09 (implementation update; external review remains pending)
+**Last reviewed:** 2026-10-25 (network list update; external review remains pending)
 
 Aagedal Photo Agent is a native macOS application. Photo browsing, metadata editing, Develop rendering,
 analysis, face detection, face matching when its model is packaged, and solar-position calculations run on
@@ -188,6 +188,12 @@ Photo Agent accesses a network only for a feature that needs it, including:
 - Apple MapKit place search, reverse geocoding, map imagery, and Look Around links;
 - OpenStreetMap tiles when that map style is selected;
 - C2PA trust-list refreshes;
+- a weekly IPTC Media Topics vocabulary check against `cv.iptc.org` while the app runs, on by
+  default; turn off **Automatically update IPTC Media Topics** in Settings → Keywords to check only on demand;
+  the request downloads the published vocabulary and sends no photo or keyword data;
+- explicit Description Assistant model downloads from Hugging Face and its HTTPS delivery
+  hosts; the requested model and ordinary connection information are visible to those hosts,
+  but captions, notes and photos are not uploaded;
 - explicit Whisper model downloads from Hugging Face's whisper.cpp repository and its HTTPS
   delivery hosts; the requested model and ordinary connection information are visible to those hosts,
   but voice memos, photos and transcripts are not uploaded;
