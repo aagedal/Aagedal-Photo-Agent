@@ -2277,6 +2277,6 @@ actor MetadataSidecarPersistenceService {
 
 nonisolated struct PendingOrientationWriteError: LocalizedError, Sendable {
     var errorDescription: String? {
-        "This photo has a pending rotation. Choose a physical metadata write mode, then use Write Pending Rotation before writing the complete metadata record. The rotation and caption draft were retained."
+        "This photo has a rotation that hasn't been written to the file yet. Choose Write Pending Rotation, then try again. Your rotation and caption are kept."
     }
 }

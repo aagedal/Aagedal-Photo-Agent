@@ -918,7 +918,7 @@ final class ImportViewModel {
                 try PhotoSidecarOwnership.copyPreservingSource(from: sourceSidecar, to: destination.url)
                 writtenThisRun.insert(key)
             } catch {
-                failures.append((result.source, "XMP sidecar not copied: \(error.localizedDescription)"))
+                failures.append((result.source, "The XMP file wasn't copied: \(error.localizedDescription)"))
             }
         }
         return failures

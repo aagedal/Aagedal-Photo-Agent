@@ -4,6 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Clearer error messages for photographers: metadata, rating and caption saves name the photo and give the real cause (disk full, read-only folder, file gone) instead of "sidecar" internals; FTP failures show the plain reason instead of curl output; export, AVIF/JPEG XL, import verification, busy-folder, face-scan folder (including photos still in iCloud), pending-rotation and certificate-import messages say what happened and what to do; a wrong certificate password now says so.
 - Description Assistant starts in your Mac's language (Bokmål, Nynorsk or English, otherwise English) instead of always Bokmål; a language you already picked is kept.
 - VoiceOver: about 80 icon-only buttons (close, clear search, remove keyword, expand/collapse folder, section show/hide and reset, face suggestions and more) now announce what they do instead of a symbol name; disclosure buttons report Expanded or Collapsed.
 - First-run dead ends: batch transcription offers Download Language when the Apple Speech language is missing and a Transcription Settings button when the provider isn't set up; the batch Description Assistant links to Description Models; adding a watermark with an empty library opens Watermark settings (and mentions text watermarks); Upload Selected/All explain why nothing happened when there is nothing to upload.

@@ -797,7 +797,7 @@ struct VariableMetadataCallerTests {
         model.processVariablesForImages([ImageFile(url: url)])
         await model.waitForVariableProcessing()
         #expect(await executor.requests.isEmpty)
-        #expect(model.variableBatchOutcome?.attention?.message.contains("physical metadata changed") == true)
+        #expect(model.variableBatchOutcome?.attention?.message.contains("metadata changed after you opened it") == true)
         #expect(model.editingMetadata.title == "Unsaved {filename}")
         #expect(model.hasRetainedVariableWrites)
         #expect(lifecycle.hasPendingWork)

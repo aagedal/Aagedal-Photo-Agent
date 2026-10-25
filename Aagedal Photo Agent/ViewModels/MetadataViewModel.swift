@@ -2895,7 +2895,7 @@ final class MetadataViewModel {
                     xmpMetadata = edited
                 }
             } catch {
-                saveError = "Failed to write XMP sidecar: \(error.localizedDescription)"
+                saveError = "Couldn't save the XMP file for \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                 return saveError
             }
             return nil
@@ -2918,7 +2918,7 @@ final class MetadataViewModel {
                     batchMetadataByURL[imageURL] = installed
                 }
             } catch {
-                saveError = "Failed to save XMP sidecar: \(error.localizedDescription)"
+                saveError = "Couldn't save the XMP file for \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                 failure = failure ?? saveError
             }
         }
@@ -3063,13 +3063,16 @@ final class MetadataViewModel {
         _ result: MetadataSidecarPersistenceResult, imageWasWritten: Bool
     ) -> String {
         let prefix = imageWasWritten
-            ? "The image metadata was written, but its draft could not be completed. Newer pending edits were preserved."
+            ? "Your changes were saved in the photo, but the app's saved edits couldn't be updated. Newer unsaved edits were kept."
             : result.wroteXMPSidecar
-                ? "The XMP metadata was written, but its draft could not be completed."
-                : "Metadata was not saved."
-        let detail = result.failure?.message ?? "The operation was cancelled."
-        let recovery = result.committedButUnverifiedSidecarURL.map { " Review: \($0.path)." } ?? ""
-        return "\(prefix) \(detail)\(recovery) Reload before retrying."
+                ? "Your changes were saved in the XMP file, but the app's saved edits couldn't be updated."
+                : "Your changes weren't saved."
+        let detail = result.failure?.message ?? "The save was cancelled."
+        let recovery = result.committedButUnverifiedSidecarURL.map { url in
+            let name = url.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")
+            return " The app's saved edits for \(name) may be incomplete."
+        } ?? ""
+        return "\(prefix) \(detail)\(recovery) Reload the folder, then try again."
     }
 
     /// True when the develop (Camera Raw) state differs between two snapshots,
@@ -4311,7 +4314,7 @@ final class MetadataViewModel {
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
                 guard let previous, try encoder.encode(previous) == encoder.encode(original) else {
                     throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
-                        "The photo's physical metadata changed after this editor was loaded. Your editor values remain unchanged; reload or reconcile before processing variables."])
+                        "The file's metadata changed after you opened it here. Your edits are kept — reload the photo, then try again."])
                 }
             }
             // The loaded editor already proved its technical values unchanged.
@@ -5003,7 +5006,7 @@ final class MetadataViewModel {
                         onComplete?(message)
                     }
                 } catch {
-                    let message = "Failed to save sidecar: \(error.localizedDescription)"
+                    let message = "Couldn't save changes to \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                     if matchesSelection() { saveError = message }
                     onComplete?(message)
                 }
@@ -5209,7 +5212,7 @@ final class MetadataViewModel {
                 }
             } catch {
                 allSaved = false
-                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+                saveError = "Couldn't save changes to \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                 failure = failure ?? saveError
             }
         }
@@ -5938,7 +5941,7 @@ final class MetadataViewModel {
                       batchFieldMutations == fieldMutations,
                       batchLocationsShownMutation == locationsMutation,
                       batchImageSupplierMutation == supplierMutation else { return }
-                saveError = "Failed to discard folder metadata sidecars: \(error.localizedDescription)"
+                saveError = "Couldn't discard the app's saved edits in \(folderURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                 return
             }
             guard discardRequestID == requestID,
@@ -5999,7 +6002,7 @@ final class MetadataViewModel {
                     cleanupBaseline = (imageURL, folderURL, installed)
                 }
             } catch {
-                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+                saveError = "Couldn't save changes to \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
             }
         }
     }

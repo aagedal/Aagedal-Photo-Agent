@@ -146,13 +146,13 @@ enum C2PASigningError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .c2patoolMissing:
-            return "c2patool not found in app bundle"
+            return "Content Credentials signing isn't available in this copy of the app. Reinstall Photo Agent."
         case .certificateNotConfigured:
             return "No signing certificate configured. Import one in Settings → Signing."
         case .privateKeyNotConfigured:
             return "No private key found in Keychain for C2PA signing."
         case .processFailed(let message):
-            return "c2patool failed: \(message)"
+            return "Signing failed. \(message)"
         case .outputMissing:
             return "c2patool produced no output file"
         case .manifestSerializationFailed:

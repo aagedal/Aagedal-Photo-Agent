@@ -282,7 +282,7 @@ final class BatchRenameSheetSession {
         do {
             reservation = try MCPProcessReservation.acquireFolder(request.folderURL)
         } catch {
-            executionGuardError = "This folder is busy or its local-operation reservation is unavailable. Refresh the preview after the other operation finishes."
+            executionGuardError = "This folder is busy with another task, such as a face scan or metadata save. When it finishes, refresh the preview and try again."
             do {
                 try await executionQuiescence.complete(.abortedBeforeExecution)
             } catch {

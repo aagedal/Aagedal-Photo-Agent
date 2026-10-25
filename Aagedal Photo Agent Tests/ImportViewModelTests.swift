@@ -3420,7 +3420,7 @@ struct ImportDataSafetyTests {
         viewModel.applyProgress(ImportCopyService.CopyResult(
             id: UUID(),
             source: URL(fileURLWithPath: "/card/photo.jpg"),
-            primary: .failed("Verification mismatch — staged copy differs from source."),
+            primary: .failed("The copy didn't match the original. Check the card and card reader, then import this file again."),
             primaryVerification: .mismatch(expected: Data([1]), got: Data([2])),
             backup: nil,
             backupVerification: nil

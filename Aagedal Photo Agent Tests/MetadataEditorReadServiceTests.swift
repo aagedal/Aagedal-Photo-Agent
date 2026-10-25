@@ -662,7 +662,7 @@ struct MetadataEditorReadServiceTests {
             #expect(fixture.model.saveError == nil)
             #expect(fixture.model.editingMetadata.title != "Written B")
         } else {
-            #expect(fixture.model.saveError?.contains("image metadata was written") == true)
+            #expect(fixture.model.saveError?.contains("saved in the photo") == true)
             #expect(fixture.model.hasChanges)
         }
         #expect(!fixture.model.isSaving)

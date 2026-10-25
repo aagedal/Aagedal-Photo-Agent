@@ -14,17 +14,24 @@ nonisolated protocol C2PAIdentityImporting: Sendable {
 }
 
 nonisolated struct SecurityPKCS12IdentityImporter: C2PAIdentityImporting {
+    static let unusableCertificateMessage =
+        "Couldn't import the certificate. Make sure it's a .p12 or .pem file with its private key."
+
     func importIdentity(from url: URL, password: String) throws -> C2PAImportedIdentity {
         let data = try Data(contentsOf: url)
         var items: CFArray?
         let options: [String: Any] = [kSecImportExportPassphrase as String: password]
         let status = SecPKCS12Import(data as CFData, options as CFDictionary, &items)
         guard status == errSecSuccess, let first = (items as? [[String: Any]])?.first else {
-            throw C2PASigningError.processFailed("Failed to import PKCS#12 file (status: \(status))")
+            let passwordRejected = status == errSecAuthFailed || status == errSecPkcs12VerifyFailure
+                || status == errSecPassphraseRequired
+            throw C2PASigningError.processFailed(passwordRejected
+                ? "Couldn't import the certificate. Check the password and try again."
+                : Self.unusableCertificateMessage)
         }
         guard let identityValue = first[kSecImportItemIdentity as String],
               CFGetTypeID(identityValue as CFTypeRef) == SecIdentityGetTypeID() else {
-            throw C2PASigningError.processFailed("PKCS#12 file did not contain a signing identity")
+            throw C2PASigningError.processFailed(Self.unusableCertificateMessage)
         }
         // Security exposes this CF object through an untyped dictionary. Swift does
         // not support a conditional SecIdentity downcast; the exact CF type check
@@ -34,15 +41,15 @@ nonisolated struct SecurityPKCS12IdentityImporter: C2PAIdentityImporting {
         var certRef: SecCertificate?
         let certificateStatus = SecIdentityCopyCertificate(identity, &certRef)
         guard certificateStatus == errSecSuccess, let cert = certRef else {
-            throw C2PASigningError.processFailed("Failed to read certificate from PKCS#12 file (status: \(certificateStatus))")
+            throw C2PASigningError.processFailed(Self.unusableCertificateMessage)
         }
         var keyRef: SecKey?
         let keyStatus = SecIdentityCopyPrivateKey(identity, &keyRef)
         guard keyStatus == errSecSuccess, let key = keyRef else {
-            throw C2PASigningError.processFailed("Failed to read private key from PKCS#12 file (status: \(keyStatus))")
+            throw C2PASigningError.processFailed(Self.unusableCertificateMessage)
         }
         guard let keyData = SecKeyCopyExternalRepresentation(key, nil) as Data? else {
-            throw C2PASigningError.processFailed("Failed to export private key from PKCS#12 file")
+            throw C2PASigningError.processFailed(Self.unusableCertificateMessage)
         }
 
         let certificatePEM = pem(data: SecCertificateCopyData(cert) as Data, type: "CERTIFICATE")

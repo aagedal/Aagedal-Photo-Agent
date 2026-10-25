@@ -30,7 +30,17 @@ nonisolated enum FaceFolderScanRefusal: Sendable, Equatable {
         case .scanAlreadyRunning: "A face scan is already running."
         case .modelUnavailable(let availability): availability.detail
         case .renameInProgress: "Face scanning is paused while files in this folder are being renamed."
-        case .invalidInventory(let detail): "Face scanning requires the complete folder image inventory: \(detail)"
+        case .invalidInventory(let detail):
+            switch detail {
+            case "an image is not downloaded locally":
+                "Some photos in this folder are still in iCloud. Download them in Finder, then scan again."
+            case "the folder must be local":
+                "Face scanning works on folders on this Mac or a connected drive."
+            case "symbolic-link images require a separate scan scope":
+                "Linked photos (aliases) can't be scanned here. Scan the folder they are stored in."
+            default:
+                "Couldn't list every photo in this folder. Reload the folder and try again."
+            }
         case .reservationFailed(let detail): detail
         case .resetFailed(let detail): detail
         }

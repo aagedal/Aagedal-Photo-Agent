@@ -220,7 +220,7 @@ struct MetadataEditorXMPBaselineTests {
         let before = try Data(contentsOf: f.xmp)
         let result = await save(.init(folder: f.folder, image: f.image, xmp: f.xmp, json: f.json, model: model), route: .history)
         guard case .failed(let message) = result else { Issue.record("Expected missing evidence failure"); return }
-        #expect(message.contains("Reload"))
+        #expect(message.localizedCaseInsensitiveContains("reload"))
         #expect(try Data(contentsOf: f.xmp) == before)
     }
     @Test("Variable completion cannot bless preserved external Develop state for an old editor")

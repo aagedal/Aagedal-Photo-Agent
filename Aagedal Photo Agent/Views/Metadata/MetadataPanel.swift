@@ -1202,6 +1202,11 @@ struct MetadataPanel: View {
         }
     }
 
+    private static func captionSaveFailureMessage(for urls: [URL], cause: String) -> String {
+        let target = urls.count == 1 ? urls[0].lastPathComponent : "the selected photos"
+        return "Couldn't save the caption for \(target). \(cause)"
+    }
+
     private func commitEdits() {
         commitDebounceTask?.cancel()
         flushBufferedFields()
@@ -1221,7 +1226,8 @@ struct MetadataPanel: View {
                 // navigation. A failed mirror then retries that event instead of inventing it again.
                 try captionFlushCoordinator.enqueueFlush(owner: captionFlushOwner)
             } catch {
-                viewModel.saveError = "Failed to save caption sidecar: \(error.localizedDescription)"
+                viewModel.saveError = Self.captionSaveFailureMessage(
+                    for: viewModel.selectedURLs, cause: error.localizedDescription)
             }
             return
         }
@@ -1398,7 +1404,10 @@ struct MetadataPanel: View {
                 },
                 capturePersistence: { try captureCaptionDraftPersistence() },
                 persistenceFailure: { message in
-                    viewModel.reportCaptionPersistenceFailure("Failed to save caption sidecar: \(message)",
+                    viewModel.reportCaptionPersistenceFailure(
+                        Self.captionSaveFailureMessage(
+                            for: captionFlushCoordinator?.currentQueueFailure?.photoURL.map { [$0] } ?? viewModel.selectedURLs,
+                            cause: message),
                         requestID: captionFlushCoordinator?.currentQueueFailure?.id)
                 },
                 handler: { try flushCaptionEditorBuffer() }

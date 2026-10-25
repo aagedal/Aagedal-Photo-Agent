@@ -730,7 +730,10 @@ struct FTPService: Sendable {
             case 64: return "\(prefix): The server doesn't support FTPS — edit the server to use plain FTP or a different port"
             case 67: return "\(prefix): Login denied — check the user name and password"
             case 78: return "\(prefix): remote folder not found"
-            default: return "\(prefix) (curl exit code \(code))"
+            default:
+                return prefix == "Upload failed"
+                    ? "The upload stopped unexpectedly. Try again; if it keeps failing, use Test Connection in Settings → FTP."
+                    : "The connection test failed unexpectedly. Check the server settings and try again."
             }
         }
 

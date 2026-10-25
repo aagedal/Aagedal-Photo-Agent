@@ -3636,7 +3636,7 @@ struct ContentView: View {
 
     private func renderAndSignSelectedAfterMetadataFlush() {
         guard C2PASigningService.isAvailable else {
-            browserViewModel.errorMessage = "c2patool not found in app bundle"
+            browserViewModel.errorMessage = "Content Credentials signing isn't available in this copy of the app. Reinstall Photo Agent."
             return
         }
         guard !isRenderingEditedFolder else { return }
@@ -4202,9 +4202,9 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         bannerItemFailureSection(label: "Failed", failures: result.failures, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "Metadata copy failed", names: result.copyFailureFilenames, folder: result.sourceFolderURL)
-                        bannerFailureSection(label: "IPTC overlay failed", names: result.overlayFailureFilenames, folder: result.sourceFolderURL)
-                        bannerPathFailureSection(label: "Private cleanup needed", paths: result.cleanupFailurePaths)
-                        bannerFailureSection(label: "Used embedded metadata (.xmp sidecar stale)", names: result.staleSidecarFilenames, folder: result.sourceFolderURL)
+                        bannerFailureSection(label: "Caption and keywords not added", names: result.overlayFailureFilenames, folder: result.sourceFolderURL)
+                        bannerPathFailureSection(label: "Temporary files couldn't be removed", paths: result.cleanupFailurePaths)
+                        bannerFailureSection(label: "Used the file's own metadata (XMP file was out of date)", names: result.staleSidecarFilenames, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "Exported without watermark (image missing)", names: result.missingWatermarkFilenames, folder: result.sourceFolderURL)
                     }
                     .padding(.top, 4)

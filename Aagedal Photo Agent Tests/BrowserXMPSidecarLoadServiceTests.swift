@@ -393,3 +393,30 @@ struct BrowserFolderLoadMessageTests {
         #expect(BrowserViewModel.folderLoadMessage(for: missing) == missing.localizedDescription)
     }
 }
+
+@Suite("User-facing error causes")
+struct UserFacingErrorCauseTests {
+    private struct Refusal: LocalizedError {
+        var errorDescription: String? { "This RAW file's metadata is saved in its XMP file instead" }
+    }
+
+    @Test("System errors get plain causes; the app's own errors pass through")
+    func causes() {
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileWriteOutOfSpaceError)) == "The disk is full.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSPOSIXErrorDomain,
+            code: Int(EROFS))) == "The folder is read-only or access was denied.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileWriteUnknownError, userInfo: [NSUnderlyingErrorKey: NSError(
+                domain: NSPOSIXErrorDomain, code: Int(ENOSPC))])) == "The disk is full.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileNoSuchFileError)) == "The file is no longer there.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileWriteUnknownError)) == "The folder may be read-only or the disk full.")
+        #expect(UserFacingErrorCause.sentence(for: Refusal())
+            == "This RAW file's metadata is saved in its XMP file instead.")
+        #expect(UserFacingErrorCause.sentence(for: CocoaError(.fileReadUnknown, userInfo: [
+            NSLocalizedDescriptionKey: "Reload this photo before saving."]))
+            == "Reload this photo before saving.")
+    }
+}

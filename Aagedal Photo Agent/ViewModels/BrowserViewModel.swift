@@ -2995,7 +2995,9 @@ final class BrowserViewModel {
                 do {
                     try await writeToFile(writeToFileWithSidecar)
                 } catch {
-                    self.errorMessage = "Failed to write \(fieldDescription): \(error.localizedDescription)"
+                    self.errorMessage = writeToFileWithSidecar.count == 1
+                        ? "Couldn't save the \(fieldDescription) to \(writeToFileWithSidecar[0].lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
+                        : "Couldn't save the \(fieldDescription) to the selected photos. \(UserFacingErrorCause.sentence(for: error)) Try again."
                 }
             }
 
@@ -3227,7 +3229,7 @@ final class BrowserViewModel {
                 in: folderURL
             )
         } catch {
-            errorMessage = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            errorMessage = "Couldn't save changes to \(url.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
             return
         }
 
@@ -3243,7 +3245,7 @@ final class BrowserViewModel {
                     mergeWithExisting: true
                 )
             } catch {
-                errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
+                errorMessage = "Couldn't save the XMP file for \(url.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
             }
         }
     }

@@ -1587,9 +1587,9 @@ nonisolated enum EditedImageRenderer {
         var errorDescription: String? {
             switch self {
             case .unreadableImage:
-                return "Could not decode source image."
+                return "This photo couldn't be opened. It may be damaged, or its camera may not be supported by macOS yet."
             case .encodeFailed:
-                return "Could not encode output image."
+                return "The exported file couldn't be created. Try another format or check disk space."
             case .rawSourceRequired:
                 return "The 16-bit JPEG XL conversion requires a RAW source image."
             case .sourceDestinationAlias:

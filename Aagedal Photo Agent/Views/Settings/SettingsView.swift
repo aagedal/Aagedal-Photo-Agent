@@ -2489,7 +2489,13 @@ struct SettingsView: View {
                 guard c2paOperationRequestID == requestID else { return }
                 c2paOperationTask = nil
                 c2paOperationRequestID = nil
-                signingMessage = "Import failed: \(error.localizedDescription)"
+                // Certificate-import failures already carry a complete sentence; don't show
+                // them under the "Signing failed." prefix that the signing path uses.
+                if case .processFailed(let message)? = error as? C2PASigningError {
+                    signingMessage = message
+                } else {
+                    signingMessage = "Couldn't import the certificate. \(error.localizedDescription)"
+                }
             }
         }
     }
