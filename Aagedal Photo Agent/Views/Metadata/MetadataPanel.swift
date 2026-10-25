@@ -1733,7 +1733,7 @@ struct MetadataPanel: View {
                         descriptionAssistantSource = DescriptionAssistantRequest(
                             imageURL: imageURL, editorLoadID: viewModel.editorBufferLoadID,
                             originalDescription: viewModel.editingMetadata.description ?? "",
-                            action: .grammar, language: .bokmal,
+                            action: .grammar, language: .systemDefault(),
                             metadata: DescriptionAssistantMetadata(viewModel.editingMetadata),
                             developSettings: viewModel.editingMetadata.cameraRaw)
                     } label: {

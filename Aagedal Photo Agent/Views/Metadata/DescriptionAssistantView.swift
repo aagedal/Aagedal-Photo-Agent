@@ -197,7 +197,7 @@ struct DescriptionAssistantView: View {
     @State private var setup = DescriptionAssistantModelSetup.shared
     @State private var action: DescriptionAssistantAction = .grammar
     @AppStorage(UserDefaultsKeys.descriptionAssistantLanguage, store: AppDefaults.store)
-    private var language: DescriptionAssistantLanguage = .bokmal
+    private var language: DescriptionAssistantLanguage = .systemDefault()
     @State private var draftDescription: String
     @State private var reportingNotes = ""
     @State private var includePeople = false
@@ -369,7 +369,7 @@ struct BatchDescriptionAssistantView: View {
     @Bindable var browser: BrowserViewModel
     @Environment(\.dismiss) private var dismiss
     @AppStorage(UserDefaultsKeys.descriptionAssistantLanguage, store: AppDefaults.store)
-    private var language: DescriptionAssistantLanguage = .bokmal
+    private var language: DescriptionAssistantLanguage = .systemDefault()
     @State private var action: DescriptionAssistantAction = .wording
     @State private var proposals: [DescriptionAssistantProposal] = []
     @State private var reviewed: [UUID: String] = [:]

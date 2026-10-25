@@ -4,6 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Description Assistant starts in your Mac's language (Bokmål, Nynorsk or English, otherwise English) instead of always Bokmål; a language you already picked is kept.
 - VoiceOver: about 80 icon-only buttons (close, clear search, remove keyword, expand/collapse folder, section show/hide and reset, face suggestions and more) now announce what they do instead of a symbol name; disclosure buttons report Expanded or Collapsed.
 - First-run dead ends: batch transcription offers Download Language when the Apple Speech language is missing and a Transcription Settings button when the provider isn't set up; the batch Description Assistant links to Description Models; adding a watermark with an empty library opens Watermark settings (and mentions text watermarks); Upload Selected/All explain why nothing happened when there is nothing to upload.
 - Upgrading from 2.x: the metadata panel keeps showing every field it showed before, instead of only the seven fields a new installation starts with.
