@@ -26,7 +26,7 @@ features work, see the [3.0 feature guide](feature-help-3.0.md).
   detector and no automatic shadow check. The Meta and Google entries only open those services'
   websites. Photo Agent does not upload your image to them.
 - **SFTP.** Uploads use macOS's built-in `curl`, which has no SFTP support. Use FTPS (the default) or FTP.
-- **Browser undo** for ratings, labels and moves is not available yet. The import time estimate is
+- **Browser undo** for ratings, labels and moves is planned for 3.1. The import time estimate is
   based on files copied so far, so a mix of small photos and large videos makes it less exact. HSL and the vertical color sliders don't accept typed values.
 
 ## Experimental in 3.0
