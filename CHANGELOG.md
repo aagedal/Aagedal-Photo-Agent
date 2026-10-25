@@ -4,6 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Import: the sidebar shows roughly how long the copy has left ("About 4 min left") once a few files are done.
 - Import: when an import from a memory card or removable disk finishes, the sidebar import banner (and Import Complete) offers **Eject** for it, and explains what to close if macOS can't eject it yet.
 - Develop: click a slider's value to type an exact number (units such as K, % or px are optional, and a comma works as the decimal mark); Return applies it as one Undo step, Escape cancels.
 - Plainer names and messages: Develop and Compare call the edit stored in the photo's XMP the **Main Edit** ("Make Main Edit…" replaces "Promote to Primary…"); voice memo messages talk about the memo's link to its photo instead of relationships and byte checks; Write All and Variable alerts name each photo instead of its full path; model download, Whisper file, analysis archive and Known People iCloud texts say what happened and what to do. The remaining icon-only buttons and the Teams known-person menu now announce themselves to VoiceOver.

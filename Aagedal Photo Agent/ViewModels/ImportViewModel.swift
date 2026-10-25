@@ -538,6 +538,25 @@ nonisolated final class ImportRunState: @unchecked Sendable {
     }
 }
 
+/// Time left for a running import, from the average rate so far.
+nonisolated enum ImportTimeEstimate {
+    /// Nil until at least 3 files and 5 seconds have passed, so a fast first file or a slow
+    /// card wake-up doesn't produce a wild guess.
+    static func secondsLeft(elapsed: TimeInterval, processed: Int, total: Int) -> TimeInterval? {
+        guard processed >= 3, elapsed >= 5, total > processed else { return nil }
+        return elapsed / Double(processed) * Double(total - processed)
+    }
+
+    static func text(forSecondsLeft seconds: TimeInterval) -> String {
+        if seconds < 60 { return "Less than a minute left" }
+        let minutes = Int((seconds / 60).rounded())
+        if minutes < 60 { return "About \(minutes) min left" }
+        let hours = Int(seconds / 3600)
+        let remainder = Int((seconds - Double(hours) * 3600) / 60)
+        return remainder == 0 ? "About \(hours) h left" : "About \(hours) h \(remainder) min left"
+    }
+}
+
 enum SourceVolumeEjectState: Equatable {
     case idle
     case ejecting
@@ -1883,6 +1902,7 @@ final class ImportViewModel {
                         let writeModes = await MainActor.run { () -> ImportMetadataWriteModes? in
                             guard self.importRequestID == requestID else { return nil }
                             self.importDidStartCopying = true
+                            self.copyStartedAt = Date()
                             self.activeImportFolder = folderToOpen
                             self.unfinishedImportCopies.removeAll()
                             if applyMetadata {
@@ -3127,6 +3147,18 @@ final class ImportViewModel {
         }
     }
 
+    /// When copying started, for the sidebar's time-left estimate.
+    private(set) var copyStartedAt: Date?
+
+    /// "About 4 min left" while copying, once enough files have been copied to judge the rate.
+    func copyTimeLeftText(now: Date = Date()) -> String? {
+        guard importPhase == .copying, let copyStartedAt else { return nil }
+        guard let seconds = ImportTimeEstimate.secondsLeft(
+            elapsed: now.timeIntervalSince(copyStartedAt), processed: processedFiles, total: totalFiles
+        ) else { return nil }
+        return ImportTimeEstimate.text(forSecondsLeft: seconds)
+    }
+
     /// The card or disk the finished import came from, when macOS can eject it.
     private(set) var sourceVolumeEjectState: SourceVolumeEjectState = .idle
 
@@ -3168,6 +3200,7 @@ final class ImportViewModel {
 
     func reset() {
         sourceVolumeEjectState = .idle
+        copyStartedAt = nil
         let preservedFileTypeFilter = configuration.fileTypeFilter
         let preservedConflictPolicy = configuration.conflictPolicy
         let preservedCreateSubFolders = configuration.createSubFolders

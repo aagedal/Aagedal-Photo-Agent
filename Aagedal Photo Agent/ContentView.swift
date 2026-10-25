@@ -3266,6 +3266,17 @@ struct ContentView: View {
                     } else {
                         ProgressView(value: Double(importViewModel.processedFiles), total: Double(max(importViewModel.totalFiles, 1)))
                     }
+                    if importViewModel.importPhase == .copying {
+                        // Refreshes between files too, so one long video doesn't freeze it.
+                        TimelineView(.periodic(from: .now, by: 5)) { context in
+                            if let timeLeft = importViewModel.copyTimeLeftText(now: context.date) {
+                                Text(timeLeft)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)

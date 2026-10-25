@@ -3575,3 +3575,25 @@ struct EjectableVolumeTests {
         #expect(model.sourceVolumeEjectState == SourceVolumeEjectState.idle)
     }
 }
+
+struct ImportTimeEstimateTests {
+    @Test("No estimate until three files and five seconds have passed")
+    func waitsForEnoughData() {
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, processed: 2, total: 100) == nil)
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 4, processed: 10, total: 100) == nil)
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, processed: 100, total: 100) == nil)
+    }
+
+    @Test("The estimate follows the average rate so far")
+    func averageRate() {
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 20, processed: 10, total: 40) == 60)
+    }
+
+    @Test("Time left reads in minutes and hours")
+    func text() {
+        #expect(ImportTimeEstimate.text(forSecondsLeft: 30) == "Less than a minute left")
+        #expect(ImportTimeEstimate.text(forSecondsLeft: 250) == "About 4 min left")
+        #expect(ImportTimeEstimate.text(forSecondsLeft: 3600) == "About 1 h left")
+        #expect(ImportTimeEstimate.text(forSecondsLeft: 5400) == "About 1 h 30 min left")
+    }
+}
