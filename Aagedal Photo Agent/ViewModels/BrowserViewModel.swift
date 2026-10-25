@@ -240,6 +240,7 @@ final class BrowserViewModel {
     var fileVisibility: BrowserFileVisibility = .photos {
         didSet {
             AppDefaults.store.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
+            AppDefaults.store.set(fileVisibility.legacyShowAllFiles, forKey: UserDefaultsKeys.showAllFiles)
             if let url = currentFolderURL { loadFolder(url: url) }
         }
     }

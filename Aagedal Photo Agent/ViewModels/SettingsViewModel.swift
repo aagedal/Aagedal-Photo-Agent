@@ -430,6 +430,7 @@ final class SettingsViewModel {
     var fileVisibility: BrowserFileVisibility {
         didSet {
             persist(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
+            persist(fileVisibility.legacyShowAllFiles, forKey: UserDefaultsKeys.showAllFiles)
             NotificationCenter.default.post(name: .showAllFilesChanged, object: nil)
         }
     }
