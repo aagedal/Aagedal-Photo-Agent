@@ -119,7 +119,7 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         case .failed, .stale: return "Batch finished with failed or changed photos. " + suffix
         case nil:
             if !activeImageURLs.isEmpty, errorMessage != nil {
-                return "Batch was not admitted. No drafts were saved. Prepare the batch again after resolving the issue."
+                return "The batch didn't start and nothing was saved. Fix the issue above, then prepare the batch again."
             }
             return "Confirm the Browser selection to transcribe its voice memos."
         }

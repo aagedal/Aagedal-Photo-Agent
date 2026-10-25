@@ -417,7 +417,7 @@ struct CaptionVoiceMemoBatchTranscriptionModelTests {
         #expect(!capacity.held)
         #expect(capacity.finishes == 1)
         #expect(model.errorMessage != nil)
-        #expect(model.statusMessage.contains("Batch was not admitted"))
+        #expect(model.statusMessage.contains("The batch didn't start"))
         #expect(await f.io.generated.isEmpty)
         #expect(try f.registry.records().isEmpty)
     }
