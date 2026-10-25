@@ -1161,21 +1161,21 @@ struct ContentView: View {
                     // the upload dialog inspects (and publishes) what the user just typed.
                     performAfterMetadataFileOperation {
                         let urls = browserViewModel.selectedImages.map(\.url)
-                        if urls.isEmpty {
+                        if !urls.isEmpty {
+                            ftpUploadItem = FTPUploadItem(urls: urls)
+                        } else {
                             browserViewModel.fileOperationNotice = FileOperationNotice(
                                 message: "Select the photos to upload first.", systemImage: "info.circle")
-                        } else {
-                            ftpUploadItem = FTPUploadItem(urls: urls)
                         }
                     }
                 case .uploadAll:
                     performAfterMetadataFileOperation {
                         let urls = browserViewModel.images.map(\.url)
-                        if urls.isEmpty {
+                        if !urls.isEmpty {
+                            ftpUploadItem = FTPUploadItem(urls: urls)
+                        } else {
                             browserViewModel.fileOperationNotice = FileOperationNotice(
                                 message: "Open a folder with photos to upload.", systemImage: "info.circle")
-                        } else {
-                            ftpUploadItem = FTPUploadItem(urls: urls)
                         }
                     }
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,

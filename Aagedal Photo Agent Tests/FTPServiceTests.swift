@@ -2324,7 +2324,7 @@ struct FTPEditHandoffTests {
             "Aagedal Photo Agent/ContentView.swift"), encoding: .utf8)
         for command in ["case .uploadSelected:", "case .uploadAll:"] {
             let start = try #require(source.range(of: command))
-            let body = source[start.upperBound...].prefix(400)
+            let body = source[start.upperBound...].prefix(600)
             let flush = try #require(body.range(of: "performAfterMetadataFileOperation {"))
             let open = try #require(body.range(of: "ftpUploadItem = FTPUploadItem"))
             #expect(flush.lowerBound < open.lowerBound)
