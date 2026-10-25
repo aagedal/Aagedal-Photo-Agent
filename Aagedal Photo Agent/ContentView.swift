@@ -2786,6 +2786,7 @@ struct ContentView: View {
                 }
                 .help(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
                 .disabled(browserViewModel.sortOrder == .manual)
+                .accessibilityLabel(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
 
                 BrowserSortOrderMenu(viewModel: browserViewModel)
             }
@@ -2820,6 +2821,7 @@ struct ContentView: View {
                 }
                 .help(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
                 .disabled(browserViewModel.sortOrder == .manual)
+                .accessibilityLabel(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
 
                 BrowserSortOrderMenu(viewModel: browserViewModel)
             }
@@ -3074,6 +3076,7 @@ struct ContentView: View {
             .opacity(browserViewModel.searchText.isEmpty ? 0 : 1)
             .disabled(browserViewModel.searchText.isEmpty)
             .accessibilityHidden(browserViewModel.searchText.isEmpty)
+            .accessibilityLabel("Clear search")
         }
         .disabled(!browserViewModel.hasImages)
     }
@@ -4197,6 +4200,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss")
+                .accessibilityLabel("Dismiss")
             }
 
             if result.hasFailures || result.hasWarnings {
@@ -4264,6 +4268,7 @@ struct ContentView: View {
                             }
                             .buttonStyle(.plain)
                             .help("Reveal in Finder")
+                            .accessibilityLabel("Reveal in Finder")
                         }
                     }
                 }
@@ -4293,6 +4298,7 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Reveal in Finder")
+                        .accessibilityLabel("Reveal in Finder")
                     }
                 }
             }
@@ -4322,6 +4328,7 @@ struct ContentView: View {
                             }
                             .buttonStyle(.plain)
                             .help("Reveal in Finder")
+                            .accessibilityLabel("Reveal in Finder")
                         }
                     }
                 }

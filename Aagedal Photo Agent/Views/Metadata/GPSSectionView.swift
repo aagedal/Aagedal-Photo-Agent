@@ -456,6 +456,7 @@ struct GPSSectionView: View {
                     Image(systemName: "trash")
                 }
                 .help("Remove GPS")
+                .accessibilityLabel("Remove GPS")
             }
         }
     }

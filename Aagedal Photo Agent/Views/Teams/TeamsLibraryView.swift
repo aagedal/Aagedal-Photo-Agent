@@ -445,6 +445,8 @@ private struct TeamEditorView: View {
         .help(linkedID != nil
               ? "Linked to \(linkedName(linkedID) ?? "a known person") — recognised by face. Click to change or unlink."
               : "Link this number to a known person so their face and jersey number identify each other.")
+        .accessibilityLabel("Known person")
+        .accessibilityValue(linkedName(linkedID) ?? "Not linked")
     }
 
     private func linkedName(_ id: UUID?) -> String? {

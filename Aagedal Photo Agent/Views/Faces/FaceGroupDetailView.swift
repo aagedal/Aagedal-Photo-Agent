@@ -222,6 +222,7 @@ struct FaceGroupDetailView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("Delete group & photos")
+                .accessibilityLabel("Delete group & photos")
             }
         }
         // A running scan of this folder publishes its own snapshot; edits now would be lost.

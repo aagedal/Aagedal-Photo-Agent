@@ -1544,6 +1544,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Clear approved list")
+                    .accessibilityLabel("Clear approved list")
                 }
             }
             .disabled(!enabled)
@@ -1716,6 +1717,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Clear structured Person Shown")
+                    .accessibilityLabel("Clear structured Person Shown")
                 }
             }
             .alert("Clear Structured Person Shown?", isPresented: $showClearStructuredPersonShownConfirmation) {
