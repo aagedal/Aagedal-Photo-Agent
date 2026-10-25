@@ -2027,7 +2027,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 } else if coordinator.iCloudAvailability == .available {
-                    Text("Each category is stored in this app's iCloud Drive container so it follows you to your other Macs. Passwords and signing keys stay on this device and are never synced.")
+                    Text("Each category is stored in Photo Agent's iCloud Drive folder so it follows you to your other Macs. Passwords and signing keys stay on this device and are never synced.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -2064,7 +2064,7 @@ struct SettingsView: View {
             if pendingKnownPeopleSyncRequest?.replacesCloudLibrary == true {
                 Text("The Known People library on this Mac was replaced (for example by an import) while iCloud sync was off, so it can't be combined with the one in iCloud. Continuing uploads it as a new iCloud library that completely replaces the one in iCloud, including people you removed, even if this library is empty. The two libraries aren't merged. Names, face data (not the photos), reference thumbnails and any reusable face crops you allowed are uploaded. Folder scan and clothing data stay in each photo folder.")
             } else {
-                Text("This uploads names, face data (not the photos), reference thumbnails and any reusable face crops you allowed from Known People to this app’s iCloud Drive container so they can reach your other Macs. Folder scan data and clothing features stay in each photo folder and are not uploaded by this setting. Turning sync off later does not itself delete the existing iCloud files.")
+                Text("This uploads names, face data (not the photos), reference thumbnails and any reusable face crops you allowed from Known People to Photo Agent’s iCloud Drive folder so they can reach your other Macs. Folder scan data and clothing features stay in each photo folder and are not uploaded by this setting. Turning sync off later does not itself delete the existing iCloud files.")
             }
         }
     }

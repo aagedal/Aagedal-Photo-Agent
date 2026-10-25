@@ -188,7 +188,7 @@ struct TranscriptionSettingsView: View {
 
     private var customWhisperPanel: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("Custom files are unverified. Choose a compatible FFmpeg build with the patched Whisper JSON filter and a compatible model. No downloads occur.")
+            Text("Photo Agent doesn't check custom files. Choose an FFmpeg build that includes the Whisper filter with JSON output, and a Whisper model that works with it. Nothing is downloaded.")
                 .foregroundStyle(.secondary).textSelection(.enabled)
             Text("Provider choice, transcription settings, and file access are saved. Each app session requires fresh execution consent and file identity checks. Clear Custom Files forgets the saved files.")
                 .foregroundStyle(.secondary).textSelection(.enabled)
