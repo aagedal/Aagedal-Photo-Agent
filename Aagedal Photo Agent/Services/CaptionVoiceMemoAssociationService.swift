@@ -233,7 +233,7 @@ actor CaptionVoiceMemoAssociationService {
             switch self {
             case .noMatch: "No matching voice memo was found for this photo."
             case .changed: "The folder, photo or voice memo changed. Find the matching voice memo again before linking it."
-            case .existingRecord: "This photo already has a saved relationship. Refresh or recover that relationship instead."
+            case .existingRecord: "This photo already has a linked voice memo. Refresh the voice memo instead."
             }
         }
     }

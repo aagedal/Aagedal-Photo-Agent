@@ -293,7 +293,7 @@ actor CaptionVoiceMemoPlaybackService {
                 guard !Task.isCancelled else { prepared.stop(); return nil }
                 guard prepared.duration.isFinite, prepared.duration > 0 else {
                     prepared.stop()
-                    return .unavailable("The associated WAV has no playable audio.")
+                    return .unavailable("The linked WAV has no playable audio.")
                 }
                 guard try readRevision(found.imageURL) == imageBefore,
                       try readRevision(found.memoURL) == memoBefore,
@@ -311,7 +311,7 @@ actor CaptionVoiceMemoPlaybackService {
         } catch let error as VoiceMemoCompanionRepository.RepositoryError {
             return .unavailable(error.localizedDescription)
         } catch {
-            return .unavailable("The saved voice memo could not be opened. Check its relationship record, audio format and folder access, then refresh.")
+            return .unavailable("The voice memo couldn't be opened. Check that the WAV is still in the photo's folder and that Photo Agent can access the folder, then refresh.")
         }
     }
 
