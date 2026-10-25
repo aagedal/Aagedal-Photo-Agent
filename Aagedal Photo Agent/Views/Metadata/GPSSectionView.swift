@@ -22,15 +22,28 @@ final class CurrentLocationProvider: NSObject, CLLocationManagerDelegate {
     }
 
     func requestLocation() {
+        guard !isLocating else { return }
         errorMessage = nil
         coordinate = nil
-
-        guard CLLocationManager.locationServicesEnabled() else {
-            errorMessage = "Location Services are turned off."
-            return
-        }
-
         isLocating = true
+        // locationServicesEnabled() can block; Apple warns against calling it on the main thread.
+        Task {
+            let enabled = await Self.locationServicesEnabled()
+            guard isLocating else { return }
+            guard enabled else {
+                finish(with: "Location Services are turned off. Turn them on in System Settings → Privacy & Security → Location Services.")
+                return
+            }
+            requestAuthorizedLocation()
+        }
+    }
+
+    @concurrent
+    nonisolated private static func locationServicesEnabled() async -> Bool {
+        CLLocationManager.locationServicesEnabled()
+    }
+
+    private func requestAuthorizedLocation() {
         switch manager.authorizationStatus {
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
