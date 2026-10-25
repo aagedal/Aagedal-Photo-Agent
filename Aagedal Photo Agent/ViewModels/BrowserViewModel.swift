@@ -5580,7 +5580,7 @@ nonisolated enum MetadataFieldMutationFeedback {
             if result.didWriteXMP { destinations.append("XMP sidecar") }
             if !destinations.isEmpty { detail += " Already written: " + destinations.joined(separator: ", ") + "." }
             if result.embeddedWriteMayHaveOccurred { detail += " Image metadata may already have changed; verify it before retrying." }
-            if let url = result.committedButUnverifiedSidecarURL { detail += " Metadata JSON was written but could not be verified: \(url.path)." }
+            if let url = result.committedButUnverifiedSidecarURL { detail += " The app's saved edits for \(url.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) couldn't be checked after saving. Reload the folder before editing it again." }
             if result.failure?.kind == .conflict { detail += " The displayed metadata may be stale. Reload this photo to read its current saved values." }
             else if result.installedSidecar?.pendingChanges == true { detail += " Pending edits were retained." }
             return detail

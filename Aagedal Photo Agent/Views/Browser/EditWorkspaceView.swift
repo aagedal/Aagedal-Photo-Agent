@@ -2688,7 +2688,7 @@ struct EditWorkspaceView: View {
                 developVersionPersistenceState = .saved
                 installDevelopSettings(result.promotedSettings)
                 metadataViewModel.hasChanges = false
-                showCopyPasteFeedback("Promoted \(versionName) to Primary and verified XMP")
+                showCopyPasteFeedback("\(versionName) is now the main edit")
             } catch is CancellationError {
                 return
             } catch {

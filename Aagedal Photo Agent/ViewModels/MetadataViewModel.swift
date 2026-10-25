@@ -168,7 +168,7 @@ nonisolated struct PendingMetadataWriteBatchOutcome: Sendable {
             if result.didWriteXMP { written.append("XMP sidecar") }
             if !written.isEmpty { message += " Already written: " + written.joined(separator: " and ") + "." }
             if result.embeddedWriteMayHaveOccurred { message += " Image metadata may already have changed; verify it before retrying." }
-            if let path = result.committedButUnverifiedSidecarURL { message += " Metadata JSON was committed but could not be verified: \(path.path)." }
+            if let path = result.committedButUnverifiedSidecarURL { message += " The app's saved edits for \(path.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) couldn't be checked after saving. Reload the folder before editing it again." }
             lines.append(message)
         }
         return lines.joined(separator: "\n\n")
@@ -6265,7 +6265,7 @@ final class MetadataViewModel {
                 saveError = nil
             } else {
                 if let path = result.committedButUnverifiedSidecarURL {
-                    saveError = "Restore wrote the metadata draft, but its current contents could not be verified. Reload before another action. Review: \(path.path). \(result.failure?.message ?? "The operation was cancelled.")"
+                    saveError = "The earlier version was restored, but the app's saved edits for \(path.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) couldn't be checked. \(result.failure?.message ?? "The restore was cancelled.") Reload the folder before doing anything else with this photo."
                     return
                 }
                 let prefix = result.installedSidecar == nil
