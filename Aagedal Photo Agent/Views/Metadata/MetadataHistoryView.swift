@@ -22,6 +22,7 @@ struct MetadataHistoryView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Clear history")
+                    .accessibilityLabel("Clear history")
                 }
             }
 

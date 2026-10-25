@@ -1069,6 +1069,7 @@ private struct NumberCorrectionButton: View {
         }
         .controlSize(.small)
         .help("Correct the number")
+        .accessibilityLabel("Correct the number")
         .popover(isPresented: $editing, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Correct number").font(.caption.weight(.medium))
@@ -1129,6 +1130,7 @@ private struct SportsUnmatchedCard: View {
             }
             .controlSize(.small)
             .help("Not a real number — dismiss this detection (won't reappear)")
+            .accessibilityLabel("Dismiss detection")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -1442,6 +1444,8 @@ struct FaceSuggestionsPanel: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close suggestions")
+                .help("Close suggestions")
             }
             .padding()
             .background(.bar)
@@ -1669,6 +1673,7 @@ struct ReplaceThumbnailCard: View {
                     }
                     .buttonStyle(.plain)
                     .help("Dismiss")
+                    .accessibilityLabel("Dismiss thumbnail replacement")
                 }
 
                 HStack(spacing: 12) {
@@ -1823,6 +1828,7 @@ struct SuggestionRow: View {
                 }
                 .buttonStyle(.plain)
                 .help("Merge groups")
+                .accessibilityLabel("Merge groups")
 
                 Button {
                     viewModel.dismissMergeSuggestion(suggestion)
@@ -1832,6 +1838,7 @@ struct SuggestionRow: View {
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss suggestion")
+                .accessibilityLabel("Dismiss suggestion")
             }
         }
         .padding(8)
@@ -1909,6 +1916,7 @@ struct KnownPersonSuggestionRow: View {
                 }
                 .buttonStyle(.plain)
                 .help("Accept: name group as \(suggestion.personName)")
+                .accessibilityLabel("Name group as \(suggestion.personName)")
 
                 Button {
                     viewModel.dismissKnownPersonSuggestion(suggestion)
@@ -1918,6 +1926,7 @@ struct KnownPersonSuggestionRow: View {
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss suggestion")
+                .accessibilityLabel("Dismiss suggestion")
             }
         }
         .padding(8)

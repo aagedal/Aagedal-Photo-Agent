@@ -31,7 +31,29 @@ def stop(signum, frame):
             child.wait(timeout=3)
         except subprocess.TimeoutExpired:
             child.kill()
-    raise TimeoutError("Web download cancelled or timed out")
+    raise WebDownloadCancelled("Web download cancelled or timed out")
+
+
+class WebDownloadCancelled(Exception):
+    pass
+
+
+NETWORK_MARKERS = (
+    "urlopen error", "nodename nor servname", "name or service not known", "failed to resolve",
+    "temporary failure in name resolution", "network is unreachable", "connection refused",
+    "connection reset", "connection aborted", "max retries exceeded", "timed out",
+    "no route to host", "[ssl", "certificate verify failed",
+)
+
+
+def user_message(error):
+    """Plain wording for the UI, never downloader logs or (signed) URLs."""
+    text = str(error)
+    if isinstance(error, WebDownloadCancelled):
+        return text
+    if isinstance(error, (ConnectionError, TimeoutError)) or any(m in text.lower() for m in NETWORK_MARKERS):
+        return "Couldn't reach the service. Check your internet connection and try again."
+    return re.sub(r"https?://\S+", "[link]", text)[:300]
 
 
 def post_url(value):
@@ -263,5 +285,5 @@ if __name__ == "__main__":
         main()
     except Exception as error:
         # Do not relay downloader logs, signed media URLs or credentials to the UI.
-        print(json.dumps({"protocol": PROTOCOL, "error": str(error)[:500]}))
+        print(json.dumps({"protocol": PROTOCOL, "error": user_message(error)}))
         sys.exit(1)

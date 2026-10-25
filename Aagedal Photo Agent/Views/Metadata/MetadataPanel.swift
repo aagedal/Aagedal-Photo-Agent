@@ -1202,6 +1202,11 @@ struct MetadataPanel: View {
         }
     }
 
+    private static func captionSaveFailureMessage(for urls: [URL], cause: String) -> String {
+        let target = urls.count == 1 ? urls[0].lastPathComponent : "the selected photos"
+        return "Couldn't save the caption for \(target). \(cause)"
+    }
+
     private func commitEdits() {
         commitDebounceTask?.cancel()
         flushBufferedFields()
@@ -1221,7 +1226,8 @@ struct MetadataPanel: View {
                 // navigation. A failed mirror then retries that event instead of inventing it again.
                 try captionFlushCoordinator.enqueueFlush(owner: captionFlushOwner)
             } catch {
-                viewModel.saveError = "Failed to save caption sidecar: \(error.localizedDescription)"
+                viewModel.saveError = Self.captionSaveFailureMessage(
+                    for: viewModel.selectedURLs, cause: error.localizedDescription)
             }
             return
         }
@@ -1398,7 +1404,10 @@ struct MetadataPanel: View {
                 },
                 capturePersistence: { try captureCaptionDraftPersistence() },
                 persistenceFailure: { message in
-                    viewModel.reportCaptionPersistenceFailure("Failed to save caption sidecar: \(message)",
+                    viewModel.reportCaptionPersistenceFailure(
+                        Self.captionSaveFailureMessage(
+                            for: captionFlushCoordinator?.currentQueueFailure?.photoURL.map { [$0] } ?? viewModel.selectedURLs,
+                            cause: message),
                         requestID: captionFlushCoordinator?.currentQueueFailure?.id)
                 },
                 handler: { try flushCaptionEditorBuffer() }
@@ -1733,7 +1742,7 @@ struct MetadataPanel: View {
                         descriptionAssistantSource = DescriptionAssistantRequest(
                             imageURL: imageURL, editorLoadID: viewModel.editorBufferLoadID,
                             originalDescription: viewModel.editingMetadata.description ?? "",
-                            action: .grammar, language: .bokmal,
+                            action: .grammar, language: .systemDefault(),
                             metadata: DescriptionAssistantMetadata(viewModel.editingMetadata),
                             developSettings: viewModel.editingMetadata.cameraRaw)
                     } label: {
@@ -2066,6 +2075,8 @@ struct MetadataPanel: View {
                     }
                     .buttonStyle(.plain)
                     .help(settingsViewModel.addJobIdToKeywords ? "Job ID will be added to keywords during variable processing (click to disable). Job IDs are not validated against the approved keywords list." : "Add Job ID to keywords during variable processing")
+                    .accessibilityLabel("Add Job ID to keywords")
+                    .accessibilityValue(settingsViewModel.addJobIdToKeywords ? "On" : "Off")
                 ),
                 focusKey: "jobId",
                 focusedField: $focusedField
@@ -2844,6 +2855,7 @@ struct MetadataPanel: View {
                     .help(focusedCaptionAutocompleteField == nil
                         ? "Focus an eligible metadata field to show suggestions"
                         : "Show suggestions for \(focusedCaptionAutocompleteField?.displayName ?? "field") (⌥Space)")
+                    .accessibilityLabel("Show caption suggestions")
                     .popover(isPresented: $showingCaptionAutocomplete, arrowEdge: .bottom) {
                         if let field = captionAutocompleteField {
                             CaptionAutocompletePopover(
@@ -2896,6 +2908,7 @@ struct MetadataPanel: View {
                     .disabled(!viewModel.canWriteMetadataToImage(
                         knownC2PAURLs: browserViewModel.c2paURLs(among: viewModel.selectedURLs)))
                     .help("Write metadata to image")
+                    .accessibilityLabel("Write metadata to image")
                 }
             }
         }
@@ -3054,6 +3067,7 @@ struct KeywordsEditorWithDiff: View {
                     }
                     .buttonStyle(.borderless)
                     .help(presetList.isEmpty ? "Choose a Quick List file" : "Choose from Quick List")
+                    .accessibilityLabel("Choose \(label) from Quick List")
                     .instantPopover(isPresented: $quickListPopoverShown, arrowEdge: .bottom) {
                         QuickListPicker(
                             presetList: presetList,
@@ -3086,6 +3100,7 @@ struct KeywordsEditorWithDiff: View {
                     }
                     .buttonStyle(.borderless)
                     .help(structuredPickerHelp)
+                    .accessibilityLabel("Choose \(label) from structured keywords")
                 }
             }
 
@@ -3628,6 +3643,7 @@ struct EditableTextField: View {
                     }
                     .buttonStyle(.plain)
                     .help("Variable Reference")
+                    .accessibilityLabel("Insert variable into \(label)")
                 }
                 if let trailingLabelContent {
                     trailingLabelContent
@@ -3642,6 +3658,7 @@ struct EditableTextField: View {
                     }
                     .buttonStyle(.borderless)
                     .help(presetList.isEmpty ? "Choose a Quick List file" : "Choose from Quick List")
+                    .accessibilityLabel("Choose \(label) from Quick List")
                     .instantPopover(isPresented: $quickListPopoverShown, arrowEdge: .bottom) {
                         QuickListPicker(
                             presetList: presetList,

@@ -96,12 +96,12 @@ struct MetadataSidecarService: Sendable {
 
     private nonisolated func ownershipChanged(_ url: URL) -> CocoaError {
         CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: url.path,
-            NSLocalizedDescriptionKey: "Metadata ownership or contents changed at \(url.path). Existing data was preserved; reload before retrying."])
+            NSLocalizedDescriptionKey: "The saved edits for \(url.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) changed while saving. Nothing was overwritten; reload the folder and try again."])
     }
 
     private nonisolated func invalidOwnership(_ url: URL) -> CocoaError {
         CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path,
-            NSLocalizedDescriptionKey: "Cannot safely establish metadata ownership at \(url.path). Existing data was preserved."])
+            NSLocalizedDescriptionKey: "A saved edits file in the hidden .photo_metadata folder (\(url.lastPathComponent)) is damaged or doesn't match its photo, so it was left as it is."])
     }
 
     private nonisolated func requireRegularFile(_ url: URL) throws {
@@ -2277,6 +2277,6 @@ actor MetadataSidecarPersistenceService {
 
 nonisolated struct PendingOrientationWriteError: LocalizedError, Sendable {
     var errorDescription: String? {
-        "This photo has a pending rotation. Choose a physical metadata write mode, then use Write Pending Rotation before writing the complete metadata record. The rotation and caption draft were retained."
+        "This photo has a rotation that hasn't been written to the file yet. Choose Write Pending Rotation, then try again. Your rotation and caption are kept."
     }
 }

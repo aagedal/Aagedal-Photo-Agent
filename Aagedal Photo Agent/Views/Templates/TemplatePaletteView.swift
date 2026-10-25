@@ -82,6 +82,8 @@ struct TemplatePaletteView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
+                .help("Close")
                 .keyboardShortcut(.cancelAction)
             }
             Text("⌥↩ to append instead of replace")

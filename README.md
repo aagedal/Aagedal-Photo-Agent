@@ -50,13 +50,15 @@ xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
 - Filter by star rating, color label, person shown, or missing required metadata fields
 - Full-text search across filenames and IPTC metadata fields
 - Folder favorites, recent folders, and drag-and-drop folder organization in the sidebar
+- Split the grid into two panes (side by side, stacked, or tabs) to cull between folders
+- Batch Rename with reusable recipes; RAW+JPEG pairs, XMP sidecars and voice memos follow the new names
 - Browser visibility modes: Photos, All media files (photos and videos), or All files
 - Extract one or several stills from a video from a video’s right-click menu: play, scrub (Option-drag for precision), step frames, press M to add markers without pausing playback, and save full-resolution JPEG, TIFF, or lossless 16-bit JPEG XL files to a chosen folder. This initial version supports videos playable by macOS, converts HDR to SDR for JPEG/TIFF while JPEG XL preserves source precision and HDR, and records the source filename and frame timecode in each still (embedded source timecode when present, otherwise relative timecode starting at `00:00:00:00`). Videos currently use system icons in the grid.
 
 ### Ingest & Import
 
 - Import selected images and videos from individual Instagram or X post URLs. Preserve downloaded originals alongside working copies with source attribution and caption metadata, plus JSON provenance records. Settings → Web Downloads updates gallery-dl and yt-dlp independently of the app. This first version uses the extractor's preferred quality; video and non-JPEG metadata use adjacent XMP. See the [runtime setup and current limits](scripts/web_downloads/README.md).
-- Import from memory cards or folders with a non-blocking progress bar
+- Import from memory cards or folders with a non-blocking progress bar, a time-left estimate and Eject for the card when it finishes
 - Copy verification (SHA-256) so files are checksummed before the source is released
 - Dual-destination backup — primary and backup copies written and verified in one pass
 - Capture-date sorting into year-grouped date folders, with an Import Title applied automatically
@@ -77,11 +79,15 @@ Non-destructive RAW development with real-time Metal GPU preview:
 - Vibrance and saturation
 - Per-color HSL — Hue / Saturation / Density adjustments matched to the vectorscope channels
 - Film emulation controls for grain, halation, bloom, vignette, and edge blur
-- Customizable Develop panel with per-slider visibility preferences
+- Customizable Develop panel with per-slider visibility preferences; click a slider's value to type an exact number
 - Tone curves (Adobe Camera Raw compatible)
 - Crop, straighten, and rotation
 - Reorderable develop layer chain — a horizontal strip of cards (Global node plus local masks) that you can drag to reorder
 - Local adjustments with elliptical/radial masks — each mask has independent tonal and color controls
+- Freeform brush masks and click-to-select AI masks for people and objects
+- Anonymizer: blur, mosaic or black out faces and areas; redactions are kept in every export, upload and preview
+- Watermark layers from a PNG library or reusable text watermarks, placed relative to the crop
+- Develop templates for saving and applying edits, crops, masks and watermarks
 - HDR/EDR rendering with extended dynamic range
 - Before/after comparison toggle
 - Undo/redo support
@@ -91,11 +97,18 @@ Non-destructive RAW development with real-time Metal GPU preview:
 ### Metadata Management
 
 - Edit the app's descriptive IPTC/XMP field set, including headline, caption, keywords, people and organisations shown, ordered creators, creator contact, credit and rights, Subject/Scene Codes, Media Topics, structured Genre and PLUS Image Supplier values, precision-aware Date Created, locations, instructions, source, and GPS coordinates
-- Local description assistance: correct grammar or improve wording in Bokmål, Nynorsk, or English, then review/edit the suggestion before applying it. The wand beside Description opens the assistant. Settings → Description Models offers downloads and existing-file imports; Settings → Description Assistant selects only models already on this Mac. The local download catalog recommends Gemma 4 12B for multilingual writing (7.12 GB download). Alternatives are Gemma 4 E4B (4.98 GB), Qwen3.5 9B (5.68 GB), Ministral 3 14B Instruct (8.24 GB), and Gemma 4 26B A4B as a high-quality option (17.04 GB). All downloads use pinned, SHA-256-verified Q4_K_M GGUF weights and can be selected again without another transfer. Recommended total Mac RAM is 16 GB for E4B/Qwen, 24 GB for 12B/Ministral, and 32 GB for 26B A4B; Settings warns when this Mac has less. These are recommendations rather than measured minimums. The backend uses each model’s embedded chat template with thinking disabled. llama.cpp and Metal libraries ship inside the app, so only the model needs downloading. Existing GGUF files and converted MLX folders can also be selected. [Bundled runtime details](scripts/llama/README.md). **Apple Foundation Models** is the default when no provider choice is saved; existing choices are preserved. It is available on macOS 27 or later without a Photo Agent model download. Downloading a local model does not change the active provider or model. It requires an eligible Mac, Apple Intelligence enabled, and Apple’s model ready. Supported caption languages are checked on this Mac; unsupported languages remain available through local models. Individual and batch suggestions still require explicit review and application. **Write from image** uses Apple Foundation Models on macOS 27 or later or a vision-capable converted MLX folder and drafts captions from an upright image capped at two megapixels, editorial metadata and optional reporting notes. The bundled GGUF runner supports text editing only. The assistant also supports **microphone dictation** through the configured Apple Speech or Whisper transcription provider: record, stop, review, then use the text as a description or reporting notes. Temporary recordings are removed after transcription or cancellation.
+- Description Assistant: fix grammar or improve wording in Bokmål, Nynorsk or English, draft a caption
+  from the image, or dictate one, then review the suggestion before applying it. Runs on this Mac with a
+  downloaded local model (Gemma 4, Qwen3.5 or Ministral 3; Settings → Description Models shows size and RAM
+  guidance) or Apple Foundation Models on macOS 27 with Apple Intelligence.
+  [Bundled runtime details](scripts/llama/README.md)
 - Description presets: Settings → Description Assistant offers Archival, Neutral editorial, NTB-inspired, Reuters-inspired, AP-inspired, AFP-inspired, and Short caption formats. Create multiple named custom presets, or duplicate a built-in to edit its guidance. Custom names and prompts save automatically and can be renamed or deleted. Existing custom prompt text migrates to “My existing prompt.” The selected preset applies to individual and batch suggestions; language remains a separate choice and factual safeguards apply to every preset. Agency-inspired names describe formatting only. No reference photographs, extracted metadata, or sample captions are bundled.
 - Optionally append named people in left-to-right order from an existing face scan. Names and normalized face positions enter the request; the app constructs the name list deterministically. Unnamed, excluded, and out-of-date face records are omitted. Ordering refers to the upright original image, rather than a developed crop. This iteration processes one photo; immutable per-photo requests and shared model admission provide the basis for a later batch queue.
 - Non-destructive editing via JSON sidecar files with explicit save
 - Copy and paste metadata between images
+- Caption Workspace for working through a folder: field navigator, validation, Save & Next, Write & Next,
+  Copy Previous and Fix Next Issue
+- Metadata Review table for checking and editing fields across many photos
 - Structured keywords — manage multiple named Photo Mechanic-style hierarchical lists, with one or several active at a time. Includes offline IPTC Media Topics in all 13 published languages and variants; follows the system language with a US English fallback and an independent language override. Existing keywords remain available as My Keywords. Custom lists, selection, and language settings are included in keyword archives, backups, and iCloud sync. IPTC Media Topics checks for updates weekly while the app runs, with an automatic-update toggle and a Check for Updates button; validated downloads are cached for offline use.
 - Batch metadata application via templates with variable interpolation
 - Template variables: `{date}`, `{date:FORMAT}`, `{dateCreated}`, `{dateCreated:YYYYMMDD}`, `{dateCreated:DDMMYYYY}`, `{dateCreated:YYYY-MM-DD}`, `{dateCaptured}`, `{dateCaptured:YYYYMMDD}`, `{dateCaptured:DDMMYYYY}`, `{dateCaptured:YYYY-MM-DD}`, `{filename}`, `{seq}`, `{persons}`, `{keywords}`, `{initials}`, `{field:FIELDNAME}` — variables also resolve inside keywords and Person Shown
@@ -115,113 +128,24 @@ Headline writes do not create, clear, or replace `dc:title` or IIM Object Name. 
 Photo Mechanic, and remaining licensed-container round trips are still limited to the evidence named in
 the support table and validation records.
 
-### Local Automation (3.0 foundation)
+### Voice Memos and Transcription
 
-- A separately built, hardened-runtime `photo-agent-mcp` helper is bundled for local STDIO MCP clients;
-  it does not listen on the network.
-- Automation is disabled by default. Settings → Automation manages explicit folder grants and provides a
-  copyable setup for Codex CLI, Claude Code, OpenCode 1.x, and OpenCode v2.
-  Authorization refreshes shared preferences on every read, so persistent clients see revocation and
-  fresh grant generations; failed refreshes or saves refuse authority.
-- The current foundation exposes read-only server, photo-input-format, root, path-admission and photo-revision tools with strict canonical-path,
-  identity, link, special-file, and private-store refusal. The helper shares photo/folder reservations
-  with retained field, variable/template, Write All, Primary Develop and Batch Rename GUI execution. The helper
-  discovers stable metadata/Develop template UUIDs, names and revision hashes with `list_templates`
-  from explicitly authorized default local or custom template folders (template iCloud sync must be off).
-  `inspect_develop_template` returns production-decoded controls and crop policy for an exact template
-  UUID/revision, with destination-state and layer-identity requirements. Inspection grants no application
-  authority. `preview_develop_template` compares saved destination controls with the template using
-  exact photo revisions, crop policy and fresh ephemeral layer IDs. Decoder/as-shot state remains
-  unresolved; Develop-template execution remains unavailable through MCP. Photo-revision inspection
-  captures opaque source, XMP and owned app-sidecar tokens. `preview_metadata_template` previews a
-  template for one photo using exact template and photo revisions, with Append/Replace
-  behavior matching the editor for descriptive fields, creators, organisations, scene/subject codes,
-  date, country, source type, urgency, Media Topic, Genre and Image Supplier. `preview_metadata_template_batch` extends the same preview
-  to 1–8 explicit photos, retaining and revalidating every photo and returning no partial result. Both previews resolve `{filename}` from each retained photo in Headline, Description, Extended Description and Instructions. Other variables, Keywords, instant processing and unsupported
-  fields are refused; it creates no draft or approval. `get_photo_metadata` returns bounded, typed
-  effective editorial values with field provenance, pending/conflict state and those revision tokens.
-  `prepare_iptc_patch` returns read-only, revision-bound normalized before/after values, exact inputs and compatibility warnings
-  for supported descriptive fields, exact carrier hashes and preservation baselines. Keyword edits
-  bind the exact local Approved Keywords list and settings, using
-  the editor's Strict policy, canonical spelling and duplicate handling. iCloud keyword lists
-  are not yet supported by patch previews. `get_iptc_patch_plan` revalidates the retained preview
-  and keyword authority. These expiring read-only plans survive helper restart in a bounded
-  private local archive but cannot be committed by MCP. `get_native_review_request_capacity` explicitly
-  initializes or migrates request coordination storage and returns its durable `requestEpoch`.
-  `request_iptc_patch_review` queues a durable request with that epoch, a new lowercase UUID
-  `requestID`, the `planID`, and purpose `pendingDraft`
-  or `xmpPublication`. In Settings → Automation → Show Client Review Requests, refresh and inspect the
-  request, then explicitly approve and apply it. `get_native_review_request` reports the retained
-  intent, linked operation ID and matching retained outcome; unavailable history stays explicitly
-  unconfirmed. Settings shows these outcomes and lets you request cancellation during execution.
-  `cancel_native_review_request` cancels before admission or requests
-  cooperative cancellation of linked work. Status, cancellation and exact retries retain the original
-  epoch and request ID across helper restart;
-  requests grant no consent and interrupted admission is never replayed. This private archive retains
-  at most 256 requests without automatic eviction. Settings can explicitly remove requests cancelled
-  before admission, or separately remove linked requests whose exact retained operation confirms a
-  finished outcome, and rotate the epoch. Cleanup preserves operation and recovery history. Active,
-  admitted, uncertain and missing-history requests remain retained. An uncertain XMP operation is
-  eligible only with an exact matching retained receipt for completed restoration or unchanged staging;
-  missing, replaced or incomplete recovery evidence keeps the request retained. Removed intents
-  cannot be retried; clients must never silently resubmit them under a
-  new epoch. Retained requests keep their original epochs. Settings can explicitly apply an approved
-  plan to a pending local draft after the photo is deselected in all editors, preserving the photo
-  and XMP. Template application, face scans and physical photo mutation tools remain
-  under implementation for 3.0; transcription start uses the separate native grant below.
-  `list_operations` discovers up to 256 retained local operation handles after reconnect, with compact
-  summaries and unknown executor liveness. History includes native and helper-linked operations;
-  it is shared by the local automation authority, rather than scoped to a client or folder.
-  `get_operation_status` and `cancel_operation` expose durable coordination records and cooperative
-  cancellation requests. The native pending-draft executor is connected with distinct `iptc_draft`
-  outcomes. Available transcription batch status includes ordered per-photo outcomes without paths
-  or transcript text. Saved transcripts are ready for metadata variables; failed or cancelled batches can
-  retain a saved prefix. Caption launches the shared batch backend after explicit native consent;
-  helper transcription invocation remains unfinished. A request is not completion.
-  `get_photo_voice_memo` inspects one photo's saved adjacent WAV relationship under the authorized
-  root and returns exact relationship/audio revision evidence. It does not expose audio or transcript
-  content, decode WAVs, inspect provider readiness, or start transcription.
-  `prepare_voice_transcription` retains an immutable five-minute preview for one to eight explicit
-  photos and requested provider options. `get_voice_transcription_plan` rechecks every photo,
-  metadata, relationship, WAV and root grant before returning it. Preparation writes private
-  coordination storage; neither tool grants consent, starts inference or saves drafts.
-  Separate epoch-bound transcription review requests can be queued, inspected and cancelled through
-  MCP, then revalidated in Settings → Automation → Transcription Intent Review. Photo order and
-  requested provider options remain exact. Settings can separately review the exact selected native
-  provider, locale/model/runtime and options, then start one durably linked operation after explicit
-  consent. Whole-set rooted reservations and identity checks span recognition and verified create-only
-  transcript saves. Existing transcripts refuse admission; cancellation preserves saved drafts. Closing
-  Settings does not stop admitted work, and linked requests never replay. Helper tools can request
-  cooperative cancellation and inspect the linked operation.
-  `open_voice_transcription_review` asks the running app to open one exact original request/epoch.
-  A private local socket authenticates both processes against the matching signed app/helper pair.
-  The app repeats whole-set validation and the native UI clears previous execution consent.
-  `reviewRequired` acknowledges a presentation request only; an already linked request returns its
-  exactly matched operation handle without claiming completion. No provider consent or execution
-  authority is supplied by the helper. Copied, unsigned, mismatched, stale and unavailable peers refuse.
-  After exact native provider review and checked consent, **Allow Helper to Start Once** enables
-  `start_voice_transcription` for that request for 60 seconds while the review stays open.
-  The app consumes this session-only grant once and schedules guarded admission; `executionRequested`
-  confirms scheduling, never durable admission, inference or completion. Provider changes, consent
-  withdrawal, dismissal and repeat review revoke the grant. Exact linked retries return the original
-  operation handle without starting again. Saved drafts still require separate caption approval.
-- `create_team` adds a team with a complete numbered roster to the Teams library. Enable
-  **Allow team creation** in Settings → Automation as well as local automation. With Teams iCloud
-  sync on, the request stays local until you open **Teams → Review Imports**, review the roster and
-  choose **Add Team** or **Reject**. Approved imports use the app’s coordinated iCloud storage;
-  unavailable iCloud leaves the request pending. Retry the same MCP call to check its
-  `awaiting_confirmation`, `accepted`, or `rejected` status. A connected AI client can research this week's team sheets using its own web tools,
-  then submit the team name, sport, kit colours and players. The helper itself does not browse.
-  Supply a client-generated `teamID` UUID and reuse it with the same content on retries. Creation
-  never replaces existing teams, assigns teams to a match, or links players to Known People.
-  Player numbers must be unique integers from 0 through 9999. Unknown names, numbers and colours
-  should be verified from a reliable source before submission.
-- **Settings → Transcription** selects **Apple Speech**, **Whisper** with embedded FFmpeg,
-  or advanced **Custom FFmpeg Whisper**. Download Tiny, Base, Small, multilingual Turbo or Large v3 explicitly in the app;
-  installed models are checked against pinned size/SHA-256 before use. Inference stays local,
-  and Caption retains compact playback, Transcribe and review controls. Language, English translation
-  and GPU request settings persist and are recorded in each editable draft. Custom files still require
-  explicit session execution consent. Provider discovery does not expose transcription execution to MCP.
+- Sony camera voice memos (WAV) are paired with their photos on import and stay with them through
+  rename, move, reject and Trash. Play them in Caption.
+- Transcribe one photo in Caption or up to eight from the Browser with **Apple Speech** (default, no
+  download) or local **Whisper** (Tiny, Base, Small, Turbo, Large v3 and Norwegian NbAiLab models,
+  downloaded in Settings → Transcription and checked against a pinned SHA-256). Inference stays on this Mac.
+- Transcripts are editable drafts. Use `{voiceMemoTranscript}` in a template to put one into Description,
+  Extended Description, Headline or Instructions.
+
+### Local Automation (experimental)
+
+- A bundled `photo-agent-mcp` helper lets a local MCP client (Codex CLI, Claude Code, OpenCode) read
+  and preview photos, metadata, templates and voice memos in folders you allow in Settings → Automation.
+  It is off by default and opens no network listener.
+- In 3.0 automation is read-only: requests that would change something (a metadata or transcription
+  review, adding a team) wait for your approval in the app.
+- Tool reference: [docs/developer/local-automation-mcp.md](docs/developer/local-automation-mcp.md).
 
 ### Face Recognition
 
@@ -273,10 +197,10 @@ privacy-labeled links to external services; Photo Agent does not upload the imag
 - Synchronize normalized pan/zoom, temporarily unlock alignment, save an offset, and reset safely
 - Enter comparison from Browser, Develop, or full-screen and present it on Clean Feed
 - Save named Develop versions in an app-private JSON catalog without multiplying XMP states
-- Duplicate, rename, delete, compare, or promote a named version to Primary; promotion first creates a
-  recovery snapshot and verifies the resulting XMP read-back
+- Duplicate, rename, delete or compare named versions, or choose **Make Main Edit…** to make one the main edit
+  (the edit saved in the photo's XMP); the previous main edit is kept as a dated version and the result is checked
 
-Named versions are not interoperable XMP edits until explicitly promoted to Primary.
+Other apps see only the main edit; named versions stay in Photo Agent until you make one the main edit.
 
 ### Export & Rendering
 
@@ -301,7 +225,7 @@ AVIF can be encoded with native macOS Image I/O or bundled FFmpeg
 - Experimental signing of images with C2PA content credentials — certificate and private key stored in the macOS Keychain
 - Powered by bundled c2patool
 
-### FTP / FTPS Upload and Deadline Delivery
+### FTP / FTPS Upload
 
 - Upload selected or all images via FTPS (FTP over TLS, the default for new servers) or plain FTP.
   SFTP isn't supported: macOS's built-in `curl` has no SFTP; older SFTP profiles are flagged and
@@ -309,22 +233,13 @@ AVIF can be encoded with native macOS Image I/O or bundled FFmpeg
 - Multiple connection profiles with a Test Connection button
 - Credentials stored securely in macOS Keychain
 - Pre-upload required-field check that is sidecar-aware (falls back to the XMP sidecar for RAW files)
-- Edited images rendered into a per-folder `Uploaded/` folder before sending, with batch abort
-- Progress tracking with upload overlay, automatic retry, and human-readable errors
-- Deadline Send freezes the preflight, filenames, metadata, Develop state, export settings, and
-  destination before producing isolated staged copies; warnings require explicit per-batch acceptance
-- Deadline delivery supports staged copies only: SDR JPEG/TIFF and HDR Adaptive JPEG gain-map/16-bit
-  TIFF. RAW sources are rendered into those derivatives; Deadline Send refuses original-file and
-  XMP-sidecar-only delivery strategies
-- Staged bytes receive the authoritative resolved metadata, are parsed back for semantic verification,
-  and retain preservation evidence before upload. Failed and cancelled workflows keep verified staging
-  evidence for exact resume or confirmed cleanup in Activity
+- Edited images rendered into a per-folder `Uploaded/` folder before sending; photos with face blurs
+  are always rendered
+- Files upload under a temporary name and are renamed when complete, so hot folders never ingest a
+  partial file; progress, Retry Failed and human-readable errors in Activity
 
-FTP delivery acknowledgement has deliberate limits. FTP/FTPS protocol success and an optional
-remote existence/size observation are not a cryptographic remote-byte verification. The production
-adapter rechecks the local file's identity, size, and SHA-256 before requesting credentials, but there is
-still a narrow path-based time-of-check/time-of-use interval before `curl` opens that path. Passwords are
-supplied through a private temporary mode-0600 netrc file.
+A successful upload means the server accepted the file; Photo Agent does not re-download it to compare
+bytes. Passwords are supplied through a private temporary mode-0600 netrc file.
 
 ### External Editor Integration
 
@@ -341,19 +256,13 @@ Opt-in sync that keeps your library settings in step across Macs, configured in 
 - Passwords, signing keys, and machine-specific values (file paths, certificates, FTP servers) stay on-device and are never synced
 - Coordinated through `NSFileCoordinator` so syncing never forks conflicting duplicate folders
 
-### Privacy and Delivery Retention
+### Privacy
 
-- Delivery receipts and retained delivery workflows live in local Application Support and are not part
-  of iCloud Sync. Retained workflow directories are also excluded from device backup
-- Workflow catalog and Activity summaries are deliberately limited and contain no credentials or
-  editorial metadata values. Receipt Activity details additionally omit filenames, source paths, and
-  content hashes
-- Exact private workflow state necessarily contains the frozen plan, local source identities, resolved
-  editorial metadata, destination details, and retained staged copies. It is used only for validation,
-  resume, and delivery execution; it is not placed in Activity summaries, logs, analytics, or sync
-- Retained workflows and staging are removed only after an explicit confirmation in Activity. Receipts
-  can also be deleted there; the local receipt repository otherwise keeps at most 250 receipts and drops
-  entries older than 365 days when its retention boundary runs
+- Face recognition, transcription, the Description Assistant and image analysis run on this Mac. No
+  analytics or tracking. Photos leave the Mac only through features you use, such as FTP upload; other
+  network use (updates, maps and geocoding, model downloads, web imports) is listed in [PRIVACY.md](PRIVACY.md).
+- Upload and import history lives in local Application Support, is not synced and contains no
+  credentials.
 
 ## Keyboard Shortcuts
 
@@ -465,6 +374,11 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
    `sparkle:channel=beta`. Only beta installations opt into that channel; the eventual
    stable release remains available to them through the default channel.
 2. Add the release notes to `CHANGELOG.md`, including a concise `### Highlights` list for the Sparkle appcast.
+   For 3.0.0, run `scripts/finalize_changelog.py --version 3.0.0 --date YYYY-MM-DD --draft docs/release/3.0.0-release-notes-draft.md`;
+   it adds the dated section and rejects Highlights the appcast would show truncated or as raw markdown.
+   Appcast items carry `sparkle:minimumAutoupdateVersion` 740 (the first 3.0 build), so 2.x
+   installs see the update alert and its notes instead of a silent background install. Override
+   with `AAGEDAL_MINIMUM_AUTOUPDATE_BUILD`, or set it empty to omit the tag.
    AuraFace is bundled for this release. The release assistant verifies the exported app contains
    `Contents/Resources/AuraFaceR100.mlmodelc` with the reviewed model weights before notarization.
 3. Commit and push the exact release source, then wait for the **macOS CI / Clean build and unfiltered tests** check to pass for that commit. The workflow performs a clean `build-for-testing`, an unfiltered `test-without-building`, generated-metadata drift checking, JSON/plist validation, conflict-marker scanning, and whitespace checks. Configure this check as required on the protected release branch in GitHub; repository files cannot enforce that remote setting.
@@ -474,9 +388,15 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
    ```
    Before accessing signing credentials or building, it rejects a dirty worktree and verifies a successful CI run tied to the exact `HEAD` SHA. The accepted run is recorded under `build/release/`. It then archives, exports with Developer ID, notarizes and staples the app and DMG, Sparkle-signs the DMG, and inserts the appcast item. When an archive or valid exported app has matching version/build metadata **and** the source-revision marker written by the script, its terminal menu can resume from that artifact instead of rebuilding; unmarked or stale-revision artifacts are rejected. Set `RELEASE_BUILD_MODE=reuse` or `RELEASE_BUILD_MODE=rebuild` to make that choice non-interactively.
 5. Upload the DMG to `https://aagedal.me/apps/photoagent/`, using the exact filename printed by the script.
-6. Commit and push the generated `appcast.xml` to GitHub, tag the release, then synchronize the website fallback appcast and legacy Codeberg copy.
+   Also upload the FFmpeg corresponding-source companion built by
+   `python3 scripts/ffmpeg/make_source_companion.py --sources <ffmpeg build sources>` (see
+   [its provenance](docs/provenance/ffmpeg-photo-agent-9.0.2.md#corresponding-source-companion))
+   and link it from the release notes, as GPLv3 §6 requires.
+6. Commit and push the generated `appcast.xml` to GitHub, tag the release, then copy the same appcast to the feeds
+   older installs still poll (listed by the script): Codeberg `raw/branch/main/appcast.xml` (2.1.x), the Codeberg
+   `releases/download/appcast/appcast.xml` release asset (2.0.x), and `https://aagedal.me/apps/appcast/photoagent.xml`.
 7. For stable releases, bump the cask in the `aagedal/homebrew-tap` repo.
-   For public betas, publish a GitHub prerelease with tag `3.0.0-beta.2`, attach the
+   For public betas, publish a GitHub prerelease tagged with the beta version (for example `3.1.0-beta.1`), attach the
    notarized DMG and its SHA-256, and leave the stable cask/latest release unchanged.
    Include the beta limitations and backup guidance from the changelog.
 

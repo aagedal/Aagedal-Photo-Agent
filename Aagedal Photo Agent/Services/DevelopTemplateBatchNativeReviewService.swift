@@ -19,8 +19,10 @@ nonisolated final class DevelopTemplateBatchNativeReviewService: Sendable {
     }
 
     actor Worker {
-        nonisolated let queue = DispatchSerialQueue(label: "com.aagedal.photo-agent.develop-native-review", qos: .utility)
-        nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+        // Capture recurses once per photo; a Dispatch queue's 512 KB stack is too small on CI.
+        nonisolated var unownedExecutor: UnownedSerialExecutor {
+            LargeStackSerialExecutor.developBatchReview.asUnownedSerialExecutor()
+        }
         func templates(_ discovery: MCPTemplateDiscovery) throws -> [Template] {
             try Task.checkCancellation()
             guard case .array(let entries) = try discovery.list(kind: "develop")["templates"] else {

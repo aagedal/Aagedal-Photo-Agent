@@ -215,7 +215,7 @@ nonisolated enum ComparisonRepresentation: Hashable, Sendable {
         case .liveEdit:
             "Live Edit"
         case .primary:
-            "Primary (XMP)"
+            "Main Edit"
         case let .namedVersion(_, name, _):
             name
         }

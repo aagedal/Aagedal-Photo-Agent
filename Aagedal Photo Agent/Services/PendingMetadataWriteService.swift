@@ -193,7 +193,7 @@ nonisolated struct PendingMetadataWriteService: Sendable {
         }
         guard try data(actual) == data(expected) else {
             throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey:
-                "The physical metadata did not match every pending editorial value. The pending record was retained."])
+                "The file's metadata didn't match your edits after saving. Your edits are kept — try again."])
         }
     }
 }

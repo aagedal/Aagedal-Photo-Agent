@@ -1139,7 +1139,8 @@ struct FieldMutationCallerTests {
         #expect(message.contains("0 of 1"))
         #expect(message.contains("Already written: XMP sidecar"))
         #expect(message.contains("Image metadata may already have changed"))
-        #expect(message.contains(json.path))
+        #expect(message.contains("saved edits for photo.jpg couldn't be checked"))
+        #expect(!message.contains(json.deletingLastPathComponent().path))
     }
 
     @Test("A Browser conflict never installs its historical prepared draft over newer displayed metadata")

@@ -262,6 +262,9 @@ nonisolated enum SettingsDestination: Equatable, Sendable {
     case metadata
     case transcription
     case descriptionAssistant
+    case descriptionModels
+    case watermarks
+    case signing
 }
 
 nonisolated struct TemplatesFolderBookmarkResolution: Sendable, Equatable {
@@ -430,6 +433,7 @@ final class SettingsViewModel {
     var fileVisibility: BrowserFileVisibility {
         didSet {
             persist(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
+            persist(fileVisibility.legacyShowAllFiles, forKey: UserDefaultsKeys.showAllFiles)
             NotificationCenter.default.post(name: .showAllFilesChanged, object: nil)
         }
     }
@@ -1528,9 +1532,7 @@ private struct SyncedPreferences {
         developSectionOrder = DevelopPanelSection.decodeOrder(
             store.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
         )
-        hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(
-            storedRawValues: store.stringArray(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields)
-        )
+        hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(in: store)
         orderedIPTCMetadataFields = MetadataFieldID.loadEditorFieldOrder()
 
         let editDestinationRaw = store.string(forKey: UserDefaultsKeys.defaultEditDestination)

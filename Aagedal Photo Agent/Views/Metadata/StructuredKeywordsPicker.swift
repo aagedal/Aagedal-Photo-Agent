@@ -117,6 +117,7 @@ struct StructuredKeywordsPicker: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 12)
@@ -207,13 +208,25 @@ struct StructuredKeywordsPicker: View {
                         .frame(width: 12)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(expandedIDs.contains(row.node.id) ? "Collapse \(row.node.name)" : "Expand \(row.node.name)")
+                .accessibilityValue(expandedIDs.contains(row.node.id) ? "Expanded" : "Collapsed")
+                .help(expandedIDs.contains(row.node.id) ? "Collapse \(row.node.name)" : "Expand \(row.node.name)")
             } else {
                 Spacer().frame(width: 12)
             }
-            if row.node.isContainer {
-                Text(row.node.name).italic().foregroundStyle(.secondary)
-            } else {
-                Text(row.node.name)
+            Group {
+                if row.node.isContainer {
+                    Text(row.node.name).italic().foregroundStyle(.secondary)
+                } else {
+                    Text(row.node.name)
+                }
+            }
+            // Double-click adds the keyword; VoiceOver gets the same action on the name.
+            .accessibilityAddTraits(isFocused ? [.isButton, .isSelected] : .isButton)
+            .accessibilityHint(row.node.isContainer ? "Category" : "Add keyword")
+            .accessibilityAction {
+                focusedIndex = index
+                activate(row.node, ancestors: row.ancestors)
             }
             if !row.node.synonyms.isEmpty, !row.node.isContainer {
                 Text(row.node.synonyms.joined(separator: ", "))

@@ -258,7 +258,7 @@ nonisolated struct RenameExecutionService: Sendable {
             }
             do {
                 guard !fileSystem.itemExists(at: action.temporaryURL) else {
-                    throw ExecutionError("Temporary path became occupied")
+                    throw ExecutionError("Another file appeared with the temporary name used while renaming.")
                 }
                 // A source shared with an image outside the rename (RAW+JPEG partner left
                 // behind) is copied, so the partner keeps its sidecar.
@@ -299,7 +299,7 @@ nonisolated struct RenameExecutionService: Sendable {
                     states: &states,
                     moves: &moves,
                     triggeringStatus: .failed,
-                    triggeringIssue: Self.issue(.moveFailed, action: action, detail: error.localizedDescription)
+                    triggeringIssue: Self.issue(.moveFailed, action: action, detail: UserFacingErrorCause.sentence(for: error))
                 )
             }
             await Task.yield()
@@ -331,7 +331,7 @@ nonisolated struct RenameExecutionService: Sendable {
                     triggeringIssue: Self.issue(
                         .metadataUpdateFailed,
                         action: states[index].action,
-                        detail: error.localizedDescription
+                        detail: UserFacingErrorCause.sentence(for: error)
                     )
                 )
             }
@@ -351,7 +351,7 @@ nonisolated struct RenameExecutionService: Sendable {
             }
             do {
                 guard !fileSystem.itemExists(at: action.artifact.destinationURL) else {
-                    throw ExecutionError("Destination became occupied after preflight")
+                    throw ExecutionError("A file with that name appeared while renaming.")
                 }
                 try fileSystem.moveItem(at: action.temporaryURL, to: action.artifact.destinationURL)
                 states[index].location = .destination
@@ -386,7 +386,7 @@ nonisolated struct RenameExecutionService: Sendable {
                     states: &states,
                     moves: &moves,
                     triggeringStatus: .failed,
-                    triggeringIssue: Self.issue(.moveFailed, action: action, detail: error.localizedDescription)
+                    triggeringIssue: Self.issue(.moveFailed, action: action, detail: UserFacingErrorCause.sentence(for: error))
                 )
             }
             await Task.yield()
@@ -407,8 +407,8 @@ nonisolated struct RenameExecutionService: Sendable {
                 postCommitIssues.append(Self.issue(
                     .pairedDevelopDetachFailed,
                     action: action,
-                    detail: "The RAW's develop settings could not be removed from the sidecar left with its JPEG: "
-                        + error.localizedDescription
+                    detail: "The RAW's edits couldn't be removed from the XMP file left with its JPEG. "
+                        + UserFacingErrorCause.sentence(for: error)
                 ))
             }
         }
@@ -432,7 +432,7 @@ nonisolated struct RenameExecutionService: Sendable {
                 artifactIdentifier: nil,
                 sourceURL: nil,
                 destinationURL: nil,
-                detail: "The plan contains blocking issues"
+                detail: "Some files in the preview have problems. Fix them and try again."
             )]))
         }
 
@@ -443,7 +443,7 @@ nonisolated struct RenameExecutionService: Sendable {
                 .planNotExecutable,
                 entry: entry,
                 artifact: nil,
-                detail: "A blocked entry cannot appear in an executable plan"
+                detail: "This file is blocked from renaming. Fix it in the preview and try again."
             ))
         }
         for entry in plan.entries where entry.disposition == .rename {
@@ -455,7 +455,7 @@ nonisolated struct RenameExecutionService: Sendable {
                     .malformedPlan,
                     entry: entry,
                     artifact: imageActions.first,
-                    detail: "A rename entry must contain exactly one matching image action"
+                    detail: "The rename preview doesn't match this photo. Refresh the preview and try again."
                 ))
             }
             for artifact in entry.plannedArtifactActions where artifact.changesPath {
@@ -466,7 +466,7 @@ nonisolated struct RenameExecutionService: Sendable {
                         .malformedPlan,
                         entry: entry,
                         artifact: artifact,
-                        detail: "Execution requires each artifact to remain in its source directory"
+                        detail: "Renaming can't move files to another folder."
                     ))
                 }
                 if !reservedPaths.contains(Self.path(artifact.destinationURL)) {
@@ -474,7 +474,7 @@ nonisolated struct RenameExecutionService: Sendable {
                         .destinationNotReserved,
                         entry: entry,
                         artifact: artifact,
-                        detail: "The planned destination is absent from the reservation set"
+                        detail: "The new name wasn't checked in the preview. Refresh the preview and try again."
                     ))
                 }
             }
@@ -487,7 +487,7 @@ nonisolated struct RenameExecutionService: Sendable {
                     .sourceMissing,
                     entry: candidate.entry,
                     artifact: candidate.artifact,
-                    detail: "The planned source no longer exists"
+                    detail: "The file is no longer there."
                 ))
                 continue
             }
@@ -499,7 +499,7 @@ nonisolated struct RenameExecutionService: Sendable {
                             .duplicateSource,
                             entry: candidate.entry,
                             artifact: candidate.artifact,
-                            detail: "Two actions refer to the same live source"
+                            detail: "This file appears twice in the rename."
                         ))
                     }
                 } catch {
@@ -507,7 +507,7 @@ nonisolated struct RenameExecutionService: Sendable {
                         .malformedPlan,
                         entry: candidate.entry,
                         artifact: candidate.artifact,
-                        detail: "Could not compare source identities: \(error.localizedDescription)"
+                        detail: "Couldn't check the files. \(UserFacingErrorCause.sentence(for: error))"
                     ))
                 }
                 if Self.path(candidate.artifact.destinationURL) == Self.path(other.artifact.destinationURL) {
@@ -515,7 +515,7 @@ nonisolated struct RenameExecutionService: Sendable {
                         .duplicateDestination,
                         entry: candidate.entry,
                         artifact: candidate.artifact,
-                        detail: "Two actions have the same destination path"
+                        detail: "Two files would get the same name."
                     ))
                 }
             }
@@ -534,7 +534,7 @@ nonisolated struct RenameExecutionService: Sendable {
                         .malformedPlan,
                         entry: candidate.entry,
                         artifact: candidate.artifact,
-                        detail: "Could not inspect an occupied destination: \(error.localizedDescription)"
+                        detail: "Couldn't check the existing file with that name. \(UserFacingErrorCause.sentence(for: error))"
                     ))
                 }
             }
@@ -543,7 +543,7 @@ nonisolated struct RenameExecutionService: Sendable {
                     .destinationOccupied,
                     entry: candidate.entry,
                     artifact: candidate.artifact,
-                    detail: "The destination is occupied by an item outside this plan"
+                    detail: "A file with that name already exists."
                 ))
             }
         }
@@ -559,7 +559,7 @@ nonisolated struct RenameExecutionService: Sendable {
                 artifactIdentifier: nil,
                 sourceURL: directory,
                 destinationURL: nil,
-                detail: "A source or destination directory does not allow filesystem changes"
+                detail: "The folder is read-only or access was denied."
             ))
         }
 
@@ -578,7 +578,7 @@ nonisolated struct RenameExecutionService: Sendable {
                     .temporaryPathUnavailable,
                     entry: candidate.entry,
                     artifact: candidate.artifact,
-                    detail: "Could not reserve a unique temporary path after 256 attempts"
+                    detail: "Couldn't find a free temporary name in the folder. Try again."
                 ))
                 continue
             }
@@ -614,7 +614,7 @@ nonisolated struct RenameExecutionService: Sendable {
                         : .invalidOriginalFilenameMetadata,
                     entry: candidate.entry,
                     artifact: candidate.artifact,
-                    detail: error.localizedDescription
+                    detail: Self.metadataPreparationCause(error)
                 ))
             }
         }
@@ -678,7 +678,7 @@ nonisolated struct RenameExecutionService: Sendable {
             let expectedStorage: RenameOriginalFilenameMetadataMutation.Storage =
                 artifact.role == .image ? .embeddedImageXMP : .xmpSidecar
             guard mutation.storage == expectedStorage else {
-                throw ExecutionError("The planned XMP storage does not match its target artifact")
+                throw ExecutionError("The planned metadata change doesn't match this file. Refresh the preview and try again.")
             }
             let original = try fileSystem.data(at: artifact.sourceURL)
             return (
@@ -690,12 +690,12 @@ nonisolated struct RenameExecutionService: Sendable {
         guard artifact.identifier == "photo-metadata-current"
                 || artifact.identifier == "photo-metadata-legacy" else { return nil }
         guard let destinationImageURL = entry.plannedDestinationImageURL else {
-            throw ExecutionError("A metadata sidecar has no destination image")
+            throw ExecutionError("Its saved metadata has no photo to follow. Refresh the preview and try again.")
         }
         let original = try fileSystem.data(at: artifact.sourceURL)
         guard var object = try JSONSerialization.jsonObject(with: original) as? [String: Any],
               let currentOwner = object["sourceFile"] as? String else {
-            throw ExecutionError("Metadata sidecar is not a JSON object with a sourceFile string")
+            throw ExecutionError("Its saved metadata file couldn't be read.")
         }
         // A stem-named legacy record is shared by a RAW+JPEG pair but owned by one of them.
         // When both are renamed it moves once; keep it pointing at its actual owner.
@@ -751,7 +751,7 @@ nonisolated struct RenameExecutionService: Sendable {
                 rollbackIssues.append(Self.issue(
                     .rollbackMoveFailed,
                     action: action,
-                    detail: error.localizedDescription
+                    detail: UserFacingErrorCause.sentence(for: error)
                 ))
             }
         }
@@ -763,7 +763,7 @@ nonisolated struct RenameExecutionService: Sendable {
             let action = states[index].action
             do {
                 guard !fileSystem.itemExists(at: action.temporaryURL) else {
-                    throw ExecutionError("Rollback temporary path is occupied")
+                    throw ExecutionError("Another file is using the temporary name needed to put it back.")
                 }
                 try fileSystem.moveItem(at: action.artifact.destinationURL, to: action.temporaryURL)
                 states[index].location = .temporary
@@ -780,7 +780,7 @@ nonisolated struct RenameExecutionService: Sendable {
                 rollbackIssues.append(Self.issue(
                     .rollbackMoveFailed,
                     action: action,
-                    detail: error.localizedDescription
+                    detail: UserFacingErrorCause.sentence(for: error)
                 ))
             }
         }
@@ -803,7 +803,7 @@ nonisolated struct RenameExecutionService: Sendable {
                 rollbackIssues.append(Self.issue(
                     .rollbackMetadataRestoreFailed,
                     action: action,
-                    detail: error.localizedDescription
+                    detail: UserFacingErrorCause.sentence(for: error)
                 ))
             }
         }
@@ -813,7 +813,7 @@ nonisolated struct RenameExecutionService: Sendable {
             let action = states[index].action
             do {
                 guard !fileSystem.itemExists(at: action.artifact.sourceURL) else {
-                    throw ExecutionError("Original source path is occupied during rollback")
+                    throw ExecutionError("A file with the original name already exists.")
                 }
                 try fileSystem.moveItem(at: action.temporaryURL, to: action.artifact.sourceURL)
                 states[index].location = .source
@@ -830,7 +830,7 @@ nonisolated struct RenameExecutionService: Sendable {
                 rollbackIssues.append(Self.issue(
                     .rollbackMoveFailed,
                     action: action,
-                    detail: error.localizedDescription
+                    detail: UserFacingErrorCause.sentence(for: error)
                 ))
             }
         }
@@ -903,7 +903,7 @@ nonisolated struct RenameExecutionService: Sendable {
             artifactIdentifier: nil,
             sourceURL: nil,
             destinationURL: nil,
-            detail: "Cancellation was observed at a filesystem-safe boundary"
+            detail: "The rename was cancelled before it finished."
         )
     }
 
@@ -936,6 +936,19 @@ nonisolated struct RenameExecutionService: Sendable {
             destinationURL: action.artifact.destinationURL,
             detail: detail
         )
+    }
+
+    /// Reading or parsing a file's metadata failed; a parse error isn't a disk problem.
+    private static func metadataPreparationCause(_ error: Error) -> String {
+        if error is ExecutionError { return UserFacingErrorCause.sentence(for: error) }
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain, ns.code == NSPropertyListReadCorruptError {
+            return "Its saved metadata file is damaged."
+        }
+        if ns.domain == NSCocoaErrorDomain || ns.domain == NSPOSIXErrorDomain {
+            return "Its saved metadata couldn't be read. \(UserFacingErrorCause.sentence(for: error))"
+        }
+        return "Its saved metadata couldn't be read."
     }
 
     private static func path(_ url: URL) -> String {

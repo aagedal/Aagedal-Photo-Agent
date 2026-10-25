@@ -337,7 +337,7 @@ struct RejectMoveServiceTests {
         #expect(result.movedFiles.isEmpty)
         #expect(result.failedFiles.count == 1)
         let warning = try #require(result.failedFiles.first?.1)
-        let reported = try reportedBackupURLs(in: warning, after: "Recover these files before retrying: ")
+        let reported = try reportedBackupURLs(in: warning, after: "Recover these files before trying again: ")
         #expect(reported.count == 1)
         let reportedResidual = try #require(reported.first)
         #expect(reportedResidual.resolvingSymlinksInPath().path == residual.resolvingSymlinksInPath().path)

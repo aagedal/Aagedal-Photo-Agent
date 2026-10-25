@@ -135,6 +135,7 @@ struct KeywordListEditor: View {
                     }
                     .buttonStyle(.plain)
                     .help("Remove entry")
+                    .accessibilityLabel("Remove \(entries[idx])")
                 }
                 .tag(entries[idx])
             }

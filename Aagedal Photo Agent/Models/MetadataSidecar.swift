@@ -446,6 +446,9 @@ nonisolated struct MetadataSidecar: Codable, Sendable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        // 2.x requires `version` and moves a sidecar without it aside as corrupt, which hides
+        // pending edits from a Mac still on 2.x sharing the folder.
+        try container.encode(Self.currentSchemaVersion, forKey: .version)
         try container.encode(sourceFile, forKey: .sourceFile)
         try container.encode(lastModified, forKey: .lastModified)
         try container.encode(pendingChanges || orientationDraft != nil, forKey: .pendingChanges)

@@ -1,4 +1,10 @@
 import SwiftUI
+
+extension EnvironmentValues {
+    /// Opens Settings at a pane. Provided by the main window; nil elsewhere, where callers
+    /// omit their "Open Settings" buttons.
+    @Entry var openSettingsDestination: (@MainActor (SettingsDestination) -> Void)? = nil
+}
 import AppKit
 import UniformTypeIdentifiers
 
@@ -409,6 +415,9 @@ struct SettingsView: View {
         case .metadata: showDestination(.metadata)
         case .transcription: showDestination(.transcription)
         case .descriptionAssistant: showDestination(.descriptionAssistant)
+        case .descriptionModels: showDestination(.descriptionModels)
+        case .watermarks: showDestination(.watermarks)
+        case .signing: showDestination(.signing)
         }
         settingsViewModel.requestedDestination = nil
     }
@@ -976,11 +985,11 @@ struct SettingsView: View {
                     Button("Confirm iCloud Crop Sync") {
                         showCropSyncConsentConfirmation = true
                     }
-                    Text("Your previous iCloud consent covered embeddings and thumbnails, not reusable face crops. Crop upload is paused until you confirm.")
+                    Text("When you turned on iCloud sync, you allowed face data and thumbnails, not reusable face crops. Crops won't upload until you confirm.")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
-                LabeledContent("Retained crops") {
+                LabeledContent("Saved face crops") {
                     if let upgradeSourceInventory, let knownPeopleStats {
                         Text("\(upgradeSourceInventory.retainedCount) of \(knownPeopleStats.embeddingCount) examples · \(ByteCountFormatter.string(fromByteCount: upgradeSourceInventory.retainedBytes, countStyle: .file))")
                             .monospacedDigit()
@@ -988,10 +997,10 @@ struct SettingsView: View {
                         Text("Calculating…").foregroundStyle(.secondary)
                     }
                 }
-                Text("Off by default. When on, new Known People enrollments keep a wider 320-pixel crop from each available original photo, in addition to the small display thumbnail. Expect roughly 30–100 KB per retained example. This may let a future face model rebuild its gallery without re-opening the originals; it does not upgrade embeddings today.")
+                Text("Off by default. When on, new Known People enrollments keep a wider 320-pixel crop from each available original photo, in addition to the small display thumbnail. Expect roughly 30–100 KB per retained example. This may let a future face recognition model update Known People without reopening the original photos; it doesn't change recognition today.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("When enabled, retained crops are included in People Library directory/ZIP exports and Known People iCloud sync. Crop-bearing packages use schema 3, which older FTP Sync readers may not support. ZIP32 is limited to 512 MiB and the current People Library package contract to 500 MB of files; oversized exports require a future streaming format. Turning this off removes retained crops on this Mac and from the active iCloud crop store, but exported ZIPs and earlier iCloud generations are separate copies. Previously enrolled examples are not backfilled automatically.")
+                Text("When on, the crops are included in People Library exports (folder or ZIP) and in Known People iCloud sync. Older apps that read People Library exports may not understand exports with crops. An export can hold up to 500 MB of files. Turning this off removes the crops on this Mac and in iCloud, but ZIPs you already exported and older iCloud copies keep theirs. People added before you turn this on don't get crops automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1045,7 +1054,7 @@ struct SettingsView: View {
                 }
             }
         } message: {
-            Text("This deletes the optional face crops on this Mac and in the active iCloud crop store. Previously exported ZIPs and older iCloud generations may still contain separate copies. Names, embeddings, and display thumbnails remain.")
+            Text("This deletes the optional face crops on this Mac and in iCloud. ZIPs you already exported and older iCloud copies may still contain them. Names, face data and thumbnails are kept.")
         }
         .alert("Sync Reusable Face Crops with iCloud?", isPresented: $showCropSyncConsentConfirmation) {
             Button("Cancel", role: .cancel) { }
@@ -1535,6 +1544,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Clear approved list")
+                    .accessibilityLabel("Clear approved list")
                 }
             }
             .disabled(!enabled)
@@ -1707,6 +1717,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Clear structured Person Shown")
+                    .accessibilityLabel("Clear structured Person Shown")
                 }
             }
             .alert("Clear Structured Person Shown?", isPresented: $showClearStructuredPersonShownConfirmation) {
@@ -2016,7 +2027,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 } else if coordinator.iCloudAvailability == .available {
-                    Text("Each category is stored in this app's iCloud Drive container so it follows you to your other Macs. Passwords and signing keys stay on this device and are never synced.")
+                    Text("Each category is stored in Photo Agent's iCloud Drive folder so it follows you to your other Macs. Passwords and signing keys stay on this device and are never synced.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -2051,9 +2062,9 @@ struct SettingsView: View {
             .keyboardShortcut(.defaultAction)
         } message: {
             if pendingKnownPeopleSyncRequest?.replacesCloudLibrary == true {
-                Text("This local library was replaced or assigned a new interchange identity. Continuing publishes it as a complete new iCloud generation. It replaces the active iCloud Known People library, including removals and an intentionally empty library; the previous cloud generation is not merged into it. Names, face-only feature vectors, reference thumbnails, and opt-in reusable face crops are uploaded. Folder scan and clothing data stay in each photo folder.")
+                Text("The Known People library on this Mac was replaced (for example by an import) while iCloud sync was off, so it can't be combined with the one in iCloud. Continuing uploads it as a new iCloud library that completely replaces the one in iCloud, including people you removed, even if this library is empty. The two libraries aren't merged. Names, face data (not the photos), reference thumbnails and any reusable face crops you allowed are uploaded. Folder scan and clothing data stay in each photo folder.")
             } else {
-                Text("This uploads names, face-only feature vectors, reference thumbnails, and opt-in reusable face crops from Known People to this app’s iCloud Drive container so they can reach your other Macs. Folder scan data and clothing features stay in each photo folder and are not uploaded by this setting. Turning sync off later does not itself delete the existing iCloud files.")
+                Text("This uploads names, face data (not the photos), reference thumbnails and any reusable face crops you allowed from Known People to Photo Agent’s iCloud Drive folder so they can reach your other Macs. Folder scan data and clothing features stay in each photo folder and are not uploaded by this setting. Turning sync off later does not itself delete the existing iCloud files.")
             }
         }
     }
@@ -2409,7 +2420,7 @@ struct SettingsView: View {
         ) { result in
             handleCertificateImport(result)
         }
-        .alert("PKCS#12 Password", isPresented: $showP12PasswordPrompt) {
+        .alert("Certificate Password", isPresented: $showP12PasswordPrompt) {
             SecureField("Password", text: $p12Password)
             Button("Import") {
                 guard let url = pendingP12URL else { return }
@@ -2422,7 +2433,7 @@ struct SettingsView: View {
                 pendingP12URL = nil
             }
         } message: {
-            Text("Enter the password for the PKCS#12 file.")
+            Text("Enter the password you set when exporting this certificate (.p12 or .pfx file).")
         }
         .alert("Remove Signing Certificate?", isPresented: $showC2PARemovalConfirmation) {
             Button("Cancel", role: .cancel) {}
@@ -2480,7 +2491,13 @@ struct SettingsView: View {
                 guard c2paOperationRequestID == requestID else { return }
                 c2paOperationTask = nil
                 c2paOperationRequestID = nil
-                signingMessage = "Import failed: \(error.localizedDescription)"
+                // Certificate-import failures already carry a complete sentence; don't show
+                // them under the "Signing failed." prefix that the signing path uses.
+                if case .processFailed(let message)? = error as? C2PASigningError {
+                    signingMessage = message
+                } else {
+                    signingMessage = "Couldn't import the certificate. \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -2626,6 +2643,8 @@ struct SettingsView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityLabel("Add FTP Server")
+                .help("Add FTP Server")
             }
 
             if ftpViewModel.connections.isEmpty {

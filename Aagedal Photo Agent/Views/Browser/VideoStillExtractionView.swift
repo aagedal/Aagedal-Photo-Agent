@@ -68,6 +68,7 @@ struct VideoStillExtractionView: View {
                                 .monospacedDigit().help("Go to this marker")
                             Button { frames.remove(at: index) } label: { Image(systemName: "xmark") }
                                 .help("Remove this marker")
+                                .accessibilityLabel("Remove this marker")
                         }
 
                     }
@@ -210,7 +211,7 @@ struct VideoStillExtractionView: View {
                     saved += 1
                 }
                 frames.removeAll()
-                message = "Saved \(saved) still(s) to \(destination.path)."
+                message = "Saved \(saved) \(saved == 1 ? "still" : "stills") to \(destination.lastPathComponent)."
             } catch let error where error is CancellationError || Task.isCancelled {
                 // AVFoundation may surface cancellation as its own error type.
                 frames.removeFirst(saved)

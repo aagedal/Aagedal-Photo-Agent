@@ -133,6 +133,8 @@ struct FTPUploadView: View {
                         .font(.title2)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
+                .help("Close")
             }
 
             // Current Upload section — two columns: file list (left) + options/action (right)

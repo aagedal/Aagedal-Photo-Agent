@@ -1085,6 +1085,7 @@ struct FullScreenImageView: View {
             }
             .buttonStyle(.plain)
             .help("Show keyboard shortcuts")
+            .accessibilityLabel("Show keyboard shortcuts")
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 12) {
@@ -1103,6 +1104,7 @@ struct FullScreenImageView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Collapse")
+                    .accessibilityLabel("Collapse shortcuts")
                 }
                 if file.hasDevelopEdits || file.hasCropEdits {
                     shortcutRow(
@@ -1994,6 +1996,14 @@ struct FullScreenImageView: View {
                             .position(x: box.midX, y: box.midY)
                             .onTapGesture {
                                 // A running scan of this folder would overwrite the rename.
+                                guard !faceVM.faceEditingPausedForScan() else { return }
+                                renamingFace = RenamingFace(id: face.id, groupID: groupID, initialName: faceVM.groupName(groupID) ?? "")
+                            }
+                            .accessibilityElement()
+                            .accessibilityLabel(faceVM.groupName(groupID).map { "Face: \($0)" } ?? "Unnamed face")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityHint("Name or rename this person")
+                            .accessibilityAction {
                                 guard !faceVM.faceEditingPausedForScan() else { return }
                                 renamingFace = RenamingFace(id: face.id, groupID: groupID, initialName: faceVM.groupName(groupID) ?? "")
                             }

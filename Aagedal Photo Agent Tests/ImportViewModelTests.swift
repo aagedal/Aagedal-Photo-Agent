@@ -3420,7 +3420,7 @@ struct ImportDataSafetyTests {
         viewModel.applyProgress(ImportCopyService.CopyResult(
             id: UUID(),
             source: URL(fileURLWithPath: "/card/photo.jpg"),
-            primary: .failed("Verification mismatch — staged copy differs from source."),
+            primary: .failed("The copy didn't match the original. Check the card and card reader, then import this file again."),
             primaryVerification: .mismatch(expected: Data([1]), got: Data([2])),
             backup: nil,
             backupVerification: nil
@@ -3556,5 +3556,46 @@ private extension Data {
         defer { try? handle.close() }
         try handle.seekToEnd()
         try handle.write(contentsOf: self)
+    }
+}
+
+struct EjectableVolumeTests {
+    @Test("The startup disk and its temporary folders are never offered for ejecting")
+    func internalDiskIsNotEjectable() {
+        #expect(EjectableVolume(containing: FileManager.default.temporaryDirectory) == nil)
+        #expect(EjectableVolume(containing: URL(fileURLWithPath: NSHomeDirectory())) == nil)
+    }
+
+    @Test("A finished import from the internal disk offers no Eject and ignores eject requests")
+    @MainActor func internalSourceOffersNoEject() {
+        let model = ImportViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.configuration.sourceURL = FileManager.default.temporaryDirectory
+        #expect(model.ejectableSourceVolume == nil)
+        model.ejectSourceVolume()
+        #expect(model.sourceVolumeEjectState == SourceVolumeEjectState.idle)
+    }
+}
+
+struct ImportTimeEstimateTests {
+    @Test("No estimate until three files and five seconds have passed")
+    func waitsForEnoughData() {
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, done: 2, remaining: 98) == nil)
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 4, done: 10, remaining: 90) == nil)
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, done: 100, remaining: 0) == nil)
+    }
+
+    @Test("The estimate follows the average rate so far")
+    func averageRate() {
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 20, done: 10, remaining: 30) == 60)
+        // 800 previously imported files skipped instantly don't make the copy look fast.
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, done: 0, remaining: 200) == nil)
+    }
+
+    @Test("Time left reads in minutes and hours")
+    func text() {
+        #expect(ImportTimeEstimate.text(forSecondsLeft: 30) == "Less than a minute left")
+        #expect(ImportTimeEstimate.text(forSecondsLeft: 250) == "About 4 min left")
+        #expect(ImportTimeEstimate.text(forSecondsLeft: 3600) == "About 1 h left")
+        #expect(ImportTimeEstimate.text(forSecondsLeft: 5400) == "About 1 h 30 min left")
     }
 }

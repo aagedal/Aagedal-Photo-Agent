@@ -386,6 +386,7 @@ struct ContentView: View {
     @State private var advancedExportPreparationRequestID = UUID()
     @State private var pendingAdvancedExportRequest: AdvancedExportRequest?
     @State private var settingsViewModel: SettingsViewModel
+    @Environment(\.openSettings) private var openSettings
     @State private var importViewModel: ImportViewModel
     /// Shared, persisted log of recent imports and uploads.
     @State private var activityHistory: ActivityHistoryStore
@@ -777,7 +778,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $isShowingImport) { importSheet }
             .sheet(isPresented: $isShowingWebImport) {
-                WebImportView { folder in browserViewModel.loadFolder(url: folder) }
+                WebImportView(initialFolder: browserViewModel.currentFolderURL) { folder in
+                    browserViewModel.loadFolder(url: folder)
+                }
             }
             .sheet(item: Bindable(browserViewModel).batchRenameSheetRequest) { request in
                 BatchRenameSheet(
@@ -1161,12 +1164,22 @@ struct ContentView: View {
                     // the upload dialog inspects (and publishes) what the user just typed.
                     performAfterMetadataFileOperation {
                         let urls = browserViewModel.selectedImages.map(\.url)
-                        if !urls.isEmpty { ftpUploadItem = FTPUploadItem(urls: urls) }
+                        if !urls.isEmpty {
+                            ftpUploadItem = FTPUploadItem(urls: urls)
+                        } else {
+                            browserViewModel.fileOperationNotice = FileOperationNotice(
+                                message: "Select the photos to upload first.", systemImage: "info.circle")
+                        }
                     }
                 case .uploadAll:
                     performAfterMetadataFileOperation {
                         let urls = browserViewModel.images.map(\.url)
-                        if !urls.isEmpty { ftpUploadItem = FTPUploadItem(urls: urls) }
+                        if !urls.isEmpty {
+                            ftpUploadItem = FTPUploadItem(urls: urls)
+                        } else {
+                            browserViewModel.fileOperationNotice = FileOperationNotice(
+                                message: "Open a folder with photos to upload.", systemImage: "info.circle")
+                        }
                     }
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,
                      .selectPreviousImage, .selectNextImage,
@@ -2773,6 +2786,7 @@ struct ContentView: View {
                 }
                 .help(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
                 .disabled(browserViewModel.sortOrder == .manual)
+                .accessibilityLabel(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
 
                 BrowserSortOrderMenu(viewModel: browserViewModel)
             }
@@ -2807,6 +2821,7 @@ struct ContentView: View {
                 }
                 .help(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
                 .disabled(browserViewModel.sortOrder == .manual)
+                .accessibilityLabel(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
 
                 BrowserSortOrderMenu(viewModel: browserViewModel)
             }
@@ -2850,7 +2865,7 @@ struct ContentView: View {
                     Label("Review Develop Conflicts", systemImage: "doc.text.magnifyingglass")
                 }
                 .accessibilityIdentifier("toolbar.develop.review")
-                .help("Export retained Primary Develop edits before discarding the exported requests.")
+                .help("Review unsaved Develop edits for a photo, export a recovery file and discard them.")
             }
             ToolbarItem(id: "develop-primary-retry", placement: .secondaryAction) {
                 Button {
@@ -2864,7 +2879,7 @@ struct ContentView: View {
                     Label("Retry Develop Writes", systemImage: "arrow.clockwise")
                 }
                 .accessibilityIdentifier("toolbar.develop.retry")
-                .help("Retry captured Primary Develop edits using their original file evidence.")
+                .help("Try saving the Develop edits again to the same photos.")
             }
         }
         if let attention = metadataViewModel.variableBatchOutcome?.attention {
@@ -2876,7 +2891,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel(attention.title)
                 .accessibilityIdentifier("toolbar.processVariables.details")
-                .help("Review variable processing results and retained edits for the original folder.")
+                .help("See the full variable processing results, including photos with unsaved edits.")
             }
         }
         if metadataViewModel.hasRetainedVariableWrites {
@@ -2893,7 +2908,7 @@ struct ContentView: View {
                     Label("Review Variable Conflicts", systemImage: "doc.text.magnifyingglass")
                 }
                 .accessibilityIdentifier("toolbar.processVariables.review")
-                .help("Export and review retained variable edits for one photo before discarding them.")
+                .help("Review unsaved variable edits for a photo, export a recovery file and discard them.")
             }
             ToolbarItem(id: "folder-variable-retry", placement: .secondaryAction) {
                 Button {
@@ -2904,7 +2919,7 @@ struct ContentView: View {
                     Label("Retry Variable Writes", systemImage: "arrow.clockwise")
                 }
                 .accessibilityIdentifier("toolbar.processVariables.retry")
-                .help("Retry captured variable work with its original inputs and write mode.")
+                .help("Try saving the variable edits again, with the same values and save settings.")
                 .disabled(metadataViewModel.isProcessingFolder)
             }
         }
@@ -2917,7 +2932,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel(attention.title)
                 .accessibilityIdentifier("toolbar.writeAllPending.details")
-                .help("Review the complete Write All results, including partial writes and retained pending files.")
+                .help("See the full Write All results, including partly written photos and those with unsaved changes.")
             }
         }
         if metadataViewModel.isProcessingFolder {
@@ -3061,6 +3076,7 @@ struct ContentView: View {
             .opacity(browserViewModel.searchText.isEmpty ? 0 : 1)
             .disabled(browserViewModel.searchText.isEmpty)
             .accessibilityHidden(browserViewModel.searchText.isEmpty)
+            .accessibilityLabel("Clear search")
         }
         .disabled(!browserViewModel.hasImages)
     }
@@ -3250,6 +3266,17 @@ struct ContentView: View {
                     } else {
                         ProgressView(value: Double(importViewModel.processedFiles), total: Double(max(importViewModel.totalFiles, 1)))
                     }
+                    if importViewModel.importPhase == .copying {
+                        // Refreshes between files too, so one long video doesn't freeze it.
+                        TimelineView(.periodic(from: .now, by: 5)) { context in
+                            if let timeLeft = importViewModel.copyTimeLeftText(now: context.date) {
+                                Text(timeLeft)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
@@ -3257,11 +3284,16 @@ struct ContentView: View {
 
             if importViewModel.showCompletionBanner, let entry = importViewModel.lastCompletionEntry {
                 Divider()
-                CompletionBannerView(
-                    isClean: entry.isClean,
-                    message: entry.summary,
-                    onConfirm: { importViewModel.dismissCompletionBanner() }
-                )
+                VStack(alignment: .leading, spacing: 6) {
+                    CompletionBannerView(
+                        isClean: entry.isClean,
+                        message: entry.summary,
+                        onConfirm: { importViewModel.dismissCompletionBanner() }
+                    )
+                    ImportEjectSourceRow(viewModel: importViewModel)
+                        .font(.caption)
+                        .controlSize(.small)
+                }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
             }
@@ -3625,7 +3657,7 @@ struct ContentView: View {
 
     private func renderAndSignSelectedAfterMetadataFlush() {
         guard C2PASigningService.isAvailable else {
-            browserViewModel.errorMessage = "c2patool not found in app bundle"
+            browserViewModel.errorMessage = "Content Credentials aren't available in this copy of the app. Reinstall Photo Agent."
             return
         }
         guard !isRenderingEditedFolder else { return }
@@ -3633,7 +3665,15 @@ struct ContentView: View {
         let certPath = settingsViewModel.c2paCertificatePath
         let usesTestCertificate = settingsViewModel.c2paUseTestCertificate
         guard settingsViewModel.c2paHasCertificate else {
-            browserViewModel.errorMessage = "No signing certificate configured. Import one in Settings → Signing."
+            let alert = NSAlert()
+            alert.messageText = "No Signing Certificate"
+            alert.informativeText = "Render and Sign needs a C2PA signing certificate. In Settings → Signing, choose Import Certificate…, or Enable Test Signing (Untrusted) to try it out."
+            alert.addButton(withTitle: "Open Signing Settings")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                settingsViewModel.requestedDestination = .signing
+                openSettings()
+            }
             return
         }
 
@@ -4176,6 +4216,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss")
+                .accessibilityLabel("Dismiss")
             }
 
             if result.hasFailures || result.hasWarnings {
@@ -4183,9 +4224,9 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         bannerItemFailureSection(label: "Failed", failures: result.failures, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "Metadata copy failed", names: result.copyFailureFilenames, folder: result.sourceFolderURL)
-                        bannerFailureSection(label: "IPTC overlay failed", names: result.overlayFailureFilenames, folder: result.sourceFolderURL)
-                        bannerPathFailureSection(label: "Private cleanup needed", paths: result.cleanupFailurePaths)
-                        bannerFailureSection(label: "Used embedded metadata (.xmp sidecar stale)", names: result.staleSidecarFilenames, folder: result.sourceFolderURL)
+                        bannerFailureSection(label: "Caption and keywords not added", names: result.overlayFailureFilenames, folder: result.sourceFolderURL)
+                        bannerPathFailureSection(label: "Temporary files couldn't be removed", paths: result.cleanupFailurePaths)
+                        bannerFailureSection(label: "Used the file's own metadata (XMP file was out of date)", names: result.staleSidecarFilenames, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "Exported without watermark (image missing)", names: result.missingWatermarkFilenames, folder: result.sourceFolderURL)
                     }
                     .padding(.top, 4)
@@ -4243,6 +4284,7 @@ struct ContentView: View {
                             }
                             .buttonStyle(.plain)
                             .help("Reveal in Finder")
+                            .accessibilityLabel("Reveal in Finder")
                         }
                     }
                 }
@@ -4272,6 +4314,7 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Reveal in Finder")
+                        .accessibilityLabel("Reveal in Finder")
                     }
                 }
             }
@@ -4301,6 +4344,7 @@ struct ContentView: View {
                             }
                             .buttonStyle(.plain)
                             .help("Reveal in Finder")
+                            .accessibilityLabel("Reveal in Finder")
                         }
                     }
                 }
@@ -4951,6 +4995,7 @@ struct ContentView: View {
 }
 
 struct ContentViewModifiers: ViewModifier {
+    @State private var isShowingWhatsNew = false
     let panes: BrowserPanesModel
     let browserViewModel: BrowserViewModel
     let metadataViewModel: MetadataViewModel
@@ -5222,6 +5267,16 @@ struct ContentViewModifiers: ViewModifier {
                 }
             }
         return base
+            .sheet(isPresented: $isShowingWhatsNew) { WhatsNewView() }
+            .task {
+                // Wait a moment so the window and its restored folder settle first.
+                try? await Task.sleep(for: .seconds(1))
+                if WhatsNewLaunchState.shared.consume(in: AppDefaults.store) { isShowingWhatsNew = true }
+            }
+            .environment(\.openSettingsDestination) { [settingsViewModel] destination in
+                settingsViewModel.requestedDestination = destination
+                openSettings()
+            }
             .modifier(PersonShownUpdatePromptModifier(viewModel: faceRecognitionViewModel,
                                                       isEnabled: !browserViewModel.isFullScreen,
                                                       images: { browserViewModel.images }))

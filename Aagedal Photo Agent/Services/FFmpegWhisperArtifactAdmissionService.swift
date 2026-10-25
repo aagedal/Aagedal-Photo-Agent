@@ -21,15 +21,15 @@ actor FFmpegWhisperArtifactAdmissionService {
         var errorDescription: String? {
             switch self {
             case .invalidArtifact, .unsafePath:
-                return "The Whisper files cannot be safely admitted. They must be readable regular files without symbolic links, with an executable FFmpeg build."
+                return "The transcription files couldn't be opened. Remove and download the model again in Settings → Transcription. If you chose custom files, check that they're compatible."
             case .artifactChanged, .configurationMismatch:
-                return "The Whisper files no longer match their admitted identities. Enable transcription again in Settings."
+                return "The transcription files changed since transcription was turned on. Turn it on again in Settings → Transcription."
             case .revoked:
-                return "Whisper authorization was cleared. Enable transcription again in Settings."
+                return "Transcription was turned off. Turn it on again in Settings → Transcription."
             case .capacityExceeded:
-                return "The Whisper session has reached its admission limit. Clear the active transcription configuration before trying again."
+                return "Transcription can't set up more files until the app restarts. Quit and reopen the app, then try again."
             case .pinMismatch:
-                return "The bundled transcription files do not match their verified release identities. Download the model again or reinstall the app."
+                return "The transcription files don't match the expected download. Remove and download the model again in Settings → Transcription, or reinstall the app."
             }
         }
     }

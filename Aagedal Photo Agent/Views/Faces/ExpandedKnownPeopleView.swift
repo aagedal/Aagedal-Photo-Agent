@@ -156,6 +156,7 @@ struct ExpandedKnownPeopleView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
                 }
             }
             .padding(.horizontal, 8)
@@ -306,6 +307,9 @@ struct ExpandedKnownPeopleView: View {
                             .onTapGesture {
                                 handlePersonTap(person)
                             }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityAddTraits(selectedPersonIDs.contains(person.id) ? [.isButton, .isSelected] : .isButton)
+                            .accessibilityAction { handlePersonTap(person) }
                         }
                     }
                     .padding(.vertical, 4)

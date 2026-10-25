@@ -527,14 +527,14 @@ struct VoiceMemoCompanionRepositoryTests {
         viewModel.renameSelected()
         try await waitUntil { viewModel.errorMessage != nil }
         #expect(viewModel.batchRenameSheetRequest == nil)
-        #expect(viewModel.errorMessage?.contains("linked to multiple photos") == true)
+        #expect(viewModel.errorMessage?.contains("linked to more than one photo") == true)
 
         viewModel.errorMessage = nil
         viewModel.selectedImageIDs = [fixture.image, jpeg]
         viewModel.renameSelected()
         try await waitUntil { viewModel.errorMessage != nil }
         #expect(viewModel.batchRenameSheetRequest == nil)
-        #expect(viewModel.errorMessage?.contains("linked to multiple photos") == true)
+        #expect(viewModel.errorMessage?.contains("linked to more than one photo") == true)
         #expect(FileManager.default.fileExists(atPath: fixture.memo.path))
         #expect(try repository.lookup(for: fixture.image) == .available(fixture.association))
     }

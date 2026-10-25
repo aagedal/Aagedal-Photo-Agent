@@ -122,6 +122,9 @@ struct FolderTreeRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(isExpanded ? "Collapse \(url.lastPathComponent)" : "Expand \(url.lastPathComponent)")
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                .help(isExpanded ? "Collapse \(url.lastPathComponent)" : "Expand \(url.lastPathComponent)")
             } else {
                 Spacer()
                     .frame(width: 20)
@@ -129,9 +132,15 @@ struct FolderTreeRow: View {
 
             Image(systemName: isCurrent || isRootOfSection ? "folder.fill" : "folder")
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+                .accessibilityHidden(true)
             Text(url.lastPathComponent)
                 .font(.callout)
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
+                // The row's tap gesture opens the folder; VoiceOver needs the same action here,
+                // separate from the expand and close buttons in the row.
+                .accessibilityLabel("Folder \(url.lastPathComponent)")
+                .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
+                .accessibilityAction { openFolder(url, section == .openRoot) }
             Spacer()
 
             if isRootOfSection && section == .openRoot && isHovered {
@@ -144,6 +153,7 @@ struct FolderTreeRow: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .help("Close Folder")
+                .accessibilityLabel("Close folder \(url.lastPathComponent)")
             }
         }
         .padding(.vertical, 3)

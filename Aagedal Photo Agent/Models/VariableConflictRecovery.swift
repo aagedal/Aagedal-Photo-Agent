@@ -5,11 +5,11 @@ nonisolated enum VariableConflictRecoveryError: LocalizedError, Sendable {
     case obsoleteReview, requestRunning, incompletePayload, unsafeExport, exportVerificationFailed
     var errorDescription: String? {
         switch self {
-        case .obsoleteReview: return "The retained requests changed. Review and export them again before discarding."
-        case .requestRunning: return "Captured work is still running. Wait for the captured work to settle before reviewing it."
-        case .incompletePayload: return "The complete captured input is unavailable. Retained work cannot be discarded."
-        case .unsafeExport: return "Choose a separate recovery JSON file outside photo metadata folders and linked locations. Existing photos and sidecars must be preserved."
-        case .exportVerificationFailed: return "The recovery export could not be verified. All retained work was preserved. Export again before discarding."
+        case .obsoleteReview: return "These unsaved edits changed. Review and export them again before discarding."
+        case .requestRunning: return "These edits are still being saved. Wait for the save to finish, then review them."
+        case .incompletePayload: return "Part of the original edit is missing, so these edits can't be discarded."
+        case .unsafeExport: return "Save the recovery file somewhere else, outside the photo folder's metadata and not through an alias. Your photos and their sidecars are left alone."
+        case .exportVerificationFailed: return "The recovery file couldn't be checked after saving. Nothing was discarded. Export again before discarding."
         }
     }
 }

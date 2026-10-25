@@ -481,6 +481,7 @@ struct AnalysisMapEvidenceView: View {
                     .buttonStyle(.plain)
                     .disabled(isReadOnly)
                     .help("Photo-location and field-of-view options")
+                    .accessibilityLabel("Photo-location and field-of-view options")
                     .popover(isPresented: $isFieldOfViewSettingsPresented, arrowEdge: .bottom) {
                         fieldOfViewSettings
                     }

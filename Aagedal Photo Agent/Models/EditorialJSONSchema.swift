@@ -66,13 +66,13 @@ nonisolated enum EditorialJSONSchemaError: Error, Equatable, LocalizedError, Sen
     var errorDescription: String? {
         switch self {
         case .invalidTopLevelJSON:
-            "The JSON document must contain a top-level object."
+            "The file is damaged or isn't a Photo Agent file."
         case .missingOrInvalidSchemaVersion:
-            "The JSON document has no valid schema version."
+            "The file is damaged or isn't a Photo Agent file."
         case .unsupportedOlderSchema(let document, let found, let supported):
-            "The \(document) uses schema version \(found), which cannot be migrated to version \(supported)."
+            "The \(document) was saved in an old format (\(found)) that this version of Photo Agent can't update."
         case .newerSchemaRequiresReadOnly(let document, let found, let supported):
-            "The \(document) uses schema version \(found), newer than supported version \(supported), and cannot be changed by this build."
+            "The \(document) was saved by a newer version of Photo Agent (format \(found)). Update Photo Agent to change it."
         }
     }
 }

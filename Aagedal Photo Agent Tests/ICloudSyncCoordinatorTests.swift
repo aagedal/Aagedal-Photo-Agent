@@ -575,6 +575,40 @@ struct ICloudSyncCoordinatorTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("A damaged Known People generation pointer routes to the local library, not legacy cloud records")
+    func damagedGenerationPointerAvoidsLegacyRoot() async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "KnownPeopleDamagedPointer-\(UUID().uuidString)", isDirectory: true)
+        let local = parent.appendingPathComponent("local", isDirectory: true)
+        let cloud = parent.appendingPathComponent("cloud", isDirectory: true)
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cloud, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let probe = KnownPeopleICloudRoutingProbe(local: local, cloud: cloud)
+        let service = KnownPeopleICloudRoutingService(access: probe.fileAccess)
+
+        #expect(await service.storageURL(syncEnabled: true) == cloud)
+        try Data("{\"not\":\"a pointer\"}".utf8).write(
+            to: cloud.appendingPathComponent(KnownPeopleCloudGenerationPointer.fileName))
+        #expect(await service.storageURL(syncEnabled: true) == local)
+        #expect(await service.storageURL(syncEnabled: false) == local)
+
+        // A generation this Mac already resolved keeps serving while the pointer is unreadable.
+        let key = UserDefaultsKeys.knownPeopleICloudGenerationID
+        let previous = AppDefaults.store.object(forKey: key)
+        defer {
+            if let previous { AppDefaults.store.set(previous, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
+        }
+        let id = UUID().uuidString.lowercased()
+        let generation = cloud.appendingPathComponent(KnownPeopleCloudGenerationPointer.generationsDirectory)
+            .appendingPathComponent(id, isDirectory: true)
+        AppDefaults.store.set(id, forKey: key)
+        #expect(await service.storageURL(syncEnabled: true) == local)
+        try FileManager.default.createDirectory(at: generation, withIntermediateDirectories: true)
+        #expect(await service.storageURL(syncEnabled: true).standardizedFileURL == generation.standardizedFileURL)
+    }
+
     @Test("Opt-in Known People crops follow routing without entering the managed root")
     func knownPeopleCropRouting() async throws {
         let key = UserDefaultsKeys.knownPeopleRetainUpgradeSources

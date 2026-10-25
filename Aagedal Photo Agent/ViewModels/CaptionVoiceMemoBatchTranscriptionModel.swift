@@ -14,6 +14,7 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         let inspect: @Sendable (UUID) async throws -> AutomationOperationRegistry.Record
         let wait: @Sendable (UUID) async throws -> AutomationOperationRegistry.Record
         let cancel: @Sendable (UUID) async throws -> AutomationOperationRegistry.Record
+        var downloadLanguage: @Sendable (Locale) async throws -> Void = { _ in }
 
         static func live() -> Self {
             let worker = CaptionVoiceMemoBatchWorker()
@@ -23,7 +24,8 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
                         submit: { try await worker.submit($0, provider: $1) },
                         inspect: { try await worker.inspect($0) },
                         wait: { try await worker.wait($0) },
-                        cancel: { try await worker.cancel($0) })
+                        cancel: { try await worker.cancel($0) },
+                        downloadLanguage: { try await worker.downloadLanguage($0) })
         }
     }
 
@@ -53,8 +55,21 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     private(set) var isResetting = false
     private(set) var errorMessage: String?
     private(set) var completionToken: UInt64 = 0
+    /// The work stopped but its final record could not be read back.
+    private(set) var statusUnconfirmed = false
+    /// Preparation failed because the provider isn't set up (Whisper model, Apple language).
+    private(set) var needsProviderSetup = false
+    /// The Apple Speech language that must be downloaded before this batch can run.
+    private(set) var missingAppleLanguage: Locale?
+    private(set) var isDownloadingLanguage = false
+
+    /// Consecutive failed completion waits before the batch stops waiting. The retained
+    /// coordinator only throws once its task has exited, so retries cover transient history
+    /// reads; a permanently unreadable operations file must not hold capacity forever.
+    nonisolated static let maximumWaitAttempts = 8
 
     @ObservationIgnored private let dependencies: Dependencies
+    @ObservationIgnored private let waitRetryDelay: @Sendable (Int) -> Duration
     @ObservationIgnored private let beginExecution: @MainActor () -> Bool
     @ObservationIgnored private let endExecution: @MainActor () -> Void
     @ObservationIgnored private var generation: UInt64 = 0
@@ -66,8 +81,12 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
 
     init(dependencies: Dependencies? = nil, activityHistory: ActivityHistoryStore? = nil,
          beginExecution: @escaping @MainActor () -> Bool = { FFmpegWhisperSetupModel.shared.beginTranscription() },
-         endExecution: @escaping @MainActor () -> Void = { FFmpegWhisperSetupModel.shared.finishTranscription() }) {
+         endExecution: @escaping @MainActor () -> Void = { FFmpegWhisperSetupModel.shared.finishTranscription() },
+         waitRetryDelay: @escaping @Sendable (Int) -> Duration = { attempt in
+             .milliseconds(min(300 << min(attempt, 4), 5_000))
+         }) {
         self.dependencies = dependencies ?? UITestVoiceTranscriptionBatchFixture.currentDependenciesForModel() ?? .live()
+        self.waitRetryDelay = waitRetryDelay
         self.activityHistory = activityHistory
         self.beginExecution = beginExecution
         self.endExecution = endExecution
@@ -88,6 +107,10 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         }
         if isRunning { return "Transcribing the confirmed photos. " + suffix }
         if cancelledBeforeSubmission { return "Batch cancelled before transcription started. No drafts were saved." }
+        if statusUnconfirmed {
+            return "Transcription stopped, but its final status could not be read. " + suffix
+                + " Check each photo's transcript in Caption before trying again."
+        }
         switch record?.outcome {
         case .verified: return suffix + " Open a transcript in Caption to use it in metadata."
         case .cancelled: return "Batch cancelled. " + suffix + " Saved drafts remain available; unfinished photos were not restarted."
@@ -96,7 +119,7 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         case .failed, .stale: return "Batch finished with failed or changed photos. " + suffix
         case nil:
             if !activeImageURLs.isEmpty, errorMessage != nil {
-                return "Batch was not admitted. No drafts were saved. Prepare the batch again after resolving the issue."
+                return "The batch didn't start and nothing was saved. Fix the issue shown, then prepare the batch again."
             }
             return "Confirm the Browser selection to transcribe its voice memos."
         }
@@ -149,6 +172,8 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         selectedImageURLs = imageURLs.map(\.standardizedFileURL)
         snapshot = nil
         errorMessage = nil
+        needsProviderSetup = false
+        missingAppleLanguage = nil
         guard !reviewOrSaveBusy, !providerBusy else {
             errorMessage = "Finish the current review, save, or transcription before preparing a batch."
             return
@@ -162,12 +187,24 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         }
         guard let provider else {
             errorMessage = "The selected transcription provider is not ready. Complete its setup in Settings."
+            needsProviderSetup = true
             return
         }
         isChecking = true
         defer { if generation == requested { isChecking = false } }
         do {
             try await dependencies.validateProvider(provider)
+        } catch {
+            guard generation == requested, !(error is CancellationError) else { return }
+            errorMessage = Self.message(for: error)
+            needsProviderSetup = true
+            if case .apple(let locale) = provider,
+               (error as? VoiceMemoTranscriptionError) == .languageDownloadRequired {
+                missingAppleLanguage = locale
+            }
+            return
+        }
+        do {
             let prepared = try await dependencies.prepare(urls)
             guard prepared.imageURLs == urls else { throw AutomationVoiceTranscriptionBatchService.Failure.invalidPhotos }
             for url in urls {
@@ -183,6 +220,22 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         }
     }
 
+    /// Downloads the missing Apple Speech language; the caller prepares the batch again.
+    func downloadMissingLanguage() async -> Bool {
+        guard let locale = missingAppleLanguage, !isDownloadingLanguage, !isRunning else { return false }
+        isDownloadingLanguage = true
+        defer { isDownloadingLanguage = false }
+        do {
+            try await dependencies.downloadLanguage(locale)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            errorMessage = "The language could not be downloaded. " + error.localizedDescription
+            return false
+        }
+    }
+
     func dismissConfirmation() {
         guard !isRunning else { return }
         generation &+= 1
@@ -191,7 +244,8 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     }
 
     /// The unstructured task deliberately survives SwiftUI task cancellation. Capacity
-    /// remains held until the retained executor acknowledges a drained terminal result.
+    /// remains held until the retained executor acknowledges a drained terminal result,
+    /// or its wait has failed `maximumWaitAttempts` times in a row.
     func confirm(consent: Bool, reviewOrSaveBusy: Bool, providerBusy: Bool) async {
         guard start(consent: consent, reviewOrSaveBusy: reviewOrSaveBusy, providerBusy: providerBusy),
               let executionTask else { return }
@@ -214,6 +268,7 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         errorMessage = nil
         cancellationRequested = false
         cancelledBeforeSubmission = false
+        statusUnconfirmed = false
         isRequestingCancellation = false
         isRunning = true
         activityID = UUID()
@@ -266,8 +321,10 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
                     catch { /* The owning wait remains authoritative; never infer rollback. */ }
                 }
             }
-            // A transient wait/history failure cannot prove provider teardown. Retain
-            // global capacity and retry the owner's wait instead of reporting completion.
+            // A transient wait/history failure does not claim completion: retain global
+            // capacity and retry the owner's wait. Only after repeated failures, when the
+            // retained task has exited, stop waiting without inventing an outcome.
+            var failedWaits = 0
             while true {
                 do {
                     let completed = try await dependencies.wait(id)
@@ -280,8 +337,20 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
                     finishExecution()
                     return
                 } catch {
+                    failedWaits += 1
+                    if failedWaits >= Self.maximumWaitAttempts {
+                        polling.cancel()
+                        await polling.value
+                        if let current = try? await dependencies.inspect(id) { record = current }
+                        statusUnconfirmed = record?.isTerminal != true
+                        errorMessage = statusUnconfirmed
+                            ? "Batch status could not be read: " + error.localizedDescription : nil
+                        completionToken &+= 1
+                        finishExecution()
+                        return
+                    }
                     errorMessage = "Batch status could not be confirmed. Waiting for transcription to finish safely. " + error.localizedDescription
-                    try? await Task.sleep(for: .milliseconds(300))
+                    try? await Task.sleep(for: waitRetryDelay(failedWaits))
                 }
             }
         } catch {
@@ -361,6 +430,9 @@ private actor CaptionVoiceMemoBatchWorker {
     }
     private nonisolated static func localeKey(_ locale: Locale) -> String {
         locale.identifier.replacingOccurrences(of: "_", with: "-").lowercased()
+    }
+    func downloadLanguage(_ locale: Locale) async throws {
+        _ = try await transcripts.downloadLanguage(locale)
     }
     func hasExistingReview(_ url: URL) async throws -> Bool {
         try await transcripts.loadPersistedDraft(imageURL: url) != nil

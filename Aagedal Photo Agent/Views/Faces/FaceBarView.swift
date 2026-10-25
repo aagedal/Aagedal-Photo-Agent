@@ -327,6 +327,15 @@ struct FaceBarView: View {
                 selectedGroup = group
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(group.name ?? "Unnamed person")
+        .accessibilityValue("\(group.faceIDs.count) \(group.faceIDs.count == 1 ? "face" : "faces")")
+        .accessibilityAddTraits(multiSelectedGroupIDs.contains(group.id) ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint("Name or rename this person")
+        .accessibilityAction {
+            multiSelectedGroupIDs.removeAll()
+            selectedGroup = group
+        }
         .contextMenu {
             if group.name != nil {
                 Button("Reset to Unnamed") {
@@ -429,6 +438,8 @@ struct FaceBarView: View {
         .buttonStyle(.plain)
         .disabled(viewModel.isCancellingScan)
         .help("Click to cancel face scan")
+        .accessibilityLabel("Cancel face scan")
+        .accessibilityValue(viewModel.scanProgress)
     }
 
     /// Not scanned yet → camera scan button.
@@ -680,6 +691,8 @@ struct MergeSuggestionRow: View {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Dismiss merge suggestion")
+                .help("Dismiss merge suggestion")
                 .controlSize(.small)
             }
         }

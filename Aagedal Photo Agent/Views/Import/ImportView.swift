@@ -494,6 +494,7 @@ struct ImportView: View {
                                         .menuStyle(.borderlessButton)
                                         .fixedSize()
                                         .help("Use an existing folder for this capture date")
+                                        .accessibilityLabel("Use an existing folder for this capture date")
                                         .disabled(!group.isIncluded)
                                     }
 
@@ -528,6 +529,7 @@ struct ImportView: View {
                                         }
                                         .buttonStyle(.borderless)
                                         .help("Split this day into multiple shoots")
+                                        .accessibilityLabel("Split this day into multiple shoots")
                                         .disabled(!group.isIncluded)
                                     }
 
@@ -539,6 +541,7 @@ struct ImportView: View {
                                         }
                                         .buttonStyle(.borderless)
                                         .help("Merge this day’s shoots back into one folder")
+                                        .accessibilityLabel("Merge this day’s shoots")
                                         .disabled(!group.isIncluded)
                                     }
                                 }
@@ -1128,6 +1131,8 @@ struct ImportView: View {
                 cancelled: cancelled
             )
 
+            ImportEjectSourceRow(viewModel: viewModel)
+
             HStack(spacing: 12) {
                 Button("Import More") {
                     viewModel.reset()
@@ -1147,5 +1152,39 @@ struct ImportView: View {
         guard prefetchImportThumbnails else { return }
         prefetchImportThumbnails = false
         showSlowThumbnailWarning = true
+    }
+}
+
+/// Eject for the card or disk a finished import came from. Shown in the sidebar banner and on
+/// the Import Complete screen; hidden when the source is on an internal disk.
+struct ImportEjectSourceRow: View {
+    let viewModel: ImportViewModel
+
+    var body: some View {
+        switch viewModel.sourceVolumeEjectState {
+        case .ejected(let name):
+            Label("\(name) was ejected. You can remove it now.", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        case .failed(let message):
+            VStack(spacing: 6) {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                if let volume = viewModel.ejectableSourceVolume {
+                    Button("Try Ejecting \(volume.name) Again", systemImage: "eject") {
+                        viewModel.ejectSourceVolume()
+                    }
+                }
+            }
+            .padding(.horizontal)
+        case .idle, .ejecting:
+            if let volume = viewModel.ejectableSourceVolume {
+                Button("Eject \(volume.name)", systemImage: "eject") {
+                    viewModel.ejectSourceVolume()
+                }
+                .disabled(viewModel.sourceVolumeEjectState == .ejecting)
+                .help("Safely eject the card or disk you imported from")
+            }
+        }
     }
 }

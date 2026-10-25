@@ -416,7 +416,7 @@ actor ImportCopyService {
         if let expectedSourceHash, staged.hash != expectedSourceHash {
             try? FileManager.default.removeItem(at: staged.temporaryURL)
             return (
-                .failed("Verification mismatch — copy differs from the verified primary."),
+                .failed("The backup copy didn't match the original. Check the card and card reader, then import this file again."),
                 .mismatch(expected: expectedSourceHash, got: staged.hash)
             )
         }
@@ -436,7 +436,7 @@ actor ImportCopyService {
         switch verification {
         case .mismatch:
             try? FileManager.default.removeItem(at: staged.temporaryURL)
-            return (.failed("Verification mismatch — staged copy differs from source."), verification)
+            return (.failed("The copy didn't match the original. Check the card and card reader, then import this file again."), verification)
         case .failed(let detail):
             try? FileManager.default.removeItem(at: staged.temporaryURL)
             return (.failed("Verification failed: \(detail)"), verification)
@@ -482,7 +482,7 @@ actor ImportCopyService {
             throw NSError(
                 domain: "ImportCopyService",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Could not create destination file at \(partialURL.path)."]
+                userInfo: [NSLocalizedDescriptionKey: "Couldn't create a file in \(partialURL.deletingLastPathComponent().lastPathComponent). Check that the destination disk has space and that you can write to it."]
             )
         }
 

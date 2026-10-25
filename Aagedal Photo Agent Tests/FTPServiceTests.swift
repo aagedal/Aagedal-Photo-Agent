@@ -2324,7 +2324,7 @@ struct FTPEditHandoffTests {
             "Aagedal Photo Agent/ContentView.swift"), encoding: .utf8)
         for command in ["case .uploadSelected:", "case .uploadAll:"] {
             let start = try #require(source.range(of: command))
-            let body = source[start.upperBound...].prefix(400)
+            let body = source[start.upperBound...].prefix(600)
             let flush = try #require(body.range(of: "performAfterMetadataFileOperation {"))
             let open = try #require(body.range(of: "ftpUploadItem = FTPUploadItem"))
             #expect(flush.lowerBound < open.lowerBound)
@@ -2436,5 +2436,17 @@ private actor HandoffProbe {
     func recordSign(_ url: URL, title: String?) {
         signed.append(url)
         if let title { titleAtSigning[url.lastPathComponent] = title }
+    }
+}
+
+@Suite("FTP failure reasons for uncategorized curl codes")
+struct FTPUncategorizedFailureReasonTests {
+    @Test("Local, network and folder failures are not blamed on the server")
+    func reasons() {
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 25) == nil)
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 26)?.contains("couldn't be read on this Mac") == true)
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 78)?.contains("remote folder wasn't found") == true)
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 56)?.contains("connection dropped") == true)
+        #expect(FTPService.FTPError.plainReason(forUncategorizedExit: 99)?.contains("stopped unexpectedly") == true)
     }
 }

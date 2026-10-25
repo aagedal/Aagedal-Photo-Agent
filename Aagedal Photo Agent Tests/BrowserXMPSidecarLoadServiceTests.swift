@@ -379,3 +379,52 @@ private nonisolated final class BrowserHDRClassificationAccessProbe: @unchecked 
 private nonisolated enum BrowserReadExecutorContext {
     @TaskLocal static var marker: UUID?
 }
+
+@Suite("Browser folder load messages")
+struct BrowserFolderLoadMessageTests {
+    @Test("A refused folder-access prompt explains where to grant access")
+    func deniedAccessExplainsSystemSettings() {
+        let denied = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError,
+            userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))])
+        #expect(BrowserViewModel.folderLoadMessage(for: denied).contains("Privacy & Security"))
+        let posix = NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+        #expect(BrowserViewModel.folderLoadMessage(for: posix).contains("Files and Folders"))
+        let missing = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError)
+        #expect(BrowserViewModel.folderLoadMessage(for: missing) == missing.localizedDescription)
+    }
+}
+
+@Suite("User-facing error causes")
+struct UserFacingErrorCauseTests {
+    private struct Refusal: LocalizedError {
+        var errorDescription: String? { "This RAW file's metadata is saved in its XMP file instead" }
+    }
+
+    @Test("System errors get plain causes; the app's own errors pass through")
+    func causes() {
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileWriteOutOfSpaceError)) == "The disk is full.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSPOSIXErrorDomain,
+            code: Int(EROFS))) == "The folder is read-only or access was denied.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileWriteUnknownError, userInfo: [NSUnderlyingErrorKey: NSError(
+                domain: NSPOSIXErrorDomain, code: Int(ENOSPC))])) == "The disk is full.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileNoSuchFileError)) == "The file is no longer there.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileWriteUnknownError)) == "The file couldn't be written or checked afterwards.")
+        #expect(UserFacingErrorCause.sentence(for: CocoaError(.fileReadCorruptFile))
+            == "The saved data is damaged or in an unexpected format.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSCocoaErrorDomain,
+            code: NSFileWriteFileExistsError)) == "A file with that name already exists.")
+        #expect(UserFacingErrorCause.sentence(for: DecodingError.dataCorrupted(.init(codingPath: [],
+            debugDescription: "bad"))) == "The saved data is damaged or in an unexpected format.")
+        #expect(UserFacingErrorCause.sentence(for: NSError(domain: NSPOSIXErrorDomain,
+            code: Int(EINVAL))) == "The file couldn't be read or written.")
+        #expect(UserFacingErrorCause.sentence(for: Refusal())
+            == "This RAW file's metadata is saved in its XMP file instead.")
+        #expect(UserFacingErrorCause.sentence(for: CocoaError(.fileReadUnknown, userInfo: [
+            NSLocalizedDescriptionKey: "Reload this photo before saving."]))
+            == "Reload this photo before saving.")
+    }
+}

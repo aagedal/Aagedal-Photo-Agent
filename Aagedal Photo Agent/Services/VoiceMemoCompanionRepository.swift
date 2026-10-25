@@ -310,43 +310,43 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         var errorDescription: String? {
             switch self {
             case .unsafeFilename(let filename):
-                return "The voice-memo relationship contains an unsafe filename: \(filename)"
+                return "The voice memo link names a file that can't be used safely: \(filename)"
             case .mismatchedFolder:
-                return "A voice memo relationship must remain in the same folder as its photo."
+                return "A voice memo must be in the same folder as its photo."
             case .invalidRecord:
-                return "The saved voice-memo relationship is invalid and was left untouched."
+                return "The saved voice memo link is damaged. It was left as it is."
             case .unsupportedSchema(let version):
-                return "Voice-memo relationship schema \(version) is newer than this app supports."
+                return "This voice memo link was saved by a newer version of Photo Agent (format \(version)). Update Photo Agent to use it."
             case .memoMissing(let filename):
                 return "The saved voice memo \(filename) is missing. Restore it before copying, moving, renaming, or trashing the photo."
             case .ambiguousImportedDestination(let filename):
-                return "The imported voice memo for \(filename) could not be identified unambiguously."
+                return "More than one imported voice memo could belong to \(filename), so none was linked."
             case .sharedMemoRequiresGroupAction(let filename):
-                return "The voice memo \(filename) is linked to multiple photos. Rename is blocked until shared voice-memo groups are supported."
+                return "The voice memo \(filename) is linked to more than one photo, so these photos can't be renamed yet."
             case .importPersistenceRollbackFailed:
-                return "Voice-memo relationship persistence failed and could not be fully rolled back."
+                return "The voice memo link couldn't be saved, and the partial change couldn't be fully undone."
             case .copyDestinationExists(let filename):
-                return "The destination already contains the photo or voice-memo companion \(filename)."
+                return "The destination already contains \(filename)."
             case .copyRollbackFailed(let filenames):
-                return "Photo and voice-memo copy failed. Remove the incomplete copies before retrying: \(filenames.joined(separator: ", "))."
+                return "The photo and voice memo couldn't be copied. Remove the incomplete copies before trying again: \(filenames.joined(separator: ", "))."
             case .copySourceChanged:
-                return "The photo, voice memo, or saved relationship changed during the file operation. Try again when the source is stable."
+                return "The photo or its voice memo changed while it was being copied or moved. Try again."
             case .moveRollbackFailed(let paths):
-                return "The photo and voice-memo move failed and could not be fully rolled back. Recover these files before retrying: \(paths.joined(separator: ", "))."
+                return "The photo and voice memo couldn't be moved, and the partial move couldn't be fully undone. Recover these files before trying again: \(paths.joined(separator: ", "))."
             case .unsafeTrashCarrier(let path):
-                return "Trash was stopped because a photo companion is malformed or is not an owned regular file: \(path)"
+                return "Nothing was moved to the Trash because a file that belongs with this photo is damaged or isn't a normal file: \(path)"
             case .trashRollbackFailed(let paths):
-                return "Trash failed and some originals could not be restored. Recover these files before retrying: \(paths.joined(separator: ", "))."
+                return "Moving to the Trash failed and some files couldn't be put back. Recover these files before trying again: \(paths.joined(separator: ", "))."
             case .trashOutcomeUncertain(let path):
                 return "Trash reported an error after the recovery bundle disappeared. Check Finder Trash for \(URL(fileURLWithPath: path).lastPathComponent) before retrying; the original files may already be there. Original recovery path: \(path)"
             case .unsafeMemoFile(let filename):
-                return "The saved voice memo \(filename) must be a regular file in the photo's folder before file operations can proceed. Symbolic links are left untouched."
+                return "The voice memo \(filename) must be a normal WAV file in the photo's folder, not an alias or link."
             case .recoveryNotNeeded:
                 return "This photo already has an available voice memo. Refresh Caption before trying recovery again."
             case .recoveryRequiresReplacementConfirmation:
-                return "The selected WAV cannot be proven to be the previously associated audio. Confirm an explicit replacement to continue."
+                return "Photo Agent can't confirm the selected WAV is the same recording. Select the WAV again and choose Use Replacement to link it anyway."
             case .reassociationDestinationAlreadyOwned:
-                return "This photo already has a voice-memo relationship. Refresh Caption before searching for a moved relationship."
+                return "This photo already has a linked voice memo. Refresh the voice memo instead of searching another folder."
             }
         }
     }

@@ -20,6 +20,20 @@ nonisolated enum DescriptionAssistantLanguage: String, CaseIterable, Identifiabl
         case .english: "en"
         }
     }
+
+    /// Default before the user picks a language: the first of the Mac's preferred languages the
+    /// assistant supports, otherwise English.
+    static func systemDefault(preferredLanguages: [String] = Locale.preferredLanguages) -> Self {
+        for identifier in preferredLanguages {
+            switch Locale(identifier: identifier).language.languageCode?.identifier {
+            case "nb", "no": return .bokmal
+            case "nn": return .nynorsk
+            case "en": return .english
+            default: continue
+            }
+        }
+        return .english
+    }
 }
 
 nonisolated enum DescriptionAssistantProvider: String, CaseIterable, Identifiable, Sendable {

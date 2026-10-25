@@ -10,6 +10,8 @@ from unittest.mock import patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+# The bridge lives in the app's Resources; a __pycache__ there would be bundled into the app.
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "Vendor/web-download-runtime/packages"))
 spec = importlib.util.spec_from_file_location("bridge", ROOT / "Aagedal Photo Agent/Resources/WebDownloads/web_download_bridge.py")
 bridge = importlib.util.module_from_spec(spec)
@@ -42,6 +44,21 @@ class BridgeTests(unittest.TestCase):
 
     def post(self, url):
         return SyntheticPost(re.match(SyntheticPost.pattern, url))
+
+    def test_errors_shown_to_users_are_plain_and_never_carry_urls(self):
+        offline = OSError("<urlopen error [Errno 8] nodename nor servname provided, or not known>")
+        self.assertIn("internet connection", bridge.user_message(offline))
+        self.assertIn("internet connection", bridge.user_message(ConnectionError("reset")))
+        wrapped = RuntimeError("ERROR: Unable to download webpage: <urlopen error timed out> (caused by x)")
+        self.assertIn("internet connection", bridge.user_message(wrapped))
+        cancelled = bridge.WebDownloadCancelled("Web download cancelled or timed out")
+        self.assertEqual(bridge.user_message(cancelled), "Web download cancelled or timed out")
+        signed = ValueError("HTTP 403 for https://cdn.example/media.jpg?sig=secret")
+        message = bridge.user_message(signed)
+        self.assertNotIn("https://", message)
+        self.assertNotIn("secret", message)
+        self.assertEqual(bridge.user_message(ValueError("Paste an HTTPS Instagram or X post URL")),
+                         "Paste an HTTPS Instagram or X post URL")
 
     def test_post_urls_are_canonical_and_bounded(self):
         self.assertEqual(bridge.post_url("https://instagram.com/p/ABC/?igsh=secret"), "https://www.instagram.com/p/ABC/")

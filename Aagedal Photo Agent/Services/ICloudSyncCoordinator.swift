@@ -523,8 +523,26 @@ actor KnownPeopleICloudRoutingService: KnownPeopleICloudRouting {
         let local = access.localRootURL()
         guard syncEnabled else { return local }
         guard let cloud = access.cloudRootURL() else { return local }
-        return (try? await KnownPeopleCloudGenerationPublisher.shared
-            .resolveActiveGeneration(in: cloud)) ?? cloud
+        do {
+            return try await KnownPeopleCloudGenerationPublisher.shared
+                .resolveActiveGeneration(in: cloud) ?? cloud
+        } catch {
+            // A present but unresolvable pointer (damaged, or synced before its generation
+            // finished downloading) must not reactivate the legacy root records a replacement
+            // retired; KnownPeopleCloudCoordinator refuses them too. Keep using the generation
+            // this Mac last resolved, else the local library that a replacement published.
+            if let id = AppDefaults.store.string(forKey: UserDefaultsKeys.knownPeopleICloudGenerationID),
+               UUID(uuidString: id) != nil {
+                let cached = cloud
+                    .appendingPathComponent(KnownPeopleCloudGenerationPointer.generationsDirectory, isDirectory: true)
+                    .appendingPathComponent(id, isDirectory: true)
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: cached.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                    return cached
+                }
+            }
+            return local
+        }
     }
 
     func cloudRootURL(ensuringDirectory: Bool) async -> URL? {

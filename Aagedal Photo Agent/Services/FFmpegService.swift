@@ -12,13 +12,10 @@ enum FFmpegError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .ffmpegMissing:
-            return "ffmpeg binary not found in app bundle"
-        case .processFailed(let message):
-            return "ffmpeg failed: \(message)"
-        case .invalidLocalInvocation:
-            return "Image conversion requires one absolute local input and output path."
-        case .outputMissing:
-            return "ffmpeg produced no output file"
+            return "AVIF and JPEG XL files can't be created in this copy of the app. Reinstall Photo Agent."
+        case .processFailed, .invalidLocalInvocation, .outputMissing:
+            // The process failure detail is already in the FFmpeg log.
+            return "Couldn't create the AVIF or JPEG XL file. Try JPEG or TIFF instead."
         }
     }
 }

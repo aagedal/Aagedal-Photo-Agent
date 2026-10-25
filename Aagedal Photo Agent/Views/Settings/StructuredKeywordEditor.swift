@@ -252,6 +252,9 @@ struct StructuredKeywordEditor: View {
                         .frame(width: 12)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(expandedIDs.contains(node.id) ? "Collapse \(node.name)" : "Expand \(node.name)")
+                .accessibilityValue(expandedIDs.contains(node.id) ? "Expanded" : "Collapsed")
+                .help(expandedIDs.contains(node.id) ? "Collapse \(node.name)" : "Expand \(node.name)")
             } else {
                 Spacer().frame(width: 12)
             }
@@ -267,6 +270,7 @@ struct StructuredKeywordEditor: View {
             }
             .buttonStyle(.plain)
             .help(node.isContainer ? "Category (won't be applied as a keyword). Click to make it a keyword." : "Keyword. Click to make it a category.")
+            .accessibilityLabel(node.isContainer ? "Make \(node.name) a keyword" : "Make \(node.name) a category")
 
             // Name
             if isRenaming {
@@ -356,6 +360,7 @@ struct StructuredKeywordEditor: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Row actions")
+        .accessibilityLabel("Actions for \(node.name)")
     }
 
     @ViewBuilder
@@ -826,6 +831,8 @@ private struct SynonymEditorPopover: View {
                                     .foregroundStyle(.secondary)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("Remove synonym \(synonym)")
+                            .help("Remove synonym \(synonym)")
                         }
                     }
                 }
@@ -883,6 +890,8 @@ private struct RelatedKeywordsEditorPopover: View {
                                     .foregroundStyle(.secondary)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("Remove related keyword \(keyword)")
+                            .help("Remove related keyword \(keyword)")
                         }
                     }
                 }

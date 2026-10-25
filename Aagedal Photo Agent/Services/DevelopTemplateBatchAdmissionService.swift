@@ -359,8 +359,10 @@ actor DevelopTemplateBatchAdmissionStore {
 /// Only this process's independent capture can become a native review. Tokens are opaque,
 /// tied to the service instance, and removed before any await that can reenter the actor.
 actor DevelopTemplateBatchAdmissionService {
-    nonisolated let queue = DispatchSerialQueue(label: "com.aagedal.photo-agent.develop-admission-review", qos: .utility)
-    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+    // Carrier validation recurses once per photo like capture, so it shares capture's large stack.
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        LargeStackSerialExecutor.developBatchReview.asUnownedSerialExecutor()
+    }
 
     struct Review: Sendable, Identifiable {
         let id: UUID

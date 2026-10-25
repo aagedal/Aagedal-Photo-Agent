@@ -26,6 +26,8 @@ struct KeywordsEditor: View {
                                 .font(.system(size: 8, weight: .bold))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Remove \(keyword)")
+                        .help("Remove \(keyword)")
                     }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
@@ -53,6 +55,8 @@ struct KeywordsEditor: View {
                         .font(.caption)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Add \(label.lowercased())")
+                .help("Add \(label.lowercased())")
                 .disabled(newKeyword.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .padding(4)

@@ -97,6 +97,7 @@ struct QuickListPicker: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear filter")
             }
             Menu {
                 if let onAddCurrentToQuickList {
@@ -118,6 +119,7 @@ struct QuickListPicker: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("More quick list actions")
+            .accessibilityLabel("More quick list actions")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -235,6 +237,12 @@ struct QuickListPicker: View {
         // Single tap only — activates immediately. No double-tap gesture, so
         // SwiftUI doesn't stall the tap waiting to disambiguate a second click.
         .onTapGesture {
+            focusedIndex = index
+            activate(entry)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
             focusedIndex = index
             activate(entry)
         }

@@ -157,21 +157,28 @@ nonisolated struct PendingMetadataWriteBatchOutcome: Sendable {
 
     var attentionMessage: String? {
         guard wasCancelled || skippedCount > 0 || failedCount > 0 || !discoveryFailures.isEmpty else { return nil }
-        var lines = ["Write All in \(folderURL.path): wrote \(completedCount), skipped \(skippedCount), failed \(failedCount)."]
-        if wasCancelled { lines.append("Cancelled after \(results.count) attempted photos; \(unattemptedURLs.count) discovered photos were not attempted.") }
-        if discoveryWasCancelled { lines.append("Discovery did not finish; additional pending photos may remain unverified.") }
-        for failure in discoveryFailures { lines.append("\(failure.url.path): \(failure.message)") }
+        var lines = ["Write All wrote \(completedCount), skipped \(skippedCount) and failed \(failedCount)."]
+        if wasCancelled { lines.append("Cancelled after \(results.count) \(results.count == 1 ? "photo" : "photos"). \(unattemptedURLs.count) more \(unattemptedURLs.count == 1 ? "photo with unsaved changes wasn't" : "photos with unsaved changes weren't") started.") }
+        if discoveryWasCancelled { lines.append("The search for photos with unsaved changes didn't finish, so some may not have been written.") }
+        for failure in discoveryFailures { lines.append(Self.discoveryFailureSubject(failure.url) + ": " + failure.message) }
         for result in results where !result.completed {
-            var message = result.imageURL.path + ": " + (result.failure ?? (result.wasSkipped ? "Skipped protected photo." : "The pending write did not complete."))
+            var message = result.imageURL.lastPathComponent + ": " + (result.failure ?? (result.wasSkipped ? "Skipped because the photo is protected." : "The changes weren't written."))
             var written: [String] = []
             if result.didWriteEmbedded { written.append("image metadata") }
             if result.didWriteXMP { written.append("XMP sidecar") }
             if !written.isEmpty { message += " Already written: " + written.joined(separator: " and ") + "." }
-            if result.embeddedWriteMayHaveOccurred { message += " Image metadata may already have changed; verify it before retrying." }
-            if let path = result.committedButUnverifiedSidecarURL { message += " Metadata JSON was committed but could not be verified: \(path.path)." }
+            if result.embeddedWriteMayHaveOccurred { message += " Image metadata may already have changed; check it before trying again." }
+            if let path = result.committedButUnverifiedSidecarURL { message += " The app's saved edits for \(path.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) couldn't be checked after saving. Reload the folder before editing it again." }
             lines.append(message)
         }
         return lines.joined(separator: "\n\n")
+    }
+
+    /// Discovery reads the app's per-photo `.meta.json` records; name the photo, not the record.
+    private static func discoveryFailureSubject(_ url: URL) -> String {
+        let name = url.lastPathComponent
+        guard name.hasSuffix(".meta.json") else { return "This folder's saved edits" }
+        return "Saved edits for " + name.replacingOccurrences(of: ".meta.json", with: "")
     }
 }
 
@@ -1724,7 +1731,7 @@ final class MetadataViewModel {
     func waitForPrimaryDevelopWrites() async { await primaryDevelopTask?.value }
     func requirePrimaryDevelopWritesPersisted() throws {
         guard !hasRetainedPrimaryDevelopWrites else {
-            throw PrimaryDevelopWriteError(message: "Primary Develop work remains retained. Retry its original save, or export and review that photo's retained work before leaving.")
+            throw PrimaryDevelopWriteError(message: "This photo has Develop edits that haven't been saved yet. Try saving again, or export them for review, before leaving.")
         }
     }
     private func synchronizePrimaryDevelopRetention() {
@@ -1800,7 +1807,10 @@ final class MetadataViewModel {
         if let existing = retainedPrimaryDevelopWrites.last(where: {
             $0.imageURL == image && $0.folderURL == folder && $0.loadID == loadID
         }), existing.edited == edited, existing.mode == mode {
-            let message = primaryDevelopResults[existing.id]?.failure ?? "This Primary Develop edit is already retained or saving."
+            let message = primaryDevelopResults[existing.id].map {
+                PrimaryDevelopFailureText.userMessage(failure: $0.failure, fileName: image.lastPathComponent,
+                    requiresRecovery: $0.requiresRecovery)
+            } ?? "Your edits to \(image.lastPathComponent) are still being saved."
             onComplete(.failed(message: message)); return
         }
         let predecessor = retainedPrimaryDevelopWrites.last {
@@ -1844,7 +1854,7 @@ final class MetadataViewModel {
             if let older = retainedPrimaryDevelopWrites.first(where: {
                 Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(request.imageURL)
             }), older.id != request.id {
-                result = .init(requestID: request.id, failure: "An earlier retained Primary Develop edit for this photo must be resolved first.")
+                result = .init(requestID: request.id, failure: PrimaryDevelopFailureText.earlierEditUnresolved)
             } else if primaryDevelopResults[request.id]?.requiresRecovery == true {
                 result = primaryDevelopResults[request.id]!
             } else if let primaryDevelopExecutor {
@@ -1906,7 +1916,8 @@ final class MetadataViewModel {
                 synchronizePrimaryDevelopRetention()
                 onComplete(.failed(message: message))
             } else {
-                let message = primaryDevelopFailureMessage(result)
+                let message = PrimaryDevelopFailureText.userMessage(failure: result.failure,
+                    fileName: request.imageURL.lastPathComponent, requiresRecovery: result.requiresRecovery)
                 if matches { saveError = message }
                 synchronizePrimaryDevelopRetention()
                 onComplete(result.wasCancelled ? .cancelled(message: message) : .failed(message: message))
@@ -1927,8 +1938,8 @@ final class MetadataViewModel {
 
     private func primaryDevelopFailureMessage(_ result: PrimaryDevelopWriteResult) -> String {
         let prefix = result.requiresRecovery
-            ? "Primary Develop metadata may be partly written. Its complete captured edit remains retained; export and review it before discarding."
-            : "The Primary Develop edit remains retained. Retry uses its original photo and captured values."
+            ? "The Develop edit may be only partly saved. The full edit is still kept in Photo Agent; export it and check the result before discarding it."
+            : "The Develop edit wasn't saved, but it is still kept in Photo Agent. Retrying saves the same edit to the same photo."
         return prefix + " " + (result.failure ?? "The save did not complete.")
     }
     func retryPrimaryDevelopWrites() async throws {
@@ -1953,7 +1964,7 @@ final class MetadataViewModel {
             try Task.checkCancellation()
             let snapshot = try await VariableConflictRecovery.makeSnapshot(photoURL: image,
                 reason: retainedPrimaryDevelopWrites.first(where: { Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(image) })
-                    .flatMap { primaryDevelopResults[$0.id] }.map(primaryDevelopFailureMessage) ?? "Primary Develop work remains retained.",
+                    .flatMap { primaryDevelopResults[$0.id] }.map(primaryDevelopFailureMessage) ?? "An unsaved Develop edit is still kept in Photo Agent.",
                 generation: primaryDevelopGeneration, entries: primaryDevelopEntries(for: image))
             guard primaryDevelopReviewOwner == owner else { throw PrimaryDevelopWriteError(message: "The recovery review changed.") }
             primaryDevelopReview = snapshot
@@ -1967,7 +1978,7 @@ final class MetadataViewModel {
     }
     private func validatePrimaryDevelopReview(_ snapshot: VariableConflictSnapshot) throws {
         guard primaryDevelopReview?.id == snapshot.id, primaryDevelopGeneration == snapshot.generation else {
-            throw PrimaryDevelopWriteError(message: "The retained Primary Develop work changed. Review and export it again.")
+            throw PrimaryDevelopWriteError(message: "The unsaved Develop edits changed since you reviewed them. Review and export them again.")
         }
     }
     private var primaryDevelopProtectedPhotos: [URL] {
@@ -2000,7 +2011,7 @@ final class MetadataViewModel {
             $0.loadID == metadataLoadRequestID && selectedURLs == [$0.imageURL] && currentFolderURL == $0.folderURL && editingMetadata == $0.edited
         } == true
         guard !ownsUnchangedEditor || (primaryDevelopEditorBarrier != nil && !isSaving) else {
-            throw PrimaryDevelopWriteError(message: "Open this photo's Develop editor and finish its active controls before discarding the retained edit.")
+            throw PrimaryDevelopWriteError(message: "Open this photo in Develop and finish the adjustment you're making before discarding the unsaved edits.")
         }
         let mayReload = ownsUnchangedEditor
         if mayReload, let last {
@@ -2015,7 +2026,7 @@ final class MetadataViewModel {
             try validatePrimaryDevelopReview(snapshot)
             guard metadataLoadRequestID == reloadID, selectedURLs == [last.imageURL],
                   metadataLoadGeneration > beforeGeneration, !isLoading else {
-                throw PrimaryDevelopWriteError(message: "The recovery export is verified, but the editor could not reload. The captured work remains retained; finish reloading before discarding it.")
+                throw PrimaryDevelopWriteError(message: "The export is saved, but the editor couldn't reload the photo. Your unsaved edits are kept. Wait for the photo to reload before discarding them.")
             }
         }
         retainedPrimaryDevelopWrites.removeAll { ids.contains($0.id) }
@@ -2895,7 +2906,7 @@ final class MetadataViewModel {
                     xmpMetadata = edited
                 }
             } catch {
-                saveError = "Failed to write XMP sidecar: \(error.localizedDescription)"
+                saveError = "Couldn't save the XMP file for \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                 return saveError
             }
             return nil
@@ -2918,7 +2929,7 @@ final class MetadataViewModel {
                     batchMetadataByURL[imageURL] = installed
                 }
             } catch {
-                saveError = "Failed to save XMP sidecar: \(error.localizedDescription)"
+                saveError = "Couldn't save the XMP file for \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                 failure = failure ?? saveError
             }
         }
@@ -3063,13 +3074,16 @@ final class MetadataViewModel {
         _ result: MetadataSidecarPersistenceResult, imageWasWritten: Bool
     ) -> String {
         let prefix = imageWasWritten
-            ? "The image metadata was written, but its draft could not be completed. Newer pending edits were preserved."
+            ? "Your changes were saved in the photo, but the app's saved edits couldn't be updated. Newer unsaved edits were kept."
             : result.wroteXMPSidecar
-                ? "The XMP metadata was written, but its draft could not be completed."
-                : "Metadata was not saved."
-        let detail = result.failure?.message ?? "The operation was cancelled."
-        let recovery = result.committedButUnverifiedSidecarURL.map { " Review: \($0.path)." } ?? ""
-        return "\(prefix) \(detail)\(recovery) Reload before retrying."
+                ? "Your changes were saved in the XMP file, but the app's saved edits couldn't be updated."
+                : "Your changes weren't saved."
+        let detail = result.failure?.message ?? "The save was cancelled."
+        let recovery = result.committedButUnverifiedSidecarURL.map { url in
+            let name = url.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")
+            return " The app's saved edits for \(name) may be incomplete."
+        } ?? ""
+        return "\(prefix) \(detail)\(recovery) Reload the folder, then try again."
     }
 
     /// True when the develop (Camera Raw) state differs between two snapshots,
@@ -3763,8 +3777,8 @@ final class MetadataViewModel {
         let riskyAdmissions = retainedVariableAdmissions.filter(\.requiresPersistence)
         guard unverified.isEmpty && riskyAdmissions.isEmpty else {
             throw CaptionWorkspaceFlushError.persistenceFailed(
-                "Variable edits have not been verified in saved metadata. Use Retry Variable Writes before closing. Retained photos: "
-                + (unverified.map { $0.imageURL.path } + riskyAdmissions.map { $0.imageURL.path }).joined(separator: ", "))
+                "Some variable edits haven't been confirmed as saved. Use Retry Variable Writes before closing. Photos: "
+                + (unverified.map { $0.imageURL.lastPathComponent } + riskyAdmissions.map { $0.imageURL.lastPathComponent }).joined(separator: ", "))
         }
     }
 
@@ -3994,7 +4008,7 @@ final class MetadataViewModel {
             guard !entries.isEmpty else { throw VariableConflictRecoveryError.obsoleteReview }
             let generation = variableRecoveryGeneration
             let snapshot = try await VariableConflictRecovery.makeSnapshot(photoURL: photoURL,
-                reason: variableFailures[Self.variablePhotoKey(photoURL)] ?? "Retained variable work needs review.",
+                reason: variableFailures[Self.variablePhotoKey(photoURL)] ?? "Unsaved variable edits need review.",
                 generation: generation, entries: entries)
             try Task.checkCancellation()
             guard variableRecoveryOwnerID == owner, variableRecoveryGeneration == generation else {
@@ -4311,7 +4325,7 @@ final class MetadataViewModel {
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
                 guard let previous, try encoder.encode(previous) == encoder.encode(original) else {
                     throw CocoaError(.fileWriteFileExists, userInfo: [NSLocalizedDescriptionKey:
-                        "The photo's physical metadata changed after this editor was loaded. Your editor values remain unchanged; reload or reconcile before processing variables."])
+                        "The file's metadata changed after you opened it here. Your edits are kept — reload the photo, then try again."])
                 }
             }
             // The loaded editor already proved its technical values unchanged.
@@ -5003,7 +5017,7 @@ final class MetadataViewModel {
                         onComplete?(message)
                     }
                 } catch {
-                    let message = "Failed to save sidecar: \(error.localizedDescription)"
+                    let message = "Couldn't save changes to \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                     if matchesSelection() { saveError = message }
                     onComplete?(message)
                 }
@@ -5209,7 +5223,7 @@ final class MetadataViewModel {
                 }
             } catch {
                 allSaved = false
-                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+                saveError = "Couldn't save changes to \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                 failure = failure ?? saveError
             }
         }
@@ -5557,7 +5571,7 @@ final class MetadataViewModel {
                       currentFolderURL == folderURL, selectedURLs == [imageURL] else {
                     if writeTaskGeneration == generation, metadataLoadRequestID == loadID,
                        currentFolderURL == folderURL, selectedURLs == [imageURL] {
-                        saveError = "Metadata was written, but a newer Caption draft is still pending. Its saved baseline was retained."
+                        saveError = "Metadata was saved. Newer caption edits you made meanwhile are kept and not saved yet."
                     }
                     return
                 }
@@ -5575,7 +5589,7 @@ final class MetadataViewModel {
                 guard writeTaskGeneration == generation, metadataLoadRequestID == loadID,
                       currentFolderURL == folderURL, selectedURLs == [imageURL] else { return }
                 guard cleared else {
-                    self.saveError = "Metadata was written, but newer pending sidecar changes were retained."
+                    self.saveError = "Metadata was saved. Newer edits you made meanwhile are kept and not saved yet."
                     return
                 }
                 self.metadata = edited
@@ -5938,7 +5952,7 @@ final class MetadataViewModel {
                       batchFieldMutations == fieldMutations,
                       batchLocationsShownMutation == locationsMutation,
                       batchImageSupplierMutation == supplierMutation else { return }
-                saveError = "Failed to discard folder metadata sidecars: \(error.localizedDescription)"
+                saveError = "Couldn't discard the app's saved edits in \(folderURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
                 return
             }
             guard discardRequestID == requestID,
@@ -5999,7 +6013,7 @@ final class MetadataViewModel {
                     cleanupBaseline = (imageURL, folderURL, installed)
                 }
             } catch {
-                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+                saveError = "Couldn't save changes to \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
             }
         }
     }
@@ -6113,7 +6127,7 @@ final class MetadataViewModel {
                         restore = self.restoreToOriginal()
                     case .point(let point):
                         guard let index = self.sidecarHistory.firstIndex(of: point) else {
-                            self.saveError = "This history point is no longer available. Reload the photo and choose a retained point."
+                            self.saveError = "This history point is no longer available. Reload the photo and choose another point."
                             return
                         }
                         restore = self.restoreToHistoryPoint(at: index)
@@ -6146,7 +6160,7 @@ final class MetadataViewModel {
               sidecarHistory.indices.contains(index),
               record.history.indices.contains(index),
               record.history == sidecarHistory else {
-            saveError = "This history point is no longer available. Reload the photo and choose a retained point."
+            saveError = "This history point is no longer available. Reload the photo and choose another point."
             return nil
         }
         // Reverse only later retained transitions from the actual current record. Replaying a
@@ -6258,7 +6272,7 @@ final class MetadataViewModel {
                 saveError = nil
             } else {
                 if let path = result.committedButUnverifiedSidecarURL {
-                    saveError = "Restore wrote the metadata draft, but its current contents could not be verified. Reload before another action. Review: \(path.path). \(result.failure?.message ?? "The operation was cancelled.")"
+                    saveError = "The earlier version was restored, but the app's saved edits for \(path.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) couldn't be checked. \(result.failure?.message ?? "The restore was cancelled.") Reload the folder before doing anything else with this photo."
                     return
                 }
                 let prefix = result.installedSidecar == nil

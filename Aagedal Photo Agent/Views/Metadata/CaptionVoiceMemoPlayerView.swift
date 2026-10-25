@@ -68,7 +68,7 @@ struct CaptionVoiceMemoPlayerView: View {
                 .labelStyle(.iconOnly)
                 .help(isTranscriptBusy
                     ? "Available when the current transcription finishes"
-                    : "Reload the saved voice-memo relationship for this photo")
+                    : "Check this photo's voice memo again")
                 .accessibilityIdentifier("caption.voiceMemo.refresh")
                 // Reloading the same photo cancels the transcript model's running work, which
                 // would silently throw away a Whisper transcription that may take minutes.
@@ -79,7 +79,7 @@ struct CaptionVoiceMemoPlayerView: View {
                 Text("Checking voice memo…").foregroundStyle(.secondary)
             case .none:
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("No associated voice memo").foregroundStyle(.secondary)
+                    Text("No voice memo linked").foregroundStyle(.secondary)
                     Button("Find matching voice memo…", systemImage: "waveform.badge.plus") {
                         guard let imageURL else { return }
                         Task { await associationModel.discover(imageURL: imageURL) }
@@ -87,7 +87,7 @@ struct CaptionVoiceMemoPlayerView: View {
                     .disabled(associationModel.isWorking || reassociationModel.isWorking || imageURL == nil
                               || isMetadataReviewOrSaveBusy)
                     .accessibilityIdentifier("caption.voiceMemo.findMatching")
-                    Button("Find moved relationship…", systemImage: "folder.badge.questionmark") {
+                    Button("Find Link in Another Folder…", systemImage: "folder.badge.questionmark") {
                         reassociationImageURL = imageURL
                         isSelectingRelationshipFolder = true
                     }
@@ -159,7 +159,7 @@ struct CaptionVoiceMemoPlayerView: View {
             if recoveryModel.isWorking {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("Verifying selected WAV…").foregroundStyle(.secondary)
+                    Text("Checking selected WAV…").foregroundStyle(.secondary)
                 }
             } else if let error = recoveryModel.errorMessage {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
@@ -280,7 +280,7 @@ struct CaptionVoiceMemoPlayerView: View {
             }
         } message: {
             if let pair = associationModel.pendingAssociation {
-                Text("Link \(pair.memoURL.lastPathComponent) to \(pair.imageURL.lastPathComponent)? Camera capture evidence and the matching WAV were checked. This saves a relationship record in this folder; the photo and audio remain unchanged.")
+                Text("Link \(pair.memoURL.lastPathComponent) to \(pair.imageURL.lastPathComponent)? Its recording matches this photo. Photo Agent saves the link in this folder; the photo and audio files aren't changed.")
             }
         }
         .alert(
@@ -301,8 +301,8 @@ struct CaptionVoiceMemoPlayerView: View {
         } message: {
             if case .explicitReplacement(let hadIdentity) = recoveryModel.pendingReplacement?.kind {
                 Text(hadIdentity
-                     ? "The current photo or selected WAV does not match the previously recorded bytes. Using it will create a new association and invalidate any transcript tied to the old audio."
-                     : "This older relationship has no historical content identity, so the selected WAV cannot be proven to be the original. Using it will record a new replacement association and revoke any audio-bound approval.")
+                     ? "The photo or the selected WAV has changed since the voice memo was linked. Using it creates a new link, and any transcript of the old audio will need to be made again."
+                     : "This link was saved without a record of the original audio, so Photo Agent can't confirm the selected WAV is the same recording. Using it creates a new link, and any transcript of the old audio will need to be approved again.")
             }
         }
         .confirmationDialog("Reset this transcript?", isPresented: Binding(
@@ -454,7 +454,7 @@ struct CaptionVoiceMemoPlayerView: View {
                             }
                         }
                     }
-                    .help("Apple on-device speech has no free language reservation for this app")
+                    .help("Apple's on-device speech has room for no more languages for this app. Release one you don't use.")
                     .disabled(whisperSetup.isTranscribing)
                     .accessibilityIdentifier("caption.voiceMemo.releaseLanguage")
                 case .downloading:
@@ -535,13 +535,13 @@ struct CaptionVoiceMemoPlayerView: View {
         if let error = reassociationModel.errorMessage { return error }
         switch reassociationModel.result {
         case .reassociated:
-            return "The moved voice-memo relationship was verified and restored."
+            return "The voice memo link was found and restored."
         case .ambiguous(let count):
-            return "Found \(count) exact relationship candidates. Choose a narrower folder so one location owns the relationship."
+            return "Found \(count) links for this photo. Choose a smaller folder that contains only one of them."
         case .sourceChanged:
-            return "The selected relationship points to different photo bytes. It was not attached."
+            return "The link found belongs to a changed copy of this photo, so it wasn't used."
         case .notFound:
-            return "No relationship with the exact photo and WAV bytes was found in the selected folder."
+            return "No link for this photo and its voice memo was found in the selected folder."
         case nil:
             return nil
         }

@@ -2832,6 +2832,33 @@ struct FieldKeyTests {
         ) == [.creator])
     }
 
+    @Test("a 2.x upgrade without a stored choice keeps every field; a fresh install stays concise")
+    func absentFieldVisibilityDependsOnEarlierInstallation() throws {
+        func withStore(_ body: (UserDefaults) throws -> Void) throws {
+            let suite = "field-visibility-\(UUID())"
+            let store = try #require(UserDefaults(suiteName: suite))
+            defer { store.removePersistentDomain(forName: suite) }
+            try body(store)
+        }
+        let concise = MetadataFieldID.resolvedHiddenEditorFields(storedRawValues: nil)
+        try withStore { store in
+            store.set(Data("[]".utf8), forKey: UserDefaultsKeys.recentFolders)
+            #expect(MetadataFieldID.resolvedHiddenEditorFields(in: store) == [])
+            #expect(store.object(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields) == nil)
+        }
+        try withStore { store in
+            #expect(MetadataFieldID.resolvedHiddenEditorFields(in: store) == concise)
+            // Opening a folder later must not flip a fresh install to show-all.
+            store.set(Data("[]".utf8), forKey: UserDefaultsKeys.recentFolders)
+            #expect(MetadataFieldID.resolvedHiddenEditorFields(in: store) == concise)
+        }
+        try withStore { store in
+            store.set(Data("[]".utf8), forKey: UserDefaultsKeys.recentFolders)
+            store.set(["creator"], forKey: UserDefaultsKeys.hiddenIPTCMetadataFields)
+            #expect(MetadataFieldID.resolvedHiddenEditorFields(in: store) == [.creator])
+        }
+    }
+
     @Test("field order defaults, persists, and repairs duplicate or missing values")
     func editorFieldOrderRecovery() {
         #expect(MetadataFieldID.resolvedEditorFieldOrder(storedRawValues: nil)
@@ -6150,5 +6177,37 @@ struct ExplicitXMPLabelClearTests {
         #expect(iptcMetadataFromDict([MetadataDictKey.label: "Editorial desk"]).label == "Editorial desk")
         #expect(iptcMetadataFromDict([MetadataDictKey.label: ""]).label == "")
         #expect(iptcMetadataFromDict([:]).label == nil)
+    }
+}
+
+struct WhatsNewPresentationTests {
+    private func makeDefaults() throws -> (UserDefaults, String) {
+        let suiteName = "WhatsNewPresentationTests.\(UUID().uuidString)"
+        return (try #require(UserDefaults(suiteName: suiteName)), suiteName)
+    }
+
+    @Test("A fresh install never sees What's New and stays that way after it gains folder history")
+    func freshInstallIsMarkedSeen() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        #expect(!WhatsNewPresentation.decideAtLaunch(in: defaults))
+        defaults.set(["/Volumes/Card/DCIM"], forKey: UserDefaultsKeys.recentFolders)
+        #expect(!WhatsNewPresentation.decideAtLaunch(in: defaults))
+    }
+
+    @Test("An upgrade from 2.x sees What's New until it is shown once")
+    func upgraderSeesItOnce() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(1.2, forKey: UserDefaultsKeys.thumbnailScale)
+        #expect(WhatsNewPresentation.decideAtLaunch(in: defaults))
+        #expect(WhatsNewPresentation.decideAtLaunch(in: defaults))
+        WhatsNewPresentation.markSeen(in: defaults)
+        #expect(!WhatsNewPresentation.decideAtLaunch(in: defaults))
+    }
+
+    @Test("What's New stays on this Mac instead of syncing through iCloud")
+    func seenKeyIsNotSynced() {
+        #expect(!PreferencesSyncService.syncedKeys.contains(WhatsNewPresentation.seenReleaseKey))
     }
 }

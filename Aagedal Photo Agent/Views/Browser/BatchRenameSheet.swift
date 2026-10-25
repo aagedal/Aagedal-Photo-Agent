@@ -282,7 +282,7 @@ final class BatchRenameSheetSession {
         do {
             reservation = try MCPProcessReservation.acquireFolder(request.folderURL)
         } catch {
-            executionGuardError = "This folder is busy or its local-operation reservation is unavailable. Refresh the preview after the other operation finishes."
+            executionGuardError = "This folder is busy with another task, such as a face scan or metadata save. When it finishes, refresh the preview and try again."
             do {
                 try await executionQuiescence.complete(.abortedBeforeExecution)
             } catch {
@@ -619,6 +619,7 @@ struct BatchRenameSheet: View {
                 }
                 .menuStyle(.borderlessButton)
                 .help("Manage rename recipes")
+                .accessibilityLabel("Manage rename recipes")
             }
 
             if session.hasUnsavedPresetChanges {
@@ -910,15 +911,29 @@ struct BatchRenameSheet: View {
                     .font(.headline)
                     .foregroundStyle(.orange)
                 Text(presentation.recoveryMessage)
-                ForEach(presentation.issueDetails, id: \.self) { Text($0).font(.caption.monospaced()) }
-                ForEach(presentation.residualDetails, id: \.self) { Text($0).font(.caption.monospaced()) }
+                ForEach(presentation.issueDetails, id: \.self) { Text($0).font(.caption) }
+                ForEach(presentation.residualDetails, id: \.self) { Text($0).font(.caption) }
+                if !presentation.technicalDetails.isEmpty {
+                    DisclosureGroup("Details") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(presentation.technicalDetails, id: \.self) {
+                                Text($0)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.caption)
+                }
                 if presentation.canRefreshOriginalRequest {
                     Button("Refresh Preview from Disk") {
                         Task { await session.refreshSnapshotAfterFailure() }
                     }
                     .disabled(session.isPreparing)
                 } else {
-                    Text("Close this sheet, review the reloaded folder, then select the authoritative files and open Rename again.")
+                    Text("Close this sheet, check the files in the folder, then select them and open Rename again.")
                         .font(.caption.weight(.semibold))
                 }
             }
@@ -929,15 +944,23 @@ struct BatchRenameSheet: View {
         .background(.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    private static func subsystemLabel(_ subsystem: RenameReassociationIssue.Subsystem) -> String {
+        switch subsystem {
+        case .faceData: return "Face data"
+        case .imageAnalysis: return "Image analysis"
+        case .voiceMemoCompanion: return "Voice memo link"
+        }
+    }
+
     private func reassociationFailure(_ result: RenameReassociationResult) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label("Files renamed; some app references need review", systemImage: "exclamationmark.triangle.fill")
+            Label("Files renamed, but some app data wasn't updated", systemImage: "exclamationmark.triangle.fill")
                 .font(.headline)
                 .foregroundStyle(.orange)
-            Text("The folder was reloaded from disk. Close Rename, verify the listed app data, and do not retry this completed plan.")
+            Text("Your files have their new names. Close Rename and check the items below. Don't run this rename again.")
             ForEach(result.issues, id: \.subsystem) { issue in
-                Text("\(issue.subsystem.rawValue): \(issue.detail)")
-                    .font(.caption.monospaced())
+                Text("\(Self.subsystemLabel(issue.subsystem)): \(issue.detail)")
+                    .font(.caption)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -2722,6 +2722,17 @@ struct DescriptionAssistantGGUFTemplateTests {
 
 @Suite("Apple description provider")
 struct AppleDescriptionProviderTests {
+    @Test("The default assistant language follows the Mac's preferred languages")
+    func defaultLanguageFollowsSystem() {
+        #expect(DescriptionAssistantLanguage.systemDefault(preferredLanguages: ["nb-NO"]) == .bokmal)
+        #expect(DescriptionAssistantLanguage.systemDefault(preferredLanguages: ["no"]) == .bokmal)
+        #expect(DescriptionAssistantLanguage.systemDefault(preferredLanguages: ["nn-NO", "en"]) == .nynorsk)
+        #expect(DescriptionAssistantLanguage.systemDefault(preferredLanguages: ["en-GB"]) == .english)
+        #expect(DescriptionAssistantLanguage.systemDefault(preferredLanguages: ["de-DE", "nb"]) == .bokmal)
+        #expect(DescriptionAssistantLanguage.systemDefault(preferredLanguages: ["sv-SE"]) == .english)
+        #expect(DescriptionAssistantLanguage.systemDefault(preferredLanguages: []) == .english)
+    }
+
     @Test("Unavailable Apple model and unsupported languages refuse generation")
     func availabilityAndLanguageAdmission() throws {
         for language in DescriptionAssistantLanguage.allCases {

@@ -270,11 +270,11 @@ final class DevelopVersionSessionCoordinator {
                 case .sourceChanged:
                     catalog = nil
                     persistenceState = .unavailable
-                    notice = "The source bytes changed. Reassociate the preserved catalog before applying a named version."
+                    notice = "This photo has changed since its named versions were saved, so they can't be used with it. The versions are kept unchanged."
                 case let .newerSchema(schemaVersion, _, _, _):
                     catalog = nil
                     persistenceState = .unavailable
-                    notice = "This catalog uses newer schema \(schemaVersion) and is read-only in this build."
+                    notice = "This photo's named versions were saved by a newer version of Photo Agent (format \(schemaVersion)). Update Photo Agent to use them. They're kept unchanged."
                 }
             } catch is CancellationError {
                 return

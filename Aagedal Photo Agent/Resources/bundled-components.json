@@ -261,7 +261,7 @@
         "supportingFiles": {
           "scripts/web_downloads/bundle_runtime.py": "sha256:81dd6f164df6591ba7c30db92ca8fc9afebc617cce8a4fa38a42db4e924bf848",
           "scripts/web_downloads/packages.lock.json": "sha256:3c81f274479a84e85628e5c7877e9d4ba5a0779b7b34444311b023e2bbd60fb0",
-          "Aagedal Photo Agent/Resources/WebDownloads/web_download_bridge.py": "sha256:a9752ffd87fc07d946d7c1cadc97b5c53492feef7bd31b75f32fc43b75d53523",
+          "Aagedal Photo Agent/Resources/WebDownloads/web_download_bridge.py": "sha256:c7b157d609624f9809302a0ca73f3502c5cbd257004476ce9eaeef4468b23d81",
           "scripts/web_downloads/fetch_python.py": "sha256:9b8a8c0a0594288f9bc9fc2b0b11d111387cffc4221e534c9d0d8c3cb76a9496"
         }
       },

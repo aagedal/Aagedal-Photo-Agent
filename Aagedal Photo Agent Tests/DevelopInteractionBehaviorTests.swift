@@ -1355,6 +1355,24 @@ struct DevelopStraightenPivotAndLimitTests {
         #expect(DevelopLayerLimits.exceedsMaskLimit(settings(enabled: limit + 1, disabled: 0)))
     }
 
+    @Test("watermark creation is gated at the pipeline's enabled-watermark limit")
+    func watermarkLayerLimitGate() {
+        func settings(enabled: Int, disabled: Int) -> CameraRawSettings {
+            var cameraRaw = CameraRawSettings()
+            cameraRaw.watermarkLayers = (0..<enabled).map { _ in WatermarkLayer(libraryAssetID: UUID()) }
+                + (0..<disabled).map { _ in WatermarkLayer(enabled: false, libraryAssetID: UUID()) }
+            return cameraRaw
+        }
+        let limit = DevelopLayerLimits.maxEnabledWatermarks
+        #expect(limit == 4)
+        #expect(DevelopLayerLimits.canAddWatermark(to: nil))
+        #expect(DevelopLayerLimits.canAddWatermark(to: settings(enabled: limit - 1, disabled: 3)))
+        #expect(!DevelopLayerLimits.canAddWatermark(to: settings(enabled: limit, disabled: 0)))
+        #expect(DevelopLayerLimits.enabledWatermarkCount(in: settings(enabled: 2, disabled: 5)) == 2)
+        #expect(!DevelopLayerLimits.exceedsWatermarkLimit(settings(enabled: limit, disabled: 4)))
+        #expect(DevelopLayerLimits.exceedsWatermarkLimit(settings(enabled: limit + 1, disabled: 0)))
+    }
+
     @Test("oversized LUT files report a size error, not an encoding error")
     func oversizedLUTReportsSize() async {
         let oversized = Data(repeating: 0x20, count: CubeLUTParser.maxFileSize + 1)
@@ -3658,5 +3676,34 @@ struct DevelopInterruptedViewportTests {
         #expect(navigation.zoomScale == zoom)
         #expect(navigation.updatePan(translation: CGSize(width: 3, height: 4)))
         #expect(navigation.offset == CGSize(width: offset.width + 3, height: offset.height + 4))
+    }
+}
+
+struct EditSliderTypedValueTests {
+    @Test("Typed slider values ignore units and signs and accept comma decimals")
+    func parsesDecoratedNumbers() {
+        #expect(EditSliderTypedValue.parse("+25") == 25)
+        #expect(EditSliderTypedValue.parse("\u{2212}12") == -12)
+        #expect(EditSliderTypedValue.parse("-0,5") == -0.5)
+        #expect(EditSliderTypedValue.parse("5200K") == 5200)
+        #expect(EditSliderTypedValue.parse("40 %") == 40)
+        #expect(EditSliderTypedValue.parse(".75") == 0.75)
+        #expect(EditSliderTypedValue.parse("abc") == nil)
+        #expect(EditSliderTypedValue.parse("") == nil)
+    }
+
+    @Test("Typed slider values are clamped to the range and snapped to the step")
+    func clampsAndSnaps() {
+        #expect(EditSliderTypedValue.clamped(250, to: -100...100, step: 1) == 100)
+        #expect(EditSliderTypedValue.clamped(-7.4, to: -100...100, step: 1) == -7)
+        #expect(EditSliderTypedValue.clamped(1.237, to: -5...5, step: 0.01) == 1.24)
+        #expect(EditSliderTypedValue.clamped(0.3, to: 0...1, step: 0) == 0.3)
+    }
+
+    @Test("The editable text shows as many decimals as the step needs")
+    func editableTextPrecision() {
+        #expect(EditSliderTypedValue.editableText(for: 25, step: 1) == "25")
+        #expect(EditSliderTypedValue.editableText(for: 0.5, step: 0.01).filter(\.isNumber) == "050")
+        #expect(EditSliderTypedValue.editableText(for: 1.25, step: 0.05).filter(\.isNumber) == "125")
     }
 }

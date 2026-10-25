@@ -146,13 +146,13 @@ enum C2PASigningError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .c2patoolMissing:
-            return "c2patool not found in app bundle"
+            return "Content Credentials aren't available in this copy of the app. Reinstall Photo Agent."
         case .certificateNotConfigured:
             return "No signing certificate configured. Import one in Settings → Signing."
         case .privateKeyNotConfigured:
             return "No private key found in Keychain for C2PA signing."
         case .processFailed(let message):
-            return "c2patool failed: \(message)"
+            return "Signing failed. \(message)"
         case .outputMissing:
             return "c2patool produced no output file"
         case .manifestSerializationFailed:
@@ -163,11 +163,15 @@ enum C2PASigningError: Error, LocalizedError {
 
 enum C2PAValidationError: Error, LocalizedError {
     case malformedOutput
+    /// The tool ran but couldn't produce a report; `detail` is its own explanation.
+    case reportFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .malformedOutput:
-            return "c2patool returned unsupported validation output"
+            return "The Content Credentials report couldn't be read."
+        case .reportFailed(let detail):
+            return "The Content Credentials couldn't be checked. \(detail)"
         }
     }
 }
@@ -313,14 +317,14 @@ nonisolated enum C2PASigningService {
         try Task.checkCancellation()
         guard !output.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw C2PASigningError.processFailed(detail.isEmpty ? "c2patool produced no validation report" : detail)
+            throw C2PAValidationError.reportFailed(detail.isEmpty ? "No report was produced." : detail)
         }
         do {
             return try parseValidationInfoJSON(Data(output.stdout.utf8))
         } catch {
             let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             if !detail.isEmpty {
-                throw C2PASigningError.processFailed(detail)
+                throw C2PAValidationError.reportFailed(detail)
             }
             throw error
         }

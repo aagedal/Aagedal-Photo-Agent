@@ -22,15 +22,28 @@ final class CurrentLocationProvider: NSObject, CLLocationManagerDelegate {
     }
 
     func requestLocation() {
+        guard !isLocating else { return }
         errorMessage = nil
         coordinate = nil
-
-        guard CLLocationManager.locationServicesEnabled() else {
-            errorMessage = "Location Services are turned off."
-            return
-        }
-
         isLocating = true
+        // locationServicesEnabled() can block; Apple warns against calling it on the main thread.
+        Task {
+            let enabled = await Self.locationServicesEnabled()
+            guard isLocating else { return }
+            guard enabled else {
+                finish(with: "Location Services are turned off. Turn them on in System Settings → Privacy & Security → Location Services.")
+                return
+            }
+            requestAuthorizedLocation()
+        }
+    }
+
+    @concurrent
+    nonisolated private static func locationServicesEnabled() async -> Bool {
+        CLLocationManager.locationServicesEnabled()
+    }
+
+    private func requestAuthorizedLocation() {
         switch manager.authorizationStatus {
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
@@ -175,6 +188,7 @@ struct GPSSectionView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Search for a location")
+                .accessibilityLabel("Search for a location")
             }
 
             // Search field (always visible when searching, regardless of collapse)
@@ -375,6 +389,7 @@ struct GPSSectionView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Copy coordinates")
+                .accessibilityLabel("Copy coordinates")
             }
         }
     }
@@ -401,6 +416,7 @@ struct GPSSectionView: View {
             }
             .disabled(coordinateInput.trimmingCharacters(in: .whitespaces).isEmpty)
             .help("Set coordinates")
+            .accessibilityLabel("Set coordinates")
 
             if let onReverseGeocode {
                 // Keep `.help` on a non-disabled wrapper: AppKit does not reliably show
@@ -440,6 +456,7 @@ struct GPSSectionView: View {
                     Image(systemName: "trash")
                 }
                 .help("Remove GPS")
+                .accessibilityLabel("Remove GPS")
             }
         }
     }

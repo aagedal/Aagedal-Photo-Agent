@@ -4,6 +4,8 @@ import SwiftUI
 @main
 struct Aagedal_Photo_AgentApp: App {
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openURL) private var openURL
     @State private var nativeInvocation = AutomationNativeInvocationController.shared
     @State private var didPresentNativeInvocationUITest = false
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -25,6 +27,10 @@ struct Aagedal_Photo_AgentApp: App {
         }
         if uiTestConfiguration.isEnabled, let root = uiTestConfiguration.watermarkRootURL {
             WatermarkStore.storageOverrideURL = root.standardizedFileURL
+        }
+        // Before this run writes folder history, which would make a new install look upgraded.
+        if !uiTestConfiguration.isEnabled {
+            WhatsNewLaunchState.shared.decide(in: AppDefaults.store)
         }
         let history = ActivityHistoryStore()
         _activityHistory = State(initialValue: history)
@@ -116,6 +122,20 @@ struct Aagedal_Photo_AgentApp: App {
                     updater.checkForUpdates()
                 }
                 .disabled(!updater.canCheckForUpdates)
+            }
+
+            // No Help book ships with the app; point Help at the 3.0 guides instead.
+            CommandGroup(replacing: .help) {
+                Button("Photo Agent Feature Guide") {
+                    openURL(WhatsNewPresentation.featureGuideURL)
+                }
+                Button("Known Limitations") {
+                    openURL(WhatsNewPresentation.limitationsURL)
+                }
+                Divider()
+                Button("What's New in Photo Agent 3.0") {
+                    openWindow(id: "whatsNew")
+                }
             }
 
             CommandGroup(after: .newItem) {
@@ -461,6 +481,11 @@ struct Aagedal_Photo_AgentApp: App {
             }
             } // end Group (View additions / Upload)
         }
+
+        Window("What's New", id: "whatsNew") {
+            WhatsNewView()
+        }
+        .windowResizability(.contentSize)
 
         Window("Structured Keywords", id: "structuredKeywords") {
             StructuredKeywordsWindowContent()

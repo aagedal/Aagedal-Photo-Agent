@@ -46,6 +46,7 @@ struct WatermarksLibraryContent: View {
                 if !searchText.isEmpty {
                     Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Clear search")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -88,6 +89,7 @@ struct WatermarksLibraryContent: View {
                     Image(systemName: "trash")
                 }
                 .help("Delete the selected watermark")
+                .accessibilityLabel("Delete the selected watermark")
                 .disabled(selection == nil)
 
                 Spacer()

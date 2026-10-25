@@ -241,8 +241,8 @@ nonisolated enum MCPProcessReservationError: LocalizedError, Sendable, Equatable
 
     var errorDescription: String? {
         switch self {
-        case .busy: "Another Photo Agent operation owns this photo or folder. Retry after it finishes."
-        case .unavailable: "Photo Agent could not establish a shared operation reservation. No write was started."
+        case .busy: "This photo or folder is busy with another task, such as a face scan or rename. Try again when it finishes."
+        case .unavailable: "Photo Agent couldn't prepare this folder for changes. Try again."
         }
     }
 }

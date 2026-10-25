@@ -16,19 +16,19 @@ nonisolated enum FFmpegWhisperJobError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidRequest:
-            return "The Whisper configuration is invalid. Select compatible custom files and enable them again."
+            return "Transcription isn't set up correctly. Check Settings → Transcription, then try again."
         case .unsafeInput:
-            return "Whisper could not safely read the selected files. Choose regular files without symbolic links and enable them again."
+            return "Transcription couldn't read its files. Try again; if it keeps failing, remove and download the model again in Settings → Transcription. If you chose custom files, check that they're compatible."
         case .inputChanged, .identityMismatch:
-            return "A Whisper input no longer matches its recorded identity. Refresh the voice memo and select and enable the custom files again."
+            return "The voice memo or transcription files changed while transcribing. Try again."
         case .launchFailed:
-            return "The selected FFmpeg could not be launched. Choose an executable build compatible with this Mac and the patched Whisper JSON filter."
+            return "Transcription couldn't start. Try again; if it keeps failing, remove and download the model again in Settings → Transcription. If you chose custom files, check that they're compatible."
         case .timedOut:
-            return "Whisper exceeded the transcription time limit. Try a smaller compatible model or a shorter voice memo."
+            return "Transcription took too long and was stopped. Try a shorter voice memo or a smaller model."
         case .outputTooLarge:
-            return "Whisper output exceeded the supported size limit. Try a shorter voice memo."
+            return "The transcript was too long to use. Try a shorter voice memo."
         case .processFailed:
-            return "FFmpeg could not finish Whisper transcription. Check that the executable includes the patched Whisper JSON filter and supports the selected model."
+            return "Transcription failed. Try again; if it keeps failing, remove and download the model again in Settings → Transcription. If you chose custom files, check that they're compatible."
         }
     }
 }

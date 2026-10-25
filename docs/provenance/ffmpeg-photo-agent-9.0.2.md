@@ -102,10 +102,30 @@ linked third-party FFmpeg dependencies merely because they exist in the prefix.
 The executable reports GPL version 3 or later, and the configure flags contain
 `--enable-gpl --enable-version3` without `--enable-nonfree`. Original license headers
 remain in the retained filter source/patch material. The patch and build records
-are local provenance evidence; complete modified FFmpeg and dependency source
-publication, source delivery verification, containing-app release signing/notarization and the
-legal distribution gate remain open. The original FFmpeg archive alone does not
-satisfy those uncompleted source-delivery tasks.
+are local provenance evidence. The corresponding-source companion below is assembled and
+rebuild-verified; publishing it next to the release DMG, containing-app release
+signing/notarization and the legal distribution gate remain open. The original FFmpeg archive
+alone does not satisfy source delivery.
+
+## Corresponding-source companion
+
+`scripts/ffmpeg/make_source_companion.py` assembles `ffmpeg-9.0.2-photo-agent-source.tar`
+(about 220 MB) from the build workspaces' unmodified upstream archives, `git archive`
+snapshots of the cloned x264 (`b35605ace3dd`, pinning the moving `stable` selector) and
+x265 4.2 checkouts, libjxl's `deps.sh` GitHub tarballs (third-party sources and test data,
+named by commit), this recipe snapshot with both FFmpeg patches, and the license notices,
+with a per-file SHA-256 `MANIFEST.json`. Its `offline/curl` and `offline/git` stand-ins serve
+the recipe's downloads and clones from the archive, because several component scripts only
+compile inside their "not yet downloaded" branch and pre-extracted sources would be skipped.
+
+Verified 2026-10-25: a clean `build.sh` run from the companion inside `sandbox-exec` with
+outbound network denied served all 36 downloads/clones from the archive and completed. The
+rebuilt `photo-agent` binary has the same configure flags, the same 492 filters and an
+identical encoder list as the bundled one, and produced a byte-identical Whisper JSON
+transcript of a Sony voice memo (base model, CPU). The binaries are not byte-identical
+(signature and embedded build paths differ); no bit-for-bit reproducibility is claimed. The
+companion's own hash changes whenever it is regenerated; record the published hash with the
+release.
 
 ## Validation evidence and limits
 

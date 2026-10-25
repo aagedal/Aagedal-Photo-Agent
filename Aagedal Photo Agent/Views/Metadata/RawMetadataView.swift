@@ -175,6 +175,7 @@ struct RawMetadataView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear filter")
             }
         }
         .padding(.horizontal)

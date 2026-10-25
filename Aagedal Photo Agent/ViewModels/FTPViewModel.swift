@@ -525,7 +525,7 @@ final class FTPViewModel {
                 // Superseded by a newer test or cancelled — leave state to the newer run.
             } catch {
                 guard !Task.isCancelled else { return }
-                self.connectionTest = .failure(error.localizedDescription)
+                self.connectionTest = .failure(Self.connectionTestFailureReason(for: error))
             }
         }
     }
@@ -1314,7 +1314,7 @@ final class FTPViewModel {
     private func recordUploadFailure(_ fileName: String, error: any Error) {
         let reason = Self.failureReason(for: error)
         uploadFailures[fileName] = reason
-        errorMessages.append("Failed to upload \(fileName): \(error.localizedDescription)")
+        errorMessages.append("Couldn't upload \(fileName). \(reason)")
     }
 
     private func markNotSent(_ fileNames: [String]) {
@@ -1328,10 +1328,24 @@ final class FTPViewModel {
         uploadFailures.values.filter { $0.hasPrefix("Not sent") }.count
     }
 
-    /// A short, user-facing reason for one failed file (the full curl diagnostic stays in
-    /// `errorMessages`).
+    /// Like `failureReason`, but a curl failure without a connection-level category (which
+    /// `failureCategory` files under `.fileRejected`, "the server did not accept the file") keeps
+    /// the exit-code wording, without curl's raw diagnostic, instead of reading as a rejected file.
+    private static func connectionTestFailureReason(for error: any Error) -> String {
+        if let ftpError = error as? FTPService.FTPError, ftpError.category == .fileRejected,
+           case .connectionTestFailed(let code, _) = ftpError {
+            return FTPService.FTPError.connectionTestFailed(code, "").localizedDescription
+        }
+        return failureReason(for: error)
+    }
+
+    /// A short, user-facing reason for one failed file, shown on its row and in `errorMessages`.
     private static func failureReason(for error: any Error) -> String {
         if let ftpError = error as? FTPService.FTPError {
+            if ftpError.category == .fileRejected, case .uploadFailed(let code, _) = ftpError,
+               let reason = FTPService.FTPError.plainReason(forUncategorizedExit: code) {
+                return reason
+            }
             if let category = ftpError.category { return category.userMessage }
             return ftpError.localizedDescription
         }

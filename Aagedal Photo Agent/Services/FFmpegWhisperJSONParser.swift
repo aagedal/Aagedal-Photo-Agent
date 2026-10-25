@@ -31,11 +31,11 @@ nonisolated enum FFmpegWhisperJSONError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .outputTooLarge, .segmentTooLarge, .tooManySegments, .textTooLarge:
-            return "Whisper transcript output exceeded the supported size limits. Try a shorter voice memo."
+            return "The transcript was too long to use. Try a shorter voice memo."
         case .malformedSegment:
-            return "Whisper returned an unsupported transcript format. Select a compatible FFmpeg build with the patched Whisper JSON filter."
+            return "Transcription returned a result the app couldn't read. Try again; if it keeps failing, remove and download the model again in Settings → Transcription. If you chose custom files, check that they're compatible."
         case .invalidTiming:
-            return "Whisper returned invalid segment timing. Select a compatible FFmpeg build with the patched Whisper JSON filter and try again."
+            return "Transcription returned a result the app couldn't read. Try again; if it keeps failing, remove and download the model again in Settings → Transcription. If you chose custom files, check that they're compatible."
         case .noSpeech:
             return "Whisper recognized no speech. Check the voice memo with playback before trying again."
         }

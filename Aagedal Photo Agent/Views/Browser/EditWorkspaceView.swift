@@ -61,14 +61,14 @@ private struct DevelopVersionDialogsModifier: ViewModifier {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The named snapshot will be removed. Primary XMP settings are not changed.")
+                Text("The version will be removed. The main edit isn't changed.")
             }
             .confirmationDialog(
-                "Promote this version to Primary?",
+                "Make this version the main edit?",
                 isPresented: promotionPresented,
                 titleVisibility: .visible
             ) {
-                Button("Promote and Verify") {
+                Button("Make Main Edit") {
                     guard let id = dialogs.consumePromotion() else { return }
                     promoteVersion(id)
                 }
@@ -236,6 +236,7 @@ nonisolated enum EditCropPreviewFraming {
 }
 
 struct EditWorkspaceView: View {
+    @Environment(\.openSettingsDestination) private var openSettingsDestination
     @Environment(AppCommandRouter.self) private var commandRouter
     @Bindable var metadataViewModel: MetadataViewModel
     @Bindable var browserViewModel: BrowserViewModel
@@ -660,7 +661,7 @@ struct EditWorkspaceView: View {
     }
 
     private var activeDevelopVersionLabel: String {
-        activeNamedDevelopVersion?.name ?? "Primary (XMP)"
+        activeNamedDevelopVersion?.name ?? "Main Edit"
     }
 
     private var developVersionStatusColor: Color {
@@ -1749,6 +1750,7 @@ struct EditWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Exit Edit View (Esc)")
+                    .accessibilityLabel("Exit Edit View")
                     Spacer()
                     if canEditSingleImage {
                         Menu {
@@ -1966,7 +1968,7 @@ struct EditWorkspaceView: View {
                         switchDevelopVersion(to: nil)
                     } label: {
                         Label(
-                            "Primary (XMP)",
+                            "Main Edit",
                             systemImage: developVersionCatalog?.activeVersionID == nil
                                 ? "checkmark" : "photo"
                         )
@@ -2014,7 +2016,7 @@ struct EditWorkspaceView: View {
                         ) {
                             toggleDefaultDevelopVersion(activeVersion.id)
                         }
-                        Button("Promote to Primary…", systemImage: "arrow.up.doc") {
+                        Button("Make Main Edit…", systemImage: "arrow.up.doc") {
                             developVersionDialogs.requestPromotion(activeVersion.id)
                         }
                         Divider()
@@ -2044,7 +2046,7 @@ struct EditWorkspaceView: View {
                             beginDevelopVersionComparison(with: .primary)
                         } label: {
                             Label(
-                                "Primary (XMP)",
+                                "Main Edit",
                                 systemImage: developVersionComparisonTarget == .primary
                                     ? "checkmark" : "photo"
                             )
@@ -2261,6 +2263,7 @@ struct EditWorkspaceView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Reset preview zoom to 100%")
+                        .accessibilityLabel("Reset preview zoom to 100%")
                     }
                     Spacer()
                     Text("\(Int((cropZoomScale * 100).rounded()))%")
@@ -2416,6 +2419,12 @@ struct EditWorkspaceView: View {
                         .onTapGesture {
                             let modifiers = NSEvent.modifierFlags
                             requestDevelopImageSelection(image.url, modifiers: modifiers)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(image.url.lastPathComponent)
+                        .accessibilityAddTraits(browserViewModel.selectedImageIDs.contains(image.url) ? [.isButton, .isSelected] : .isButton)
+                        .accessibilityAction {
+                            requestDevelopImageSelection(image.url, modifiers: [])
                         }
                         .onContinuousHover { phase in
                             switch phase {
@@ -2622,7 +2631,6 @@ struct EditWorkspaceView: View {
         let primarySummary = primaryDevelopSettings?.hasEffectiveEdits == true
             ? "Develop adjustments"
             : "No adjustments"
-        let sidecarPath = XMPSidecarService().sidecarURL(for: imageURL).path
         let availableWatermarkIDs = Set(watermarkStore.allAssets().map(\.id))
         let diagnostics = version.snapshot.dependencyDiagnostics { id in
             guard availableWatermarkIDs.contains(id) else { return nil }
@@ -2633,7 +2641,7 @@ struct EditWorkspaceView: View {
             ? ""
             : " Warning: \(unresolved) external dependency \(unresolved == 1 ? "is" : "are") missing or changed."
 
-        return "\(version.name) (\(version.summary)) will replace Primary (\(primarySummary)) at \(sidecarPath). A dated named recovery version of the current Primary will be saved first, and the XMP write must pass read-back verification.\(dependencyWarning)"
+        return "\(version.name) (\(version.summary)) will replace the main edit (\(primarySummary)) of \(imageURL.lastPathComponent). The current main edit is kept first as a dated version, and the result is checked after saving. Other apps see only the main edit.\(dependencyWarning)"
     }
 
     private func promoteDevelopVersion(id: UUID) {
@@ -2649,7 +2657,7 @@ struct EditWorkspaceView: View {
         developVersionSession.cancelSave()
 
         let versionName = candidate.versions.first(where: { $0.id == id })?.name ?? "Named version"
-        let recoveryName = "Primary before promotion — \(Date().formatted(date: .abbreviated, time: .shortened))"
+        let recoveryName = "Main edit before promotion — \(Date().formatted(date: .abbreviated, time: .shortened))"
         let preparation: DevelopVersionPromotionPreparation
         do {
             preparation = try candidate.preparePromotion(
@@ -2685,7 +2693,7 @@ struct EditWorkspaceView: View {
                 developVersionPersistenceState = .saved
                 installDevelopSettings(result.promotedSettings)
                 metadataViewModel.hasChanges = false
-                showCopyPasteFeedback("Promoted \(versionName) to Primary and verified XMP")
+                showCopyPasteFeedback("\(versionName) is now the main edit")
             } catch is CancellationError {
                 return
             } catch {
@@ -2853,7 +2861,7 @@ struct EditWorkspaceView: View {
         schedulePrimaryMetadataCommit(mode: .writeToXMPSidecar)
         guard !metadataViewModel.hasUncapturedPrimaryDevelopEdits(mode: .writeToXMPSidecar) else {
             throw PrimaryDevelopWriteError(message: metadataViewModel.saveError
-                ?? "The active Develop adjustment could not be retained. Keep this photo open and retry.")
+                ?? "Couldn't hold on to your latest adjustment. Keep this photo open and try again.")
         }
     }
 
@@ -4179,7 +4187,7 @@ struct EditWorkspaceView: View {
     ) -> (name: String, settings: CameraRawSettings?)? {
         switch target {
         case .primary:
-            return ("Primary (XMP)", primaryDevelopSettings)
+            return ("Main Edit", primaryDevelopSettings)
         case let .named(id):
             guard let version = developVersionCatalog?.versions.first(where: { $0.id == id }) else {
                 return nil
@@ -4661,6 +4669,7 @@ struct EditWorkspaceView: View {
             gradientColors: [.blue, .yellow],
             formatter: { "\(Int($0.rounded()))" },
             displayValueTransform: { [self] in kelvinValue(forNormalizedLogScale: $0) },
+            displayValueInverse: { [self] in normalizedLogScaleValue(forKelvin: $0) },
             onEditingChanged: { editing in
                 interactiveRender.setSliderInteraction(active: editing)
                 if !editing {
@@ -5286,6 +5295,7 @@ struct EditWorkspaceView: View {
                 .buttonStyle(.plain)
                 .disabled(!hasAnonymizerAdjustments)
                 .help("Reset anonymizer")
+                .accessibilityLabel("Reset anonymizer")
             }
             .padding(.top, 2)
             Divider()
@@ -5353,6 +5363,7 @@ struct EditWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .help(isMuted.wrappedValue ? "Show \(title.lowercased())" : "Hide \(title.lowercased())")
+            .accessibilityLabel(isMuted.wrappedValue ? "Show \(title.lowercased())" : "Hide \(title.lowercased())")
             if let onReset {
                 Button {
                     onReset()
@@ -5364,6 +5375,7 @@ struct EditWorkspaceView: View {
                 .buttonStyle(.plain)
                 .disabled(!hasAdjustments)
                 .help("Reset \(title.lowercased())")
+                .accessibilityLabel("Reset \(title.lowercased())")
             }
         }
     }
@@ -5388,6 +5400,7 @@ struct EditWorkspaceView: View {
             .buttonStyle(.plain)
             .disabled(!canEditSingleImage || metalPipeline?.hasSourceTexture != true)
             .help("Set white balance from the image — click a neutral grey, or drag to average an area")
+            .accessibilityLabel("Set white balance from the image")
             Spacer()
             Button {
                 sectionMutes.toggle(.color)
@@ -5399,6 +5412,7 @@ struct EditWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .help(sectionMutes.isMuted(.color) ? "Show color" : "Hide color")
+            .accessibilityLabel(sectionMutes.isMuted(.color) ? "Show color" : "Hide color")
             Button {
                 resetColorAdjustments()
             } label: {
@@ -5409,6 +5423,7 @@ struct EditWorkspaceView: View {
             .buttonStyle(.plain)
             .disabled(!hasColorAdjustments)
             .help("Reset color")
+            .accessibilityLabel("Reset color")
         }
     }
 
@@ -5541,6 +5556,7 @@ struct EditWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .help(sectionMutes.isMuted(.exposure) ? "Show exposure adjustments" : "Hide exposure adjustments")
+            .accessibilityLabel(sectionMutes.isMuted(.exposure) ? "Show exposure adjustments" : "Hide exposure adjustments")
             Button {
                 resetExposureAdjustments()
             } label: {
@@ -5551,6 +5567,7 @@ struct EditWorkspaceView: View {
             .buttonStyle(.plain)
             .disabled(!hasExposureAdjustments)
             .help("Reset exposure")
+            .accessibilityLabel("Reset exposure")
             Text("HDR")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(isHDREnabled ? Color.orange : Color.secondary.opacity(0.5))
@@ -5596,6 +5613,15 @@ struct EditWorkspaceView: View {
             if DevelopLayerLimits.exceedsMaskLimit(metadataViewModel.editingMetadata.cameraRaw) {
                 Label(
                     "Only the first \(DevelopLayerLimits.maxEnabledMasks) enabled mask/adjustment layers render. Disable or delete layers to see the rest.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            if DevelopLayerLimits.exceedsWatermarkLimit(metadataViewModel.editingMetadata.cameraRaw) {
+                Label(
+                    "Only the first \(DevelopLayerLimits.maxEnabledWatermarks) enabled watermark layers render. Disable or delete watermarks to see the rest.",
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .font(.caption)
@@ -6003,16 +6029,23 @@ struct EditWorkspaceView: View {
                 addLayerTile(kind: .colorTransform, tint: .green, help: "Add LUT or CST layer", atMaskLimit: atLimit) {
                     addNewColorTransformLayer()
                 }
-                addLayerTile(kind: .watermark, tint: .yellow, help: "Add watermark layer") {
+                addLayerTile(kind: .watermark, tint: .yellow, help: "Add watermark layer",
+                             atMaskLimit: !canAddWatermarkLayer,
+                             limitMessage: DevelopLayerLimits.watermarkLimitReachedMessage) {
                     addNewWatermarkLayer()
                 }
             }
         }
         .frame(width: 86, height: 56)
         .alert("No Watermarks in Library", isPresented: $showWatermarkLibraryEmptyAlert) {
-            Button("OK") {}
+            if let openSettingsDestination {
+                Button("Open Watermark Settings") { openSettingsDestination(.watermarks) }
+                Button("Cancel", role: .cancel) {}
+            } else {
+                Button("OK") {}
+            }
         } message: {
-            Text("Import a PNG watermark first, from Settings \u{2192} Watermarks.")
+            Text("Import a PNG watermark or create a text watermark first, in Settings \u{2192} Watermarks.")
         }
         .alert(
             "AI Mask",
@@ -6065,6 +6098,7 @@ struct EditWorkspaceView: View {
         tint: Color,
         help: String,
         atMaskLimit: Bool = false,
+        limitMessage: String = DevelopLayerLimits.limitReachedMessage,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -6087,7 +6121,8 @@ struct EditWorkspaceView: View {
         .buttonStyle(.plain)
         .disabled(atMaskLimit)
         .onHover { hoveredAddLayerKind = $0 ? kind : nil }
-        .help(atMaskLimit ? DevelopLayerLimits.limitReachedMessage : help)
+        .help(atMaskLimit ? limitMessage : help)
+        .accessibilityLabel(help)
     }
 
     private func addGlobalLayerTile(atMaskLimit: Bool) -> some View {
@@ -6115,6 +6150,7 @@ struct EditWorkspaceView: View {
         .disabled(atMaskLimit)
         .onHover { hoveredAddLayerKind = $0 ? .secondaryGlobal : nil }
         .help(atMaskLimit ? DevelopLayerLimits.limitReachedMessage : "Add Global adjustment layer")
+        .accessibilityLabel("Add Global adjustment layer")
     }
 
     @ViewBuilder
@@ -7473,11 +7509,20 @@ struct EditWorkspaceView: View {
 
     // MARK: - Watermark layers
 
+    /// The pipeline composites at most `DevelopLayerLimits.maxEnabledWatermarks` watermarks.
+    private var canAddWatermarkLayer: Bool {
+        DevelopLayerLimits.canAddWatermark(to: metadataViewModel.editingMetadata.cameraRaw)
+    }
+
     /// Adds a new watermark layer using the first (alphabetically) library asset, defaulting
     /// to the bottom-right corner of the margin-inset safe area per spec. If the library is
     /// empty, prompts the user to import one from Settings instead of adding a layer with no
     /// image to show.
     private func addNewWatermarkLayer() {
+        guard canAddWatermarkLayer else {
+            workspaceSession.showNotice(DevelopLayerLimits.watermarkLimitReachedMessage)
+            return
+        }
         guard let defaultAsset = WatermarkStore.shared.allAssets().first else {
             showWatermarkLibraryEmptyAlert = true
             return

@@ -483,6 +483,9 @@ struct KnownPeopleManagedStoreReplacementTests {
             await entries.add(2)
             lease.release()
         }
+        // FIFO is only defined once `second` is queued; both tasks starting together can
+        // otherwise reach the gate in either order (seen on CI).
+        try await waitForWaiters(1, on: gate)
         let third = Task {
             let lease = try await gate.acquire()
             await entries.add(3)

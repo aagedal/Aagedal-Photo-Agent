@@ -67,12 +67,12 @@ nonisolated struct RenameReassociationService: Sendable {
         } else if case .complete(let snapshot) = faceLoad, snapshot.documentExisted {
             issues.append(RenameReassociationIssue(
                 subsystem: .faceData,
-                detail: "The existing face-data document could not be decoded; it was not reassociated."
+                detail: "The saved face data couldn't be read, so it still uses the old file names."
             ))
         } else if case .cancelled = faceLoad {
             issues.append(RenameReassociationIssue(
                 subsystem: .faceData,
-                detail: "Face-data reassociation was cancelled before the document could be read."
+                detail: "Updating face data was cancelled, so it still uses the old file names."
             ))
         }
 
@@ -82,7 +82,7 @@ nonisolated struct RenameReassociationService: Sendable {
         } catch {
             issues.append(RenameReassociationIssue(
                 subsystem: .imageAnalysis,
-                detail: error.localizedDescription
+                detail: UserFacingErrorCause.sentence(for: error)
             ))
         }
 
@@ -96,7 +96,7 @@ nonisolated struct RenameReassociationService: Sendable {
         } catch {
             issues.append(RenameReassociationIssue(
                 subsystem: .voiceMemoCompanion,
-                detail: error.localizedDescription
+                detail: UserFacingErrorCause.sentence(for: error)
             ))
         }
 

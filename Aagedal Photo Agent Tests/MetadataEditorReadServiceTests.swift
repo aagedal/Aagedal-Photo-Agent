@@ -613,7 +613,7 @@ struct MetadataEditorReadServiceTests {
         while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
         #expect(!fixture.model.isSaving)
         #expect(writer.writeCount == 1)
-        #expect(fixture.model.saveError?.contains("newer pending sidecar changes were retained") == true)
+        #expect(fixture.model.saveError?.contains("Newer edits you made meanwhile are kept") == true)
         #expect(fixture.model.hasChanges)
         #expect(try Data(contentsOf: jsonURL) == expected)
         #expect(!CaptionWriteAndNextGate.shouldAdvance(pendingURL: fixture.image,
@@ -662,7 +662,7 @@ struct MetadataEditorReadServiceTests {
             #expect(fixture.model.saveError == nil)
             #expect(fixture.model.editingMetadata.title != "Written B")
         } else {
-            #expect(fixture.model.saveError?.contains("image metadata was written") == true)
+            #expect(fixture.model.saveError?.contains("saved in the photo") == true)
             #expect(fixture.model.hasChanges)
         }
         #expect(!fixture.model.isSaving)
@@ -1062,7 +1062,7 @@ struct MetadataEditorReadServiceTests {
         #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.imageMetadataSnapshot == original)
     }
 
-    @Test("A post-commit verification failure reports its path without publishing unverified state")
+    @Test("A post-commit verification failure names the photo without publishing unverified state")
     @MainActor
     func unverifiedRestoreReportsCommittedPath() async throws {
         let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
@@ -1074,8 +1074,9 @@ struct MetadataEditorReadServiceTests {
         defer { try? FileManager.default.removeItem(at: fixture.folder) }
         await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
         await fixture.model.restoreToOriginal()?.value
-        #expect(fixture.model.saveError?.contains("could not be verified") == true)
-        #expect(fixture.model.saveError?.contains("draft.jpg.meta.json") == true)
+        #expect(fixture.model.saveError?.contains("couldn't be checked") == true)
+        #expect(fixture.model.saveError?.contains("draft.jpg") == true)
+        #expect(fixture.model.saveError?.contains("/") == false)
         #expect(fixture.model.editingMetadata.title == "Pending")
         #expect(!fixture.model.isSaving)
         #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == "Original")

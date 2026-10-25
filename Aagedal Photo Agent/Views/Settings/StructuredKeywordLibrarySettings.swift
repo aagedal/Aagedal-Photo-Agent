@@ -70,6 +70,7 @@ struct StructuredKeywordLibrarySettings: View {
                         listPendingDeletion = list
                     } label: { Image(systemName: "trash") }
                     .help("Remove \(list.name)")
+                    .accessibilityLabel("Remove \(list.name)")
                 }
                 .disabled(unavailable)
             }

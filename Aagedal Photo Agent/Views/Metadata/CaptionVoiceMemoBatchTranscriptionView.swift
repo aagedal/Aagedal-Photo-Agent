@@ -9,6 +9,7 @@ struct CaptionVoiceMemoBatchTranscriptionView: View {
     let onReset: () -> Void
     let onSelectLanguage: (String) -> Void
     @State private var isConfirmingReset = false
+    @Environment(\.openSettingsDestination) private var openSettingsDestination
 
     private var imageURLs: [URL] { model.snapshot?.imageURLs ?? model.selectedImageURLs }
 
@@ -60,6 +61,31 @@ struct CaptionVoiceMemoBatchTranscriptionView: View {
             if let error = model.errorMessage {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
                     .accessibilityIdentifier("caption.voiceMemo.batch.sheet.error")
+            }
+            if model.needsProviderSetup {
+                HStack {
+                    if model.missingAppleLanguage != nil {
+                        Button("Download Language", systemImage: "arrow.down.circle") {
+                            Task {
+                                guard FFmpegWhisperSetupModel.shared.beginTranscription() else { return }
+                                let downloaded = await model.downloadMissingLanguage()
+                                FFmpegWhisperSetupModel.shared.finishTranscription()
+                                if downloaded { onSelectLanguage(model.selectedLanguageIdentifier) }
+                            }
+                        }
+                        .disabled(model.isDownloadingLanguage || providerBusy || reviewOrSaveBusy)
+                        .accessibilityIdentifier("caption.voiceMemo.batch.downloadLanguage")
+                        if model.isDownloadingLanguage { ProgressView().controlSize(.small) }
+                    }
+                    if let openSettingsDestination {
+                        Button("Transcription Settings…") {
+                            model.dismissConfirmation()
+                            onClose()
+                            openSettingsDestination(.transcription)
+                        }
+                        .accessibilityIdentifier("caption.voiceMemo.batch.openSettings")
+                    }
+                }
             }
             Divider()
             HStack {

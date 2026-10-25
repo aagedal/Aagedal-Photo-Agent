@@ -240,6 +240,7 @@ final class BrowserViewModel {
     var fileVisibility: BrowserFileVisibility = .photos {
         didSet {
             AppDefaults.store.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
+            AppDefaults.store.set(fileVisibility.legacyShowAllFiles, forKey: UserDefaultsKeys.showAllFiles)
             if let url = currentFolderURL { loadFolder(url: url) }
         }
     }
@@ -1251,11 +1252,26 @@ final class BrowserViewModel {
                     AppStartupSignposts.shared.firstFolderLoadFailed()
                     return
                 }
-                self.folderLoadErrorMessage = error.localizedDescription
+                self.folderLoadErrorMessage = Self.folderLoadMessage(for: error)
                 self.isLoading = false
                 AppStartupSignposts.shared.firstFolderLoadFailed()
             }
         }
+    }
+
+    /// A refused access prompt surfaces as a bare "no permission" error; say where to grant it.
+    nonisolated static func folderLoadMessage(for error: Error) -> String {
+        let message = error.localizedDescription
+        let ns = error as NSError
+        let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError
+        let denied = (ns.domain == NSCocoaErrorDomain && ns.code == NSFileReadNoPermissionError)
+            || [ns, underlying].contains { error in
+                guard let error, error.domain == NSPOSIXErrorDomain else { return false }
+                return error.code == Int(EPERM) || error.code == Int(EACCES)
+            }
+        guard denied else { return message }
+        return message + " If you declined access, allow Aagedal Photo Agent in System Settings \u{2192} "
+            + "Privacy & Security \u{2192} Files and Folders (or Full Disk Access), then open the folder again."
     }
 
     /// Stable identity of a file's bytes, from the scan's size+mtime (no extra I/O).
@@ -2979,7 +2995,9 @@ final class BrowserViewModel {
                 do {
                     try await writeToFile(writeToFileWithSidecar)
                 } catch {
-                    self.errorMessage = "Failed to write \(fieldDescription): \(error.localizedDescription)"
+                    self.errorMessage = writeToFileWithSidecar.count == 1
+                        ? "Couldn't save the \(fieldDescription) to \(writeToFileWithSidecar[0].lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
+                        : "Couldn't save the \(fieldDescription) to the selected photos. \(UserFacingErrorCause.sentence(for: error)) Try again."
                 }
             }
 
@@ -3211,7 +3229,7 @@ final class BrowserViewModel {
                 in: folderURL
             )
         } catch {
-            errorMessage = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            errorMessage = "Couldn't save changes to \(url.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
             return
         }
 
@@ -3227,7 +3245,7 @@ final class BrowserViewModel {
                     mergeWithExisting: true
                 )
             } catch {
-                errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
+                errorMessage = "Couldn't save the XMP file for \(url.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
             }
         }
     }
@@ -5562,7 +5580,7 @@ nonisolated enum MetadataFieldMutationFeedback {
             if result.didWriteXMP { destinations.append("XMP sidecar") }
             if !destinations.isEmpty { detail += " Already written: " + destinations.joined(separator: ", ") + "." }
             if result.embeddedWriteMayHaveOccurred { detail += " Image metadata may already have changed; verify it before retrying." }
-            if let url = result.committedButUnverifiedSidecarURL { detail += " Metadata JSON was written but could not be verified: \(url.path)." }
+            if let url = result.committedButUnverifiedSidecarURL { detail += " The app's saved edits for \(url.lastPathComponent.replacingOccurrences(of: ".meta.json", with: "")) couldn't be checked after saving. Reload the folder before editing it again." }
             if result.failure?.kind == .conflict { detail += " The displayed metadata may be stale. Reload this photo to read its current saved values." }
             else if result.installedSidecar?.pendingChanges == true { detail += " Pending edits were retained." }
             return detail
