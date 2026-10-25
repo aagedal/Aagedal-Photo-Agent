@@ -92,6 +92,15 @@ record_artifact_source_revision() {
   printf '%s\n' "$SOURCE_REVISION" > "$1.source-revision"
 }
 
+# An unset AAGEDAL_RELEASE_VERSION builds to an empty string, not a missing key, so treat empty
+# the same as missing and fall back to the marketing version.
+artifact_release_version() {
+  local v
+  v="$(/usr/libexec/PlistBuddy -c 'Print :AagedalReleaseVersion' "$1/Contents/Info.plist" 2>/dev/null || true)"
+  [ -n "$v" ] || v="$(artifact_app_version "$1")"
+  printf '%s' "$v"
+}
+
 artifact_app_version() {
   /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$1/Contents/Info.plist" 2>/dev/null || true
 }
@@ -109,7 +118,7 @@ app_matches_release() {
   embedded_revision="$(artifact_app_source_revision "$1")"
   [ -d "$1" ] \
     && [ "$(artifact_app_version "$1")" = "$BUNDLE_VERSION" ] \
-    && [ "$(/usr/libexec/PlistBuddy -c 'Print :AagedalReleaseVersion' "$1/Contents/Info.plist" 2>/dev/null || artifact_app_version "$1")" = "$VERSION" ] \
+    && [ "$(artifact_release_version "$1")" = "$VERSION" ] \
     && [ "$(artifact_app_build "$1")" = "$BUILD" ] \
     && [[ "$embedded_revision" =~ ^[0-9a-f]{40}$ ]] \
     && [ "$embedded_revision" = "$SOURCE_REVISION" ]
@@ -532,7 +541,14 @@ ACTIVE_VERSION_COUNT="$(xmllint --xpath \
   "$APPCAST" 2>/dev/null)" || die "Could not inspect active releases in $APPCAST."
 if [ "$ACTIVE_VERSION_COUNT" != "0" ]; then
   printf '%s\n' "$ITEM" >"$OUTPUT_DIR/appcast-item.xml"
-  ok "$VERSION already in $APPCAST — wrote the regenerated item to $OUTPUT_DIR/appcast-item.xml instead"
+  # A rebuilt DMG has a new signature and length. Publishing it with the existing item would
+  # make every client reject the update, so stop instead of reporting success.
+  EXISTING_SIG="$(xmllint --xpath "string(//*[local-name()='item'][*[local-name()='shortVersionString' and text()='$VERSION']]/*[local-name()='enclosure']/@*[local-name()='edSignature'])" "$APPCAST" 2>/dev/null || true)"
+  EXISTING_LENGTH="$(xmllint --xpath "string(//*[local-name()='item'][*[local-name()='shortVersionString' and text()='$VERSION']]/*[local-name()='enclosure']/@length)" "$APPCAST" 2>/dev/null || true)"
+  if [ "$EXISTING_SIG" != "$ED_SIG" ] || [ "$EXISTING_LENGTH" != "$LENGTH" ]; then
+    die "$VERSION is already in $APPCAST with a different DMG signature or size. Either upload the original DMG, or replace that item with $OUTPUT_DIR/appcast-item.xml before publishing."
+  fi
+  ok "$VERSION already in $APPCAST with this DMG's signature — nothing to change"
 else
   ITEM_FILE="$OUTPUT_DIR/appcast-item.xml"
   printf '%s\n' "$ITEM" >"$ITEM_FILE"
@@ -572,4 +588,8 @@ Publish steps (manual — outward-facing, not automated):
         $(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$INFO_PLIST" 2>/dev/null))
      with the now-updated $APPCAST.
   3. Commit + push the $APPCAST change, and tag the release ($VERSION).
+  4. Copy the same appcast to the feeds older installs still poll:
+        https://codeberg.org/taagedal/Aagedal-Photo-Agent/raw/branch/main/appcast.xml   (2.1.x)
+        https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download/appcast/appcast.xml   (2.0.x)
+        https://aagedal.me/apps/appcast/photoagent.xml   (website fallback)
 EOF

@@ -35,11 +35,27 @@ def draft_section(draft: str, version: str, date: str) -> str:
     return section + "\n"
 
 
-def highlights(section: str) -> list[str]:
+def highlights_block(section: str) -> str:
     match = re.search(r"^### Highlights\s*$(.*?)(?=^### |\Z)", section, flags=re.M | re.S)
-    if not match:
-        return []
-    return [line for line in match.group(1).splitlines() if line.startswith("- ")]
+    return match.group(1) if match else ""
+
+
+def highlights(section: str) -> list[str]:
+    return [line for line in highlights_block(section).splitlines() if line.startswith("- ")]
+
+
+def highlight_problems(section: str) -> list[str]:
+    """release.sh copies each bullet's first line verbatim into the appcast HTML."""
+    problems = []
+    for line in highlights_block(section).splitlines():
+        if line.strip() and not line.startswith("- "):
+            problems.append(f"a Highlights bullet continues on another line (only the first line reaches the appcast): {line.strip()!r}")
+    for bullet in highlights(section):
+        if "**" in bullet or "](" in bullet or "`" in bullet:
+            problems.append(f"a Highlights bullet uses markdown, which the appcast shows as raw text: {bullet!r}")
+        if "]]>" in bullet:
+            problems.append(f"a Highlights bullet contains ']]>', which would break the appcast CDATA block: {bullet!r}")
+    return problems
 
 
 def finalize(changelog: str, section: str, version: str) -> str:
@@ -70,8 +86,9 @@ def main() -> None:
     bullets = highlights(section)
     if not bullets:
         fail("the draft has no bullets under '### Highlights' (the appcast notes need at least one)")
-    if any("]]>" in bullet for bullet in bullets):
-        fail("a Highlights bullet contains ']]>', which would break the appcast CDATA block")
+    problems = highlight_problems(section)
+    if problems:
+        fail("\n  ".join(["the Highlights can't go into the appcast as written:"] + problems))
 
     result = finalize(args.changelog.read_text(encoding="utf-8"), section, args.version)
     if args.dry_run:

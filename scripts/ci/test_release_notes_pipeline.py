@@ -90,10 +90,16 @@ class ReleaseNotesPipelineTests(unittest.TestCase):
         self.assertEqual(release_sh_notes(result, "3.0.0-beta.3"), ["<li>Beta three highlight.</li>"])
         self.assertEqual(release_sh_notes(result, "2.2.0"), ["<li>Old release highlight.</li>"])
 
+    def test_markdown_and_wrapped_highlights_are_reported(self):
+        bad = DRAFT.replace("- Second highlight.", "- Second **bold** highlight\n  that wraps.")
+        problems = finalize_changelog.highlight_problems(finalize_changelog.draft_section(bad, "3.0.0", "2026-11-02"))
+        self.assertEqual(len(problems), 2)
+
     def test_real_draft_has_highlights(self):
         draft = (ROOT / "docs/release/3.0.0-release-notes-draft.md").read_text(encoding="utf-8")
         section = finalize_changelog.draft_section(draft, "3.0.0", "2026-11-02")
         self.assertTrue(finalize_changelog.highlights(section))
+        self.assertEqual(finalize_changelog.highlight_problems(section), [])
 
 
 if __name__ == "__main__":
