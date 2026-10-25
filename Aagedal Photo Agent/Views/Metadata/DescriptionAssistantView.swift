@@ -364,6 +364,7 @@ struct DescriptionAssistantView: View {
 
 /// Captures a fixed selection and stages reviewed captions through the existing metadata queue.
 struct BatchDescriptionAssistantView: View {
+    @Environment(\.openSettingsDestination) private var openSettingsDestination
     let urls: [URL]
     @Bindable var browser: BrowserViewModel
     @Environment(\.dismiss) private var dismiss
@@ -397,7 +398,17 @@ struct BatchDescriptionAssistantView: View {
             }
             Text("Provider: " + setup.provider.title).font(.caption)
             if let issue = setup.generationIssue(for: language, action: action) {
-                Text(issue).font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline) {
+                    Text(issue).font(.caption).foregroundStyle(.secondary)
+                    if let openSettingsDestination {
+                        Button("Description Models…") {
+                            dismiss()
+                            openSettingsDestination(.descriptionModels)
+                        }
+                        .controlSize(.small)
+                        .accessibilityIdentifier("descriptionAssistant.batch.openSettings")
+                    }
+                }
             }
             if task != nil { ProgressView(value: Double(completed), total: Double(urls.count)) }
             ScrollView {

@@ -512,6 +512,44 @@ struct CaptionVoiceMemoBatchTranscriptionModelTests {
         }
     }
 
+    @Test("A missing Apple language offers an in-sheet download and preparation succeeds after it")
+    func missingAppleLanguageDownload() async throws {
+        let f = try Fixture(), downloads = Counter()
+        let base = f.dependencies
+        let dependencies = CaptionVoiceMemoBatchTranscriptionModel.Dependencies(
+            prepare: base.prepare,
+            validateProvider: { provider in
+                if await downloads.value == 0 { throw VoiceMemoTranscriptionError.languageDownloadRequired }
+                try await base.validateProvider(provider)
+            },
+            hasExistingReview: base.hasExistingReview, submit: base.submit, inspect: base.inspect,
+            wait: base.wait, cancel: base.cancel,
+            downloadLanguage: { _ in await downloads.increment() })
+        let model = CaptionVoiceMemoBatchTranscriptionModel(dependencies: dependencies,
+            beginExecution: { true }, endExecution: {})
+        await prepare(model)
+        #expect(model.snapshot == nil)
+        #expect(model.needsProviderSetup)
+        #expect(model.missingAppleLanguage?.identifier == "en-US")
+        #expect(await model.downloadMissingLanguage())
+        #expect(await downloads.value == 1)
+        await prepare(model)
+        #expect(model.snapshot != nil)
+        #expect(!model.needsProviderSetup)
+        #expect(model.missingAppleLanguage == nil)
+    }
+
+    @Test("An unready provider marks setup as needed without offering a language download")
+    func unreadyProviderNeedsSetup() async throws {
+        let f = try Fixture(), model = model(f)
+        await f.io.configure(ready: false)
+        await prepare(model)
+        #expect(model.snapshot == nil)
+        #expect(model.needsProviderSetup)
+        #expect(model.missingAppleLanguage == nil)
+        #expect(!(await model.downloadMissingLanguage()))
+    }
+
     @Test("A transient retained wait error does not claim completion or release capacity")
     func transientWaitFailure() async throws {
         let f = try Fixture(), capacity = Capacity(), model = model(f, capacity: capacity)

@@ -236,6 +236,7 @@ nonisolated enum EditCropPreviewFraming {
 }
 
 struct EditWorkspaceView: View {
+    @Environment(\.openSettingsDestination) private var openSettingsDestination
     @Environment(AppCommandRouter.self) private var commandRouter
     @Bindable var metadataViewModel: MetadataViewModel
     @Bindable var browserViewModel: BrowserViewModel
@@ -6021,9 +6022,14 @@ struct EditWorkspaceView: View {
         }
         .frame(width: 86, height: 56)
         .alert("No Watermarks in Library", isPresented: $showWatermarkLibraryEmptyAlert) {
-            Button("OK") {}
+            if let openSettingsDestination {
+                Button("Open Watermark Settings") { openSettingsDestination(.watermarks) }
+                Button("Cancel", role: .cancel) {}
+            } else {
+                Button("OK") {}
+            }
         } message: {
-            Text("Import a PNG watermark first, from Settings \u{2192} Watermarks.")
+            Text("Import a PNG watermark or create a text watermark first, in Settings \u{2192} Watermarks.")
         }
         .alert(
             "AI Mask",

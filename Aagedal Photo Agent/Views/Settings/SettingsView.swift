@@ -1,4 +1,10 @@
 import SwiftUI
+
+extension EnvironmentValues {
+    /// Opens Settings at a pane. Provided by the main window; nil elsewhere, where callers
+    /// omit their "Open Settings" buttons.
+    @Entry var openSettingsDestination: (@MainActor (SettingsDestination) -> Void)? = nil
+}
 import AppKit
 import UniformTypeIdentifiers
 
@@ -409,6 +415,8 @@ struct SettingsView: View {
         case .metadata: showDestination(.metadata)
         case .transcription: showDestination(.transcription)
         case .descriptionAssistant: showDestination(.descriptionAssistant)
+        case .descriptionModels: showDestination(.descriptionModels)
+        case .watermarks: showDestination(.watermarks)
         }
         settingsViewModel.requestedDestination = nil
     }

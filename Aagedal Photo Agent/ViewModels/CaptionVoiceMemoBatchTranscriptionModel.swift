@@ -14,6 +14,7 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         let inspect: @Sendable (UUID) async throws -> AutomationOperationRegistry.Record
         let wait: @Sendable (UUID) async throws -> AutomationOperationRegistry.Record
         let cancel: @Sendable (UUID) async throws -> AutomationOperationRegistry.Record
+        var downloadLanguage: @Sendable (Locale) async throws -> Void = { _ in }
 
         static func live() -> Self {
             let worker = CaptionVoiceMemoBatchWorker()
@@ -23,7 +24,8 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
                         submit: { try await worker.submit($0, provider: $1) },
                         inspect: { try await worker.inspect($0) },
                         wait: { try await worker.wait($0) },
-                        cancel: { try await worker.cancel($0) })
+                        cancel: { try await worker.cancel($0) },
+                        downloadLanguage: { try await worker.downloadLanguage($0) })
         }
     }
 
@@ -55,6 +57,11 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     private(set) var completionToken: UInt64 = 0
     /// The work stopped but its final record could not be read back.
     private(set) var statusUnconfirmed = false
+    /// Preparation failed because the provider isn't set up (Whisper model, Apple language).
+    private(set) var needsProviderSetup = false
+    /// The Apple Speech language that must be downloaded before this batch can run.
+    private(set) var missingAppleLanguage: Locale?
+    private(set) var isDownloadingLanguage = false
 
     /// Consecutive failed completion waits before the batch stops waiting. The retained
     /// coordinator only throws once its task has exited, so retries cover transient history
@@ -165,6 +172,8 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         selectedImageURLs = imageURLs.map(\.standardizedFileURL)
         snapshot = nil
         errorMessage = nil
+        needsProviderSetup = false
+        missingAppleLanguage = nil
         guard !reviewOrSaveBusy, !providerBusy else {
             errorMessage = "Finish the current review, save, or transcription before preparing a batch."
             return
@@ -178,12 +187,24 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         }
         guard let provider else {
             errorMessage = "The selected transcription provider is not ready. Complete its setup in Settings."
+            needsProviderSetup = true
             return
         }
         isChecking = true
         defer { if generation == requested { isChecking = false } }
         do {
             try await dependencies.validateProvider(provider)
+        } catch {
+            guard generation == requested, !(error is CancellationError) else { return }
+            errorMessage = Self.message(for: error)
+            needsProviderSetup = true
+            if case .apple(let locale) = provider,
+               (error as? VoiceMemoTranscriptionError) == .languageDownloadRequired {
+                missingAppleLanguage = locale
+            }
+            return
+        }
+        do {
             let prepared = try await dependencies.prepare(urls)
             guard prepared.imageURLs == urls else { throw AutomationVoiceTranscriptionBatchService.Failure.invalidPhotos }
             for url in urls {
@@ -196,6 +217,22 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         } catch {
             guard generation == requested else { return }
             if !(error is CancellationError) { errorMessage = Self.message(for: error) }
+        }
+    }
+
+    /// Downloads the missing Apple Speech language; the caller prepares the batch again.
+    func downloadMissingLanguage() async -> Bool {
+        guard let locale = missingAppleLanguage, !isDownloadingLanguage, !isRunning else { return false }
+        isDownloadingLanguage = true
+        defer { isDownloadingLanguage = false }
+        do {
+            try await dependencies.downloadLanguage(locale)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            errorMessage = "The language could not be downloaded. " + error.localizedDescription
+            return false
         }
     }
 
@@ -393,6 +430,9 @@ private actor CaptionVoiceMemoBatchWorker {
     }
     private nonisolated static func localeKey(_ locale: Locale) -> String {
         locale.identifier.replacingOccurrences(of: "_", with: "-").lowercased()
+    }
+    func downloadLanguage(_ locale: Locale) async throws {
+        _ = try await transcripts.downloadLanguage(locale)
     }
     func hasExistingReview(_ url: URL) async throws -> Bool {
         try await transcripts.loadPersistedDraft(imageURL: url) != nil
