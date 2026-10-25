@@ -429,6 +429,8 @@ struct FaceBarView: View {
         .buttonStyle(.plain)
         .disabled(viewModel.isCancellingScan)
         .help("Click to cancel face scan")
+        .accessibilityLabel("Cancel face scan")
+        .accessibilityValue(viewModel.scanProgress)
     }
 
     /// Not scanned yet → camera scan button.
