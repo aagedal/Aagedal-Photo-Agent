@@ -124,7 +124,7 @@ nonisolated enum VoiceMemoTranscriptVariableError: LocalizedError, Equatable, Se
         case .empty:
             return "This photo's voice-memo transcript is not ready. Open it in Caption before processing {voiceMemoTranscript}."
         case .sourceChanged:
-            return "The voice-memo transcript no longer matches the current WAV relationship and bytes. No transcript text was applied."
+            return "The voice memo changed since it was linked. Link it again in Caption. No transcript text was added."
         case .transcriptChanged:
             return "The voice-memo transcript changed before metadata could be written. No transcript text was applied; reload the transcript and try again."
         case .incompatibleDestinations(let fields):
@@ -165,7 +165,7 @@ nonisolated enum VoiceMemoTranscriptionError: LocalizedError, Equatable, Sendabl
         case .languageReservationLimitReached(let maximum):
             return "Apple on-device speech can reserve at most \(maximum) language\(maximum == 1 ? "" : "s") for this app. Release an unused language, then try again."
         case .relationshipUnavailable:
-            return "The saved voice-memo relationship is no longer available. Refresh it before transcribing."
+            return "The voice memo linked to this photo is no longer available. Link it again in Caption, then transcribe."
         case .sourceChanged:
             return "The photo, voice memo, or relationship changed while transcribing. The result was discarded."
         case .existingTranscript:

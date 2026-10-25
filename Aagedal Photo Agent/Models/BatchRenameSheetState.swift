@@ -355,6 +355,8 @@ nonisolated struct BatchRenameExecutionPresentation: Equatable, Sendable {
     let recoveryMessage: String
     let issueDetails: [String]
     let residualDetails: [String]
+    /// Codes and full paths for support, shown behind a Details disclosure.
+    let technicalDetails: [String]
     /// The original request may be planned again only when rollback proved every source path was
     /// restored. Residual/incomplete cases must close and reopen from the reloaded browser state.
     let canRefreshOriginalRequest: Bool
@@ -374,25 +376,26 @@ nonisolated struct BatchRenameExecutionPresentation: Equatable, Sendable {
         switch result.status {
         case .succeeded:
             headline = "Rename complete"
-            recoveryMessage = "All planned image and associated-file moves completed."
+            recoveryMessage = "All photos and their related files were renamed."
         case .cancelled:
             headline = "Rename cancelled"
             recoveryMessage = Self.recoveryMessage(result: result)
         case .preflightFailed:
-            headline = "Rename could not start"
-            recoveryMessage = "No planned move was trusted. The folder was reloaded from disk."
+            headline = "Couldn't start the rename"
+            recoveryMessage = "Nothing was renamed. The folder was reloaded so you see the files as they are now."
         case .failed:
-            headline = "Rename failed"
+            headline = "Couldn't finish the rename"
             recoveryMessage = Self.recoveryMessage(result: result)
         }
 
-        issueDetails = result.issues.map { issue in
+        issueDetails = result.issues.map(Self.issueLine)
+        residualDetails = result.residuals.map(Self.residualLine)
+        technicalDetails = result.issues.map { issue in
             var parts = [issue.code.rawValue, issue.detail]
-            if let source = issue.sourceURL?.lastPathComponent { parts.append("source: \(source)") }
-            if let destination = issue.destinationURL?.lastPathComponent { parts.append("destination: \(destination)") }
+            if let source = issue.sourceURL?.path { parts.append("source: \(source)") }
+            if let destination = issue.destinationURL?.path { parts.append("destination: \(destination)") }
             return parts.joined(separator: " · ")
-        }
-        residualDetails = result.residuals.map { residual in
+        } + result.residuals.map { residual in
             let current = residual.currentURL?.path ?? "missing"
             let metadataWarning = residual.metadataMayContainUpdatedSourceFile
                 ? " · metadata sourceFile may require repair"
@@ -401,14 +404,65 @@ nonisolated struct BatchRenameExecutionPresentation: Equatable, Sendable {
         }
     }
 
+    /// One readable line per affected file: "{old name} → {new name}: {cause}".
+    private static func issueLine(_ issue: RenameExecutionIssue) -> String {
+        let source = issue.sourceURL?.lastPathComponent
+        let destination = issue.destinationURL?.lastPathComponent
+        let cause: String
+        switch issue.code {
+        case .moveFailed, .injectedFailure:
+            cause = "Couldn't be renamed. \(issue.detail)"
+        case .metadataUpdateFailed:
+            cause = "Couldn't update its metadata. \(issue.detail)"
+        case .rollbackMoveFailed:
+            cause = "Couldn't be renamed back. \(issue.detail)"
+        case .rollbackMetadataRestoreFailed:
+            cause = "Its metadata couldn't be put back. \(issue.detail)"
+        default:
+            cause = issue.detail
+        }
+        switch (source, destination) {
+        case let (source?, destination?) where source != destination:
+            return "\(source) → \(destination): \(cause)"
+        case let (source?, _):
+            return "\(source): \(cause)"
+        case let (nil, destination?):
+            return "\(destination): \(cause)"
+        case (nil, nil):
+            return cause
+        }
+    }
+
+    /// A file rollback couldn't return to its original name, described by file name only.
+    private static func residualLine(_ residual: RenameExecutionResidual) -> String {
+        let original = residual.expectedSourceURL.lastPathComponent
+        let newName = residual.intendedDestinationURL.lastPathComponent
+        let current = residual.currentURL?.lastPathComponent
+        var line: String
+        switch residual.location {
+        case .source:
+            line = "\(original): Is back under its original name."
+        case .temporary:
+            line = "\(original): Couldn't be put back. It's now a hidden file named \(current ?? original) in the same folder."
+        case .destination:
+            line = "\(original): Couldn't be put back. It's still named \(current ?? newName)."
+        case .missing:
+            line = "\(original): Couldn't be found after the rename stopped."
+        }
+        if residual.metadataMayContainUpdatedSourceFile {
+            line += " Its saved metadata may still refer to \(newName)."
+        }
+        return line
+    }
+
     private static func recoveryMessage(result: RenameExecutionResult) -> String {
         if result.rollbackStatus == .succeeded && result.residuals.isEmpty {
-            return "The executor restored the original paths. The folder was reloaded from disk to verify the result."
+            return "All files were put back under their original names. The folder was reloaded so you see the files as they are now."
         }
         if result.rollbackStatus == .failed || !result.residuals.isEmpty {
-            return "Automatic rollback was incomplete. Review the residual paths below before changing these files again; the folder was reloaded from disk."
+            return "Some files couldn't be put back automatically. Check these files in Finder before renaming again."
         }
-        return "No completed paths were assumed. The folder was reloaded from disk."
+        return "The folder was reloaded so you see the files as they are now."
     }
 }
 

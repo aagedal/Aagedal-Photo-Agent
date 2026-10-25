@@ -2856,7 +2856,7 @@ struct EditWorkspaceView: View {
         schedulePrimaryMetadataCommit(mode: .writeToXMPSidecar)
         guard !metadataViewModel.hasUncapturedPrimaryDevelopEdits(mode: .writeToXMPSidecar) else {
             throw PrimaryDevelopWriteError(message: metadataViewModel.saveError
-                ?? "The active Develop adjustment could not be retained. Keep this photo open and retry.")
+                ?? "Couldn't hold on to your latest adjustment. Keep this photo open and try again.")
         }
     }
 

@@ -6,6 +6,48 @@ nonisolated struct PrimaryDevelopWriteError: LocalizedError, Sendable {
     var errorDescription: String? { message }
 }
 
+/// Failure text recorded in the retained-edit recovery evidence. Keep these strings unchanged:
+/// they're written into recovery exports. What the photographer reads comes from
+/// `userMessage(failure:fileName:requiresRecovery:)`.
+nonisolated enum PrimaryDevelopFailureText {
+    static let identityMismatch = "The earlier captured Primary Develop edit belongs to another photo or editor load. This edit remains retained for recovery."
+    static let sourceRevisionUnavailable = "The loaded source revision is unavailable. This Primary Develop edit remains retained for recovery."
+    static let xmpRevisionUnavailable = "The loaded XMP revision is unavailable. This Primary Develop edit remains retained for recovery."
+    static let predecessorUnverified = "The earlier captured Primary Develop edit has no verified completion receipt."
+    static let sourceEvidenceUnavailable = "The original Develop source evidence is unavailable. The captured edit remains retained for recovery."
+    static let sourceChanged = "The source image changed after this Develop edit was loaded. The original edit remains retained."
+    static let writerCannotVerify = "This image writer cannot safely verify a retained Develop edit."
+
+    /// Plain-language message for a save that didn't complete. The edit is always kept.
+    static func userMessage(failure: String?, fileName: String, requiresRecovery: Bool) -> String {
+        if requiresRecovery {
+            return "Your edits to \(fileName) may be only partly saved. Your edits are kept. Export them for review before discarding."
+        }
+        let reloadAndSave = "Your edits are kept. Reload the photo, then save again."
+        switch failure {
+        case sourceChanged?:
+            return "Your edits to \(fileName) weren't saved because the file changed on disk. \(reloadAndSave)"
+        case identityMismatch?:
+            return "Your edits to \(fileName) weren't saved because a different photo was loaded in the editor. \(reloadAndSave)"
+        case sourceRevisionUnavailable?, sourceEvidenceUnavailable?:
+            return "Your edits to \(fileName) weren't saved because the photo couldn't be checked when it was opened. \(reloadAndSave)"
+        case xmpRevisionUnavailable?:
+            return "Your edits to \(fileName) weren't saved because its XMP file couldn't be checked when it was opened. \(reloadAndSave)"
+        case predecessorUnverified?:
+            return "Your edits to \(fileName) weren't saved because an earlier save of this photo didn't finish. Your edits are kept. Try again."
+        case writerCannotVerify?:
+            return "Your edits to \(fileName) weren't saved because this file type can't be saved safely here. Your edits are kept."
+        case let failure?:
+            let cause = failure.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sentence = cause.isEmpty || cause.hasSuffix(".") ? cause : cause + "."
+            return "Couldn't save your edits to \(fileName). \(sentence) Your edits are kept. Try again."
+                .replacingOccurrences(of: "  ", with: " ")
+        case nil:
+            return "Couldn't save your edits to \(fileName). Your edits are kept. Try again."
+        }
+    }
+}
+
 nonisolated struct PrimaryDevelopWatermarkDependency: Codable, Sendable {
     let id: UUID
     let asset: WatermarkAsset?
@@ -153,9 +195,9 @@ nonisolated enum PrimaryDevelopWriteRequestBuilder {
                 replaceCameraRawBlock: true) : .empty
         }
         let failure = capture.captureFailure
-            ?? (!identityMatches ? "The earlier captured Primary Develop edit belongs to another photo or editor load. This edit remains retained for recovery." : nil)
-            ?? (capture.sourceRevision == nil ? "The loaded source revision is unavailable. This Primary Develop edit remains retained for recovery." : nil)
-            ?? (capture.expectedXMP == nil ? "The loaded XMP revision is unavailable. This Primary Develop edit remains retained for recovery." : nil)
+            ?? (!identityMatches ? PrimaryDevelopFailureText.identityMismatch : nil)
+            ?? (capture.sourceRevision == nil ? PrimaryDevelopFailureText.sourceRevisionUnavailable : nil)
+            ?? (capture.expectedXMP == nil ? PrimaryDevelopFailureText.xmpRevisionUnavailable : nil)
         return PrimaryDevelopWriteRequest(imageURL: capture.imageURL, folderURL: capture.folderURL,
             loadID: capture.loadID, mode: capture.mode, edited: edited, previous: previous,
             original: capture.original, expectedRecord: capture.expectedRecord, expectedXMP: capture.expectedXMP,
@@ -347,7 +389,7 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
             if let predecessor = request.predecessor {
                 guard let receipt = predecessorResult, receipt.requestID == predecessor.id, receipt.completed,
                       let completion = receipt.completion, let installed = completion.installedSidecar else {
-                    throw PrimaryDevelopWriteError(message: "The earlier captured Primary Develop edit has no verified completion receipt.")
+                    throw PrimaryDevelopWriteError(message: PrimaryDevelopFailureText.predecessorUnverified)
                 }
                 admittedSource = receipt.sourceRevision
                 admittedXMP = completion.writtenXMPSnapshot ?? predecessor.expectedXMP
@@ -357,7 +399,7 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
             }
             guard let source = admittedSource, let xmp = admittedXMP,
                   request.mode != .historyOnly else {
-                throw PrimaryDevelopWriteError(message: "The original Develop source evidence is unavailable. The captured edit remains retained for recovery.")
+                throw PrimaryDevelopWriteError(message: PrimaryDevelopFailureText.sourceEvidenceUnavailable)
             }
             try await hooks.beforeAdmission()
             let service = MetadataSidecarService()
@@ -366,7 +408,7 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
                 expectedTechnicalMetadata: nil, expectedXMPSnapshot: xmp)
             let currentSource = try await SourceImageRevision.capture(at: request.imageURL)
             guard currentSource.canonicalURL == source.canonicalURL, currentSource.sha256 == source.sha256 else {
-                throw PrimaryDevelopWriteError(message: "The source image changed after this Develop edit was loaded. The original edit remains retained.")
+                throw PrimaryDevelopWriteError(message: PrimaryDevelopFailureText.sourceChanged)
             }
             var writtenSource = source
             let target = DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: request.imageURL, requestedMode: request.mode)
@@ -382,7 +424,7 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
             // A develop-only embed with no develop change has nothing to put in the file.
             if target.writesEmbedded, !(request.embedsDevelopOnly && !request.replaceDevelop) {
                 guard let engine = engine as? any PrimaryDevelopWriting else {
-                    throw PrimaryDevelopWriteError(message: "This image writer cannot safely verify a retained Develop edit.")
+                    throw PrimaryDevelopWriteError(message: PrimaryDevelopFailureText.writerCannotVerify)
                 }
                 let receipt = try await engine.writePrimaryDevelop(request, validatePreparedIntent: {
                     try await validateAuthority()

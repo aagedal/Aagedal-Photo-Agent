@@ -4,6 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Batch Rename, Develop save and transcription errors in plain language: rename problems list one line per file ("IMG_1.JPG → Match_01.JPG: a file with that name already exists") with technical details tucked under Details; Develop save failures name the photo and say your edits are kept; Whisper failures say what to try next instead of mentioning patched filters or custom builds.
 - Clearer error messages for photographers: metadata, rating and caption saves name the photo and give the real cause (disk full, read-only folder, file gone) instead of "sidecar" internals; FTP failures show the plain reason instead of curl output; export, AVIF/JPEG XL, import verification, busy-folder, face-scan folder (including photos still in iCloud), pending-rotation and certificate-import messages say what happened and what to do; a wrong certificate password now says so.
 - Description Assistant starts in your Mac's language (Bokmål, Nynorsk or English, otherwise English) instead of always Bokmål; a language you already picked is kept.
 - VoiceOver: about 80 icon-only buttons (close, clear search, remove keyword, expand/collapse folder, section show/hide and reset, face suggestions and more) now announce what they do instead of a symbol name; disclosure buttons report Expanded or Collapsed.

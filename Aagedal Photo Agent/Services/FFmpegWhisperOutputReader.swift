@@ -11,11 +11,11 @@ nonisolated enum FFmpegWhisperOutputError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .producerNotSuccessful:
-            return "FFmpeg did not finish successfully. Check the selected build and model before trying again."
+            return "Transcription failed. Try again; if it keeps failing, remove and download the model again in Settings → Transcription. If you chose custom files, check that they're compatible."
         case .unsafePath, .unsafeFile, .readFailed:
-            return "Whisper did not produce a safely readable transcript. Check that the selected FFmpeg build supports the patched Whisper JSON filter."
+            return "Transcription didn't produce a readable transcript. Try again; if it keeps failing, remove and download the model again in Settings → Transcription. If you chose custom files, check that they're compatible."
         case .fileChanged:
-            return "Whisper output changed during verification and was discarded. Try transcription again."
+            return "The transcript changed while it was being checked, so it wasn't used. Try again."
         }
     }
 }

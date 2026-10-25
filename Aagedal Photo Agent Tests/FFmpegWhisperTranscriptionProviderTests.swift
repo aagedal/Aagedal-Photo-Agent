@@ -528,7 +528,7 @@ struct FFmpegWhisperTranscriptionProviderTests {
         #expect(!model.isTranscribing)
         if fails {
             #expect(model.draft == original)
-            #expect(model.errorMessage == "Whisper exceeded the transcription time limit. Try a smaller compatible model or a shorter voice memo. The existing review was kept. Apple Speech was not used.")
+            #expect(model.errorMessage == "Transcription took too long and was stopped. Try a shorter voice memo or a smaller model. The existing review was kept. Apple Speech was not used.")
         } else {
             let draft = try #require(model.draft)
             #expect(draft.generatedText == "Custom replacement")

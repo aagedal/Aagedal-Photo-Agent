@@ -450,7 +450,7 @@ struct BatchRenameSheetStateTests {
         #expect(session.requiresFreshSnapshotAfterFailure)
         #expect(session.plan == nil)
         #expect(!session.canExecute)
-        #expect(session.executionPresentation?.recoveryMessage.contains("restored") == true)
+        #expect(session.executionPresentation?.recoveryMessage.contains("put back under their original names") == true)
     }
 
     @MainActor
@@ -664,10 +664,15 @@ struct BatchRenameSheetStateTests {
         let presentation = BatchRenameExecutionPresentation(result: result)
 
         #expect(presentation.mappings.isEmpty)
-        #expect(presentation.recoveryMessage.contains("incomplete"))
+        #expect(presentation.recoveryMessage.contains("couldn't be put back"))
         #expect(!presentation.canRefreshOriginalRequest)
-        #expect(presentation.residualDetails.first?.contains(temporary.path) == true)
-        #expect(presentation.residualDetails.first?.contains(destination.path) == true)
+        // The visible line names files, never full paths; paths stay behind Details.
+        let line = presentation.residualDetails.first ?? ""
+        #expect(line.contains("old.jpg"))
+        #expect(line.contains(temporary.lastPathComponent))
+        #expect(line.contains("Couldn't be put back"))
+        #expect(!line.contains(root.path))
+        #expect(presentation.technicalDetails.contains { $0.contains(temporary.path) && $0.contains(destination.path) })
     }
 
     @Test("RAW cycles keep XMP Develop settings and path-keyed app associations")

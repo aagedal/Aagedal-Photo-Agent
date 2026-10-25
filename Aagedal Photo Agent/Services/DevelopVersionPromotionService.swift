@@ -26,15 +26,15 @@ nonisolated enum DevelopVersionPromotionError: Error, Equatable, LocalizedError,
     var errorDescription: String? {
         switch self {
         case let .stepFailed(.recoveryCatalogWrite, detail):
-            "The previous Primary could not be saved as a recovery version. XMP was not changed. \(detail)"
+            "Couldn't make this version the main edit. Your main edit and other versions are unchanged. \(detail) Try again."
         case let .stepFailed(.xmpWrite, detail):
-            "The recovery version was saved, but Primary XMP could not be written. \(detail)"
+            "Couldn't make this version the main edit. Your previous main edit was kept as the version \"Primary before promotion\", and your other versions are unchanged. \(detail) Try again."
         case let .stepFailed(.xmpReadBack, detail):
-            "Primary XMP was written, but it could not be read back. The previous Primary remains available as a recovery version. \(detail)"
+            "This version was saved as the main edit, but couldn't be checked afterwards. Your previous main edit was kept as the version \"Primary before promotion\". Reopen the photo to check the result. \(detail)"
         case let .stepFailed(.finalCatalogWrite, detail):
-            "Primary XMP was verified, but the catalog could not mark Primary active. The recovery and source versions remain available. \(detail)"
+            "This version is now the main edit, but the version list couldn't be updated. Your previous main edit and other versions are still available. \(detail)"
         case .readBackMismatch:
-            "Primary XMP did not match the promoted version after read-back. The previous Primary remains available as a recovery version."
+            "Couldn't confirm that this version became the main edit: the saved result didn't match. Your previous main edit was kept as the version \"Primary before promotion\"."
         }
     }
 }
@@ -121,7 +121,7 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
         } catch {
             throw DevelopVersionPromotionError.stepFailed(
                 .recoveryCatalogWrite,
-                error.localizedDescription
+                UserFacingErrorCause.sentence(for: error)
             )
         }
 
@@ -131,7 +131,7 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
         do {
             try await writePrimary(settingsToWrite)
         } catch {
-            throw DevelopVersionPromotionError.stepFailed(.xmpWrite, error.localizedDescription)
+            throw DevelopVersionPromotionError.stepFailed(.xmpWrite, UserFacingErrorCause.sentence(for: error))
         }
 
         let readBack: CameraRawSettings?
@@ -140,7 +140,7 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
         } catch {
             throw DevelopVersionPromotionError.stepFailed(
                 .xmpReadBack,
-                error.localizedDescription
+                UserFacingErrorCause.sentence(for: error)
             )
         }
         guard Self.readBackMatches(
@@ -159,7 +159,7 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
             // evolve in a later schema.
             throw DevelopVersionPromotionError.stepFailed(
                 .finalCatalogWrite,
-                error.localizedDescription
+                UserFacingErrorCause.sentence(for: error)
             )
         }
 
@@ -169,7 +169,7 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
         } catch {
             throw DevelopVersionPromotionError.stepFailed(
                 .finalCatalogWrite,
-                error.localizedDescription
+                UserFacingErrorCause.sentence(for: error)
             )
         }
 

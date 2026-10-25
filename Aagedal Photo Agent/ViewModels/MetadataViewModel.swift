@@ -1800,7 +1800,10 @@ final class MetadataViewModel {
         if let existing = retainedPrimaryDevelopWrites.last(where: {
             $0.imageURL == image && $0.folderURL == folder && $0.loadID == loadID
         }), existing.edited == edited, existing.mode == mode {
-            let message = primaryDevelopResults[existing.id]?.failure ?? "This Primary Develop edit is already retained or saving."
+            let message = primaryDevelopResults[existing.id].map {
+                PrimaryDevelopFailureText.userMessage(failure: $0.failure, fileName: image.lastPathComponent,
+                    requiresRecovery: $0.requiresRecovery)
+            } ?? "Your edits to \(image.lastPathComponent) are still being saved."
             onComplete(.failed(message: message)); return
         }
         let predecessor = retainedPrimaryDevelopWrites.last {
@@ -1906,7 +1909,8 @@ final class MetadataViewModel {
                 synchronizePrimaryDevelopRetention()
                 onComplete(.failed(message: message))
             } else {
-                let message = primaryDevelopFailureMessage(result)
+                let message = PrimaryDevelopFailureText.userMessage(failure: result.failure,
+                    fileName: request.imageURL.lastPathComponent, requiresRecovery: result.requiresRecovery)
                 if matches { saveError = message }
                 synchronizePrimaryDevelopRetention()
                 onComplete(result.wasCancelled ? .cancelled(message: message) : .failed(message: message))

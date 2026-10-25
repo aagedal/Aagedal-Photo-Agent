@@ -231,7 +231,7 @@ actor CaptionVoiceMemoAssociationService {
         case noMatch, changed, existingRecord
         var errorDescription: String? {
             switch self {
-            case .noMatch: "No unique, validated Sony voice memo was found. Matching names alone cannot establish a relationship."
+            case .noMatch: "No matching voice memo was found for this photo."
             case .changed: "The folder, photo or voice memo changed. Find the matching voice memo again before linking it."
             case .existingRecord: "This photo already has a saved relationship. Refresh or recover that relationship instead."
             }
