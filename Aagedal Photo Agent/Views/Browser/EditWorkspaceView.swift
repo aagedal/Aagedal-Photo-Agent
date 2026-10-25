@@ -4663,6 +4663,7 @@ struct EditWorkspaceView: View {
             gradientColors: [.blue, .yellow],
             formatter: { "\(Int($0.rounded()))" },
             displayValueTransform: { [self] in kelvinValue(forNormalizedLogScale: $0) },
+            displayValueInverse: { [self] in normalizedLogScaleValue(forKelvin: $0) },
             onEditingChanged: { editing in
                 interactiveRender.setSliderInteraction(active: editing)
                 if !editing {

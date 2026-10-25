@@ -26,8 +26,8 @@ features work, see the [3.0 feature guide](feature-help-3.0.md).
   detector and no automatic shadow check. The Meta and Google entries only open those services'
   websites. Photo Agent does not upload your image to them.
 - **SFTP.** Uploads use macOS's built-in `curl`, which has no SFTP support. Use FTPS (the default) or FTP.
-- **Browser undo** for ratings, labels and moves, typed numbers in Develop sliders, ejecting a card
-  after import, and an import time estimate are not available yet.
+- **Browser undo** for ratings, labels and moves, ejecting a card after import, and an import time
+  estimate are not available yet. HSL and the vertical color sliders don't accept typed values.
 
 ## Experimental in 3.0
 
@@ -59,7 +59,7 @@ features work, see the [3.0 feature guide](feature-help-3.0.md).
   shows exactly what is written where. Not every Bridge or Photo Mechanic round trip has been tested.
 - **RAW files are never modified.** Their metadata and edits go into the `.xmp` sidecar next to them.
 - **Named Develop versions, Image Analysis cases and map notes are Photo Agent-only.** Other apps
-  cannot see them. Promote a version to Primary to write it as ordinary Camera Raw settings.
+  cannot see them. Choose **Make Main Edit…** on a version to write it as ordinary Camera Raw settings.
 - Film emulation, watermark layers and the Anonymizer (face blur) are saved in Photo Agent's own XMP
   fields. Camera Raw and Lightroom ignore them.
 - Exports keep **Person Shown** names and keywords even when those people are blurred with the

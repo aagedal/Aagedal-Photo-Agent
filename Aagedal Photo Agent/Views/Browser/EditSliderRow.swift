@@ -14,6 +14,9 @@ struct EditSliderRow: View {
     /// Use for sliders where the binding operates on a different scale than the display
     /// (e.g., normalized log-scale 0...1 → Kelvin 2000...50000).
     var displayValueTransform: ((Double) -> Double)?
+    /// Maps a typed display value back to the binding's scale. Required for typing into a row
+    /// with `displayValueTransform`; rows without a transform type in their own units.
+    var displayValueInverse: ((Double) -> Double)?
     var onEditingChanged: ((Bool) -> Void)?
     var onDragValueChanged: ((Double) -> Void)?
     var onReset: (() -> Void)?
@@ -22,6 +25,8 @@ struct EditSliderRow: View {
     var resetHelp: String = "Reset to default"
 
     @State private var dragDisplayValue: Double?
+    @State private var typedText: String?
+    @FocusState private var isTyping: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -44,12 +49,30 @@ struct EditSliderRow: View {
                     .accessibilityLabel("Reset \(label)")
                 }
                 Spacer()
-                Text(formattedDisplayValue)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    // The slider element below speaks the label and value.
-                    .accessibilityHidden(true)
+                if typedText != nil {
+                    TextField(label, text: Binding(get: { typedText ?? "" }, set: { typedText = $0 }))
+                        .textFieldStyle(.plain)
+                        .font(.caption.monospacedDigit())
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 64)
+                        .focused($isTyping)
+                        .onSubmit(commitTypedValue)
+                        .onExitCommand { typedText = nil }
+                        .onChange(of: isTyping) { _, focused in
+                            if !focused { typedText = nil }
+                        }
+                        .accessibilityLabel("\(label) value")
+                } else {
+                    Text(formattedDisplayValue)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .contentShape(Rectangle())
+                        .onTapGesture { beginTyping() }
+                        .help(canType ? "Click to type a value" : "")
+                        // The slider element below speaks the label and value.
+                        .accessibilityHidden(true)
+                }
             }
             EditSlider(
                 value: $value,
@@ -79,9 +102,55 @@ struct EditSliderRow: View {
         return abs(value) > 0.001
     }
 
+    private var canType: Bool { displayValueTransform == nil || displayValueInverse != nil }
+
+    private func beginTyping() {
+        guard canType else { return }
+        let displayed = displayValueTransform?(value) ?? value
+        typedText = EditSliderTypedValue.editableText(for: displayed, step: displayValueTransform == nil ? step : 1)
+        isTyping = true
+    }
+
+    /// A typed value commits like one slider release: one Develop commit and one Undo step.
+    private func commitTypedValue() {
+        defer { typedText = nil }
+        guard let text = typedText, let typed = EditSliderTypedValue.parse(text) else { return }
+        let raw = displayValueInverse?(typed) ?? typed
+        let newValue = EditSliderTypedValue.clamped(raw, to: range, step: step)
+        guard newValue != value else { return }
+        onEditingChanged?(true)
+        DevelopUndoActionName.perform(label) { value = newValue }
+        onEditingChanged?(false)
+    }
+
     private var formattedDisplayValue: String {
         let raw = dragDisplayValue ?? value
         let transformed = displayValueTransform?(raw) ?? raw
         return formatter(transformed)
+    }
+}
+
+/// Parsing for values typed into a Develop slider's value field.
+nonisolated enum EditSliderTypedValue {
+    /// Accepts "+25", "-0,5", "−12", "5200K", "40%" or "12px": the first number wins and any
+    /// unit or sign decoration around it is ignored.
+    static func parse(_ text: String) -> Double? {
+        let normalized = text
+            .replacingOccurrences(of: "\u{2212}", with: "-")
+            .replacingOccurrences(of: ",", with: ".")
+        guard let match = normalized.firstMatch(of: /[-+]?\d*\.?\d+/) else { return nil }
+        return Double(match.output)
+    }
+
+    static func clamped(_ value: Double, to range: ClosedRange<Double>, step: Double) -> Double {
+        let bounded = min(range.upperBound, max(range.lowerBound, value))
+        guard step > 0 else { return bounded }
+        let snapped = (bounded / step).rounded() * step
+        return min(range.upperBound, max(range.lowerBound, snapped))
+    }
+
+    static func editableText(for value: Double, step: Double) -> String {
+        let decimals = step > 0 && step < 1 ? min(4, Int(ceil(-log10(step)))) : 0
+        return value.formatted(.number.precision(.fractionLength(decimals)).grouping(.never))
     }
 }

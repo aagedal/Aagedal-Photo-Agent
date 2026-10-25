@@ -296,6 +296,13 @@ discard the unsaved edits, or cancel, and project export retries the save before
 Comparison aligns display-oriented normalized positions. It does not register image content
 automatically, and the wipe view is not a computed difference image.
 
+## Adjust Develop sliders precisely
+
+Drag a slider, or hold Option while dragging for finer steps. Double-click a slider to reset it.
+Click a slider's value to type an exact number, then press Return; Escape cancels. Units such as
+K, % or px can be left out, and a comma works as the decimal mark. With a slider selected, the Up
+and Down arrow keys step it (hold Shift for bigger steps). Each change is one Undo step.
+
 ## Use named Develop versions
 
 In Develop, the version control starts at **Main Edit**. The main edit is the one saved in the photo's
