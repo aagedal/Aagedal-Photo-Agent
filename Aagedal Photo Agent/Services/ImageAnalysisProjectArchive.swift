@@ -83,7 +83,7 @@ nonisolated enum ImageAnalysisProjectArchive {
             case .unsupportedSchemaVersion(let version):
                 "This archive was made by a newer version of Photo Agent (format \(version)). Update Photo Agent to open it."
             case .unsafePath(let path):
-                "The archive contains a file that points outside it (\(path)), so it wasn't opened."
+                "A file path in the archive (\(path)) points outside it, so it can't be used."
             case .missingPayloadFile(let path):
                 "The archive is incomplete: \(path) is missing."
             case .unexpectedPayloadFile(let path):

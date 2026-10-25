@@ -147,7 +147,7 @@ nonisolated struct RejectMoveService: Sendable {
                             catch {
                                 throw NSError(domain: "RejectMoveService", code: 1, userInfo: [
                                     NSLocalizedDescriptionKey: originalError.localizedDescription
-                                        + " Its XMP sidecar couldn't be moved back and is still at \(xmpDestination.path). \(UserFacingErrorCause.sentence(for: error))"
+                                        + " Its XMP sidecar couldn't be put back as it was; check \(xmpDestination.path). \(UserFacingErrorCause.sentence(for: error))"
                                 ])
                             }
                         }

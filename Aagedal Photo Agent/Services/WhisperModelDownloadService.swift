@@ -52,13 +52,13 @@ actor WhisperModelDownloadService {
         var errorDescription: String? {
             switch self {
             case .invalidModel: "This model can't be downloaded. Choose another model."
-            case .unsafeStorage: "The folder where Photo Agent keeps downloaded models contains a file it can't safely use, such as an alias or a file owned by another user. Remove that file, then try again."
+            case .unsafeStorage: "Photo Agent can't safely use the folder where it keeps downloaded models (wrong permissions, an alias, or a file it can't read). Check the folder, then try again."
             case .storageChanged: "The model folder changed during the download. Try again."
             case .invalidResponse: "The download server sent something unexpected. Try again later."
             case .sizeMismatch: "The download was incomplete. Try again."
             case .checksumMismatch: "The downloaded model was damaged. Try again."
             case .busy: "A model download is already in progress."
-            case .cleanupLimitExceeded: "Too many unfinished downloads are left in the models folder. Delete the files there that end in “.partial”, then try again."
+            case .cleanupLimitExceeded: "The models folder contains too many files, such as leftover unfinished downloads (hidden files whose names end in “.partial”). Remove them, then try again."
             }
         }
     }

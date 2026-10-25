@@ -274,7 +274,7 @@ final class DevelopVersionSessionCoordinator {
                 case let .newerSchema(schemaVersion, _, _, _):
                     catalog = nil
                     persistenceState = .unavailable
-                    notice = "This photo's named versions were saved by a newer version of Photo Agent (format \(schemaVersion)). You can view them, but update Photo Agent to change them."
+                    notice = "This photo's named versions were saved by a newer version of Photo Agent (format \(schemaVersion)). Update Photo Agent to use them. They're kept unchanged."
                 }
             } catch is CancellationError {
                 return

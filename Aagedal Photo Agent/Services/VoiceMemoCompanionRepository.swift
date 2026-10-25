@@ -334,17 +334,17 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             case .moveRollbackFailed(let paths):
                 return "The photo and voice memo couldn't be moved, and the partial move couldn't be fully undone. Recover these files before trying again: \(paths.joined(separator: ", "))."
             case .unsafeTrashCarrier(let path):
-                return "Nothing was moved to the Trash because a file that belongs with this photo isn't a normal file: \(URL(fileURLWithPath: path).lastPathComponent)"
+                return "Nothing was moved to the Trash because a file that belongs with this photo is damaged or isn't a normal file: \(path)"
             case .trashRollbackFailed(let paths):
                 return "Moving to the Trash failed and some files couldn't be put back. Recover these files before trying again: \(paths.joined(separator: ", "))."
             case .trashOutcomeUncertain(let path):
                 return "Trash reported an error after the recovery bundle disappeared. Check Finder Trash for \(URL(fileURLWithPath: path).lastPathComponent) before retrying; the original files may already be there. Original recovery path: \(path)"
             case .unsafeMemoFile(let filename):
-                return "The voice memo \(filename) must be a normal file in the photo's folder, not an alias or link, before the photo can be copied, moved or renamed."
+                return "The voice memo \(filename) must be a normal WAV file in the photo's folder, not an alias or link."
             case .recoveryNotNeeded:
                 return "This photo already has an available voice memo. Refresh Caption before trying recovery again."
             case .recoveryRequiresReplacementConfirmation:
-                return "Photo Agent can't confirm the selected WAV is the same recording. Choose Use Replacement to link it anyway."
+                return "Photo Agent can't confirm the selected WAV is the same recording. Select the WAV again and choose Use Replacement to link it anyway."
             case .reassociationDestinationAlreadyOwned:
                 return "This photo already has a linked voice memo. Refresh the voice memo instead of searching another folder."
             }

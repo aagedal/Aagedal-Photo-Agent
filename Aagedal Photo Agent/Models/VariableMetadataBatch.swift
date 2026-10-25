@@ -246,7 +246,7 @@ struct VariableMetadataBatchOutcome: Sendable {
 
     var attention: PendingMetadataWriteBatchAttention? {
         guard wasCancelled || results.contains(where: { !$0.completed }) else { return nil }
-        var lines = ["Variables were filled in for \(results.filter(\.completed).count) of \(results.count) photos."]
+        var lines = ["Variables were saved for \(results.filter(\.completed).count) of \(results.count) photos."]
         if wasCancelled { lines.append("Cancelled. \(unattemptedURLs.count) photos weren't started.") }
         for item in results where !item.completed {
             let result = item.writeResult
@@ -266,7 +266,7 @@ struct VariableMetadataBatchOutcome: Sendable {
             }
             lines.append(detail)
         }
-        lines.append("Retry Variable Writes is available until you quit Photo Agent. After reopening, check the unsaved changes and choose Write All to save them; Write All saves each photo's full metadata, not only the variables.")
+        lines.append("Retry Variable Writes is available until you quit Photo Agent. After reopening, check the unsaved changes and choose Write All Pending to save them; it saves each photo's full metadata, not only the variables.")
         return .init(id: requestID, title: "Variable Processing Needs Attention: \(folderURL.lastPathComponent)",
             message: lines.joined(separator: "\n\n"))
     }

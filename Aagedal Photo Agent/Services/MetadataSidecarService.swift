@@ -101,7 +101,7 @@ struct MetadataSidecarService: Sendable {
 
     private nonisolated func invalidOwnership(_ url: URL) -> CocoaError {
         CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path,
-            NSLocalizedDescriptionKey: "The saved edits file \(url.lastPathComponent) doesn't clearly belong to one photo in this folder, so it was left as it is."])
+            NSLocalizedDescriptionKey: "A saved edits file in the hidden .photo_metadata folder (\(url.lastPathComponent)) is damaged or doesn't match its photo, so it was left as it is."])
     }
 
     private nonisolated func requireRegularFile(_ url: URL) throws {
