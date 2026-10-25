@@ -299,7 +299,7 @@ automatically, and the wipe view is not a computed difference image.
 ## Adjust Develop sliders precisely
 
 Drag a slider, or hold Option while dragging for finer steps. Double-click a slider to reset it.
-Click a slider's value to type an exact number, then press Return; Escape cancels. Units such as
+Click a slider's value to type an exact number, then press Return or click elsewhere; Escape cancels. Units such as
 K, % or px can be left out, and a comma works as the decimal mark. With a slider selected, the Up
 and Down arrow keys step it (hold Shift for bigger steps). Each change is one Undo step.
 

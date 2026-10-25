@@ -542,9 +542,9 @@ nonisolated final class ImportRunState: @unchecked Sendable {
 nonisolated enum ImportTimeEstimate {
     /// Nil until at least 3 files and 5 seconds have passed, so a fast first file or a slow
     /// card wake-up doesn't produce a wild guess.
-    static func secondsLeft(elapsed: TimeInterval, processed: Int, total: Int) -> TimeInterval? {
-        guard processed >= 3, elapsed >= 5, total > processed else { return nil }
-        return elapsed / Double(processed) * Double(total - processed)
+    static func secondsLeft(elapsed: TimeInterval, done: Int, remaining: Int) -> TimeInterval? {
+        guard done >= 3, elapsed >= 5, remaining > 0 else { return nil }
+        return elapsed / Double(done) * Double(remaining)
     }
 
     static func text(forSecondsLeft seconds: TimeInterval) -> String {
@@ -571,14 +571,20 @@ nonisolated struct EjectableVolume: Equatable, Sendable {
 
     init?(containing url: URL) {
         let keys: Set<URLResourceKey> = [.volumeURLKey, .volumeIsEjectableKey, .volumeIsRemovableKey,
-                                         .volumeIsInternalKey, .volumeIsRootFileSystemKey, .volumeLocalizedNameKey]
+                                         .volumeIsLocalKey, .volumeIsRootFileSystemKey, .volumeLocalizedNameKey]
         guard let values = try? url.resourceValues(forKeys: keys),
               let volumeURL = values.volume,
               values.volumeIsRootFileSystem != true,
+              // Network shares are disconnected in Finder, not ejected like a card.
+              values.volumeIsLocal == true,
               values.volumeIsEjectable == true || values.volumeIsRemovable == true
         else { return nil }
         self.url = volumeURL
         self.name = values.volumeLocalizedName ?? volumeURL.lastPathComponent
+    }
+
+    static func volumeURL(containing url: URL) -> URL? {
+        try? url.resourceValues(forKeys: [.volumeURLKey]).volume
     }
 }
 
@@ -619,7 +625,9 @@ final class ImportViewModel {
     var voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
     var isDiscoveringVoiceMemoSource: Bool = false
     var isScanningVoiceMemoSource: Bool = false
-    var importPhase: ImportPhase = .idle
+    var importPhase: ImportPhase = .idle {
+        didSet { if importPhase != oldValue { importPhaseDidChange() } }
+    }
     var copiedFiles: Int = 0
     var voiceMemoCopiedFiles: Int = 0
     var totalFiles: Int = 0
@@ -1442,6 +1450,8 @@ final class ImportViewModel {
     // MARK: - Import Execution
 
     func startImport() {
+        copyStartedAt = nil
+        resetSourceVolumeEject()
         if let importBlockingReason {
             errorMessage = importBlockingReason
             return
@@ -3151,45 +3161,70 @@ final class ImportViewModel {
     private(set) var copyStartedAt: Date?
 
     /// "About 4 min left" while copying, once enough files have been copied to judge the rate.
+    /// Skipped files take no time, so they count in neither the rate nor the work left.
     func copyTimeLeftText(now: Date = Date()) -> String? {
         guard importPhase == .copying, let copyStartedAt else { return nil }
         guard let seconds = ImportTimeEstimate.secondsLeft(
-            elapsed: now.timeIntervalSince(copyStartedAt), processed: processedFiles, total: totalFiles
+            elapsed: now.timeIntervalSince(copyStartedAt),
+            done: processedFiles - skippedFiles,
+            remaining: totalFiles - processedFiles
         ) else { return nil }
         return ImportTimeEstimate.text(forSecondsLeft: seconds)
     }
 
-    /// The card or disk the finished import came from, when macOS can eject it.
+    /// The card or disk the finished import came from, when macOS can eject it. Resolved once,
+    /// off the main actor, when the import stops for good (complete, cancelled or failed): every
+    /// one of those paths has already waited for the finisher and voice memo links.
+    private(set) var ejectableSourceVolume: EjectableVolume?
     private(set) var sourceVolumeEjectState: SourceVolumeEjectState = .idle
+    @ObservationIgnored private var ejectGeneration = UUID()
 
-    /// Only offered once an import has stopped for good: a failed import may have stopped
-    /// before every source read finished, but nothing still reads the card after it either.
-    var ejectableSourceVolume: EjectableVolume? {
+    private func importPhaseDidChange() {
         switch importPhase {
-        case .complete, .cancelled, .failed: break
-        default: return nil
+        case .complete, .cancelled, .failed:
+            guard ejectableSourceVolume == nil, sourceVolumeEjectState == .idle,
+                  let source = configuration.sourceURL else { return }
+            let excluded = [configuration.destinationBaseURL, configuration.backupDestination?.url].compactMap { $0 }
+            let generation = ejectGeneration
+            Task {
+                let volume = await Self.resolveEjectableVolume(source: source, excluding: excluded)
+                guard generation == ejectGeneration else { return }
+                ejectableSourceVolume = volume
+            }
+        default:
+            break
         }
-        guard let sourceURL = configuration.sourceURL else { return nil }
-        return EjectableVolume(containing: sourceURL)
     }
 
-    /// Ejects the import source after the import has fully finished (copies, sidecars,
-    /// templates and voice memo links). Unmounting blocks, so it runs off the main actor.
+    @concurrent nonisolated private static func resolveEjectableVolume(source: URL, excluding: [URL]) async -> EjectableVolume? {
+        guard let volume = EjectableVolume(containing: source) else { return nil }
+        // Never eject the disk the photos were just copied to, or backed up to.
+        let sameDisk = excluding.contains { EjectableVolume.volumeURL(containing: $0) == volume.url }
+        return sameDisk ? nil : volume
+    }
+
+    /// Unmounting blocks, so it runs off the main actor. A result that arrives after the user
+    /// started another import is dropped.
     func ejectSourceVolume() {
-        guard sourceVolumeEjectState != .ejecting,
-              let volume = ejectableSourceVolume else { return }
+        guard sourceVolumeEjectState != .ejecting, let volume = ejectableSourceVolume else { return }
         sourceVolumeEjectState = .ejecting
+        let generation = ejectGeneration
         Task {
             let failure = await Self.eject(volume.url, name: volume.name)
+            guard generation == ejectGeneration else { return }
             if let failure {
                 sourceVolumeEjectState = .failed(failure)
             } else {
                 sourceVolumeEjectState = .ejected(volume.name)
+                ejectableSourceVolume = nil
             }
         }
     }
 
     @concurrent nonisolated private static func eject(_ volumeURL: URL, name: String) async -> String? {
+        guard FileManager.default.fileExists(atPath: volumeURL.path) else {
+            return "\(name) is no longer connected."
+        }
         do {
             try NSWorkspace.shared.unmountAndEjectDevice(at: volumeURL)
             return nil
@@ -3198,8 +3233,14 @@ final class ImportViewModel {
         }
     }
 
-    func reset() {
+    private func resetSourceVolumeEject() {
+        ejectGeneration = UUID()
+        ejectableSourceVolume = nil
         sourceVolumeEjectState = .idle
+    }
+
+    func reset() {
+        resetSourceVolumeEject()
         copyStartedAt = nil
         let preservedFileTypeFilter = configuration.fileTypeFilter
         let preservedConflictPolicy = configuration.conflictPolicy

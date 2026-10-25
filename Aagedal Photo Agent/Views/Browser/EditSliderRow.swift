@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// A slider row with a label, optional reset button, and a formatted value display.
@@ -27,6 +28,7 @@ struct EditSliderRow: View {
     @State private var dragDisplayValue: Double?
     @State private var typedText: String?
     @FocusState private var isTyping: Bool
+    @State private var clickAwayMonitor: Any?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -57,10 +59,18 @@ struct EditSliderRow: View {
                         .frame(width: 64)
                         .focused($isTyping)
                         .onSubmit(commitTypedValue)
-                        .onExitCommand { typedText = nil }
+                        .onExitCommand { endTyping() }
                         .onChange(of: isTyping) { _, focused in
-                            if !focused { typedText = nil }
+                            if !focused { endTyping() }
                         }
+                        // A value changed elsewhere (another photo, Undo) makes the typed text stale.
+                        .onChange(of: value) { _, _ in endTyping() }
+                        .onAppear {
+                            // Focus once the field exists; setting it in the same update is dropped.
+                            DispatchQueue.main.async { isTyping = true }
+                            installClickAwayMonitor()
+                        }
+                        .onDisappear(perform: removeClickAwayMonitor)
                         .accessibilityLabel("\(label) value")
                 } else {
                     Text(formattedDisplayValue)
@@ -108,12 +118,39 @@ struct EditSliderRow: View {
         guard canType else { return }
         let displayed = displayValueTransform?(value) ?? value
         typedText = EditSliderTypedValue.editableText(for: displayed, step: displayValueTransform == nil ? step : 1)
-        isTyping = true
+    }
+
+    private func endTyping() {
+        typedText = nil
+        isTyping = false
+    }
+
+    /// SwiftUI text fields keep keyboard focus when the user clicks the photo or another
+    /// control, which would leave Develop's shortcuts blocked. Any click outside the field
+    /// applies the typed value (like Camera Raw) and hands the keyboard back.
+    private func installClickAwayMonitor() {
+        removeClickAwayMonitor()
+        clickAwayMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+            guard typedText != nil, let window = event.window else { return event }
+            let hit = window.contentView?.hitTest(event.locationInWindow)
+            if let editor = window.firstResponder as? NSView, let hit,
+               hit === editor || hit.isDescendant(of: editor) || editor.isDescendant(of: hit) && hit is NSTextField {
+                return event
+            }
+            commitTypedValue()
+            window.makeFirstResponder(nil)
+            return event
+        }
+    }
+
+    private func removeClickAwayMonitor() {
+        if let clickAwayMonitor { NSEvent.removeMonitor(clickAwayMonitor) }
+        clickAwayMonitor = nil
     }
 
     /// A typed value commits like one slider release: one Develop commit and one Undo step.
     private func commitTypedValue() {
-        defer { typedText = nil }
+        defer { endTyping() }
         guard let text = typedText, let typed = EditSliderTypedValue.parse(text) else { return }
         let raw = displayValueInverse?(typed) ?? typed
         let newValue = EditSliderTypedValue.clamped(raw, to: range, step: step)

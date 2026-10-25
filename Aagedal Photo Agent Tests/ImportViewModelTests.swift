@@ -3579,14 +3579,16 @@ struct EjectableVolumeTests {
 struct ImportTimeEstimateTests {
     @Test("No estimate until three files and five seconds have passed")
     func waitsForEnoughData() {
-        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, processed: 2, total: 100) == nil)
-        #expect(ImportTimeEstimate.secondsLeft(elapsed: 4, processed: 10, total: 100) == nil)
-        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, processed: 100, total: 100) == nil)
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, done: 2, remaining: 98) == nil)
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 4, done: 10, remaining: 90) == nil)
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, done: 100, remaining: 0) == nil)
     }
 
     @Test("The estimate follows the average rate so far")
     func averageRate() {
-        #expect(ImportTimeEstimate.secondsLeft(elapsed: 20, processed: 10, total: 40) == 60)
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 20, done: 10, remaining: 30) == 60)
+        // 800 previously imported files skipped instantly don't make the copy look fast.
+        #expect(ImportTimeEstimate.secondsLeft(elapsed: 10, done: 0, remaining: 200) == nil)
     }
 
     @Test("Time left reads in minutes and hours")
