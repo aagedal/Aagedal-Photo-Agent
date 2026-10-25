@@ -296,16 +296,17 @@ automatically, and the wipe view is not a computed difference image.
 
 ## Use named Develop versions
 
-In Develop, the version control starts at **Primary (XMP)**.
+In Develop, the version control starts at **Main Edit**. The main edit is the one saved in the photo's
+XMP, so it is what other apps such as Lightroom and Camera Raw see.
 
-- Create or duplicate a named version to preserve an alternative Develop snapshot.
+- Create or duplicate a named version to keep an alternative look.
 - Rename, delete, or compare named versions from the version controls.
-- Wait for the visible Saved state before leaving when a save is in progress. A failed flush blocks a
-  silent version switch.
-- Choose **Promote to Primary…** only when the named version should replace the interoperable Primary XMP
-  state. Photo Agent creates a dated recovery version, writes Primary, and verifies read-back.
+- Wait for the Saved state before leaving while a save is in progress. If a save fails, Photo Agent
+  doesn't switch versions silently.
+- Choose **Make Main Edit…** to have a named version replace the main edit. Photo Agent first keeps the
+  current main edit as a dated version, then saves and checks the result.
 
-Named versions live in Photo Agent's app-private JSON store. Other applications see only Primary XMP.
+Named versions are stored only in Photo Agent. Other apps see only the main edit.
 
 ## Batch Rename
 

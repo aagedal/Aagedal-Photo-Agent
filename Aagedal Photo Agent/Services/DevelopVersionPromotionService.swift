@@ -28,13 +28,13 @@ nonisolated enum DevelopVersionPromotionError: Error, Equatable, LocalizedError,
         case let .stepFailed(.recoveryCatalogWrite, detail):
             "Couldn't make this version the main edit. Your main edit and other versions are unchanged. \(detail) Try again."
         case let .stepFailed(.xmpWrite, detail):
-            "Couldn't make this version the main edit. Your previous main edit was kept as the version \"Primary before promotion\", and your other versions are unchanged. \(detail) Try again."
+            "Couldn't make this version the main edit. Your previous main edit was kept as the version \"Main edit before promotion\", and your other versions are unchanged. \(detail) Try again."
         case let .stepFailed(.xmpReadBack, detail):
-            "This version was saved as the main edit, but couldn't be checked afterwards. Your previous main edit was kept as the version \"Primary before promotion\". Reopen the photo to check the result. \(detail)"
+            "This version was saved as the main edit, but couldn't be checked afterwards. Your previous main edit was kept as the version \"Main edit before promotion\". Reopen the photo to check the result. \(detail)"
         case let .stepFailed(.finalCatalogWrite, detail):
             "This version is now the main edit, but the version list couldn't be updated. Your previous main edit and other versions are still available. \(detail)"
         case .readBackMismatch:
-            "Couldn't confirm that this version became the main edit: the saved result didn't match. Your previous main edit was kept as the version \"Primary before promotion\"."
+            "Couldn't confirm that this version became the main edit: the saved result didn't match. Your previous main edit was kept as the version \"Main edit before promotion\"."
         }
     }
 }
@@ -87,8 +87,8 @@ nonisolated struct DevelopVersionPromotionService: Sendable {
     nonisolated static func pairedJPEGRefusal(for imageURL: URL) -> String? {
         guard !SupportedImageFormats.isRaw(url: imageURL),
               let raw = PhotoSidecarOwnership.developOwningRawSibling(of: imageURL, requiringFreshListing: true) else { return nil }
-        return "\(imageURL.lastPathComponent) shares its XMP sidecar with \(raw.lastPathComponent) and keeps its Primary Develop settings in the file itself, "
-            + "so named versions can't be promoted to Primary on it. Nothing was changed. Switch to the version and keep editing, or promote on the RAW file."
+        return "\(imageURL.lastPathComponent) shares its XMP sidecar with \(raw.lastPathComponent) and keeps its main edit in the file itself, "
+            + "so a version can't be made its main edit. Nothing was changed. Switch to the version and keep editing, or do this on the RAW file instead."
     }
 
     init(

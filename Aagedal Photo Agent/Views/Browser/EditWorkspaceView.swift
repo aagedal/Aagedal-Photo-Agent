@@ -61,14 +61,14 @@ private struct DevelopVersionDialogsModifier: ViewModifier {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The named snapshot will be removed. Primary XMP settings are not changed.")
+                Text("The version will be removed. The main edit isn't changed.")
             }
             .confirmationDialog(
-                "Promote this version to Primary?",
+                "Make this version the main edit?",
                 isPresented: promotionPresented,
                 titleVisibility: .visible
             ) {
-                Button("Promote and Verify") {
+                Button("Make Main Edit") {
                     guard let id = dialogs.consumePromotion() else { return }
                     promoteVersion(id)
                 }
@@ -661,7 +661,7 @@ struct EditWorkspaceView: View {
     }
 
     private var activeDevelopVersionLabel: String {
-        activeNamedDevelopVersion?.name ?? "Primary (XMP)"
+        activeNamedDevelopVersion?.name ?? "Main Edit"
     }
 
     private var developVersionStatusColor: Color {
@@ -1968,7 +1968,7 @@ struct EditWorkspaceView: View {
                         switchDevelopVersion(to: nil)
                     } label: {
                         Label(
-                            "Primary (XMP)",
+                            "Main Edit",
                             systemImage: developVersionCatalog?.activeVersionID == nil
                                 ? "checkmark" : "photo"
                         )
@@ -2016,7 +2016,7 @@ struct EditWorkspaceView: View {
                         ) {
                             toggleDefaultDevelopVersion(activeVersion.id)
                         }
-                        Button("Promote to Primary…", systemImage: "arrow.up.doc") {
+                        Button("Make Main Edit…", systemImage: "arrow.up.doc") {
                             developVersionDialogs.requestPromotion(activeVersion.id)
                         }
                         Divider()
@@ -2046,7 +2046,7 @@ struct EditWorkspaceView: View {
                             beginDevelopVersionComparison(with: .primary)
                         } label: {
                             Label(
-                                "Primary (XMP)",
+                                "Main Edit",
                                 systemImage: developVersionComparisonTarget == .primary
                                     ? "checkmark" : "photo"
                             )
@@ -2625,7 +2625,6 @@ struct EditWorkspaceView: View {
         let primarySummary = primaryDevelopSettings?.hasEffectiveEdits == true
             ? "Develop adjustments"
             : "No adjustments"
-        let sidecarPath = XMPSidecarService().sidecarURL(for: imageURL).path
         let availableWatermarkIDs = Set(watermarkStore.allAssets().map(\.id))
         let diagnostics = version.snapshot.dependencyDiagnostics { id in
             guard availableWatermarkIDs.contains(id) else { return nil }
@@ -2636,7 +2635,7 @@ struct EditWorkspaceView: View {
             ? ""
             : " Warning: \(unresolved) external dependency \(unresolved == 1 ? "is" : "are") missing or changed."
 
-        return "\(version.name) (\(version.summary)) will replace Primary (\(primarySummary)) at \(sidecarPath). A dated named recovery version of the current Primary will be saved first, and the XMP write must pass read-back verification.\(dependencyWarning)"
+        return "\(version.name) (\(version.summary)) will replace the main edit (\(primarySummary)) of \(imageURL.lastPathComponent). The current main edit is kept first as a dated version, and the result is checked after saving. Other apps see only the main edit.\(dependencyWarning)"
     }
 
     private func promoteDevelopVersion(id: UUID) {
@@ -2652,7 +2651,7 @@ struct EditWorkspaceView: View {
         developVersionSession.cancelSave()
 
         let versionName = candidate.versions.first(where: { $0.id == id })?.name ?? "Named version"
-        let recoveryName = "Primary before promotion — \(Date().formatted(date: .abbreviated, time: .shortened))"
+        let recoveryName = "Main edit before promotion — \(Date().formatted(date: .abbreviated, time: .shortened))"
         let preparation: DevelopVersionPromotionPreparation
         do {
             preparation = try candidate.preparePromotion(
@@ -4182,7 +4181,7 @@ struct EditWorkspaceView: View {
     ) -> (name: String, settings: CameraRawSettings?)? {
         switch target {
         case .primary:
-            return ("Primary (XMP)", primaryDevelopSettings)
+            return ("Main Edit", primaryDevelopSettings)
         case let .named(id):
             guard let version = developVersionCatalog?.versions.first(where: { $0.id == id }) else {
                 return nil

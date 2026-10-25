@@ -158,7 +158,7 @@ struct ComparisonCoordinatorTests {
 
         #expect(coordinator.session.hasBothSources)
         #expect(coordinator.session.left.source?.revision == coordinator.session.right.source?.revision)
-        #expect(coordinator.session.left.source?.representationLabel == "Primary (XMP)")
+        #expect(coordinator.session.left.source?.representationLabel == "Main Edit")
         #expect(coordinator.session.right.source?.representationLabel == "Warm editorial")
         #expect(DevelopVersionComparisonTarget.primary != .named(versionID))
     }

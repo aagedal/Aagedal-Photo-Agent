@@ -90,7 +90,7 @@ final class DevelopPrimaryLifecycleCoordinator {
         if let captureFailure { throw captureFailure }
         guard !editors.values.contains(where: { $0.hasPendingWork() }) else {
             throw CaptionWorkspaceFlushError.persistenceFailed(
-                "Primary Develop edits still need to be captured or saved. Finish the active adjustment and retry before leaving.")
+                "Develop edits haven't been saved yet. Finish the adjustment you're making, then try again.")
         }
     }
 }

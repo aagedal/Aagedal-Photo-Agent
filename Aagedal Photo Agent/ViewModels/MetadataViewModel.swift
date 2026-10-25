@@ -1931,8 +1931,8 @@ final class MetadataViewModel {
 
     private func primaryDevelopFailureMessage(_ result: PrimaryDevelopWriteResult) -> String {
         let prefix = result.requiresRecovery
-            ? "Primary Develop metadata may be partly written. Its complete captured edit remains retained; export and review it before discarding."
-            : "The Primary Develop edit remains retained. Retry uses its original photo and captured values."
+            ? "The Develop edit may be only partly saved. The full edit is still kept in Photo Agent; export it and check the result before discarding it."
+            : "The Develop edit wasn't saved, but it is still kept in Photo Agent. Retrying saves the same edit to the same photo."
         return prefix + " " + (result.failure ?? "The save did not complete.")
     }
     func retryPrimaryDevelopWrites() async throws {
@@ -1957,7 +1957,7 @@ final class MetadataViewModel {
             try Task.checkCancellation()
             let snapshot = try await VariableConflictRecovery.makeSnapshot(photoURL: image,
                 reason: retainedPrimaryDevelopWrites.first(where: { Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(image) })
-                    .flatMap { primaryDevelopResults[$0.id] }.map(primaryDevelopFailureMessage) ?? "Primary Develop work remains retained.",
+                    .flatMap { primaryDevelopResults[$0.id] }.map(primaryDevelopFailureMessage) ?? "An unsaved Develop edit is still kept in Photo Agent.",
                 generation: primaryDevelopGeneration, entries: primaryDevelopEntries(for: image))
             guard primaryDevelopReviewOwner == owner else { throw PrimaryDevelopWriteError(message: "The recovery review changed.") }
             primaryDevelopReview = snapshot
