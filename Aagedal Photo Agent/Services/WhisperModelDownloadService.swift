@@ -51,14 +51,14 @@ actor WhisperModelDownloadService {
         case invalidModel, unsafeStorage, storageChanged, invalidResponse, sizeMismatch, checksumMismatch, busy, cleanupLimitExceeded
         var errorDescription: String? {
             switch self {
-            case .invalidModel: "The selected downloadable model is invalid."
-            case .unsafeStorage: "The local model storage location is not a private regular file or directory."
-            case .storageChanged: "The model storage changed during download. Please try again."
-            case .invalidResponse: "The model server returned an invalid response. Please try again."
-            case .sizeMismatch: "The downloaded model has an unexpected size. Please try again."
-            case .checksumMismatch: "The downloaded model failed checksum verification. Please try again."
+            case .invalidModel: "This model can't be downloaded. Choose another model."
+            case .unsafeStorage: "The folder where Photo Agent keeps downloaded models contains a file it can't safely use, such as an alias or a file owned by another user. Remove that file, then try again."
+            case .storageChanged: "The model folder changed during the download. Try again."
+            case .invalidResponse: "The download server sent something unexpected. Try again later."
+            case .sizeMismatch: "The download was incomplete. Try again."
+            case .checksumMismatch: "The downloaded model was damaged. Try again."
             case .busy: "A model download is already in progress."
-            case .cleanupLimitExceeded: "Interrupted model cleanup exceeds the bounded maintenance limit."
+            case .cleanupLimitExceeded: "Too many unfinished downloads are left in the models folder. Delete the files there that end in “.partial”, then try again."
             }
         }
     }

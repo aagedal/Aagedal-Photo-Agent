@@ -154,14 +154,14 @@ final class FFmpegWhisperSetupModel {
         } catch {
             guard !Task.isCancelled, request == (executable ? executableRequest : modelRequest) else { return }
             // Keep recovery evidence until the user reselects or explicitly clears the files.
-            errorMessage = "A saved custom file is unavailable. Reconnect its volume or choose the file again. No file was executed."
+            errorMessage = "A custom FFmpeg or Whisper model file can't be found. Reconnect its disk or choose the file again."
         }
     }
 
     func select(_ url: URL, executable: Bool) async {
         // A file panel can outlive the enabled Settings form while Caption starts work.
         guard !isTranscribing else {
-            errorMessage = "Stop transcription in Caption before changing custom files."
+            errorMessage = "Stop the transcription in Caption before changing these files."
             return
         }
         invalidate()
@@ -184,7 +184,7 @@ final class FFmpegWhisperSetupModel {
             publish(selection, executable: executable)
         } catch {
             guard !Task.isCancelled, request == (executable ? executableRequest : modelRequest) else { return }
-            errorMessage = "Cannot retain access to this custom file. Choose a readable local file again. No file was executed."
+            errorMessage = "Photo Agent couldn't keep access to this file. Choose a file on this Mac that you can open."
         }
     }
 
@@ -221,7 +221,7 @@ final class FFmpegWhisperSetupModel {
                 guard self.generation == requested else { return }
                 self.isPreparing = false
                 if !(error is CancellationError) {
-                    self.errorMessage = "Cannot admit these custom files. Select readable, nonempty regular files without symbolic links; FFmpeg must be executable. No file was executed."
+                    self.errorMessage = "These files can't be used. Choose the files themselves rather than aliases, make sure they aren't empty, and that the FFmpeg file is a program that can be run."
                 }
             }
         }
