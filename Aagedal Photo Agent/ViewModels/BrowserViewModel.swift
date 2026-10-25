@@ -1252,11 +1252,26 @@ final class BrowserViewModel {
                     AppStartupSignposts.shared.firstFolderLoadFailed()
                     return
                 }
-                self.folderLoadErrorMessage = error.localizedDescription
+                self.folderLoadErrorMessage = Self.folderLoadMessage(for: error)
                 self.isLoading = false
                 AppStartupSignposts.shared.firstFolderLoadFailed()
             }
         }
+    }
+
+    /// A refused access prompt surfaces as a bare "no permission" error; say where to grant it.
+    nonisolated static func folderLoadMessage(for error: Error) -> String {
+        let message = error.localizedDescription
+        let ns = error as NSError
+        let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError
+        let denied = (ns.domain == NSCocoaErrorDomain && ns.code == NSFileReadNoPermissionError)
+            || [ns, underlying].contains { error in
+                guard let error, error.domain == NSPOSIXErrorDomain else { return false }
+                return error.code == Int(EPERM) || error.code == Int(EACCES)
+            }
+        guard denied else { return message }
+        return message + " If you declined access, allow Aagedal Photo Agent in System Settings \u{2192} "
+            + "Privacy & Security \u{2192} Files and Folders (or Full Disk Access), then open the folder again."
     }
 
     /// Stable identity of a file's bytes, from the scan's size+mtime (no extra I/O).

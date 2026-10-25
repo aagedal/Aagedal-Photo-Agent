@@ -379,3 +379,17 @@ private nonisolated final class BrowserHDRClassificationAccessProbe: @unchecked 
 private nonisolated enum BrowserReadExecutorContext {
     @TaskLocal static var marker: UUID?
 }
+
+@Suite("Browser folder load messages")
+struct BrowserFolderLoadMessageTests {
+    @Test("A refused folder-access prompt explains where to grant access")
+    func deniedAccessExplainsSystemSettings() {
+        let denied = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError,
+            userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))])
+        #expect(BrowserViewModel.folderLoadMessage(for: denied).contains("Privacy & Security"))
+        let posix = NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+        #expect(BrowserViewModel.folderLoadMessage(for: posix).contains("Files and Folders"))
+        let missing = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError)
+        #expect(BrowserViewModel.folderLoadMessage(for: missing) == missing.localizedDescription)
+    }
+}
