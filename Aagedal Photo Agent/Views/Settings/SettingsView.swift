@@ -417,6 +417,7 @@ struct SettingsView: View {
         case .descriptionAssistant: showDestination(.descriptionAssistant)
         case .descriptionModels: showDestination(.descriptionModels)
         case .watermarks: showDestination(.watermarks)
+        case .signing: showDestination(.signing)
         }
         settingsViewModel.requestedDestination = nil
     }

@@ -264,6 +264,7 @@ nonisolated enum SettingsDestination: Equatable, Sendable {
     case descriptionAssistant
     case descriptionModels
     case watermarks
+    case signing
 }
 
 nonisolated struct TemplatesFolderBookmarkResolution: Sendable, Equatable {

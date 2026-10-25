@@ -386,6 +386,7 @@ struct ContentView: View {
     @State private var advancedExportPreparationRequestID = UUID()
     @State private var pendingAdvancedExportRequest: AdvancedExportRequest?
     @State private var settingsViewModel: SettingsViewModel
+    @Environment(\.openSettings) private var openSettings
     @State private var importViewModel: ImportViewModel
     /// Shared, persisted log of recent imports and uploads.
     @State private var activityHistory: ActivityHistoryStore
@@ -3643,7 +3644,15 @@ struct ContentView: View {
         let certPath = settingsViewModel.c2paCertificatePath
         let usesTestCertificate = settingsViewModel.c2paUseTestCertificate
         guard settingsViewModel.c2paHasCertificate else {
-            browserViewModel.errorMessage = "No signing certificate configured. Import one in Settings → Signing."
+            let alert = NSAlert()
+            alert.messageText = "No Signing Certificate"
+            alert.informativeText = "Render and Sign needs a C2PA signing certificate. In Settings → Signing, choose Import Certificate…, or Enable Test Signing (Untrusted) to try it out."
+            alert.addButton(withTitle: "Open Signing Settings")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                settingsViewModel.requestedDestination = .signing
+                openSettings()
+            }
             return
         }
 
