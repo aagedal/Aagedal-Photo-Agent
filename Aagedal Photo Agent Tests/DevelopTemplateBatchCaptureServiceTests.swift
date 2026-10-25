@@ -1325,3 +1325,31 @@ struct DevelopTemplateBatchCaptureServiceTests {
         #expect(try await store.load(capture.intent.id).state == .cancelled)
     }
 }
+
+struct DevelopBatchReviewStackTests {
+    private actor Probe {
+        nonisolated var unownedExecutor: UnownedSerialExecutor {
+            LargeStackSerialExecutor.developBatchReview.asUnownedSerialExecutor()
+        }
+        func stackSize() -> Int { pthread_get_stacksize_np(pthread_self()) }
+        func isMainThread() -> Bool { Thread.isMainThread }
+    }
+
+    @Test("Batch capture and admission run on an 8 MB stack, not a 512 KB worker stack")
+    func reviewExecutorHasLargeStack() async {
+        let probe = Probe()
+        #expect(await probe.stackSize() >= 8 << 20)
+        #expect(await !probe.isMainThread())
+    }
+
+    @Test("Work on the large-stack executor still sees task cancellation")
+    func reviewExecutorKeepsCancellation() async {
+        let probe = Probe()
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            _ = await probe.stackSize()
+            return Task.isCancelled
+        }
+        #expect(await task.value)
+    }
+}
