@@ -374,6 +374,8 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
    `sparkle:channel=beta`. Only beta installations opt into that channel; the eventual
    stable release remains available to them through the default channel.
 2. Add the release notes to `CHANGELOG.md`, including a concise `### Highlights` list for the Sparkle appcast.
+   For 3.0.0, run `scripts/finalize_changelog.py --version 3.0.0 --date YYYY-MM-DD --draft docs/release/3.0.0-release-notes-draft.md`;
+   it adds the dated section and rejects Highlights the appcast would show truncated or as raw markdown.
    Appcast items carry `sparkle:minimumAutoupdateVersion` 740 (the first 3.0 build), so 2.x
    installs see the update alert and its notes instead of a silent background install. Override
    with `AAGEDAL_MINIMUM_AUTOUPDATE_BUILD`, or set it empty to omit the tag.
@@ -390,9 +392,11 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
    `python3 scripts/ffmpeg/make_source_companion.py --sources <ffmpeg build sources>` (see
    [its provenance](docs/provenance/ffmpeg-photo-agent-9.0.2.md#corresponding-source-companion))
    and link it from the release notes, as GPLv3 §6 requires.
-6. Commit and push the generated `appcast.xml` to GitHub, tag the release, then synchronize the website fallback appcast and legacy Codeberg copy.
+6. Commit and push the generated `appcast.xml` to GitHub, tag the release, then copy the same appcast to the feeds
+   older installs still poll (listed by the script): Codeberg `raw/branch/main/appcast.xml` (2.1.x), the Codeberg
+   `releases/download/appcast/appcast.xml` release asset (2.0.x), and `https://aagedal.me/apps/appcast/photoagent.xml`.
 7. For stable releases, bump the cask in the `aagedal/homebrew-tap` repo.
-   For public betas, publish a GitHub prerelease with tag `3.0.0-beta.2`, attach the
+   For public betas, publish a GitHub prerelease tagged with the beta version (for example `3.1.0-beta.1`), attach the
    notarized DMG and its SHA-256, and leave the stable cask/latest release unchanged.
    Include the beta limitations and backup guidance from the changelog.
 
