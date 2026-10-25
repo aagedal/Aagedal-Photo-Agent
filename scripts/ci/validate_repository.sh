@@ -17,6 +17,7 @@ python3 -B scripts/ci/test_model_bundle_validator.py
 python3 -B scripts/ci/test_model_omission_validator.py
 python3 -B scripts/ci/test_model_free_candidate.py
 python3 -B scripts/ci/test_release_metadata_validator.py
+python3 -B scripts/ci/test_release_notes_pipeline.py
 python3 -B scripts/ci/validate_release_metadata.py
 
 say "Validating tracked JSON documents"

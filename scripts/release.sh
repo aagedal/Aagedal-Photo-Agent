@@ -492,8 +492,10 @@ ok "EdDSA signature obtained (length $LENGTH)"
 # ─── 11. Build the appcast <item> (release notes pulled from CHANGELOG) ───────
 # Highlights come from the "### Highlights" bullets under "## <version>" in the
 # changelog, so user-facing notes stay in sync with what you already wrote there.
+# The heading must be exactly "## <version>" or "## <version> …": a prefix match would also
+# enter "## 3.0.0-beta.3" and run on through every beta's highlights.
 NOTES="$(awk -v ver="$VERSION" '
-  $0 ~ "^## "ver { inver=1; next }
+  !inver && ($0 == "## " ver || index($0, "## " ver " ") == 1) { inver=1; next }
   inver && /^## /  { exit }
   inver && /^### Highlights/ { inh=1; next }
   inh && /^### / { inh=0 }
