@@ -45,7 +45,7 @@ and an output canvas of at most 4,096 pixels in either dimension.
 
 ## Restore metadata edits
 
-Open **Metadata editing history** to choose a retained history point or **Original State**.
+Open **Metadata editing history** to choose a saved history point or **Original State**.
 Original State uses the saved metadata snapshot from before the pending edits. Restoring saves
 an editorial draft and its XMP mirror; use **Write to Image** when you want to commit it to the
 image. Develop settings and orientation are preserved. Field markers compare the draft against
@@ -56,21 +56,22 @@ cannot be reversed across later summarized or hidden values. The app explains th
 actions instead of inventing missing metadata. If restoration reports an incomplete mirror or
 changed files, follow its reload/retry guidance before another action.
 
-## Listen to an associated voice memo
+## Listen to a linked voice memo
 
 If you open an existing Sony camera folder directly, select its photo in Caption and use
-**Find matching voice memo…**. The app checks the adjacent photo/WAV inventory and camera
-capture evidence. Confirm **Link Voice Memo** to save the proposed relationship. Opening or
-checking the folder makes no changes; confirmation adds a relationship record without changing
-the image or WAV. Duplicate or uncertain matches are refused. **Find moved relationship…**
-is for recovering a previously saved link, not making the initial association.
+**Find matching voice memo…**. The app checks the WAV files beside the photo against the
+camera's recording information. Confirm **Link Voice Memo** to save the link. Opening or
+checking the folder makes no changes; linking saves a small link file in the folder without
+changing the photo or WAV. Duplicate or uncertain matches are refused. **Find Link in Another
+Folder…** is for recovering a link that was saved before the photo was moved, not for linking
+a memo the first time.
 
 After linking, choose **Apple Speech** in Settings → Transcription. Caption’s Voice memo panel
 then exposes the language picker and **Download Language** when the selected locale needs its
 on-device asset. If **Transcribe** appears, the selected language is already installed.
 
 Caption Workspace shows a **Voice memo** panel beneath the preview. When an imported photo
-has a saved WAV relationship, the panel displays its filename and duration. Press **Play voice
+has a linked WAV, the panel displays its filename and duration. Press **Play voice
 memo** to listen and **Pause voice memo** to pause. Drag the playhead to listen from any point,
 including while paused. Selecting another photo or leaving Caption
 stops playback. Playback does not transcribe audio or alter metadata.
@@ -79,22 +80,22 @@ and the same waveform in green when a saved transcript matches the current memo.
 focuses one photo for editing; batch transcription is available from the Browser thumbnail context menu.
 
 If the memo is missing, restore the WAV beside its photo and press **Refresh voice memo**.
-Invalid records, unsupported relationship schemas and unplayable audio remain unavailable.
+Damaged links, links saved by a newer version of Photo Agent and unplayable audio stay unavailable.
 Refresh also reloads a changed photo or memo before another playback attempt. Caption automatically detects and links a unique supported WAV in the same folder using the
-same validated matching rules as import. Existing relationships are preserved. Ambiguous matches
+same matching rules as import. Existing links are kept. Ambiguous matches
 and moved or replaced memos still use the manual recovery controls.
 
-**Duplicate** preserves a proven memo and its relationship as independent copies. When a RAW
+**Duplicate** copies a linked memo and its link along with the photo. When a RAW
 and JPEG share a source memo, duplicating either creates its own WAV without changing the
 source pair. Missing/invalid companions block duplication; existing output files are preserved.
 **Add to Subfolder**, **Move to Folder** and **Move Rejected to Folder** also carry the proven
-WAV and saved relationship. Moving one photo from a shared memo group keeps the source memo
-for the photos left behind and gives the moved photo its own copy. Missing/invalid records,
-linked audio and existing destination companions fail closed. A cleanup warning can mean the
+WAV and its link. Moving one photo from a shared memo group keeps the source memo
+for the photos left behind and gives the moved photo its own copy. If a link is damaged, the
+WAV is an alias, or the destination already has a file with the same name, nothing is moved. A cleanup warning can mean the
 photo moved successfully but private source backups remain; follow the reported paths before
 retrying. General Move reports XMP/editorial sidecar failures separately from the moved photo.
 
-**Move to Trash** places an associated photo, its WAV and owned metadata in one recoverable
+**Move to Trash** places a photo with a voice memo, its WAV and owned metadata in one recoverable
 folder. Shared audio remains available to surviving photos. In Finder's Trash, use **Put Back**
 on the complete folder, keep its contents together, and open that folder in Photo Agent.
 If an operation reports an issue, open **Details** for all affected paths and recovery guidance.
@@ -139,10 +140,11 @@ provider and language in the confirmation. Select a language for this batch (or 
 with Whisper), then press **Transcribe N Photos** to authorize and start it. The batch language choice
 does not change your Settings default; changing it rechecks the captured selection. Apple Speech lists
 supported locales and requires the chosen on-device language to be installed.
-Every photo needs a supported saved WAV relationship. Photos sharing a metadata sidecar cannot
+Every photo needs a linked WAV. Photos sharing a metadata sidecar cannot
 be included together. Existing saved transcripts refuse preparation; an active or unsaved current review must finish before a batch starts.
-The chosen provider must already be ready. This action downloads no language or model assets and
-does not switch providers. Changed photos, WAVs or relationships require a fresh confirmation.
+The chosen provider must already be set up: if it isn't, the sheet offers **Transcription Settings…**,
+and if the Apple Speech language isn't installed it offers **Download Language**. The batch never
+downloads Whisper models or switches providers. Changed photos, WAVs or links require a fresh confirmation.
 
 The confirmation closes when transcription starts, and processing continues in the background.
 Open **Activity** in the left sidebar to view progress or cancel the batch. Completed batches remain
@@ -183,7 +185,7 @@ entry into your existing config. OpenCode v2 uses `mcp.servers` when configured 
 or disabling automation applies to later calls from an already connected client.
 
 Automation is **experimental** in 3.0 and read-only: a client can read effective metadata, inspect
-voice-memo relationships and templates, and prepare previews in the folders you allow. It cannot write
+voice memo links and templates, and prepare previews in the folders you allow. It cannot write
 metadata, apply templates, run face scans or start Develop work. Requests that lead to a change (a
 metadata or transcription review, or adding a team when **Allow team creation** is on) wait in
 Settings → Automation until you approve them there. Review history and recovery sections appear when
