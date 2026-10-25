@@ -87,6 +87,7 @@ struct FaceGroupDetailView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Close")
+                .accessibilityLabel("Close")
             }
 
             // Face grid with multi-select and context menu
@@ -141,6 +142,7 @@ struct FaceGroupDetailView: View {
                 .controlSize(.large)
                 .disabled(trimmedName.isEmpty || isApplying)
                 .help("Apply name")
+                .accessibilityLabel("Apply name")
             }
 
             if !isUnmatched, viewModel.group(byID: group.id)?.name != nil {
@@ -206,6 +208,7 @@ struct FaceGroupDetailView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Merge into another group")
+                    .accessibilityLabel("Merge into another group")
                     .popover(isPresented: $showMergePopover, arrowEdge: .bottom) {
                         mergePopover
                     }
@@ -389,6 +392,7 @@ struct FaceGroupDetailView: View {
         .controlSize(.small)
         .disabled(disabled)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     @ViewBuilder

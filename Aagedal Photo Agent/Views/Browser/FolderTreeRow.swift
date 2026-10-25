@@ -122,6 +122,9 @@ struct FolderTreeRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(isExpanded ? "Collapse \(url.lastPathComponent)" : "Expand \(url.lastPathComponent)")
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                .help(isExpanded ? "Collapse \(url.lastPathComponent)" : "Expand \(url.lastPathComponent)")
             } else {
                 Spacer()
                     .frame(width: 20)
@@ -144,6 +147,7 @@ struct FolderTreeRow: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .help("Close Folder")
+                .accessibilityLabel("Close folder \(url.lastPathComponent)")
             }
         }
         .padding(.vertical, 3)

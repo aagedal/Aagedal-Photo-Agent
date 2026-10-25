@@ -30,6 +30,7 @@ struct CompletionBannerView: View {
             .buttonStyle(.borderless)
             .foregroundStyle(.green)
             .help("Dismiss")
+            .accessibilityLabel("Dismiss")
         }
     }
 }

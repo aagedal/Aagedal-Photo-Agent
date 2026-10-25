@@ -2840,6 +2840,7 @@ private struct AnalysisMapLayersView: View {
             .buttonStyle(.borderless)
             .disabled(isReadOnly)
             .help("Edit this photo annotation's label and note")
+            .accessibilityLabel("Edit photo annotation label and note")
 
             Button {
                 onSetPhotoVisible(annotation.id, !annotation.isVisible)
@@ -2849,6 +2850,7 @@ private struct AnalysisMapLayersView: View {
             .buttonStyle(.borderless)
             .disabled(isReadOnly)
             .help(annotation.isVisible ? "Hide photo annotation" : "Show photo annotation")
+            .accessibilityLabel(annotation.isVisible ? "Hide photo annotation" : "Show photo annotation")
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
@@ -2999,6 +3001,7 @@ private struct AnalysisMapLayersView: View {
             .buttonStyle(.borderless)
             .disabled(isReadOnly)
             .help(annotation.isVisible ? "Hide folder map annotation" : "Show folder map annotation")
+            .accessibilityLabel(annotation.isVisible ? "Hide folder map annotation" : "Show folder map annotation")
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 6)

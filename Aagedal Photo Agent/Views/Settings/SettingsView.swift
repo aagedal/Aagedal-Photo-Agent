@@ -2635,6 +2635,8 @@ struct SettingsView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityLabel("Add FTP Server")
+                .help("Add FTP Server")
             }
 
             if ftpViewModel.connections.isEmpty {

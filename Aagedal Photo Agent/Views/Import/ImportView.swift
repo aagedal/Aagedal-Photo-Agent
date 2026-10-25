@@ -528,6 +528,7 @@ struct ImportView: View {
                                         }
                                         .buttonStyle(.borderless)
                                         .help("Split this day into multiple shoots")
+                                        .accessibilityLabel("Split this day into multiple shoots")
                                         .disabled(!group.isIncluded)
                                     }
 
@@ -539,6 +540,7 @@ struct ImportView: View {
                                         }
                                         .buttonStyle(.borderless)
                                         .help("Merge this day’s shoots back into one folder")
+                                        .accessibilityLabel("Merge this day’s shoots")
                                         .disabled(!group.isIncluded)
                                     }
                                 }

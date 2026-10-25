@@ -147,6 +147,7 @@ struct FTPUploadProgressView: View {
             .foregroundStyle(isHoveringDismiss ? Color.secondary : Color.green)
             .onHover { isHoveringDismiss = $0 }
             .help("Close")
+            .accessibilityLabel("Close")
         }
     }
 }

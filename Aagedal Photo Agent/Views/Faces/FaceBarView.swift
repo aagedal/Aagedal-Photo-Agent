@@ -680,6 +680,8 @@ struct MergeSuggestionRow: View {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Dismiss merge suggestion")
+                .help("Dismiss merge suggestion")
                 .controlSize(.small)
             }
         }

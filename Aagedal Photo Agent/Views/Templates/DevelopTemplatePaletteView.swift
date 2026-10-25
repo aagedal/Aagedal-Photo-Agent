@@ -69,6 +69,8 @@ struct DevelopTemplatePaletteView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close")
+            .help("Close")
             .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 16)

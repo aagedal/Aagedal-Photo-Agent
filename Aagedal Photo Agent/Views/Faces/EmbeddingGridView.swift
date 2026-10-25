@@ -69,6 +69,9 @@ struct EmbeddingGridView: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(isRepresentative ? "Representative face sample" : "Face sample")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .help("Show details for this face sample")
     }
 
     // MARK: - Selected Detail

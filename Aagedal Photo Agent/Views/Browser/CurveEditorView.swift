@@ -142,6 +142,7 @@ struct CurveEditorView: View {
                 }
                 .buttonStyle(.plain)
                 .help(isMuted ? "Show tone curve" : "Hide tone curve")
+                .accessibilityLabel(isMuted ? "Show tone curve" : "Hide tone curve")
                 Button {
                     resetCurve()
                 } label: {
@@ -152,6 +153,7 @@ struct CurveEditorView: View {
                 .buttonStyle(.plain)
                 .disabled(toneCurve == nil)
                 .help("Reset tone curve")
+                .accessibilityLabel("Reset tone curve")
             }
 
             Divider()
@@ -186,6 +188,7 @@ struct CurveEditorView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Delete selected point")
+                    .accessibilityLabel("Delete selected point")
                 }
             }
 

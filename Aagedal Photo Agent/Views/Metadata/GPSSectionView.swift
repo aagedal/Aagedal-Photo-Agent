@@ -175,6 +175,7 @@ struct GPSSectionView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Search for a location")
+                .accessibilityLabel("Search for a location")
             }
 
             // Search field (always visible when searching, regardless of collapse)
@@ -375,6 +376,7 @@ struct GPSSectionView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Copy coordinates")
+                .accessibilityLabel("Copy coordinates")
             }
         }
     }
@@ -401,6 +403,7 @@ struct GPSSectionView: View {
             }
             .disabled(coordinateInput.trimmingCharacters(in: .whitespaces).isEmpty)
             .help("Set coordinates")
+            .accessibilityLabel("Set coordinates")
 
             if let onReverseGeocode {
                 // Keep `.help` on a non-disabled wrapper: AppKit does not reliably show

@@ -151,6 +151,7 @@ struct VerificationSummaryView: View {
             }
             .buttonStyle(.plain)
             .help("Reveal source in Finder")
+            .accessibilityLabel("Reveal source in Finder")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)

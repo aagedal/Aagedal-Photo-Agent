@@ -438,6 +438,8 @@ struct VariableReferenceView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close")
+            .help("Close")
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
@@ -472,6 +474,7 @@ struct VariableReferenceView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal)

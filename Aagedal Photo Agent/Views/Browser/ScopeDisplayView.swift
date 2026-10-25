@@ -23,6 +23,8 @@ struct ScopeDisplayView: View {
                 }
                 .buttonStyle(.plain)
                 .help(isExpanded ? "Collapse scopes" : "Expand scopes")
+                .accessibilityLabel(isExpanded ? "Collapse scopes" : "Expand scopes")
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
 
                 if isExpanded {
                     ForEach(ScopeViewModel.ScopeMode.allCases, id: \.self) { mode in

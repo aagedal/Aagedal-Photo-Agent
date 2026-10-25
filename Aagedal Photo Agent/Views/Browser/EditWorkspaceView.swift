@@ -1750,6 +1750,7 @@ struct EditWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Exit Edit View (Esc)")
+                    .accessibilityLabel("Exit Edit View")
                     Spacer()
                     if canEditSingleImage {
                         Menu {
@@ -2262,6 +2263,7 @@ struct EditWorkspaceView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Reset preview zoom to 100%")
+                        .accessibilityLabel("Reset preview zoom to 100%")
                     }
                     Spacer()
                     Text("\(Int((cropZoomScale * 100).rounded()))%")
@@ -5287,6 +5289,7 @@ struct EditWorkspaceView: View {
                 .buttonStyle(.plain)
                 .disabled(!hasAnonymizerAdjustments)
                 .help("Reset anonymizer")
+                .accessibilityLabel("Reset anonymizer")
             }
             .padding(.top, 2)
             Divider()
@@ -5354,6 +5357,7 @@ struct EditWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .help(isMuted.wrappedValue ? "Show \(title.lowercased())" : "Hide \(title.lowercased())")
+            .accessibilityLabel(isMuted.wrappedValue ? "Show \(title.lowercased())" : "Hide \(title.lowercased())")
             if let onReset {
                 Button {
                     onReset()
@@ -5365,6 +5369,7 @@ struct EditWorkspaceView: View {
                 .buttonStyle(.plain)
                 .disabled(!hasAdjustments)
                 .help("Reset \(title.lowercased())")
+                .accessibilityLabel("Reset \(title.lowercased())")
             }
         }
     }
@@ -5389,6 +5394,7 @@ struct EditWorkspaceView: View {
             .buttonStyle(.plain)
             .disabled(!canEditSingleImage || metalPipeline?.hasSourceTexture != true)
             .help("Set white balance from the image — click a neutral grey, or drag to average an area")
+            .accessibilityLabel("Set white balance from the image")
             Spacer()
             Button {
                 sectionMutes.toggle(.color)
@@ -5400,6 +5406,7 @@ struct EditWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .help(sectionMutes.isMuted(.color) ? "Show color" : "Hide color")
+            .accessibilityLabel(sectionMutes.isMuted(.color) ? "Show color" : "Hide color")
             Button {
                 resetColorAdjustments()
             } label: {
@@ -5410,6 +5417,7 @@ struct EditWorkspaceView: View {
             .buttonStyle(.plain)
             .disabled(!hasColorAdjustments)
             .help("Reset color")
+            .accessibilityLabel("Reset color")
         }
     }
 
@@ -5542,6 +5550,7 @@ struct EditWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .help(sectionMutes.isMuted(.exposure) ? "Show exposure adjustments" : "Hide exposure adjustments")
+            .accessibilityLabel(sectionMutes.isMuted(.exposure) ? "Show exposure adjustments" : "Hide exposure adjustments")
             Button {
                 resetExposureAdjustments()
             } label: {
@@ -5552,6 +5561,7 @@ struct EditWorkspaceView: View {
             .buttonStyle(.plain)
             .disabled(!hasExposureAdjustments)
             .help("Reset exposure")
+            .accessibilityLabel("Reset exposure")
             Text("HDR")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(isHDREnabled ? Color.orange : Color.secondary.opacity(0.5))
@@ -6106,6 +6116,7 @@ struct EditWorkspaceView: View {
         .disabled(atMaskLimit)
         .onHover { hoveredAddLayerKind = $0 ? kind : nil }
         .help(atMaskLimit ? limitMessage : help)
+        .accessibilityLabel(help)
     }
 
     private func addGlobalLayerTile(atMaskLimit: Bool) -> some View {
@@ -6133,6 +6144,7 @@ struct EditWorkspaceView: View {
         .disabled(atMaskLimit)
         .onHover { hoveredAddLayerKind = $0 ? .secondaryGlobal : nil }
         .help(atMaskLimit ? DevelopLayerLimits.limitReachedMessage : "Add Global adjustment layer")
+        .accessibilityLabel("Add Global adjustment layer")
     }
 
     @ViewBuilder

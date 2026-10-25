@@ -91,6 +91,7 @@ struct TeamsLibraryContent: View {
                     if !searchText.isEmpty {
                         Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("Clear search")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -141,11 +142,13 @@ struct TeamsLibraryContent: View {
                     Image(systemName: "plus")
                 }
                 .help("Add a team")
+                .accessibilityLabel("Add a team")
 
                 Button { showDeleteAlert = true } label: {
                     Image(systemName: "trash")
                 }
                 .help("Delete the selected team")
+                .accessibilityLabel("Delete the selected team")
                 .disabled(selection == nil)
 
                 Spacer()
@@ -303,6 +306,8 @@ private struct TeamEditorView: View {
                                 roster.removeAll { $0.id == player.id }
                             } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.red) }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("Remove player \(player.number)")
+                            .help("Remove player \(player.number)")
                             .gridColumnAlignment(.trailing)
                         }
                     }

@@ -68,6 +68,7 @@ struct VideoStillExtractionView: View {
                                 .monospacedDigit().help("Go to this marker")
                             Button { frames.remove(at: index) } label: { Image(systemName: "xmark") }
                                 .help("Remove this marker")
+                                .accessibilityLabel("Remove this marker")
                         }
 
                     }

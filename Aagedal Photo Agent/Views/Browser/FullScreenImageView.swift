@@ -1085,6 +1085,7 @@ struct FullScreenImageView: View {
             }
             .buttonStyle(.plain)
             .help("Show keyboard shortcuts")
+            .accessibilityLabel("Show keyboard shortcuts")
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 12) {
@@ -1103,6 +1104,7 @@ struct FullScreenImageView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Collapse")
+                    .accessibilityLabel("Collapse shortcuts")
                 }
                 if file.hasDevelopEdits || file.hasCropEdits {
                     shortcutRow(
