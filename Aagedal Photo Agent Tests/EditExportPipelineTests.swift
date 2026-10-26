@@ -1845,6 +1845,15 @@ struct CustomSubfolderTests {
         EditedImageRenderer.customSubfolder(in: root, name: name)
     }
 
+    @Test("Settings can tell when a name will be replaced by Exports")
+    func usableNameCheck() {
+        #expect(EditedImageRenderer.isUsableSubfolderName("Edited"))
+        #expect(EditedImageRenderer.isUsableSubfolderName(" Edited/2026 "))
+        #expect(!EditedImageRenderer.isUsableSubfolderName("   "))
+        #expect(!EditedImageRenderer.isUsableSubfolderName("../Delivered"))
+        #expect(!EditedImageRenderer.isUsableSubfolderName("/tmp/out"))
+    }
+
     @Test("a plain name nests directly under the source folder")
     func plainName() {
         #expect(sub("Edited").path == "/Volumes/Photos/Shoot/Edited")
@@ -3705,7 +3714,8 @@ struct NativeAVIFEncodingTests {
 
         let props = try properties(at: destination)
         #expect((props[kCGImagePropertyDepth] as? NSNumber)?.intValue == 10)
-        #expect((props[kCGImagePropertyProfileName] as? String)?.contains("2100 HLG") == true)
+        // macOS 27.2 names this profile "BT.2020 Primaries; HLG (…)"; earlier releases "…2100 HLG".
+        #expect((props[kCGImagePropertyProfileName] as? String)?.contains("HLG") == true)
         #expect((props[kCGImagePropertyOrientation] as? NSNumber)?.intValue == 1)
         #expect(SupportedImageFormats.isHDR(url: destination))
 

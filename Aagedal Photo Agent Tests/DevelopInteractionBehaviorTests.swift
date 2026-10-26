@@ -996,6 +996,23 @@ struct DevelopInteractionBehaviorTests {
         #expect(partial.skippedMasks == 1)
     }
 
+    @Test("Paste and templates keep the target's HDR mode unless the source sets one")
+    func pasteAndTemplateKeepTargetHDRMode() {
+        var target = CameraRawSettings()
+        target.hdrEditMode = 1
+
+        let unset = CameraRawSettings(exposure2012: 1)
+        #expect(CameraRawSettings.pasted(unset, onto: target, includeCrop: false).hdrEditMode == 1)
+        #expect(CameraRawSettings.templateResult(unset, onto: target, includeCrop: false)
+            .settings.hdrEditMode == 1)
+
+        var explicitSDR = unset
+        explicitSDR.hdrEditMode = 0
+        #expect(CameraRawSettings.pasted(explicitSDR, onto: target, includeCrop: false).hdrEditMode == 0)
+        #expect(CameraRawSettings.templateResult(explicitSDR, onto: target, includeCrop: false)
+            .settings.hdrEditMode == 0)
+    }
+
     @Test("Paste never turns the target's global Anonymizer off or weaker")
     func pasteNeverWeakensGlobalAnonymizer() {
         var target = CameraRawSettings()
@@ -3686,6 +3703,8 @@ struct EditSliderTypedValueTests {
         #expect(EditSliderTypedValue.parse("\u{2212}12") == -12)
         #expect(EditSliderTypedValue.parse("-0,5") == -0.5)
         #expect(EditSliderTypedValue.parse("5200K") == 5200)
+        #expect(EditSliderTypedValue.parse("5 200 K") == 5200)
+        #expect(EditSliderTypedValue.parse("5\u{00A0}200") == 5200)
         #expect(EditSliderTypedValue.parse("40 %") == 40)
         #expect(EditSliderTypedValue.parse(".75") == 0.75)
         #expect(EditSliderTypedValue.parse("abc") == nil)

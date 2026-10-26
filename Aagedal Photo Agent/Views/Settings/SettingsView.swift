@@ -194,19 +194,19 @@ struct SettingsView: View {
         /// Search only built-in labels; never inspect private libraries or saved credentials.
         var searchTerms: [String] {
             switch self {
-            case .general: ["External Editor", "Command+E", "Default Editor", "Browser", "File visibility", "Preview", "Always show original thumbnails"]
+            case .general: ["External Editor", "Open in Editor", "Command+E", "Default Editor", "Browser", "File visibility", "Preview", "Always show original thumbnails"]
             case .rawDecoding: ["Decode Profile", "Dynamic Range", "Render RAW images as HDR", "Apple RAW Decoder", "Decoder version"]
             case .transcription: ["Transcription provider", "Voice memo", "Whisper model", "Download models", "Remove Downloaded Model", "Custom FFmpeg Whisper", "Transcription language", "Translate speech into English", "Request GPU acceleration"]
             case .descriptionAssistant: ["AI caption", "Local language model", "Description generation", "Description Model", "Provider", "Installed model", "Description Presets", "Preset name", "Model setup", "GPU acceleration"]
             case .descriptionModels: ["Download models", "Local language model", "GGUF", "MLX folder", "Models Already on This Mac", "Remove Downloaded Model"] + DescriptionAssistantDownloadModel.allCases.map(\.title)
             case .developControls: ["Develop Controls", "Exposure", "White balance", "Crop", "Show All", "Reset Order"] + DevelopPanelSection.allCases.map(\.title) + DevelopSlider.allCases.map(\.displayName)
-            case .metadata: ["Multi-Select Behavior", "Visible and required fields", "Write Behavior", "XMP sidecars", "C2PA-Protected Images", "Variable Processing", "Initials", "Reverse Geocoding", "Place-name language", "Work offline", "Metadata Fields", "Headline minimum length", "Description minimum length", "Reset Layout to Defaults"] + MetadataFieldID.userSelectable.map(\.displayName)
-            case .keywordLists: ["Approved Keywords", "Structured Keyword Lists", "IPTC Media Topics", "Automatically update IPTC Media Topics", "IPTC language", "My Keywords", "Structured Person Shown", "Add category names as keywords", "Import / Export"]
-            case .quickLists: ["Quick Lists", "Metadata autocomplete", "Import / Export", "Backup", "Restore"]
-            case .faceRecognition: ["AuraFace Model", "Download model", "Detection", "Scan Mode", "Sports Tagging", "Folder Face Data", "Auto-delete face data"]
-            case .knownPeople: ["Known People Database", "People Library", "Import / Export", "Clear Database", "Future Face Model Upgrades", "Keep reusable face crops", "Data Management", "Stored size", "Privacy"]
+            case .metadata: ["Multi-Select Behavior", "Visible and required fields", "Write Behavior", "Simple", "Professional", "Custom", "Standard Images", "RAW Images", "XMP sidecars", "C2PA-Protected Images", "Variable Processing", "Initials", "Reverse Geocoding", "Place-name language", "Work offline", "Metadata Fields", "Headline minimum length", "Description minimum length", "Reset Layout to Defaults"] + MetadataFieldID.userSelectable.map(\.displayName)
+            case .keywordLists: ["Approved Keywords", "Structured Keyword Lists", "IPTC Media Topics", "Automatically update IPTC Media Topics", "IPTC language", "My Keywords", "When typing a non-approved keyword", "Import / Export", "Restore from Backup", "Backup"]
+            case .quickLists: ["Quick Lists", "Metadata autocomplete", "Import / Export"]
+            case .faceRecognition: ["AuraFace Model", "Download model", "Detection", "Scan Mode", "Fast", "Thorough", "Min Detection Confidence", "Min Face Size", "Sports Tagging", "Folder Face Data", "Auto-delete face data"]
+            case .knownPeople: ["Known People Database", "People Library", "Auto-match Min Confidence", "Structured Person Shown", "Add category names as keywords", "Import / Export", "Clear Database", "Future Face Model Upgrades", "Keep reusable face crops", "Data Management", "Stored size", "Privacy"]
             case .teams: ["Sports Tagging", "Team roster", "Players", "Jersey numbers", "Team colors", "Import / Export"]
-            case .locations: ["Export Location", "Save Exported Files", "Sub-folder Name", "RAW Archive Location", "Main Ingest Folder", "Separate Archive Root"]
+            case .locations: ["Export Location", "Save Exported Files", "Sub-folder Name", "RAW Archive Location", "Save RAW Archives", "Main Ingest Folder", "Separate Archive Root"]
             case .format: Self.uniqued(["SDR Format", "HDR Format", "Default Format", "Quality", "Color Gamut", "Output Resolution", "Maximum Long Edge", "TIFF Options", "Compression"]
                 + ExportFormatSDR.allCases.map(\.displayName)
                 + ExportFormatHDR.allCases.map(\.displayName)
@@ -412,6 +412,7 @@ struct SettingsView: View {
     private func applyRequestedDestination() {
         guard let destination = settingsViewModel.requestedDestination else { return }
         switch destination {
+        case .general: showDestination(.general)
         case .metadata: showDestination(.metadata)
         case .transcription: showDestination(.transcription)
         case .descriptionAssistant: showDestination(.descriptionAssistant)
@@ -492,11 +493,19 @@ struct SettingsView: View {
 
     // MARK: - General Tab
 
+    /// The Open in Editor shortcut is remappable in Shortcuts; name the current key.
+    private var openInEditorPickerTitle: String {
+        guard let chord = KeyboardShortcutProfileRegistry.shared.selectedProfile.chord(for: .openInEditor) else {
+            return "Open in Editor"
+        }
+        return "Open in Editor (\(chord.displayName))"
+    }
+
     @ViewBuilder
     private var generalTab: some View {
         Form {
             Section("External Editor") {
-                Picker("Command+E", selection: $settingsViewModel.defaultEditDestination) {
+                Picker(openInEditorPickerTitle, selection: $settingsViewModel.defaultEditDestination) {
                     ForEach(DefaultEditDestination.allCases) { destination in
                         Text(destination.displayName).tag(destination)
                     }
@@ -898,7 +907,9 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
                         }
-                        Slider(value: $settingsViewModel.knownPeopleMinConfidence, in: 0.20...0.65, step: 0.01)
+                        // A candidate must already be closer than knownPeopleMatchThreshold
+                        // (0.68), so every match scores above 0.32; lower values did nothing.
+                        Slider(value: $settingsViewModel.knownPeopleMinConfidence, in: 0.32...0.65, step: 0.01)
                         Text("Lower values match more often; higher values reduce false matches.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -1142,6 +1153,14 @@ struct SettingsView: View {
                 if settingsViewModel.exportLocationMode == .customSubfolder {
                     TextField("Sub-folder Name", text: $settingsViewModel.exportCustomSubfolderName)
                         .textFieldStyle(.roundedBorder)
+                    if !EditedImageRenderer.isUsableSubfolderName(settingsViewModel.exportCustomSubfolderName) {
+                        Label(
+                            "Enter a folder name inside the photo’s folder. Until then, exports go to “Exports”.",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    }
                 }
             }
 

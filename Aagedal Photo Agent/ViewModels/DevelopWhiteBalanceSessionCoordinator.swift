@@ -206,6 +206,44 @@ final class DevelopWhiteBalanceSessionCoordinator {
         return .previewOnly
     }
 
+    /// Clears the stored temperature instead of writing the as-shot/zero value, so a reset
+    /// photo is no longer counted as edited. When neither component is left, the white balance
+    /// returns to its default marker ("As Shot" for RAW, none for relative WB).
+    func resetTemperature(
+        usesIncrementalWhiteBalance: Bool,
+        in settings: inout CameraRawSettings
+    ) {
+        if usesIncrementalWhiteBalance {
+            settings.incrementalTemperature = nil
+        } else {
+            settings.temperature = nil
+        }
+        Self.restoreDefaultMarkerIfUnset(usesIncrementalWhiteBalance: usesIncrementalWhiteBalance, in: &settings)
+    }
+
+    func resetTint(
+        usesIncrementalWhiteBalance: Bool,
+        in settings: inout CameraRawSettings
+    ) {
+        if usesIncrementalWhiteBalance {
+            settings.incrementalTint = nil
+        } else {
+            settings.tint = nil
+        }
+        Self.restoreDefaultMarkerIfUnset(usesIncrementalWhiteBalance: usesIncrementalWhiteBalance, in: &settings)
+    }
+
+    private static func restoreDefaultMarkerIfUnset(
+        usesIncrementalWhiteBalance: Bool,
+        in settings: inout CameraRawSettings
+    ) {
+        guard settings.temperature == nil,
+              settings.tint == nil,
+              settings.incrementalTemperature == nil,
+              settings.incrementalTint == nil else { return }
+        settings.whiteBalance = usesIncrementalWhiteBalance ? nil : "As Shot"
+    }
+
     @discardableResult
     func applyPickedWhiteBalance(
         temperatureKelvin: Double,

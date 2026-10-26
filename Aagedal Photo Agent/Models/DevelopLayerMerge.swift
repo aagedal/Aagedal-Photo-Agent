@@ -128,6 +128,9 @@ extension CameraRawSettings {
         if source.toneCurve == nil { result.toneCurve = existing?.toneCurve }
         if source.hslAdjustments?.isEmpty != false { result.hslAdjustments = existing?.hslAdjustments }
         result.anonymizer = AnonymizerSettings.atLeastAsStrong(target: existing?.anonymizer, incoming: source.anonymizer)
+        // HDR mode is display state: a source that never chose one must not switch the
+        // target back to SDR. An explicit source value still applies.
+        if source.hdrEditMode == nil { result.hdrEditMode = existing?.hdrEditMode }
         result.copyLayersAndDecodeFacts(from: existing)
         return result.pastingLayers(from: source, maskIdentity: maskIdentity,
                                     watermarkIdentity: watermarkIdentity)
@@ -150,6 +153,7 @@ extension CameraRawSettings {
             result.crop = existing?.crop
         }
         result.anonymizer = AnonymizerSettings.atLeastAsStrong(target: existing?.anonymizer, incoming: template.anonymizer)
+        if template.hdrEditMode == nil { result.hdrEditMode = existing?.hdrEditMode }
         result.copyLayersAndDecodeFacts(from: existing)
         return result.appendingLayers(from: template, maskIdentity: .fresh, watermarkIdentity: .fresh)
     }

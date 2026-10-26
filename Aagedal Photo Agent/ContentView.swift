@@ -561,6 +561,9 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: DispatchQueue.main)) { _ in
                 deadlineLiveSnapshot.refreshValidationPreferences()
+                // Settings ▸ Metadata Fields can change what "Incomplete" means while a pane
+                // is filtered by it.
+                for pane in panes.panes { pane.metadataRequirementsMayHaveChanged() }
             }
             .sheet(isPresented: $isShowingDeadlineProfileManager) {
                 DeadlineProfileManagementView(
@@ -5360,6 +5363,8 @@ struct ContentViewModifiers: ViewModifier {
         alert.addButton(withTitle: "Open Settings")
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
+            // The editor choice lives in General; don't land on whichever tab was last open.
+            settingsViewModel.requestedDestination = .general
             openSettings()
         }
     }

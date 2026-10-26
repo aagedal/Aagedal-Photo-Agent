@@ -674,6 +674,23 @@ final class BrowserViewModel {
         setNeedsVisibleRebuild()
     }
 
+    /// The stored requirement levels and minimum lengths the visible list was last filtered
+    /// with. Compared as raw bytes so unrelated defaults changes cost no decoding or rebuild.
+    @ObservationIgnored private var appliedRequirementPreferences: [Data?]?
+
+    /// Called on any defaults change: rebuilds the grid only when a Required Metadata filter
+    /// is active and the requirement settings it depends on actually changed.
+    func metadataRequirementsMayHaveChanged(defaults: UserDefaults = AppDefaults.store) {
+        let current = [
+            defaults.data(forKey: UserDefaultsKeys.metadataRequirementLevels),
+            defaults.data(forKey: UserDefaultsKeys.metadataMinimumLengths),
+        ]
+        defer { appliedRequirementPreferences = current }
+        // Unknown (nil) counts as changed: at most one extra rebuild, never a missed one.
+        guard requiredMetadataFilter != .any, appliedRequirementPreferences != current else { return }
+        setNeedsVisibleRebuild()
+    }
+
     @ObservationIgnored private var revealActiveRequestedAt: ContinuousClock.Instant?
 
     /// Marks the next grid update as caused by the user (sort/filter setting, their own
@@ -973,12 +990,12 @@ final class BrowserViewModel {
             )
         }
 
-        let requiredFields = MetadataRequirements.requireFields()
+        let requiredFields = MetadataRequirements.requireFields(from: AppDefaults.store)
         return ImageFilterContext(
             query: query,
             requiredFields: requiredFields,
             requiredLevels: Dictionary(uniqueKeysWithValues: requiredFields.map { ($0, .require) }),
-            minimumLengths: MetadataRequirements.loadMinimumLengths()
+            minimumLengths: MetadataRequirements.loadMinimumLengths(from: AppDefaults.store)
         )
     }
 

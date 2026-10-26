@@ -100,8 +100,8 @@ struct CaptionWorkspaceView: View {
             return profile
         }
         return MetadataValidationProfile.currentRequirements(
-            levels: MetadataRequirements.load(),
-            minimumLengths: MetadataRequirements.loadMinimumLengths()
+            levels: MetadataRequirements.load(from: AppDefaults.store),
+            minimumLengths: MetadataRequirements.loadMinimumLengths(from: AppDefaults.store)
         )
     }
 

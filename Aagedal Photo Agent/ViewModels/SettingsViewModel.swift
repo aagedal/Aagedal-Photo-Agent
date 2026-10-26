@@ -259,6 +259,7 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
 
 
 nonisolated enum SettingsDestination: Equatable, Sendable {
+    case general
     case metadata
     case transcription
     case descriptionAssistant
@@ -478,7 +479,7 @@ final class SettingsViewModel {
     var orderedIPTCMetadataFields: [MetadataFieldID] {
         didSet {
             guard !isApplyingStoredValues else { return }
-            MetadataFieldID.saveEditorFieldOrder(orderedIPTCMetadataFields)
+            MetadataFieldID.saveEditorFieldOrder(orderedIPTCMetadataFields, to: AppDefaults.store)
         }
     }
 
@@ -1533,7 +1534,7 @@ private struct SyncedPreferences {
             store.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
         )
         hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(in: store)
-        orderedIPTCMetadataFields = MetadataFieldID.loadEditorFieldOrder()
+        orderedIPTCMetadataFields = MetadataFieldID.loadEditorFieldOrder(from: AppDefaults.store)
 
         let editDestinationRaw = store.string(forKey: UserDefaultsKeys.defaultEditDestination)
             ?? DefaultEditDestination.internalEditor.rawValue
