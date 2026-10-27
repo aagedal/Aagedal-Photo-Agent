@@ -146,6 +146,7 @@ private struct HSLChannelColumn: View {
                 range: -25...25,
                 step: 1,
                 onEditingChanged: { editing in
+                    onEditingChanged?(editing)
                     if !editing { onDragEnded?() }
                 },
                 onDragValueChanged: { dragValue in

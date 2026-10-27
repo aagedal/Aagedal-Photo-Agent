@@ -5,8 +5,8 @@ import SwiftUI
 /// field is visible.
 struct RequiredMetadataFieldsSection: View {
     @Bindable var settingsViewModel: SettingsViewModel
-    @State private var levels: MetadataRequirements.Levels = MetadataRequirements.load()
-    @State private var minimumLengths = MetadataRequirements.loadMinimumLengths()
+    @State private var levels: MetadataRequirements.Levels = MetadataRequirements.load(from: AppDefaults.store)
+    @State private var minimumLengths = MetadataRequirements.loadMinimumLengths(from: AppDefaults.store)
 
     var body: some View {
         Section("Metadata Fields") {
@@ -110,7 +110,7 @@ struct RequiredMetadataFieldsSection: View {
             get: { levels[field] ?? .optional },
             set: { newValue in
                 if newValue == .optional { levels[field] = nil } else { levels[field] = newValue }
-                MetadataRequirements.save(levels)
+                MetadataRequirements.save(levels, to: AppDefaults.store)
             }
         )
     }
@@ -124,7 +124,7 @@ struct RequiredMetadataFieldsSection: View {
                 get: { minimumLengths[field] ?? 0 },
                 set: { value in
                     minimumLengths[field] = max(0, value)
-                    MetadataRequirements.saveMinimumLengths(minimumLengths)
+                    MetadataRequirements.saveMinimumLengths(minimumLengths, to: AppDefaults.store)
                 }
             ), format: .number)
             .labelsHidden()

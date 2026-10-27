@@ -147,6 +147,35 @@ struct DevelopWhiteBalanceSessionCoordinatorTests {
         #expect(abs(coordinator.kelvinValue(forNormalizedLogScale: 2) - 50_000) < 0.001)
     }
 
+    @Test("resetting temperature and tint clears them instead of storing a Custom default")
+    func resetClearsWhiteBalance() {
+        let coordinator = DevelopWhiteBalanceSessionCoordinator()
+
+        // Non-RAW: a fully reset relative white balance is no longer an edit.
+        var jpeg = CameraRawSettings()
+        _ = coordinator.setDisplayedTemperature(30, usesIncrementalWhiteBalance: true, in: &jpeg)
+        _ = coordinator.setDisplayedTint(-12, usesIncrementalWhiteBalance: true, in: &jpeg)
+        coordinator.resetTemperature(usesIncrementalWhiteBalance: true, in: &jpeg)
+        #expect(jpeg.incrementalTemperature == nil)
+        #expect(jpeg.whiteBalance == "Custom")
+        coordinator.resetTint(usesIncrementalWhiteBalance: true, in: &jpeg)
+        #expect(jpeg.incrementalTint == nil)
+        #expect(jpeg.whiteBalance == nil)
+        #expect(!DevelopSettingsMutation.hasEdits(jpeg))
+
+        // RAW: resetting both components returns to As Shot.
+        var raw = CameraRawSettings()
+        _ = coordinator.setDisplayedTemperature(4_800, usesIncrementalWhiteBalance: false, in: &raw)
+        _ = coordinator.setDisplayedTint(9, usesIncrementalWhiteBalance: false, in: &raw)
+        coordinator.resetTint(usesIncrementalWhiteBalance: false, in: &raw)
+        #expect(raw.tint == nil)
+        #expect(raw.temperature == 4_800)
+        coordinator.resetTemperature(usesIncrementalWhiteBalance: false, in: &raw)
+        #expect(raw.temperature == nil)
+        #expect(raw.whiteBalance == "As Shot")
+        #expect(!DevelopSettingsMutation.hasEdits(raw))
+    }
+
     @Test("edit workspace delegates white-balance state and lifecycle to the coordinator")
     func editWorkspaceSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)

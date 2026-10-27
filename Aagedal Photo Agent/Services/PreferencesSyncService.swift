@@ -62,6 +62,8 @@ final class PreferencesSyncService {
         UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords,
         UserDefaultsKeys.hiddenIPTCMetadataFields,
         UserDefaultsKeys.iptcMetadataFieldOrder,
+        UserDefaultsKeys.metadataRequirementLevels,
+        UserDefaultsKeys.metadataMinimumLengths,
         // Face recognition
         UserDefaultsKeys.faceCleanupPolicy,
         UserDefaultsKeys.faceMinConfidence,

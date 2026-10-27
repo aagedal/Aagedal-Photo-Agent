@@ -7,8 +7,8 @@ import UniformTypeIdentifiers
 /// persistence remain in BrowserVM and the shared Caption FIFO when lazy rows leave the screen.
 struct MetadataReviewView: View {
     @Bindable var viewModel: BrowserViewModel
-    @State private var levels = MetadataRequirements.load()
-    @State private var minimumLengths = MetadataRequirements.loadMinimumLengths()
+    @State private var levels = MetadataRequirements.load(from: AppDefaults.store)
+    @State private var minimumLengths = MetadataRequirements.loadMinimumLengths(from: AppDefaults.store)
     @State private var owner = UUID()
     @State private var lifetime: UUID?
     @State private var operation: UUID?
@@ -277,8 +277,8 @@ struct MetadataReviewView: View {
     }
 
     private func reloadRequirements() {
-        levels = MetadataRequirements.load()
-        minimumLengths = MetadataRequirements.loadMinimumLengths()
+        levels = MetadataRequirements.load(from: AppDefaults.store)
+        minimumLengths = MetadataRequirements.loadMinimumLengths(from: AppDefaults.store)
     }
 }
 

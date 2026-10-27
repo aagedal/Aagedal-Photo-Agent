@@ -172,7 +172,12 @@ nonisolated enum EditSliderTypedValue {
     /// Accepts "+25", "-0,5", "−12", "5200K", "40%" or "12px": the first number wins and any
     /// unit or sign decoration around it is ignored.
     static func parse(_ text: String) -> Double? {
+        // Spaces between digits are thousands grouping ("5 200" K, as Norwegian and other
+        // locales write it), not the end of the number.
         let normalized = text
+            .replacingOccurrences(
+                of: "(?<=\\d)[ \\u00A0\\u202F](?=\\d)", with: "", options: .regularExpression
+            )
             .replacingOccurrences(of: "\u{2212}", with: "-")
             .replacingOccurrences(of: ",", with: ".")
         guard let match = normalized.firstMatch(of: /[-+]?\d*\.?\d+/) else { return nil }

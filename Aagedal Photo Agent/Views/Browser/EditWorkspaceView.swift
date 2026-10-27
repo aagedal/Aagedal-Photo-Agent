@@ -1078,16 +1078,7 @@ struct EditWorkspaceView: View {
                 guard canMutateSingleImageDevelop else { return }
                 removeOrResetSelectedEditLayer()
             case .toggleHDR:
-                guard canMutateSingleImageDevelop else { return }
-                hdrToggleBinding.wrappedValue.toggle()
-                // Auto-switch soft-proof target gamut and display gamut from format settings
-                if scopeViewModel.showClippedGamut {
-                    scopeViewModel.targetGamut = isHDREnabled
-                        ? settingsViewModel.exportColorGamutHDR
-                        : settingsViewModel.exportColorGamutSDR
-                }
-                // Refresh gamut clip pipeline so HDR flag is immediately applied/cleared
-                updateGamutClipMode()
+                toggleHDRMode()
             case .applyDevelopTemplate(let template):
                 guard canMutateSingleImageDevelop || browserViewModel.selectedImageIDs.count == 1 else { return }
                 performWhenSelectedImageReady("Template") { applyDevelopTemplate(template) }
@@ -2079,7 +2070,7 @@ struct EditWorkspaceView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .disabled(!hasDevelopVersionComparisonTargets || isDevelopVersionTransitioning)
-                .help("Compare the current Develop version with Primary or another named version")
+                .help("Compare the current Develop version with the Main Edit or another named version")
 
                 Image(systemName: developVersionPersistenceState.systemImage)
                     .foregroundStyle(developVersionStatusColor)
@@ -2122,7 +2113,7 @@ struct EditWorkspaceView: View {
                         .accessibilityLabel("Version dependency warning: \(warning)")
                 }
             } else {
-                Text("XMP-backed primary Develop state")
+                Text("Main Edit, saved in the photo’s XMP")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -4687,12 +4678,44 @@ struct EditWorkspaceView: View {
                 }
             },
             onReset: {
-                whiteBalanceTemperatureBinding.wrappedValue = asShotTemperatureKelvin
+                resetWhiteBalanceTemperature()
                 commitEditAdjustments()
             },
-            showReset: abs(whiteBalanceTemperatureBinding.wrappedValue - asShotTemperatureKelvin) > 1,
+            showReset: metadataViewModel.editingMetadata.cameraRaw?.temperature != nil,
             resetHelp: "Reset to \(Int(asShotTemperatureKelvin))K"
         )
+    }
+
+    /// Shared by the HDR label, its accessibility action and the Toggle HDR command, so every
+    /// route also moves the gamut warning to the matching export gamut.
+    private func toggleHDRMode() {
+        guard canMutateSingleImageDevelop else { return }
+        hdrToggleBinding.wrappedValue.toggle()
+        // Auto-switch soft-proof target gamut and display gamut from format settings
+        if scopeViewModel.showClippedGamut {
+            scopeViewModel.targetGamut = isHDREnabled
+                ? settingsViewModel.exportColorGamutHDR
+                : settingsViewModel.exportColorGamutSDR
+        }
+        // Refresh gamut clip pipeline so HDR flag is immediately applied/cleared
+        updateGamutClipMode()
+    }
+
+    /// Names the user's current Toggle HDR shortcut; it is remappable, so never hard-code it.
+    private var hdrToggleHelp: String {
+        guard let chord = KeyboardShortcutProfileRegistry.shared.selectedProfile.chord(for: .toggleHDR) else {
+            return "Toggle HDR mode"
+        }
+        return "Toggle HDR mode (\(chord.displayName))"
+    }
+
+    private func resetWhiteBalanceTemperature() {
+        updateCameraRaw { cameraRaw in
+            whiteBalanceSession.resetTemperature(
+                usesIncrementalWhiteBalance: usesIncrementalWhiteBalance,
+                in: &cameraRaw
+            )
+        }
     }
 
     private func normalizedLogScaleValue(forKelvin kelvin: Double) -> Double {
@@ -5035,8 +5058,9 @@ struct EditWorkspaceView: View {
                     settings.incrementalTemperature = Int(value.rounded())
                 },
                 onReset: {
-                    whiteBalanceTemperatureBinding.wrappedValue = 0
-                }
+                    resetWhiteBalanceTemperature()
+                },
+                showReset: metadataViewModel.editingMetadata.cameraRaw?.incrementalTemperature != nil
             )
         } else {
             kelvinTemperatureSliderRow
@@ -5059,13 +5083,24 @@ struct EditWorkspaceView: View {
             step: 1,
             gradientColors: [.green, .pink],
             formatter: signedIntString,
-            settingsMutator: { settings, value in
-                settings.whiteBalance = "Custom"
-                settings.tint = Int(value.rounded())
+            settingsMutator: { [usesIncrementalWhiteBalance] settings, value in
+                _ = whiteBalanceSession.setDisplayedTint(
+                    value,
+                    usesIncrementalWhiteBalance: usesIncrementalWhiteBalance,
+                    in: &settings
+                )
             },
             onReset: {
-                whiteBalanceTintBinding.wrappedValue = asShotTintValue
-            }
+                updateCameraRaw { cameraRaw in
+                    whiteBalanceSession.resetTint(
+                        usesIncrementalWhiteBalance: usesIncrementalWhiteBalance,
+                        in: &cameraRaw
+                    )
+                }
+            },
+            showReset: usesIncrementalWhiteBalance
+                ? metadataViewModel.editingMetadata.cameraRaw?.incrementalTint != nil
+                : metadataViewModel.editingMetadata.cameraRaw?.tint != nil
         )
 
         sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, gradientColors: [.gray, .red], formatter: signedIntString, visibility: .saturation, settingsMutator: { $0.saturation = Int($1.rounded()) }, onReset: {
@@ -5122,7 +5157,7 @@ struct EditWorkspaceView: View {
                 .padding(.top, 2)
             Divider()
 
-            sliderRow("Sharpness", value: toneSliderBinding(\.sharpness), range: 0...150, step: 1, formatter: signedIntString, visibility: .sharpness, settingsMutator: { $0.sharpness = Int($1.rounded()) }, onReset: {
+            sliderRow("Sharpness", value: toneSliderBinding(\.sharpness), range: 0...150, step: 1, formatter: { "\(Int($0.rounded()))" }, visibility: .sharpness, settingsMutator: { $0.sharpness = Int($1.rounded()) }, onReset: {
                 toneSliderBinding(\.sharpness).wrappedValue = 0
             })
             sliderRow("Clarity", value: toneSliderBinding(\.clarity2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .clarity, settingsMutator: { $0.clarity2012 = Int($1.rounded()) }, onReset: {
@@ -5576,16 +5611,14 @@ struct EditWorkspaceView: View {
                     isHoveringHDR = hovering
                 }
                 .onTapGesture {
-                    guard canMutateSingleImageDevelop else { return }
-                    hdrToggleBinding.wrappedValue.toggle()
+                    toggleHDRMode()
                 }
-                .help("Toggle HDR mode (\u{2318}H)")
+                .help(hdrToggleHelp)
                 .accessibilityLabel("HDR")
                 .accessibilityValue(isHDREnabled ? "On" : "Off")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction {
-                    guard canMutateSingleImageDevelop else { return }
-                    hdrToggleBinding.wrappedValue.toggle()
+                    toggleHDRMode()
                 }
         }
         .padding(.top, 2)
@@ -5929,7 +5962,8 @@ struct EditWorkspaceView: View {
                 },
                 onReset: {
                     maskCornerRadiusBinding(index).wrappedValue = 100
-                }
+                },
+                showReset: maskCornerRadiusBinding(index).wrappedValue < 99.5
             )
 
             sliderRow(
@@ -5943,7 +5977,8 @@ struct EditWorkspaceView: View {
                 },
                 onReset: {
                     maskGeometryBinding(index, \.feather).wrappedValue = 50
-                }
+                },
+                showReset: abs(maskGeometryBinding(index, \.feather).wrappedValue - 50) > 0.5
             )
 
             Text("100% is the ACR ellipse; lower values are a Photo Agent extension.")
@@ -5973,6 +6008,8 @@ struct EditWorkspaceView: View {
                 .font(.system(size: 10))
                 .frame(width: 58, alignment: .leading)
             Slider(value: value, in: range)
+                .accessibilityLabel("Brush \(label)")
+                .accessibilityValue(String(format: "%.0f%%", value.wrappedValue / range.upperBound * 100))
             Text(String(format: "%.0f%%", value.wrappedValue / range.upperBound * 100))
                 .font(.system(size: 10).monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -6491,7 +6528,8 @@ struct EditWorkspaceView: View {
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].amount = min(max(value / 100, 0), 1)
                 },
-                onReset: { maskAmountBinding(idx).wrappedValue = 100 }
+                onReset: { maskAmountBinding(idx).wrappedValue = 100 },
+                showReset: maskAmountBinding(idx).wrappedValue < 99.5
             )
         }
     }
@@ -6849,8 +6887,11 @@ struct EditWorkspaceView: View {
                     }
                 },
                 onReset: {
-                    watermarkSizeValueBinding(idx).wrappedValue = 20
-                }
+                    watermarkSizeValueBinding(idx).wrappedValue = watermarkDefaultPlacement(idx).sizeValue
+                },
+                showReset: abs(
+                    watermarkSizeValueBinding(idx).wrappedValue - watermarkDefaultPlacement(idx).sizeValue
+                ) > 0.5
             )
 
             Text("Margin")
@@ -6891,8 +6932,11 @@ struct EditWorkspaceView: View {
                     }
                 },
                 onReset: {
-                    watermarkMarginValueBinding(idx).wrappedValue = 10
-                }
+                    watermarkMarginValueBinding(idx).wrappedValue = watermarkDefaultPlacement(idx).marginValue
+                },
+                showReset: abs(
+                    watermarkMarginValueBinding(idx).wrappedValue - watermarkDefaultPlacement(idx).marginValue
+                ) > 0.5
             )
 
             Text("Opacity")
@@ -6912,7 +6956,8 @@ struct EditWorkspaceView: View {
                 },
                 onReset: {
                     watermarkOpacityBinding(idx).wrappedValue = 100
-                }
+                },
+                showReset: watermarkOpacityBinding(idx).wrappedValue < 99.5
             )
         }
     }
@@ -7011,6 +7056,28 @@ struct EditWorkspaceView: View {
     /// The frame a watermark's px/% values are measured against — the crop frame when a crop
     /// is in effect, else the display image — so a unit switch keeps the rendered size.
     /// Falls back to the nominal library frame before the image size is known.
+    /// The size and margin a reset returns to: the layer's asset Default Placement (Settings ▸
+    /// Watermarks), as used when the layer was added, expressed in the layer's current units.
+    private func watermarkDefaultPlacement(_ index: Int) -> WatermarkGeometry {
+        guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+              layers.indices.contains(index) else { return WatermarkGeometry() }
+        let layer = layers[index]
+        var defaults = WatermarkGeometry()
+        defaults.sizeDimension = layer.geometry.sizeDimension
+        if let asset = WatermarkStore.shared.asset(byID: layer.libraryAssetID) {
+            if asset.defaultSizeDimension == layer.geometry.sizeDimension {
+                defaults.sizeUnit = asset.defaultSizeUnit
+                defaults.sizeValue = asset.defaultSizeValue
+            }
+            defaults.marginUnit = asset.defaultMarginUnit
+            defaults.marginValue = asset.defaultMarginValue
+        }
+        let reference = watermarkUnitReferenceSize
+        return defaults
+            .convertingSizeUnit(to: layer.geometry.sizeUnit, imageWidth: reference.width, imageHeight: reference.height)
+            .convertingMarginUnit(to: layer.geometry.marginUnit, imageWidth: reference.width, imageHeight: reference.height)
+    }
+
     private var watermarkUnitReferenceSize: CGSize {
         let projection = layerGeometryProjection
         guard projection.displayImageSize.width > 0, projection.displayImageSize.height > 0 else {
@@ -7897,7 +7964,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetExposureAdjustments() {
-        updateCameraRaw(actionName: "Reset Light") { cameraRaw in
+        updateCameraRaw(actionName: "Reset Exposure") { cameraRaw in
             cameraRaw.exposure2012 = nil
             cameraRaw.contrast2012 = nil
             cameraRaw.highlights2012 = nil
@@ -8892,7 +8959,13 @@ struct EditWorkspaceView: View {
             guard canEditSingleImage else { return event }
             // Like paste: a still-loading buffer is a placeholder, not this photo's settings.
             guard isSelectedImageMetadataReady else { return nil }
-            browserViewModel.copiedCameraRawSettings = metadataViewModel.editingMetadata.cameraRaw
+            // An unedited photo has nothing to copy; keep the previous clipboard, like the
+            // filmstrip's Copy Settings, instead of silently emptying it.
+            guard let settings = metadataViewModel.editingMetadata.cameraRaw else {
+                showCopyPasteFeedback("No develop settings")
+                return nil
+            }
+            browserViewModel.copiedCameraRawSettings = settings
             showCopyPasteFeedback("Copied")
             return nil
         }

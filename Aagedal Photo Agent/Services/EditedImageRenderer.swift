@@ -1248,6 +1248,16 @@ nonisolated enum EditedImageRenderer {
     /// otherwise silently write exports over unrelated files outside the source folder,
     /// so they fall back to a safe `Exports` sub-folder. An empty name also defaults to
     /// `Exports`.
+    /// False when `customSubfolder` would ignore `name` and use `Exports` instead, so
+    /// Settings can say so rather than show a name that isn't used.
+    static func isUsableSubfolderName(_ name: String) -> Bool {
+        let root = URL(fileURLWithPath: "/photo-agent-subfolder-check", isDirectory: true)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return customSubfolder(in: root, name: trimmed)
+            == root.appendingPathComponent(trimmed, isDirectory: true).standardizedFileURL
+    }
+
     static func customSubfolder(in rootFolder: URL, name: String) -> URL {
         let safeDefault = rootFolder.appendingPathComponent("Exports", isDirectory: true)
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -44,6 +44,21 @@ struct SettingsSearchTests {
         #expect(Section.descriptionModels.matches("remove downloaded model"))
     }
 
+    @Test("Search opens the category that actually shows the control")
+    func controlsLiveInTheirCategory() {
+        #expect(Section.knownPeople.matches("Structured Person Shown"))
+        #expect(!Section.keywordLists.matches("Structured Person Shown"))
+        #expect(Section.knownPeople.matches("category names"))
+        #expect(Section.keywordLists.matches("restore backup"))
+        #expect(!Section.quickLists.matches("backup"))
+        #expect(Section.faceRecognition.matches("min face size"))
+        #expect(Section.faceRecognition.matches("thorough"))
+        #expect(Section.faceRecognition.matches("detection confidence"))
+        #expect(Section.knownPeople.matches("auto-match"))
+        #expect(Section.metadata.matches("professional"))
+        #expect(Section.locations.matches("save RAW archives"))
+    }
+
     @Test("Search does not promise controls that don't exist")
     func noPhantomTerms() {
         #expect(!Section.watermarks.matches("Opacity"))

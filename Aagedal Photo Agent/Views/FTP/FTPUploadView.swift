@@ -512,7 +512,7 @@ struct FTPUploadView: View {
         }
         // Evaluate metadata requirements against the global config, with the Person Shown
         // face-scan rule. Face data and XMP sidecars are loaded off the main actor (file I/O).
-        let levels = MetadataRequirements.load()
+        let levels = MetadataRequirements.load(from: AppDefaults.store)
         async let faceInfoRequest = Self.loadFaceInfo(for: urls)
         async let sidecarRequest = sidecarLoadService.load(
             imageURLs: urls,
@@ -739,7 +739,7 @@ struct FTPUploadView: View {
     nonisolated private static func evaluateRequirements(url: URL, embedded: IPTCMetadata?, sidecar: IPTCMetadata?, willRender: Bool, levels: MetadataRequirements.Levels, face: FaceInfo?) -> UploadMetadataStatus {
         var missingRequired: [String] = []
         var missingWarn: [String] = []
-        let minimumLengths = MetadataRequirements.loadMinimumLengths()
+        let minimumLengths = MetadataRequirements.loadMinimumLengths(from: AppDefaults.store)
         for field in MetadataFieldID.userSelectable {
             guard let level = levels[field], level != .optional else { continue }
             let embeddedEmpty = embedded.map { MetadataRequirements.fieldFails(field, in: $0, levels: levels, minimumLengths: minimumLengths) } ?? true
