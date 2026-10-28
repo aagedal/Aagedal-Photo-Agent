@@ -726,7 +726,7 @@ struct VariableMetadataCallerTests {
 
         model.applyTemplateFieldsAndProcessVariables(
             ["description": "{voiceMemoTranscript}"],
-            to: [ImageFile(url: url)], append: true
+            to: [ImageFile(url: url)], mode: .append
         )
         await model.waitForVariableProcessing()
 
@@ -845,7 +845,7 @@ struct VariableMetadataCallerTests {
         model.selectedURLs = urls
         model.selectedCount = 2
         model.applyTemplateFieldsAndProcessVariables(["organisationShownCode": append ? "New {seq}" : ""],
-            to: urls.map { ImageFile(url: $0) }, append: append)
+            to: urls.map { ImageFile(url: $0) }, mode: append ? .append : .replace)
         await model.waitForVariableProcessing()
         let requests = await executor.requests
         try #require(requests.count == 2)
@@ -872,7 +872,7 @@ struct VariableMetadataCallerTests {
         model.selectedCount = 2
         try model.setBatchMutation(replace ? .overwrite(.repeatable(["Replacement person"])) : .clear, for: .personShown)
         model.applyTemplateFieldsAndProcessVariables(["personShown": "Added {seq}"],
-            to: urls.map { ImageFile(url: $0) }, append: true)
+            to: urls.map { ImageFile(url: $0) }, mode: .append)
         await model.waitForVariableProcessing()
         let requests = await executor.requests
         try #require(requests.count == 2)
@@ -880,6 +880,36 @@ struct VariableMetadataCallerTests {
             let expected = (replace ? ["Replacement person"] : []) + ["Added \(index + 1)"]
             #expect(request.sidecar.metadata.personShown == expected)
             #expect(!request.sidecar.metadata.personShown.contains("Remove original person"))
+        }
+    }
+
+    @Test("Instant fill-empty template resolves variables only on photos with an empty field")
+    @MainActor
+    func instantTemplateFillEmptyOnMixedField() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/variables-fill-template")
+        let urls = ["one.jpg", "two.jpg"].map { folder.appendingPathComponent($0) }
+        let inputs = Dictionary(uniqueKeysWithValues: urls.enumerated().map { index, url in
+            var original = IPTCMetadata(title: "Keep headline")
+            original.description = index == 0 ? "Own caption" : nil
+            return (url, snapshot(url, metadata: original))
+        })
+        let executor = VariableCallerExecutor()
+        let model = makeModel(inputs, executor: executor)
+        model.currentFolderURL = folder
+        model.selectedURLs = urls
+        model.selectedCount = 2
+        model.batchDifferingFields = ["description"]
+        model.applyTemplateFieldsAndProcessVariables(["description": "Caption {seq}"],
+            to: urls.map { ImageFile(url: $0) }, mode: .fillEmpty)
+        #expect(model.batchFieldMutations[.description] == .fillIfEmpty(.scalar("Caption {seq}")))
+        await model.waitForVariableProcessing()
+        let requests = await executor.requests
+        // The photo that keeps its own caption may need no write at all.
+        let filled = try #require(requests.first { $0.imageURL == urls[1] })
+        #expect(filled.sidecar.metadata.description == "Caption 2")
+        for request in requests {
+            if request.imageURL == urls[0] { #expect(request.sidecar.metadata.description == "Own caption") }
+            #expect(request.sidecar.metadata.title == "Keep headline")
         }
     }
 

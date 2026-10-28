@@ -78,7 +78,7 @@ struct AdvancedExportView: View {
             Divider()
 
             HStack(spacing: 12) {
-                comparisonHeading("Original")
+                comparisonHeading("Developed")
                 comparisonHeading("Export 1")
                 if configurations.count > 1 {
                     comparisonHeading("Export 2")
@@ -151,8 +151,8 @@ struct AdvancedExportView: View {
                         hdrSettings
                     }
                     resolutionSettings
-                    if configuration.wrappedValue.sdrFormat == .tiff
-                        || configuration.wrappedValue.hdrFormat == .tiff16bit {
+                    if (hasSDRItems && configuration.wrappedValue.sdrFormat == .tiff)
+                        || (hasHDRItems && configuration.wrappedValue.hdrFormat == .tiff16bit) {
                         tiffSettings
                     }
                     destinationSettings
@@ -191,8 +191,9 @@ struct AdvancedExportView: View {
     }
 
     private var exportButtonTitle: String {
+        // "Export 1" alone would read as the "Export 1" settings tab, so name the unit.
         if configurations.count == 1 {
-            return "Export \(session.items.count)"
+            return "Export \(session.items.count) \(session.items.count == 1 ? "Image" : "Images")"
         }
         return "Export \(session.items.count * configurations.count) Files"
     }
@@ -262,6 +263,15 @@ struct AdvancedExportView: View {
                     .labelsHidden()
                     .frame(width: 145)
                 }
+
+                if let note = configuration.wrappedValue.hdrFormat.gamutFallbackNote(
+                    for: configuration.wrappedValue.hdrGamut
+                ) {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.vertical, 4)
         } label: {
@@ -321,6 +331,17 @@ struct AdvancedExportView: View {
                         "Sub-folder name",
                         text: configuration.customSubfolderName
                     )
+                    if !EditedImageRenderer.isUsableSubfolderName(
+                        configuration.wrappedValue.customSubfolderName
+                    ) {
+                        Label(
+                            "Enter a folder name inside the photo’s folder. Until then, exports go to “Exports”.",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 Text(configuration.wrappedValue.locationMode.description)
@@ -340,7 +361,7 @@ struct AdvancedExportView: View {
             HStack {
                 Text(title)
                 Spacer()
-                Text("\(Int(value.wrappedValue * 100))%")
+                Text("\(Int((value.wrappedValue * 100).rounded()))%")
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
@@ -453,7 +474,7 @@ private struct AdvancedExportComparisonRow: View {
         let configuration = configurations[index]
         var components = [configuration.formatName(isHDR: item.isHDR)]
         if let quality = configuration.quality(isHDR: item.isHDR) {
-            components.append("\(Int(quality * 100))%")
+            components.append("\(Int((quality * 100).rounded()))%")
         }
         return components.joined(separator: " · ")
     }
@@ -810,7 +831,7 @@ private struct AdvancedExportLoupeView: View {
     private func comparisonRow(magnification: CGFloat) -> some View {
         HStack(alignment: .top, spacing: 10) {
             loupePane(
-                title: "Original",
+                title: "Developed",
                 image: referenceLoupe?.referenceImage,
                 magnification: magnification,
                 showsLoading: isReferenceLoading,
@@ -953,7 +974,7 @@ private struct AdvancedExportLoupeView: View {
             configuration.formatName(isHDR: item.isHDR)
         ]
         if let quality = configuration.quality(isHDR: item.isHDR) {
-            components.append("\(Int(quality * 100))%")
+            components.append("\(Int((quality * 100).rounded()))%")
         }
         return components.joined(separator: " · ")
     }

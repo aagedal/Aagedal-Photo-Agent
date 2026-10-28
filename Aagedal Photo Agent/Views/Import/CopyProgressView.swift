@@ -48,10 +48,18 @@ struct CopyProgressView: View {
 
             Spacer()
 
-            Button("Cancel") {
-                onCancel()
+            // Cancel only stops copying; files already copied are always finished, so
+            // there is nothing left to cancel while metadata is applied.
+            if isApplyingMetadata {
+                Text("Finishing the files already copied…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("Cancel") {
+                    onCancel()
+                }
+                .keyboardShortcut(.cancelAction)
             }
-            .keyboardShortcut(.cancelAction)
         }
         .frame(maxWidth: .infinity)
         .padding()

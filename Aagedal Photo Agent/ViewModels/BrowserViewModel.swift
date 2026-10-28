@@ -2034,26 +2034,51 @@ final class BrowserViewModel {
         }
         guard !targets.isEmpty else { return }
         developSettingsReadsInFlight.formUnion(targets)
-        let folderURL = currentFolderURL
         Task { [weak self] in
-            guard let self else { return }
-            let embedded = (try? await metadataReadService.readBatchFullMetadata(
-                urls: targets, stopsWhenCancelled: false
-            )) ?? [:]
-            let sidecars = await Self.readSidecarDevelopSettings(for: targets)
-            developSettingsReadsInFlight.subtract(targets)
-            guard currentFolderURL == folderURL else { return }
-            for url in targets {
-                // A file rewritten again while this read ran waits for its own re-read.
-                guard let index = validImageIndex(for: url), !images[index].developSettingsLoaded,
-                      images[index].dateModified == modificationDates[url] else { continue }
-                images[index].cameraRawSettings = ExportCameraRawSourcePolicy.persisted(
-                    imageURL: url,
-                    sidecar: sidecars[url],
-                    embedded: embedded[url]?.cameraRaw
-                )
-                images[index].developSettingsLoaded = true
-            }
+            await self?.readAndApplyDevelopSettings(targets, modificationDates: modificationDates)
+            self?.developSettingsReadsInFlight.subtract(targets)
+        }
+    }
+
+    /// Awaitable `ensureDevelopSettingsLoaded` without the per-call limit, for a command that
+    /// needs every photo's develop state before it shows anything (Advanced Export's preview
+    /// would otherwise show a not-yet-loaded photo unedited — and as SDR — while the export
+    /// itself re-reads the persisted edit).
+    func loadDevelopSettings(for urls: [URL]) async {
+        var targets: [URL] = []
+        var modificationDates: [URL: Date] = [:]
+        for url in urls {
+            guard let index = validImageIndex(for: url) else { continue }
+            let image = images[index]
+            guard !image.developSettingsLoaded, image.isImageFile,
+                  !image.isICloudDownloadPending else { continue }
+            targets.append(url)
+            modificationDates[url] = image.dateModified
+        }
+        guard !targets.isEmpty else { return }
+        await readAndApplyDevelopSettings(targets, modificationDates: modificationDates)
+    }
+
+    private func readAndApplyDevelopSettings(
+        _ targets: [URL],
+        modificationDates: [URL: Date]
+    ) async {
+        let folderURL = currentFolderURL
+        let embedded = (try? await metadataReadService.readBatchFullMetadata(
+            urls: targets, stopsWhenCancelled: false
+        )) ?? [:]
+        let sidecars = await Self.readSidecarDevelopSettings(for: targets)
+        guard currentFolderURL == folderURL else { return }
+        for url in targets {
+            // A file rewritten again while this read ran waits for its own re-read.
+            guard let index = validImageIndex(for: url), !images[index].developSettingsLoaded,
+                  images[index].dateModified == modificationDates[url] else { continue }
+            images[index].cameraRawSettings = ExportCameraRawSourcePolicy.persisted(
+                imageURL: url,
+                sidecar: sidecars[url],
+                embedded: embedded[url]?.cameraRaw
+            )
+            images[index].developSettingsLoaded = true
         }
     }
 

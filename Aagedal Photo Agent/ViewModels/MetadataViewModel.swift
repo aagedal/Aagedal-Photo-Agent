@@ -1517,6 +1517,9 @@ final class MetadataViewModel {
             return "Will append “\(text)” to each of \(selectedCount) photos"
         case .clear?:
             return "Will be cleared on all \(selectedCount) photos"
+        case .fillIfEmpty(.scalar(let text))?:
+            let count = batchEmptyPhotoCount(for: field)
+            return "Will fill “\(text)” where empty on \(count) \(count == 1 ? "photo" : "photos")"
         default:
             break
         }
@@ -1530,6 +1533,12 @@ final class MetadataViewModel {
             return "Will be cleared on all \(selectedCount) photos"
         }
         return "Leave empty to skip"
+    }
+
+    /// How many selected photos have no value for an editor field key (for batch placeholders).
+    private func batchEmptyPhotoCount(for key: String) -> Int {
+        guard let field = MetadataFieldID(rawValue: key), !batchMetadataByURL.isEmpty else { return selectedCount }
+        return batchMetadataByURL.values.filter { field.isEmpty(in: $0) }.count
     }
 
     /// Partial keywords not yet added to every photo by the editor. A partial value the user
@@ -2450,12 +2459,10 @@ final class MetadataViewModel {
                     }
                 }
 
-                if let batchMutation = draftMutation?.mutation, explicitBatchMutations.contains(where: { entry in
-                    if case .appendText = entry.value { return true }
-                    return false
-                }) {
-                    // Template text appends are per photo: each file gets its own value plus the
-                    // appended text, never the editor's common-value preview.
+                if let batchMutation = draftMutation?.mutation,
+                   explicitBatchMutations.values.contains(where: \.appliesPerRecord) {
+                    // Template appends and fills are per photo: each file gets its own value plus
+                    // the appended text (or the fill where empty), never the common-value preview.
                     for url in writableEmbedURLs() {
                         let base: IPTCMetadata
                         if let resolved = resolvedBatchSnapshot[url] {
@@ -2463,10 +2470,13 @@ final class MetadataViewModel {
                         } else {
                             base = try await self.readService.readFullMetadata(url: url)
                         }
-                        let photoFields = batchMutation.embeddedTextFields(for: url, base: base)
-                        guard !photoFields.isEmpty else { continue }
+                        let photoWrite = batchMutation.embeddedPerRecordWrite(for: url, base: base)
+                        guard !photoWrite.fields.isEmpty else { continue }
                         do {
-                            try await writeEngine.writeFields(photoFields, to: [url])
+                            try await writeEngine.writeFields(
+                                photoWrite.fields, to: [url],
+                                structuredData: StructuredWriteData(listValues: photoWrite.listValues)
+                            )
                             batchMutation.markDelivered(to: url, channel: .embedded)
                         } catch let batch as EmbeddedMetadataBatchRefusal {
                             lossRefusals += batch.refusals
@@ -2690,9 +2700,9 @@ final class MetadataViewModel {
         for field in MetadataFieldID.allCases where !field.isRepeatable {
             guard let mutation = mutations[field] else { continue }
             switch mutation {
-            case .untouched, .append, .appendText:
-                // A per-photo append is written file by file (see `perPhotoBatchTextFields`);
-                // never also write the common-value preview to every file.
+            case .untouched, .append, .appendText, .fillIfEmpty:
+                // A per-photo append or fill is written file by file (see
+                // `perPhotoBatchWrite`); never also write the common-value preview to every file.
                 fields.removeValue(forKey: field.metadataWriteKey)
             case .clear:
                 fields[field.metadataWriteKey] = ""
@@ -2705,7 +2715,7 @@ final class MetadataViewModel {
         for field in MetadataFieldID.allCases where field.isRepeatable {
             guard let mutation = mutations[field] else { continue }
             switch mutation {
-            case .untouched, .appendText:
+            case .untouched, .appendText, .fillIfEmpty:
                 fields.removeValue(forKey: field.metadataWriteKey)
             case .append:
                 // Appends use the typed add/remove writer path below; never also overwrite the
@@ -2728,22 +2738,36 @@ final class MetadataViewModel {
         }
     }
 
-    /// The embedded-write fields for one photo's per-photo text appends, computed from that
-    /// photo's own record. Empty when the batch carries no text append intent.
-    nonisolated static func perPhotoBatchTextFields(
+    /// The embedded write for one photo's per-photo text appends and fills, computed from that
+    /// photo's own record; no fields when the batch carries no per-photo intent. Typed list
+    /// values keep list entries containing commas intact. A fill only writes a field the photo
+    /// has empty; one it already has is left out of the write entirely.
+    nonisolated static func perPhotoBatchWrite(
         _ mutations: [MetadataFieldID: MetadataFieldMutation],
         base: IPTCMetadata
-    ) -> [MetadataFieldKey: String] {
-        let appends = mutations.filter { entry in
-            guard case .appendText = entry.value else { return false }
-            return !entry.key.isRepeatable
+    ) -> (fields: [MetadataFieldKey: String], listValues: EditorialListWriteData) {
+        let perPhoto = mutations.filter { entry in
+            switch entry.value {
+            case .appendText: !entry.key.isRepeatable
+            case .fillIfEmpty: entry.key.isEmpty(in: base)
+            default: false
+            }
         }
-        guard !appends.isEmpty, let updated = try? applyingBatchTextMutations(appends, to: base) else { return [:] }
+        guard !perPhoto.isEmpty,
+              let texts = try? applyingBatchTextMutations(perPhoto, to: base),
+              let updated = try? applyingBatchListMutations(perPhoto, to: texts)
+        else { return ([:], EditorialListWriteData(metadata: base)) }
         var fields: [MetadataFieldKey: String] = [:]
-        for field in appends.keys {
-            fields[field.metadataWriteKey] = field.textValue(in: updated) ?? ""
+        for field in perPhoto.keys {
+            if field == .creator {
+                fields[field.metadataWriteKey] = updated.creatorTransportValue ?? ""
+            } else if field.isRepeatable {
+                fields[field.metadataWriteKey] = values(for: field, in: updated).joined(separator: ", ")
+            } else {
+                fields[field.metadataWriteKey] = field.textValue(in: updated) ?? ""
+            }
         }
-        return fields
+        return (fields, EditorialListWriteData(metadata: updated))
     }
 
     /// Compute add/remove diffs for list fields in add mode, relative to previousEditingMetadata.
@@ -3265,7 +3289,12 @@ final class MetadataViewModel {
         registerSingleSave(imageURL: imageURL, loadID: loadID)
     }
 
-    func applyTemplateFields(_ template: [String: String], append: Bool = false) {
+    func applyTemplateFields(_ template: [String: String], mode: TemplateApplyMode = .replace) {
+        if mode == .fillEmpty {
+            applyTemplateFillingEmptyFields(template)
+            return
+        }
+        let append = mode == .append
         let editorBeforeTemplate = editingMetadata
         for (key, value) in template {
             switch key {
@@ -3439,7 +3468,7 @@ final class MetadataViewModel {
                         // A prior removal/clear is represented as replacement intent. Appending
                         // a template must extend that replacement, not resurrect original values.
                         batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
-                    case .untouched, .append, .appendText:
+                    case .untouched, .append, .appendText, .fillIfEmpty:
                         if !values.isEmpty { batchFieldMutations[field] = .append(values) }
                     }
                 } else {
@@ -3453,6 +3482,90 @@ final class MetadataViewModel {
 
     private func appendString(_ existing: String?, _ new: String) -> String {
         MetadataTemplateText.appending(existing, new)
+    }
+
+    /// Fill Empty Fields (Photo Mechanic): each template value lands only where its field is
+    /// empty, and an empty template value never clears anything. A single photo is decided from
+    /// the editor. A multi-selection fills a field every photo has empty like a replace, leaves a
+    /// field they all share alone, and records a per-photo `.fillIfEmpty` intent for a mixed one.
+    private func applyTemplateFillingEmptyFields(_ template: [String: String]) {
+        var applied: [String: String] = [:]
+        var perPhoto: [MetadataFieldID] = []
+        for (key, value) in template {
+            guard let field = MetadataFieldID(rawValue: key),
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  field.isEmpty(in: editingMetadata) else { continue }
+            guard selectedCount > 1 else {
+                applied[key] = value
+                continue
+            }
+            switch batchFillEmptyState(of: field) {
+            case .allEmpty:
+                applied[key] = value
+            case .mixed:
+                applied[key] = value
+                perPhoto.append(field)
+            case .filled:
+                continue
+            }
+        }
+        guard !applied.isEmpty else { return }
+
+        // Mixed fields go through the replace path too, so they are parsed and validated exactly
+        // like a replace; the recorded overwrite then becomes a per-photo fill and the editor
+        // keeps showing the field's mixed state.
+        let editorBefore = editingMetadata
+        let mutationsBefore = batchFieldMutations
+        let intentValuesBefore = batchTextIntentEditorValues
+        let tokensBefore = batchTextAppendTokens
+        applyTemplateFields(applied, mode: .replace)
+        for field in perPhoto {
+            field.setHistoryValue(field.historyValue(in: editorBefore), in: &editingMetadata)
+            guard case .overwrite(let value)? = batchFieldMutations[field] else {
+                // The template value resolved to nothing (e.g. every keyword rejected).
+                batchFieldMutations[field] = mutationsBefore[field]
+                batchTextIntentEditorValues[field] = intentValuesBefore[field]
+                batchTextAppendTokens[field] = tokensBefore[field]
+                continue
+            }
+            if field.isRepeatable {
+                batchFieldMutations[field] = .fillIfEmpty(value)
+            } else {
+                let path = MetadataEditorFieldPaths.scalarText(for: field.rawValue)
+                setBatchTextIntent(.fillIfEmpty(value), for: field,
+                                   editorValue: path.map { editorBefore[keyPath: $0] } ?? nil)
+            }
+        }
+    }
+
+    private enum BatchFillEmptyState { case allEmpty, mixed, filled }
+
+    /// How Fill Empty Fields treats a field the batch editor shows as empty.
+    private func batchFillEmptyState(of field: MetadataFieldID) -> BatchFillEmptyState {
+        if field == .imageSupplier {
+            // Suppliers are not projected into the batch editor; only an all-empty selection
+            // is known to be empty.
+            let suppliers = batchListSelectionSummary.imageSuppliers
+            return suppliers.common.isEmpty && suppliers.partial.isEmpty ? .allEmpty : .filled
+        }
+        let pending = field.isRepeatable ? batchFieldMutations[field] : batchTextIntent(for: field.rawValue)
+        switch pending {
+        case .clear?:
+            return .allEmpty // A pending clear empties the field on every photo first.
+        case .append?, .appendText?, .fillIfEmpty?:
+            return .filled // Every photo already ends up with a value.
+        default:
+            break
+        }
+        guard batchDifferingFields.contains(field.rawValue) else { return .allEmpty }
+        let supportsPerPhoto = field.isRepeatable
+            || Self.batchTemplateTextFields.contains { $0.field == field }
+        guard supportsPerPhoto else { return .filled } // Mixed values without a per-photo write path.
+        if !batchMetadataByURL.isEmpty,
+           !batchMetadataByURL.values.contains(where: { field.isEmpty(in: $0) }) {
+            return .filled
+        }
+        return .mixed
     }
 
     /// How a template text field acts on a multi-selection. Appendable text concatenates per
@@ -3597,18 +3710,23 @@ final class MetadataViewModel {
     /// Template intent and editor inputs are captured before asynchronous work. Each photo's
     /// local copy resolves its own {filename}/{seq} values, then awaited JSON preparation saves
     /// that complete result. No separate literal save can race the variable operation.
-    func applyTemplateFieldsAndProcessVariables(_ template: [String: String], to images: [ImageFile], append: Bool = false) {
+    func applyTemplateFieldsAndProcessVariables(_ template: [String: String], to images: [ImageFile], mode: TemplateApplyMode = .replace) {
         do { try requireVariableDiscardedEditorReconciled() }
         catch { saveError = error.localizedDescription; return }
         guard variableRecoveryOwnerID == nil else {
             saveError = "Finish or cancel the variable conflict review before applying a variable template."
             return
         }
-        applyTemplateFields(template, append: append)
+        applyTemplateFields(template, mode: mode)
         guard !images.isEmpty else { return }
         // Capture the batch mutation with the variable request. Awaited JSON preparation saves
         // the complete per-photo result; no separate fire-and-forget literal write can race it.
-        startVariableBatch(images: images, previewAction: append ? .append : .replace)
+        let previewAction: VoiceMemoVariablePreviewAction = switch mode {
+        case .replace: .replace
+        case .fillEmpty: .fillEmpty
+        case .append: .append
+        }
+        startVariableBatch(images: images, previewAction: previewAction)
     }
 
     private static let variablePattern = /(?:\{(date|date:[^}]+|dateCreated|dateCreated:[^}]+|dateCaptured|dateCaptured:[^}]+|filename|initials|persons|keywords|voiceMemoTranscript|number|gps|gps:city|gps:country|latitude|longitude|field:[^}]+|seq|seq:\d+)\}|\(number\))/
@@ -3616,11 +3734,17 @@ final class MetadataViewModel {
     /// Checks whether any text field, keyword, or person in editingMetadata contains variable placeholders.
     var hasVariables: Bool {
         if Self.containsVariables(editingMetadata) { return true }
-        // A batch template append on a mixed field keeps its text in the explicit intent, not
-        // in the editor buffer.
+        // A batch template append or fill on a mixed field keeps its text in the explicit
+        // intent, not in the editor buffer.
         return batchFieldMutations.values.contains { mutation in
-            guard case .appendText(let text) = mutation else { return false }
-            return text.contains(Self.variablePattern)
+            switch mutation {
+            case .appendText(let text), .fillIfEmpty(.scalar(let text)):
+                return text.contains(Self.variablePattern)
+            case .fillIfEmpty(.repeatable(let values)):
+                return values.contains { $0.contains(Self.variablePattern) }
+            default:
+                return false
+            }
         }
     }
 
@@ -4144,6 +4268,8 @@ final class MetadataViewModel {
             case .appendText(let value): return ["operation": "appendText", "value": value]
             case .overwrite(.scalar(let value)): return ["operation": "overwriteScalar", "value": value]
             case .overwrite(.repeatable(let values)): return ["operation": "overwriteRepeatable", "values": values]
+            case .fillIfEmpty(.scalar(let value)): return ["operation": "fillIfEmptyScalar", "value": value]
+            case .fillIfEmpty(.repeatable(let values)): return ["operation": "fillIfEmptyRepeatable", "values": values]
             }
         }
         let options = admission.options
@@ -6421,9 +6547,11 @@ nonisolated struct BatchRecordMutation: Sendable {
         { metadata in self.apply(to: &metadata, url: url, channel: channel) }
     }
 
-    /// The embedded-write fields for one photo's text appends, from that photo's own record.
-    func embeddedTextFields(for url: URL, base: IPTCMetadata) -> [MetadataFieldKey: String] {
-        MetadataViewModel.perPhotoBatchTextFields(
+    /// The embedded write for one photo's appends and fills, from that photo's own record.
+    func embeddedPerRecordWrite(
+        for url: URL, base: IPTCMetadata
+    ) -> (fields: [MetadataFieldKey: String], listValues: EditorialListWriteData) {
+        MetadataViewModel.perPhotoBatchWrite(
             ledger.effective(fields, tokens: appendTokens, url: url, channel: .embedded), base: base
         )
     }

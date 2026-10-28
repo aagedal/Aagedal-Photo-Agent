@@ -833,7 +833,7 @@ final class SettingsViewModel {
         didSet { persist(exportFormatSDR.rawValue, forKey: UserDefaultsKeys.exportFormatSDR) }
     }
 
-    /// Default export format for HDR images. Default: HEIC 10-bit
+    /// Default export format for HDR images. Default: JPEG XL
     var exportFormatHDR: ExportFormatHDR {
         didSet { persist(exportFormatHDR.rawValue, forKey: UserDefaultsKeys.exportFormatHDR) }
     }

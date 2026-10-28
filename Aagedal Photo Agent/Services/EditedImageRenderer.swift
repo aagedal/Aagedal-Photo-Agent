@@ -344,7 +344,7 @@ nonisolated enum EditedImageRenderer {
         return image
             .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
             .clampedToExtent()
-            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale), highQualityDownsample: true)
             .cropped(to: CGRect(
                 x: 0, y: 0, width: extent.width * scale, height: extent.height * scale
             ))
@@ -564,8 +564,12 @@ nonisolated enum EditedImageRenderer {
         let scale = CGFloat(maximumPixelSize) / longestEdge
         let width = max(1, (extent.width * scale).rounded())
         let height = max(1, (extent.height * scale).rounded())
+        // Clamp first: when a side rounds up, the last row/column would otherwise sample
+        // transparent pixels and encode as a dark edge line. High-quality downsampling
+        // avoids moiré on large single-step reductions (e.g. 6000 → 1600 px).
         return normalized
-            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .clampedToExtent()
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale), highQualityDownsample: true)
             .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
     }
 
@@ -1000,11 +1004,14 @@ nonisolated enum EditedImageRenderer {
                 .appendingPathExtension("tiff")
             defer { try? FileManager.default.removeItem(at: tempTIFF) }
 
+            // AV1 has no Adobe RGB primaries code: render Adobe RGB as Display P3 (the
+            // nclx tag FFmpegService writes for it) so the pixels match their tag.
+            let intermediateGamut: TargetColorGamut = gamut == .adobeRGB ? .displayP3 : gamut
             guard let cgImage = ctx.createCGImage(
                 ciImage,
                 from: ciImage.extent,
                 format: .RGBA8,
-                colorSpace: gamut.sdrColorSpace
+                colorSpace: intermediateGamut.sdrColorSpace
             ) else {
                 throw RenderError.encodeFailed
             }

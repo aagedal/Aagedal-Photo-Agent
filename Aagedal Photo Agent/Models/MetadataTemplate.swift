@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 nonisolated struct MetadataTemplate: Codable, Identifiable, Sendable, Equatable {
     static let currentSchemaVersion = 1
@@ -121,5 +121,33 @@ nonisolated struct TemplateField: Codable, Identifiable, Sendable, Hashable {
 
     static func label(for key: String) -> String {
         availableFields.first { $0.key == key }?.label ?? key
+    }
+}
+
+/// How a template's fields combine with values already present. Only the fields the template
+/// contains are touched in every mode.
+nonisolated enum TemplateApplyMode: Sendable, Equatable {
+    /// The template's value replaces the field (an empty template field clears it). Return.
+    case replace
+    /// The template's value is used only where the field is empty. Option-Return.
+    case fillEmpty
+    /// The template's value is added after the existing text or list. Shift-Return.
+    case append
+
+    /// The mode chosen by the modifier keys held when a template is picked.
+    static func from(modifiers: NSEvent.ModifierFlags) -> TemplateApplyMode {
+        if modifiers.contains(.shift) { return .append }
+        if modifiers.contains(.option) { return .fillEmpty }
+        return .replace
+    }
+
+    static var current: TemplateApplyMode { from(modifiers: NSEvent.modifierFlags) }
+
+    var displayName: String {
+        switch self {
+        case .replace: "Replace"
+        case .fillEmpty: "Fill Empty Fields"
+        case .append: "Append"
+        }
     }
 }

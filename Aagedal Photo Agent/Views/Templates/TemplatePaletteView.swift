@@ -2,7 +2,7 @@ import SwiftUI
 
 struct TemplatePaletteView: View {
     let templates: [MetadataTemplate]
-    let onApply: (MetadataTemplate, Bool) -> Void  // (template, append)
+    let onApply: (MetadataTemplate, TemplateApplyMode) -> Void
     let onSaveNew: () -> Void
     let onDismiss: () -> Void
 
@@ -51,13 +51,17 @@ struct TemplatePaletteView: View {
             }
             return .handled
         }
-        .onKeyPress(.return) {
-            let appendMode = NSEvent.modifierFlags.contains(.option)
+        .onKeyPress(keys: [.return], phases: .down) { press in
+            // Return replaces, Option-Return fills empty fields, Shift-Return appends.
+            var modifiers: NSEvent.ModifierFlags = []
+            if press.modifiers.contains(.option) { modifiers.insert(.option) }
+            if press.modifiers.contains(.shift) { modifiers.insert(.shift) }
+            let mode = TemplateApplyMode.from(modifiers: modifiers)
             if selectedIndex == templates.count {
                 // Save button selected
                 onSaveNew()
             } else if !templates.isEmpty && selectedIndex < templates.count {
-                onApply(templates[selectedIndex], appendMode)
+                onApply(templates[selectedIndex], mode)
             }
             return .handled
         }
@@ -86,7 +90,7 @@ struct TemplatePaletteView: View {
                 .help("Close")
                 .keyboardShortcut(.cancelAction)
             }
-            Text("⌥↩ to append instead of replace")
+            Text("↩ replace · ⌥↩ fill empty fields · ⇧↩ append")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -167,8 +171,8 @@ struct TemplatePaletteView: View {
 
     private func templateRow(_ template: MetadataTemplate, index: Int) -> some View {
         Button {
-            // Option-click appends, matching Option-Return.
-            onApply(template, NSEvent.modifierFlags.contains(.option))
+            // Option-click fills empty fields and Shift-click appends, matching the Return keys.
+            onApply(template, .current)
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {

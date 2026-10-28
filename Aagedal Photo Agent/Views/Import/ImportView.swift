@@ -51,9 +51,9 @@ struct ImportView: View {
         } message: { preflight in
             let backupRoot = preflight.backupRoot?.path ?? "Not configured"
             Text(
-                "Primary: \(preflight.primaryCollisionCount) existing files\n"
+                "Destination: \(preflight.primaryCollisionCount) existing files\n"
                     + "\(preflight.primaryRoot.path)\n\n"
-                    + "Backup: \(preflight.backupCollisionCount) existing files\n"
+                    + "Additional copy: \(preflight.backupCollisionCount) existing files\n"
                     + backupRoot
                     + "\n\nNo destination files will be changed unless you confirm."
             )
@@ -190,6 +190,11 @@ struct ImportView: View {
                 }
                 if viewModel.importPhase != .scanning, let notice = viewModel.ignoredSourceFilesNotice {
                     Label(notice, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let notice = viewModel.crossSourceDuplicatesNotice {
+                    Label(notice, systemImage: "square.on.square")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -690,6 +695,12 @@ struct ImportView: View {
                 Text("Checks destination folders beginning with the same date, then requires a matching file name, size, and quick content checksum.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if viewModel.configuration.skipPreviouslyImported,
+                   viewModel.configuration.conflictPolicy == .overwrite {
+                    Text("With Overwrite, photos already imported to this same folder are copied again; ones imported elsewhere are still skipped.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -736,13 +747,18 @@ struct ImportView: View {
                             Menu {
                                 ForEach(templates) { template in
                                     Button(template.name) {
-                                        viewModel.applyTemplate(template)
+                                        // Option fills only empty fields; Shift appends.
+                                        viewModel.applyTemplate(template, mode: .current)
                                     }
                                 }
                             } label: {
                                 Text("Choose Template...")
                                     .font(.caption)
                             }
+                            .fixedSize()
+                            Text("⌥ fill empty fields · ⇧ append")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
                         }
                     }
 

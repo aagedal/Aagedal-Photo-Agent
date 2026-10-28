@@ -485,7 +485,7 @@ struct MCPMetadataTemplatePreviewTests {
         metadata["fields"] = .object(fields)
         metadata["hasXMPConflict"] = .bool(false)
         let preview = try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(metadata))
-        model.applyTemplateFields(values, append: mode == "append")
+        model.applyTemplateFields(values, mode: mode == "append" ? .append : .replace)
         let expected: [String: MCPJSONValue] = ["title": .string(model.editingMetadata.title!),
             "description": .string(model.editingMetadata.description!), "credit": .string(model.editingMetadata.credit!),
             "imageSupplierImageID": .string(model.editingMetadata.imageSupplierImageID!),
@@ -542,7 +542,7 @@ struct MCPMetadataTemplatePreviewTests {
             record["hasXMPConflict"] = .bool(false)
             let decoded = try MCPMetadataTemplatePreview.templateFields(template(values.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }))
             let preview = try MCPMetadataTemplatePreview.preview(request: request, templateFields: decoded, metadata: .object(record))
-            model.applyTemplateFields(values, append: mode == "append")
+            model.applyTemplateFields(values, mode: mode == "append" ? .append : .replace)
             let expected = try protocolFields(model.editingMetadata)
             guard case .array(let changes) = preview.objectValue?["changes"] else { Issue.record("Missing changes"); return }
             #expect(changes.count == values.count)
@@ -588,7 +588,7 @@ struct MCPMetadataTemplatePreviewTests {
             record["hasXMPConflict"] = .bool(false)
             let decoded = try MCPMetadataTemplatePreview.templateFields(template(values.map { ($0.key, $0.value) }))
             let result = try MCPMetadataTemplatePreview.preview(request: request, templateFields: decoded, metadata: .object(record))
-            model.applyTemplateFields(values, append: mode == "append")
+            model.applyTemplateFields(values, mode: mode == "append" ? .append : .replace)
             let expected = try protocolFields(model.editingMetadata)
             guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
             #expect(changes.count == 3)

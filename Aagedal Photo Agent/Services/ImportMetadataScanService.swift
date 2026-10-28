@@ -63,7 +63,11 @@ actor ImportCaptureDateScanService {
         processedFiles.reserveCapacity(files.count)
 
         let exifParser = Self.dateFormatter(format: "yyyy:MM:dd HH:mm:ss")
-        let keyFromDate = Self.dateFormatter(format: "yyyy:MM:dd")
+        // EXIF times are camera wall-clock, parsed as if UTC. A modification date is a real
+        // instant: express it as local wall-clock the same way, or a file saved at 00:30 in
+        // Oslo lands in the previous day's folder and sorts an hour or two off its neighbours.
+        let localWallClock = Self.dateFormatter(format: "yyyy:MM:dd HH:mm:ss")
+        localWallClock.timeZone = .current
 
         for file in files {
             guard !Task.isCancelled else {
@@ -100,8 +104,9 @@ actor ImportCaptureDateScanService {
                     ))
                 }
                 if let modificationDate {
-                    fileToDateKey[file] = keyFromDate.string(from: modificationDate)
-                    fileToTimestamp[file] = modificationDate
+                    let wallClock = localWallClock.string(from: modificationDate)
+                    fileToDateKey[file] = String(wallClock.prefix(10))
+                    fileToTimestamp[file] = exifParser.date(from: wallClock) ?? modificationDate
                 }
             }
             processedFiles.append(file)

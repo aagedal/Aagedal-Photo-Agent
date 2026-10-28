@@ -160,7 +160,7 @@ struct ImportFilesystemExecutorTests {
         let queue = DispatchSerialQueue(label: "test.import.preflight")
         let service = ImportPreflightService(findDuplicateSources: { _, _ in
             checkImportExecutor(queue, marker: root)
-            return []
+            return [:]
         }, fileExists: { _ in
             checkImportExecutor(queue, marker: root)
             withUnsafeCurrentTask { $0?.cancel() }

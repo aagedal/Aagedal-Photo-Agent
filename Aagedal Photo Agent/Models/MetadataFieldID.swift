@@ -884,7 +884,19 @@ nonisolated enum MetadataFieldMutation: Sendable, Equatable {
     /// append (`MetadataTemplateText.appending`). Batch template application records this so a
     /// mixed selection keeps each photo's text instead of receiving the common-value preview.
     case appendText(String)
+    /// Writes the value only into a record whose field is empty, per record (template
+    /// "Fill Empty Fields"). A record that already has a value keeps it.
+    case fillIfEmpty(MetadataFieldMutationValue)
     case clear
+
+    /// Whether the outcome depends on each record's own value, so batch writes apply it file by
+    /// file instead of writing one common value to every file.
+    var appliesPerRecord: Bool {
+        switch self {
+        case .appendText, .fillIfEmpty: true
+        case .untouched, .overwrite, .append, .clear: false
+        }
+    }
 }
 
 /// Shared text-append rule for templates: one space between the existing and appended text.
@@ -1010,6 +1022,10 @@ extension IPTCMetadata {
                 in: &candidate
             )
             self = candidate
+
+        case .fillIfEmpty(let value):
+            guard field.isEmpty(in: self) else { return }
+            try apply(.overwrite(value), to: field)
         }
     }
 }

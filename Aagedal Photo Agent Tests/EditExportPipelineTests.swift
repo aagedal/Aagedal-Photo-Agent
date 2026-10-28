@@ -2618,13 +2618,35 @@ struct FFmpegAVIFEncodingTests {
         #expect(arguments.contains("12"))
     }
 
+    @Test("HDR formats report the gamut they actually write")
+    func hdrEffectiveGamut() {
+        #expect(ExportFormatHDR.heic10bit.effectiveGamut(for: .sRGB) == .displayP3)
+        #expect(ExportFormatHDR.jxl.effectiveGamut(for: .adobeRGB) == .displayP3)
+        #expect(ExportFormatHDR.avif10bit.effectiveGamut(for: .rec2020) == .rec2020)
+        #expect(ExportFormatHDR.jpegGainMap.effectiveGamut(for: .sRGB) == .sRGB)
+        #expect(ExportFormatHDR.tiff16bit.effectiveGamut(for: .adobeRGB) == .displayP3)
+        #expect(ExportFormatHDR.png16bit.gamutFallbackNote(for: .displayP3) == nil)
+        #expect(ExportFormatHDR.png16bit.gamutFallbackNote(for: .sRGB) != nil)
+        // Must agree with the color spaces the encoders use.
+        for format in ExportFormatHDR.allCases {
+            for gamut in TargetColorGamut.allCases {
+                let effective = format.effectiveGamut(for: gamut)
+                let usesLinear = format == .jpegGainMap || format == .tiff16bit
+                let written = usesLinear ? gamut.hdrLinearColorSpace : gamut.hdrHLGColorSpace
+                let expected = usesLinear ? effective.hdrLinearColorSpace : effective.hdrHLGColorSpace
+                #expect(written.name == expected.name, "\(format) \(gamut)")
+            }
+        }
+    }
+
     @Test("AVIF declares already-rendered input primaries and transfer before decoding")
     func inputColorDeclaration() throws {
         let cases: [(TargetColorGamut, Bool, String, String)] = [
             (.sRGB, false, "bt709", "iec61966-2-1"),
             (.displayP3, false, "smpte432", "iec61966-2-1"),
             (.rec2020, false, "bt2020", "bt2020-10"),
-            (.adobeRGB, false, "smpte432", "gamma22"),
+            // Rendered as Display P3 for this encoder (AV1 has no Adobe RGB code).
+            (.adobeRGB, false, "smpte432", "iec61966-2-1"),
             (.sRGB, true, "smpte432", "arib-std-b67"),
             (.rec2020, true, "bt2020", "arib-std-b67")
         ]

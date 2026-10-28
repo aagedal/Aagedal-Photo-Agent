@@ -151,9 +151,9 @@ nonisolated enum FFmpegService {
         case .rec2020:
             ("bt2020", "bt2020-10", "bt2020nc")
         case .adobeRGB:
-            // AV1 CICP has no Adobe RGB primaries identifier. These values describe
-            // the closest broadly supported wide-gamut interpretation.
-            ("smpte432", "gamma22", "bt709")
+            // AV1 CICP has no Adobe RGB primaries identifier, so the renderer converts
+            // Adobe RGB output to Display P3 for this encoder; tag it as such.
+            ("smpte432", "iec61966-2-1", "bt709")
         }
     }
 

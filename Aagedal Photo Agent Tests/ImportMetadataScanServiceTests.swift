@@ -304,7 +304,9 @@ struct ImportMetadataScanServiceTests {
         #expect(evidence.groups.map(\.yearFolder) == ["2026", "2026"])
         #expect(evidence.groups.map(\.monthFolder) == ["09", "09"])
         #expect(evidence.groups[0].captureTimes[first] != nil)
-        #expect(evidence.groups[1].captureTimes[second] == fallbackDate)
+        // A modification date is expressed as local wall-clock, like EXIF capture times.
+        let localOffset = TimeInterval(TimeZone.current.secondsFromGMT(for: fallbackDate))
+        #expect(evidence.groups[1].captureTimes[second] == fallbackDate.addingTimeInterval(localOffset))
     }
 
     @Test("Cancellation after a capture-date read returns an explicit empty prefix")
