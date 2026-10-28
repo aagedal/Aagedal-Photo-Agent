@@ -7053,9 +7053,6 @@ struct EditWorkspaceView: View {
         }
     }
 
-    /// The frame a watermark's px/% values are measured against — the crop frame when a crop
-    /// is in effect, else the display image — so a unit switch keeps the rendered size.
-    /// Falls back to the nominal library frame before the image size is known.
     /// The size and margin a reset returns to: the layer's asset Default Placement (Settings ▸
     /// Watermarks), as used when the layer was added, expressed in the layer's current units.
     private func watermarkDefaultPlacement(_ index: Int) -> WatermarkGeometry {
@@ -7078,6 +7075,9 @@ struct EditWorkspaceView: View {
             .convertingMarginUnit(to: layer.geometry.marginUnit, imageWidth: reference.width, imageHeight: reference.height)
     }
 
+    /// The frame a watermark's px/% values are measured against — the crop frame when a crop
+    /// is in effect, else the display image — so a unit switch keeps the rendered size.
+    /// Falls back to the nominal library frame before the image size is known.
     private var watermarkUnitReferenceSize: CGSize {
         let projection = layerGeometryProjection
         guard projection.displayImageSize.width > 0, projection.displayImageSize.height > 0 else {

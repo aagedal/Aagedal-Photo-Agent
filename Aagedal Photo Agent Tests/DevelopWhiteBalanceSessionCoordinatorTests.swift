@@ -174,6 +174,17 @@ struct DevelopWhiteBalanceSessionCoordinatorTests {
         #expect(raw.temperature == nil)
         #expect(raw.whiteBalance == "As Shot")
         #expect(!DevelopSettingsMutation.hasEdits(raw))
+
+        // RAW opened with a preset: resetting one component leaves Custom, not the preset,
+        // so Camera Raw doesn't keep applying "Daylight" over the remaining Tint.
+        var preset = CameraRawSettings()
+        preset.whiteBalance = "Daylight"
+        preset.temperature = 5_500
+        preset.tint = 10
+        coordinator.resetTemperature(usesIncrementalWhiteBalance: false, in: &preset)
+        #expect(preset.temperature == nil)
+        #expect(preset.tint == 10)
+        #expect(preset.whiteBalance == "Custom")
     }
 
     @Test("edit workspace delegates white-balance state and lifecycle to the coordinator")

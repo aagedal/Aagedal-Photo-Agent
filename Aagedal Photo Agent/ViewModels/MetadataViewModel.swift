@@ -3289,12 +3289,33 @@ final class MetadataViewModel {
         registerSingleSave(imageURL: imageURL, loadID: loadID)
     }
 
-    func applyTemplateFields(_ template: [String: String], mode: TemplateApplyMode = .replace) {
+    /// Returns false when the template was refused and nothing changed.
+    @discardableResult
+    func applyTemplateFields(_ template: [String: String], mode: TemplateApplyMode = .replace) -> Bool {
         if mode == .fillEmpty {
             applyTemplateFillingEmptyFields(template)
-            return
+            return true
         }
         let append = mode == .append
+        if append, selectedCount > 1 {
+            // A pending per-photo fill can't be combined with a per-photo append: empty photos
+            // would need the fill plus the appended text, the others only the append. Refuse
+            // the whole template instead of silently replacing the fill.
+            let pendingFills = template.compactMap { key, value -> String? in
+                guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      let field = MetadataFieldID(rawValue: key) else { return nil }
+                let pending = field.isRepeatable ? batchFieldMutations[field] : batchTextIntent(for: key)
+                guard case .fillIfEmpty? = pending else { return nil }
+                return field.displayName
+            }.sorted()
+            if !pendingFills.isEmpty {
+                notice = MetadataPanelNotice(
+                    title: "Template not appended",
+                    detail: ["Fill Empty Fields is still waiting to be saved for \(pendingFills.joined(separator: ", ")). Save first, then append the template."],
+                    severity: .warning)
+                return false
+            }
+        }
         let editorBeforeTemplate = editingMetadata
         for (key, value) in template {
             switch key {
@@ -3478,6 +3499,7 @@ final class MetadataViewModel {
             recordBatchTextTemplateIntents(template, append: append, before: editorBeforeTemplate)
         }
         hasChanges = true
+        return true
     }
 
     private func appendString(_ existing: String?, _ new: String) -> String {
@@ -3491,6 +3513,7 @@ final class MetadataViewModel {
     private func applyTemplateFillingEmptyFields(_ template: [String: String]) {
         var applied: [String: String] = [:]
         var perPhoto: [MetadataFieldID] = []
+        var unsupported: [MetadataFieldID] = []
         for (key, value) in template {
             guard let field = MetadataFieldID(rawValue: key),
                   !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -3505,9 +3528,17 @@ final class MetadataViewModel {
             case .mixed:
                 applied[key] = value
                 perPhoto.append(field)
+            case .mixedWithoutPerPhotoFill:
+                unsupported.append(field)
             case .filled:
                 continue
             }
+        }
+        if !unsupported.isEmpty {
+            notice = MetadataPanelNotice(
+                title: "Some fields were not filled",
+                detail: ["\(unsupported.map(\.displayName).sorted().joined(separator: ", ")) can only be filled when every selected photo has it empty. Select the photos without a value and apply the template again."],
+                severity: .warning)
         }
         guard !applied.isEmpty else { return }
 
@@ -3538,7 +3569,7 @@ final class MetadataViewModel {
         }
     }
 
-    private enum BatchFillEmptyState { case allEmpty, mixed, filled }
+    private enum BatchFillEmptyState { case allEmpty, mixed, mixedWithoutPerPhotoFill, filled }
 
     /// How Fill Empty Fields treats a field the batch editor shows as empty.
     private func batchFillEmptyState(of field: MetadataFieldID) -> BatchFillEmptyState {
@@ -3546,7 +3577,10 @@ final class MetadataViewModel {
             // Suppliers are not projected into the batch editor; only an all-empty selection
             // is known to be empty.
             let suppliers = batchListSelectionSummary.imageSuppliers
-            return suppliers.common.isEmpty && suppliers.partial.isEmpty ? .allEmpty : .filled
+            if suppliers.common.isEmpty && suppliers.partial.isEmpty { return .allEmpty }
+            let somePhotoIsEmpty = batchMetadataByURL.isEmpty
+                || batchMetadataByURL.values.contains { field.isEmpty(in: $0) }
+            return suppliers.common.isEmpty && somePhotoIsEmpty ? .mixedWithoutPerPhotoFill : .filled
         }
         let pending = field.isRepeatable ? batchFieldMutations[field] : batchTextIntent(for: field.rawValue)
         switch pending {
@@ -3558,14 +3592,14 @@ final class MetadataViewModel {
             break
         }
         guard batchDifferingFields.contains(field.rawValue) else { return .allEmpty }
-        let supportsPerPhoto = field.isRepeatable
-            || Self.batchTemplateTextFields.contains { $0.field == field }
-        guard supportsPerPhoto else { return .filled } // Mixed values without a per-photo write path.
         if !batchMetadataByURL.isEmpty,
            !batchMetadataByURL.values.contains(where: { field.isEmpty(in: $0) }) {
             return .filled
         }
-        return .mixed
+        let supportsPerPhoto = field.isRepeatable
+            || Self.batchTemplateTextFields.contains { $0.field == field }
+        // Mixed values without a per-photo write path (dates, urgency, source type).
+        return supportsPerPhoto ? .mixed : .mixedWithoutPerPhotoFill
     }
 
     /// How a template text field acts on a multi-selection. Appendable text concatenates per
@@ -3717,8 +3751,7 @@ final class MetadataViewModel {
             saveError = "Finish or cancel the variable conflict review before applying a variable template."
             return
         }
-        applyTemplateFields(template, mode: mode)
-        guard !images.isEmpty else { return }
+        guard applyTemplateFields(template, mode: mode), !images.isEmpty else { return }
         // Capture the batch mutation with the variable request. Awaited JSON preparation saves
         // the complete per-photo result; no separate fire-and-forget literal write can race it.
         let previewAction: VoiceMemoVariablePreviewAction = switch mode {
