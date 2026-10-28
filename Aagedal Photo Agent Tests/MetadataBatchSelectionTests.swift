@@ -1753,6 +1753,49 @@ extension MetadataBatchSelectionTests {
         }
     }
 
+    @Test("an append template over a pending per-photo fill is refused instead of replacing the fill")
+    func templateAppendAfterPendingFillIsRefused() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await mixedFillFixture(in: folder)
+        let model = try await applyMixedFillTemplate(urls, in: folder)
+        let mutationsBefore = model.batchFieldMutations
+        let editorBefore = model.editingMetadata
+
+        #expect(!model.applyTemplateFields(["description": "Photo: NTB", "event": "Final"], mode: .append))
+        #expect(model.batchFieldMutations == mutationsBefore)
+        #expect(model.editingMetadata == editorBefore)
+        #expect(model.notice?.title == "Template not appended")
+        #expect(model.notice?.detail.first?.contains("Description") == true)
+
+        // A field without a pending fill still appends normally.
+        #expect(model.applyTemplateFields(["event": "Final"], mode: .append))
+        #expect(model.batchFieldMutations[.description] == .fillIfEmpty(.scalar("Filled caption")))
+    }
+
+    @Test("fill empty fields says which mixed fields it can't fill per photo")
+    func batchFillEmptyReportsUnsupportedMixedFields() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg")]
+        for (url, urgency) in zip(urls, [3, nil] as [Int?]) {
+            var metadata = IPTCMetadata()
+            metadata.urgency = urgency
+            metadata.credit = "Desk"
+            try await write(metadata, to: url)
+        }
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        try #require(model.batchDifferingFields.contains("urgency"))
+
+        model.applyTemplateFields(["urgency": "5", "city": "Oslo"], mode: .fillEmpty)
+        #expect(model.notice?.title == "Some fields were not filled")
+        #expect(model.notice?.detail.first?.contains("Urgency") == true)
+        #expect(model.editingMetadata.city == "Oslo")
+        #expect(model.batchFieldMutations[.urgency] == nil)
+    }
+
     @Test("batch fill empty fields applies per photo to JSON sidecar drafts")
     func batchTemplateFillEmptySidecarDrafts() async throws {
         let folder = try makeFolder()

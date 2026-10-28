@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// One customization surface for field order, visibility, and requirement severity. Requirement
@@ -48,6 +49,18 @@ struct RequiredMetadataFieldsSection: View {
                 .disabled(settingsViewModel.hiddenIPTCMetadataFields.isEmpty)
             }
         }
+        // Levels and minimum lengths sync between Macs: show a synced change, and never save
+        // a stale copy over it.
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: DispatchQueue.main)) { _ in
+            reloadStoredRequirements()
+        }
+    }
+
+    private func reloadStoredRequirements() {
+        let storedLevels = MetadataRequirements.load(from: AppDefaults.store)
+        if storedLevels != levels { levels = storedLevels }
+        let storedLengths = MetadataRequirements.loadMinimumLengths(from: AppDefaults.store)
+        if storedLengths != minimumLengths { minimumLengths = storedLengths }
     }
 
     private func fieldRow(_ field: MetadataFieldID, at index: Int) -> some View {
@@ -109,6 +122,7 @@ struct RequiredMetadataFieldsSection: View {
         Binding(
             get: { levels[field] ?? .optional },
             set: { newValue in
+                levels = MetadataRequirements.load(from: AppDefaults.store)
                 if newValue == .optional { levels[field] = nil } else { levels[field] = newValue }
                 MetadataRequirements.save(levels, to: AppDefaults.store)
             }
@@ -123,6 +137,7 @@ struct RequiredMetadataFieldsSection: View {
             TextField("Minimum length", value: Binding(
                 get: { minimumLengths[field] ?? 0 },
                 set: { value in
+                    minimumLengths = MetadataRequirements.loadMinimumLengths(from: AppDefaults.store)
                     minimumLengths[field] = max(0, value)
                     MetadataRequirements.saveMinimumLengths(minimumLengths, to: AppDefaults.store)
                 }

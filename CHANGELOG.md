@@ -4,6 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Templates and Develop: appending a template to a multi-photo selection that still has an unsaved Fill Empty Fields for the same field now asks you to save first instead of silently dropping the fill; Fill Empty Fields says which fields it can't fill on a mixed selection (Date Created, Urgency, Digital Source Type, Image Supplier) instead of doing nothing; resetting only Temperature or only Tint on a RAW that had a preset white balance (such as Daylight) switches it to Custom, so Camera Raw shows the same result; Settings ▸ Metadata Fields picks up validation levels synced from another Mac instead of saving its older copy over them.
 - People upgrading from 2.x see a one-time What's New sheet with the main new workspaces, what changed from 2.x, and links to the feature guide and known limitations. New installs don't see it. The Help menu opens the feature guide, known limitations and What's New at any time.
 - Import: the sidebar shows roughly how long the copy has left ("About 4 min left") once a few files are done.
 - Import: when an import from a memory card or removable disk finishes, the sidebar import banner (and Import Complete) offers **Eject** for it, and explains what to close if macOS can't eject it yet.

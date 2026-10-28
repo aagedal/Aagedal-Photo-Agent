@@ -240,7 +240,13 @@ final class DevelopWhiteBalanceSessionCoordinator {
         guard settings.temperature == nil,
               settings.tint == nil,
               settings.incrementalTemperature == nil,
-              settings.incrementalTint == nil else { return }
+              settings.incrementalTint == nil else {
+            // One component is left: a preset name ("Daylight", "Auto"…) no longer describes
+            // it, and Camera Raw would keep applying the preset. Custom keeps the remaining
+            // value authoritative, with the reset component at its as-shot default.
+            settings.whiteBalance = "Custom"
+            return
+        }
         settings.whiteBalance = usesIncrementalWhiteBalance ? nil : "As Shot"
     }
 
