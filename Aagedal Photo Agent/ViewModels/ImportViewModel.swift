@@ -605,6 +605,17 @@ final class ImportViewModel {
         didSet { refreshDerivedSourceLists() }
     }
     var voiceMemoAssociationReport: VoiceMemoAssociationReport?
+    /// Files on the second source that are copies of a file on the first (a dual-slot camera
+    /// writing to both cards). They are left out so each photo is imported once.
+    var crossSourceDuplicateFiles: Set<URL> = [] {
+        didSet { refreshDerivedSourceLists() }
+    }
+    /// The second source's files, minus copies of first-source files.
+    private var companionSourceFiles: [URL] {
+        crossSourceDuplicateFiles.isEmpty
+            ? voiceMemoSourceFiles
+            : voiceMemoSourceFiles.filter { !crossSourceDuplicateFiles.contains($0) }
+    }
     @ObservationIgnored private var canonicalVoiceMemoImageURLBySource: [URL: URL] = [:] {
         didSet { refreshDerivedSourceLists() }
     }
@@ -841,7 +852,7 @@ final class ImportViewModel {
     }
 
     private func refreshDerivedSourceLists() {
-        let secondSourceImages = voiceMemoSourceFiles.filter {
+        let secondSourceImages = companionSourceFiles.filter {
             SupportedImageFormats.isSupported(url: $0)
         }
         var seen = Set<URL>()
@@ -874,6 +885,15 @@ final class ImportViewModel {
 
     private func refreshIgnoredSourceFiles() {
         ignoredSourceFiles = ignoredPrimarySourceFiles + ignoredSecondSourceFiles
+    }
+
+    /// Explains why the second card's copies of first-card files aren't counted, or nil.
+    var crossSourceDuplicatesNotice: String? {
+        let count = crossSourceDuplicateFiles.count
+        guard count > 0 else { return nil }
+        return count == 1
+            ? "1 file on the second source is a copy of one on the first and is imported once."
+            : "\(count) files on the second source are copies of ones on the first and are imported once."
     }
 
     /// "N other files won't be imported (videos, sidecars…)" for the source section, or nil.
@@ -1228,11 +1248,20 @@ final class ImportViewModel {
         voiceMemoAssociationTask?.cancel()
         let requestID = UUID()
         voiceMemoAssociationRequestID = requestID
-        let hasMemoCandidates = !sourceVoiceMemoFiles.isEmpty
-            || voiceMemoSourceFiles.contains {
+        let primaryFiles = sourceFiles
+        let primaryMemoFiles = sourceVoiceMemoFiles
+        let secondSourceFiles = voiceMemoSourceFiles
+        let primaryRoot = configuration.sourceURL
+        let companionRoot = configuration.voiceMemoSourceURL
+        let checksDuplicates = !secondSourceFiles.isEmpty && !(primaryFiles.isEmpty && primaryMemoFiles.isEmpty)
+        if !checksDuplicates, !crossSourceDuplicateFiles.isEmpty {
+            crossSourceDuplicateFiles = []
+        }
+        let hasMemoCandidates = !primaryMemoFiles.isEmpty
+            || secondSourceFiles.contains {
                 $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame
             }
-        guard !allSourceImages.isEmpty, hasMemoCandidates else {
+        guard checksDuplicates || (!allSourceImages.isEmpty && hasMemoCandidates) else {
             voiceMemoAssociationReport = nil
             canonicalVoiceMemoImageURLBySource = [:]
             isScanningVoiceMemoSource = false
@@ -1240,12 +1269,37 @@ final class ImportViewModel {
         }
 
         isScanningVoiceMemoSource = true
-        let primaryFiles = sourceFiles
-        let companionFiles = voiceMemoSourceFiles
-        let primaryMemoFiles = sourceVoiceMemoFiles
-        let primaryRoot = configuration.sourceURL
-        let companionRoot = configuration.voiceMemoSourceURL
         voiceMemoAssociationTask = Task(priority: .userInitiated) { [voiceMemoAssociationScanService] in
+            var companionFiles = secondSourceFiles
+            if checksDuplicates {
+                // Copies on the second card are dropped before association, so a photo and
+                // its memo are never matched (or imported) twice.
+                let duplicates = await ImportCrossSourceDuplicateDetector.duplicates(
+                    companionFiles: secondSourceFiles,
+                    primaryFiles: primaryFiles + primaryMemoFiles,
+                    primaryRoot: primaryRoot,
+                    companionRoot: companionRoot
+                )
+                guard self.voiceMemoAssociationRequestID == requestID else { return }
+                guard let duplicates else {
+                    self.isScanningVoiceMemoSource = false
+                    return
+                }
+                if self.crossSourceDuplicateFiles != duplicates {
+                    self.crossSourceDuplicateFiles = duplicates
+                }
+                companionFiles = secondSourceFiles.filter { !duplicates.contains($0) }
+            }
+            let hasMemoCandidates = !primaryMemoFiles.isEmpty
+                || companionFiles.contains {
+                    $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame
+                }
+            guard !self.allSourceImages.isEmpty, hasMemoCandidates else {
+                self.voiceMemoAssociationReport = nil
+                self.canonicalVoiceMemoImageURLBySource = [:]
+                self.isScanningVoiceMemoSource = false
+                return
+            }
             let result = await voiceMemoAssociationScanService.scan(
                 primaryImages: primaryFiles,
                 primaryMemos: primaryMemoFiles,
@@ -1377,74 +1431,104 @@ final class ImportViewModel {
 
     // MARK: - Template Application
 
-    func applyTemplate(_ template: MetadataTemplate) {
+    /// Applies a template to the import form. Only the template's own fields change: Replace
+    /// sets them, Fill Empty sets only the ones still empty, Append adds to text and lists.
+    func applyTemplate(_ template: MetadataTemplate, mode: TemplateApplyMode = .replace) {
+        let before = configuration.metadata
+        var metadata = before
+        let append = mode == .append
+        func text(_ existing: String?, _ value: String) -> String {
+            append ? MetadataTemplateText.appending(existing, value) : value
+        }
+        func list(_ existing: [String], _ values: [String]) -> [String] {
+            guard append else { return values }
+            var seen = Set<String>()
+            return (existing + values).filter { seen.insert($0).inserted }
+        }
+        func split(_ value: String) -> [String] {
+            value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        }
         for field in template.fields {
             let value = field.templateValue
+            if mode == .fillEmpty {
+                // An empty template value never clears in this mode, and a field the user (or
+                // an earlier template) already filled is left alone.
+                guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      MetadataFieldID(rawValue: field.fieldKey)?.isEmpty(in: before) ?? false else { continue }
+            }
             switch field.fieldKey {
-            case "title": configuration.metadata.title = value
-            case "description": configuration.metadata.description = value
-            case "extendedDescription": configuration.metadata.extendedDescription = value
-            case "keywords":
-                configuration.metadata.keywords = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            case "personShown":
-                configuration.metadata.personShown = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            case "title": metadata.title = text(metadata.title, value)
+            case "description": metadata.description = text(metadata.description, value)
+            case "extendedDescription": metadata.extendedDescription = text(metadata.extendedDescription, value)
+            case "keywords": metadata.keywords = list(metadata.keywords, split(value))
+            case "personShown": metadata.personShown = list(metadata.personShown, split(value))
             case "organisationShownName":
-                configuration.metadata.organisationsShownNames = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                metadata.organisationsShownNames = list(metadata.organisationsShownNames, split(value))
             case "organisationShownCode":
-                configuration.metadata.organisationsShownCodes = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                metadata.organisationsShownCodes = list(metadata.organisationsShownCodes, split(value))
             case "digitalSourceType":
-                configuration.metadata.digitalSourceType = DigitalSourceType(metadataValue: value)
+                metadata.digitalSourceType = DigitalSourceType(metadataValue: value)
             case "urgency":
-                configuration.metadata.urgency = Int(value)
+                metadata.urgency = Int(value)
             case "sceneCode":
-                configuration.metadata.sceneCodes = IPTCSceneCode.normalizedValues(
+                let values = IPTCSceneCode.normalizedValues(
                     value.components(separatedBy: CharacterSet(charactersIn: ",;"))
                 )
+                metadata.sceneCodes = append ? IPTCSceneCode.normalizedValues(metadata.sceneCodes + values) : values
             case "subjectCode":
-                configuration.metadata.subjectCodes = IPTCSubjectCode.normalizedValues(
+                let values = IPTCSubjectCode.normalizedValues(
                     value.components(separatedBy: CharacterSet(charactersIn: ",;"))
                 )
+                metadata.subjectCodes = append ? IPTCSubjectCode.normalizedValues(metadata.subjectCodes + values) : values
             case "mediaTopic":
-                configuration.metadata.mediaTopics = IPTCControlledVocabularyTerm.terms(
+                let values = IPTCControlledVocabularyTerm.terms(
                     fromTemplateValue: value,
                     fallback: { IPTCControlledVocabularyTerm.mediaTopic(metadataValue: $0) }
                 )
+                metadata.mediaTopics = append
+                    ? IPTCControlledVocabularyTerm.normalizedValues(metadata.mediaTopics + values) : values
             case "genre":
-                configuration.metadata.genres = IPTCControlledVocabularyTerm.terms(
+                let values = IPTCControlledVocabularyTerm.terms(
                     fromTemplateValue: value,
                     fallback: { IPTCControlledVocabularyTerm.genre(metadataValue: $0) }
                 )
+                metadata.genres = append
+                    ? IPTCControlledVocabularyTerm.normalizedValues(metadata.genres + values) : values
             case "creator":
-                configuration.metadata.creators = IPTCMetadata.creators(fromTransportValue: value)
-            case "creatorJobTitle": configuration.metadata.creatorJobTitle = value
-            case "descriptionWriter": configuration.metadata.descriptionWriter = value
-            case "credit": configuration.metadata.credit = value
-            case "copyright": configuration.metadata.copyright = value
-            case "rightsUsageTerms": configuration.metadata.rightsUsageTerms = value
-            case "webStatementOfRights": configuration.metadata.webStatementOfRights = value
-            case "digitalImageGUID": configuration.metadata.digitalImageGUID = value
-            case "imageSupplierImageID": configuration.metadata.imageSupplierImageID = value
+                let values = IPTCMetadata.creators(fromTransportValue: value)
+                metadata.creators = append ? IPTCMetadata.normalizedCreators(metadata.creators + values) : values
+            case "creatorJobTitle": metadata.creatorJobTitle = text(metadata.creatorJobTitle, value)
+            case "descriptionWriter": metadata.descriptionWriter = text(metadata.descriptionWriter, value)
+            case "credit": metadata.credit = text(metadata.credit, value)
+            case "copyright": metadata.copyright = text(metadata.copyright, value)
+            case "rightsUsageTerms": metadata.rightsUsageTerms = text(metadata.rightsUsageTerms, value)
+            case "webStatementOfRights": metadata.webStatementOfRights = text(metadata.webStatementOfRights, value)
+            // Identifiers, codes and dates are atomic: Append replaces them rather than joining two.
+            case "digitalImageGUID": metadata.digitalImageGUID = value
+            case "imageSupplierImageID": metadata.imageSupplierImageID = value
             case "imageSupplier":
                 if let values = EditorialImageSupplier.values(fromTemplateValue: value) {
-                    configuration.metadata.imageSuppliers = values
+                    metadata.imageSuppliers = append
+                        ? EditorialImageSupplier.normalizedValues(metadata.imageSuppliers + values) : values
                 }
-            case "jobId": configuration.metadata.jobId = value
+            case "jobId": metadata.jobId = text(metadata.jobId, value)
             case "dateCreated":
                 if MetadataTemplatePlaceholderDetector.containsPlaceholder(value)
                     || (try? EditorialDateCreated(parsing: value)) != nil {
-                    configuration.metadata.dateCreated = value
+                    metadata.dateCreated = value
                 }
-            case "city": configuration.metadata.city = value
-            case "sublocation": configuration.metadata.sublocation = value
-            case "provinceState": configuration.metadata.provinceState = value
-            case "country": configuration.metadata.country = value
-            case "countryCode": configuration.metadata.countryCode = ISO3166Country.normalizedAlpha3(value)
-            case "event": configuration.metadata.event = value
-            case "instructions": configuration.metadata.instructions = value
-            case "source": configuration.metadata.source = value
+            case "city": metadata.city = text(metadata.city, value)
+            case "sublocation": metadata.sublocation = text(metadata.sublocation, value)
+            case "provinceState": metadata.provinceState = text(metadata.provinceState, value)
+            case "country": metadata.country = text(metadata.country, value)
+            case "countryCode": metadata.countryCode = ISO3166Country.normalizedAlpha3(value)
+            case "event": metadata.event = text(metadata.event, value)
+            case "instructions": metadata.instructions = text(metadata.instructions, value)
+            case "source": metadata.source = text(metadata.source, value)
             default: break
             }
         }
+        configuration.metadata = metadata
     }
 
     // MARK: - Import Execution
@@ -1832,7 +1916,11 @@ final class ImportViewModel {
                         self.totalFiles = preflightResult.jobs.count
 
                         if let overwrite = preflightResult.overwrite {
-                            guard self.confirmedOverwriteSignature == overwrite.signature else {
+                            // Nothing would be replaced, so there is nothing to confirm. The jobs
+                            // still carry the frozen "no file here" expectation, so a file that
+                            // appears before the copy stops the import instead of being replaced.
+                            let replacesFiles = overwrite.primaryCollisionCount + overwrite.backupCollisionCount > 0
+                            guard !replacesFiles || self.confirmedOverwriteSignature == overwrite.signature else {
                                 self.confirmedOverwriteSignature = nil
                                 self.importPhase = .idle
                                 self.overwritePreflight = ImportOverwritePreflight(
@@ -2062,17 +2150,22 @@ final class ImportViewModel {
                     self.importPhase = .cancelled
                     self.importSummary = self.buildImportSummary()
                     importLog.info("Import cancelled: \(self.importSummary)")
-                    self.recordCompletion(cancelled: true)
+                    // Cancelled while planning: nothing was copied, so there is no import to
+                    // put in Activity history or the sidebar banner.
+                    if self.importDidStartCopying {
+                        self.recordCompletion(cancelled: true)
+                    }
                     NotificationCenter.default.post(name: .importCompleted, object: destURL)
                 }
             } catch ImportCopyService.CopyError.overwritePreflightChanged {
                 await MainActor.run {
                     guard self.importRequestID == requestID else { return }
                     self.importPhase = .idle
-                    self.errorMessage = ImportCopyService.CopyError.overwritePreflightChanged.localizedDescription
                     // Rebuild and present the changed collision set. No destination
-                    // file was staged or replaced after validation failed.
+                    // file was staged or replaced after validation failed. Set the notice
+                    // afterwards: `startImport()` clears `errorMessage`.
                     self.startImport()
+                    self.errorMessage = ImportCopyService.CopyError.overwritePreflightChanged.localizedDescription
                 }
             } catch {
                 await MainActor.run {
@@ -2295,6 +2388,12 @@ final class ImportViewModel {
             skippedFiles += 1
             if reason == .previouslyImported { duplicateSkippedFiles += 1 }
         case .failed(let detail):
+            // A photo that didn't copy is never finished: drop it from the metadata total so
+            // the "Applying metadata" progress can reach the end.
+            if metadataTotalFiles > metadataProcessedFiles,
+               result.source.pathExtension.lowercased() != "wav" {
+                metadataTotalFiles -= 1
+            }
             // A verification mismatch also fails the copy; it is counted (and listed) once,
             // as a verification failure, below.
             if case .mismatch = result.primaryVerification { break }
@@ -2518,7 +2617,9 @@ final class ImportViewModel {
         if voiceMemoCopiedFiles > 0 {
             parts.append("voice memos \(voiceMemoCopiedFiles)")
         }
-        if renamedFiles > 0 { parts.append("renamed \(renamedFiles)") }
+        // A conflict rename is also counted in `renamedFiles`; list it once, in its own part.
+        let otherRenamed = renamedFiles - conflictRenamedFiles
+        if otherRenamed > 0 { parts.append("renamed \(otherRenamed)") }
         if conflictRenamedFiles > 0 {
             parts.append("\(conflictRenamedFiles) kept under a new name (a different photo had the same name)")
         }
@@ -2599,6 +2700,10 @@ final class ImportViewModel {
         resolved.event = Self.resolveField(metadata.event, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.instructions = Self.resolveField(metadata.instructions, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.source = Self.resolveField(metadata.source, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        // Like the Browser's batch path: a token without variables stays byte-for-byte intact
+        // (a literal comma belongs to it); only an expansion may produce several values.
+        resolved.keywords = Self.resolveListField(metadata.keywords, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex, keepsLiteralTokens: true)
+        resolved.personShown = Self.resolveListField(metadata.personShown, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex, keepsLiteralTokens: true)
         resolved.organisationsShownNames = Self.resolveListField(metadata.organisationsShownNames, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.organisationsShownCodes = Self.resolveListField(metadata.organisationsShownCodes, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.sceneCodes = IPTCSceneCode.normalizedValues(
@@ -2617,14 +2722,16 @@ final class ImportViewModel {
         return resolved.isEmpty ? nil : resolved
     }
 
-    private static func resolveListField(_ values: [String], filename: String, ref: IPTCMetadata, interpolator: PresetVariableInterpolator, sequenceIndex: Int) -> [String] {
-        values.flatMap { value in
-            interpolator.resolve(
+    private static func resolveListField(_ values: [String], filename: String, ref: IPTCMetadata, interpolator: PresetVariableInterpolator, sequenceIndex: Int, keepsLiteralTokens: Bool = false) -> [String] {
+        values.flatMap { value -> [String] in
+            let expanded = interpolator.resolve(
                 value,
                 filename: filename,
                 existingMetadata: ref,
                 sequenceIndex: sequenceIndex
             )
+            if keepsLiteralTokens, expanded == value { return [value] }
+            return expanded
             .components(separatedBy: CharacterSet(charactersIn: ",;"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -2821,6 +2928,7 @@ final class ImportViewModel {
 
     private static let folderDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
@@ -3264,6 +3372,7 @@ final class ImportViewModel {
         sourceFiles = []
         sourceVoiceMemoFiles = []
         voiceMemoSourceFiles = []
+        crossSourceDuplicateFiles = []
         voiceMemoAssociationReport = nil
         canonicalVoiceMemoImageURLBySource = [:]
         sourceScanProgress = ImportSourceDiscoveryProgress()

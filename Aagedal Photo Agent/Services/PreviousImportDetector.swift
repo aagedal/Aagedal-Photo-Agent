@@ -41,7 +41,15 @@ nonisolated struct PreviousImportDetector {
         among candidates: [Candidate],
         destinationBaseURL: URL
     ) throws -> Set<URL> {
-        guard !candidates.isEmpty else { return [] }
+        Set(try previousCopies(among: candidates, destinationBaseURL: destinationBaseURL).keys)
+    }
+
+    /// Each previously imported source mapped to the library copy that proves it.
+    static func previousCopies(
+        among candidates: [Candidate],
+        destinationBaseURL: URL
+    ) throws -> [URL: URL] {
+        guard !candidates.isEmpty else { return [:] }
 
         var duplicates: Set<URL> = []
         var matchedDestinations: [URL: URL] = [:]
@@ -171,13 +179,14 @@ nonisolated struct PreviousImportDetector {
                         isImage: true
                       ) else { continue }
                 duplicates.insert(candidate.source)
+                matchedDestinations[candidate.source] = partner
             }
         }
 
         if !duplicates.isEmpty {
             previousImportLog.info("Found \(duplicates.count) previously imported files.")
         }
-        return duplicates
+        return matchedDestinations
     }
 
     /// Card folder + stem: the files of one exposure on the source.

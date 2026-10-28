@@ -154,6 +154,25 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// The gamut this format actually writes for `requested`. HLG formats have only Display P3
+    /// and Rec. 2020 variants; the extended-linear formats (gain-map JPEG, 16-bit TIFF) also
+    /// keep sRGB. Mirrors `TargetColorGamut.hdrHLGColorSpace` / `hdrLinearColorSpace`.
+    func effectiveGamut(for requested: TargetColorGamut) -> TargetColorGamut {
+        switch (self, requested) {
+        case (_, .displayP3), (_, .rec2020): return requested
+        case (.jpegGainMap, .sRGB), (.tiff16bit, .sRGB): return .sRGB
+        default: return .displayP3
+        }
+    }
+
+    /// A caption when `requested` isn't what this format writes, so the picker doesn't
+    /// silently promise a gamut the file won't have.
+    func gamutFallbackNote(for requested: TargetColorGamut) -> String? {
+        let effective = effectiveGamut(for: requested)
+        guard effective != requested else { return nil }
+        return "\(displayName) has no \(requested.displayName) HDR variant; it is saved as \(effective.displayName)."
+    }
+
     var fileExtension: String {
         switch self {
         case .jpegGainMap: return "jpg"

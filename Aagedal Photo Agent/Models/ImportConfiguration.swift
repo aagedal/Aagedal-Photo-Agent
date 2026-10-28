@@ -134,6 +134,8 @@ struct ImportConfiguration {
 
     var destinationFolderName: String {
         let formatter = DateFormatter()
+        // POSIX: a Buddhist or Japanese system calendar must not name the folder "2569-10-27".
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         let dateStr = formatter.string(from: Date())
         let title = importTitle.trimmingCharacters(in: .whitespaces)

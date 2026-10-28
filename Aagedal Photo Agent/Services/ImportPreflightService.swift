@@ -13,10 +13,11 @@ actor ImportPreflightService {
         filesystemQueue.asUnownedSerialExecutor()
     }
 
+    /// Previously imported sources, each mapped to the library copy that proves it.
     typealias DuplicateSourceFinder = @Sendable (
         [PreviousImportDetector.Candidate],
         URL
-    ) throws -> Set<URL>
+    ) throws -> [URL: URL]
     typealias FileExistenceProbe = @Sendable (String) -> Bool
 
     struct Request: Sendable {
@@ -127,7 +128,7 @@ actor ImportPreflightService {
 
     init(
         findDuplicateSources: @escaping DuplicateSourceFinder = { candidates, destinationBaseURL in
-            try PreviousImportDetector.duplicateSources(
+            try PreviousImportDetector.previousCopies(
                 among: candidates,
                 destinationBaseURL: destinationBaseURL
             )
@@ -170,6 +171,10 @@ actor ImportPreflightService {
         return stems
     }
 
+    nonisolated private static func pathKey(_ url: URL) -> String {
+        url.standardizedFileURL.path.precomposedStringWithCanonicalMapping.lowercased()
+    }
+
     nonisolated private static func stemKey(_ stem: String) -> String {
         stem.precomposedStringWithCanonicalMapping.lowercased()
     }
@@ -179,11 +184,23 @@ actor ImportPreflightService {
         var jobs = request.jobs
 
         if request.skipPreviouslyImported {
-            let duplicateSources = try findDuplicateSources(
+            var previousCopies = try findDuplicateSources(
                 request.previousImportCandidates,
                 request.destinationBaseURL
             )
             try Task.checkCancellation()
+            if request.freezeOverwriteCollisions {
+                // Overwrite is an explicit request to replace what is at this import's own
+                // paths, so a photo whose earlier copy *is* that path is copied again (for
+                // example to re-apply corrected metadata). A copy elsewhere still skips it.
+                for job in jobs {
+                    if let copy = previousCopies[job.source],
+                       Self.pathKey(copy) == Self.pathKey(job.desiredPrimaryDest) {
+                        previousCopies.removeValue(forKey: job.source)
+                    }
+                }
+            }
+            let duplicateSources = Set(previousCopies.keys)
             if !duplicateSources.isEmpty {
                 jobs = jobs.map { job in
                     var updated = job
@@ -413,7 +430,6 @@ actor ImportPreflightService {
                 // under the original name, another body's shot — and the stem is not this
                 // exposure's; it is copied whole under a new name instead of being skipped.
                 var matchingPaths: Set<URL> = []
-                var samePhotoIsThere = false
                 var differentFileIsThere = false
                 for file in request.files {
                     let primary = Self.url(file.primaryFolder, plannedName, file.pathExtension)
@@ -423,17 +439,16 @@ actor ImportPreflightService {
                             || (file.role == .image && sameExposure(file.source, path))
                         if isSameFile {
                             matchingPaths.insert(path)
-                            if file.role == .image, path == primary { samePhotoIsThere = true }
                         } else {
                             differentFileIsThere = true
                         }
                     }
                 }
                 guard !Task.isCancelled else { return cancelled() }
-                if samePhotoIsThere && !differentFileIsThere {
-                    // The exposure is already here: its existing files are skipped, missing
-                    // partners join them at this stem, and a backup leg skips only when the
-                    // backup path holds this same file.
+                if !matchingPaths.isEmpty && !differentFileIsThere {
+                    // The exposure is already here — on the primary, the backup, or both: its
+                    // existing files are skipped, missing partners and legs join them at this
+                    // stem (a backup leg skips only when the backup path holds this same file).
                     claim(request, suffix: planned)
                     destinations.append(destination(
                         request,

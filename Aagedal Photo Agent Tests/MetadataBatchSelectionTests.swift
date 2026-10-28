@@ -161,7 +161,7 @@ struct MetadataBatchSelectionTests {
         // No common values: per-photo lists differ, so the editor starts empty.
         model.applyTemplateFields(["keywords": "desk", "mediaTopic": "medtop:01000000",
             "genre": "genre:Feature", "subjectCode": "01000000"])
-        model.applyTemplateFields(["creator": "Second Reporter"], append: true)
+        model.applyTemplateFields(["creator": "Second Reporter"], mode: .append)
 
         #expect(model.batchFieldMutations[.keywords] == .overwrite(.repeatable(["desk"])))
         #expect(model.batchFieldMutations[.creator] == .append(["Second Reporter"]))
@@ -1340,7 +1340,7 @@ extension MetadataBatchSelectionTests {
         let urls = try await threeCaptionFixture(in: folder)
         let model = try await loadedBatch(urls, in: folder)
 
-        model.applyTemplateFields(["description": "Photo: NTB", "credit": "Agency"], append: true)
+        model.applyTemplateFields(["description": "Photo: NTB", "credit": "Agency"], mode: .append)
         // No common caption to preview: the field keeps its mixed state and says what will happen.
         #expect((model.editingMetadata.description ?? "").isEmpty)
         #expect(model.batchPlaceholder(for: "description").contains("append"))
@@ -1363,8 +1363,8 @@ extension MetadataBatchSelectionTests {
         let urls = try await threeCaptionFixture(in: folder)
         let model = try await loadedBatch(urls, in: folder)
 
-        model.applyTemplateFields(["description": "(NTB)"], append: true)
-        model.applyTemplateFields(["description": "Oslo"], append: true)
+        model.applyTemplateFields(["description": "(NTB)"], mode: .append)
+        model.applyTemplateFields(["description": "Oslo"], mode: .append)
         model.saveToSidecar()
         try await waitForSave(model)
 
@@ -1417,7 +1417,7 @@ extension MetadataBatchSelectionTests {
         let urls = try await threeCaptionFixture(in: folder)
         let model = try await loadedBatch(urls, in: folder)
 
-        model.applyTemplateFields(["description": "Photo: NTB"], append: true)
+        model.applyTemplateFields(["description": "Photo: NTB"], mode: .append)
         model.editingMetadata.description = "Typed for all"
         model.markChanged()
         #expect(model.batchTextIntent(for: "description") == nil)
@@ -1454,7 +1454,7 @@ extension MetadataBatchSelectionTests {
         model.editingMetadata.imageSuppliers = [EditorialImageSupplier(name: "Old")]
         model.applyTemplateFields(["imageSupplier": "NTB Scanpix"])
         #expect(model.editingMetadata.imageSuppliers == [EditorialImageSupplier(name: "NTB Scanpix")])
-        model.applyTemplateFields(["imageSupplier": "Second"], append: true)
+        model.applyTemplateFields(["imageSupplier": "Second"], mode: .append)
         #expect(model.editingMetadata.imageSuppliers.map(\.name) == ["NTB Scanpix", "Second"])
         model.applyTemplateFields(["imageSupplier": ""])
         #expect(model.editingMetadata.imageSuppliers.isEmpty)
@@ -1519,7 +1519,7 @@ extension MetadataBatchSelectionTests {
         try await waitForBatchLoad(model)
         try #require(model.batchDifferingFields.contains("description"))
 
-        model.applyTemplateFields(["description": "(NTB)"], append: true)
+        model.applyTemplateFields(["description": "(NTB)"], mode: .append)
         var result: MetadataCommitResult?
         model.commitEditsReportingResult(mode: .writeToFileAndXMPSidecar) { result = $0 }
         #expect(try await waitForCommit { result } == .succeeded)
@@ -1539,7 +1539,7 @@ extension MetadataBatchSelectionTests {
         let urls = try await threeCaptionFixture(in: folder)
         let model = try await loadedBatch(urls, in: folder)
 
-        model.applyTemplateFields(["description": "(NTB)"], append: true)
+        model.applyTemplateFields(["description": "(NTB)"], mode: .append)
         // Two writes requested back to back: the second is captured before the first finishes.
         model.writeMetadata()
         // Another template during the save changes the intent set, so it no longer matches the
@@ -1568,8 +1568,8 @@ extension MetadataBatchSelectionTests {
         let model = try await loadedBatch(urls, in: folder)
         try #require(model.editingMetadata.credit == "Desk")
 
-        model.applyTemplateFields(["credit": "A"], append: true)
-        model.applyTemplateFields(["credit": "B"], append: true)
+        model.applyTemplateFields(["credit": "A"], mode: .append)
+        model.applyTemplateFields(["credit": "B"], mode: .append)
         #expect(model.editingMetadata.credit == "Desk A B")
         #expect(model.batchFieldMutations[.credit] == .appendText("A B"))
         model.writeMetadata()
@@ -1632,12 +1632,144 @@ extension MetadataBatchSelectionTests {
         model.loadMetadata(for: [ImageFile(url: jpeg), ImageFile(url: raw)], folderURL: folder)
         try await waitForBatchLoad(model)
 
-        model.applyTemplateFields(["description": "(NTB)"], append: true)
+        model.applyTemplateFields(["description": "(NTB)"], mode: .append)
         model.writeMetadata()
         model.writeMetadata()
         try await waitForSave(model)
 
         #expect(XMPSidecarService().loadSidecar(for: raw)?.description == "Gamma (NTB)")
         #expect(try await SwiftExifReadService().readFullMetadata(url: jpeg).description == "Alpha (NTB)")
+    }
+}
+
+extension MetadataBatchSelectionTests {
+    @Test("template modifier keys pick replace, fill empty fields, or append")
+    func templateApplyModeFromModifiers() {
+        #expect(TemplateApplyMode.from(modifiers: []) == .replace)
+        #expect(TemplateApplyMode.from(modifiers: .command) == .replace)
+        #expect(TemplateApplyMode.from(modifiers: .option) == .fillEmpty)
+        #expect(TemplateApplyMode.from(modifiers: .shift) == .append)
+        #expect(TemplateApplyMode.from(modifiers: [.shift, .option]) == .append)
+    }
+
+    @Test("fill-if-empty mutation fills only an empty record and never clears")
+    func fillIfEmptyMutation() throws {
+        var metadata = IPTCMetadata()
+        metadata.description = "Own caption"
+        metadata.keywords = ["own"]
+        try metadata.apply(.fillIfEmpty(.scalar("Template")), to: .description)
+        try metadata.apply(.fillIfEmpty(.repeatable(["desk"])), to: .keywords)
+        try metadata.apply(.fillIfEmpty(.scalar("Oslo")), to: .city)
+        try metadata.apply(.fillIfEmpty(.repeatable(["Ann"])), to: .personShown)
+        #expect(metadata.description == "Own caption")
+        #expect(metadata.keywords == ["own"])
+        #expect(metadata.city == "Oslo")
+        #expect(metadata.personShown == ["Ann"])
+        // Same validation as an overwrite on an empty record; a filled record is never checked.
+        #expect(throws: MetadataFieldMutationError.emptyOverwriteRequiresClear(.credit)) {
+            try metadata.apply(.fillIfEmpty(.scalar("  ")), to: .credit)
+        }
+        #expect(throws: MetadataFieldMutationError.scalarValueRequired(.credit)) {
+            try metadata.apply(.fillIfEmpty(.repeatable(["x"])), to: .credit)
+        }
+    }
+
+    @Test("single-photo fill empty fields leaves set fields and fills empty ones")
+    func singlePhotoTemplateFillEmpty() {
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.editingMetadata.title = "Own headline"
+        model.editingMetadata.keywords = ["own"]
+        model.editingMetadata.city = "Bergen"
+        model.applyTemplateFields([
+            "title": "Template headline", "description": "Template caption",
+            "keywords": "desk", "personShown": "Ann, Bob", "urgency": "3",
+            "city": "", "credit": "Agency",
+        ], mode: .fillEmpty)
+        #expect(model.editingMetadata.title == "Own headline")
+        #expect(model.editingMetadata.keywords == ["own"])
+        #expect(model.editingMetadata.description == "Template caption")
+        #expect(model.editingMetadata.personShown == ["Ann", "Bob"])
+        #expect(model.editingMetadata.urgency == 3)
+        #expect(model.editingMetadata.credit == "Agency")
+        // An empty template value never clears in fill mode.
+        #expect(model.editingMetadata.city == "Bergen")
+        #expect(model.hasChanges)
+    }
+
+    private func mixedFillFixture(in folder: URL) async throws -> [URL] {
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg"),
+                    try makeJPEG(in: folder, name: "c.jpg")]
+        for (url, caption, keywords) in zip3(urls, ["First caption", nil, "Third caption"], [["own"], [], []]) {
+            var metadata = IPTCMetadata()
+            metadata.description = caption
+            metadata.keywords = keywords
+            metadata.credit = "Desk"
+            try await write(metadata, to: url)
+        }
+        return urls
+    }
+
+    private func zip3<A, B, C>(_ a: [A], _ b: [B], _ c: [C]) -> [(A, B, C)] {
+        zip(a, zip(b, c)).map { ($0, $1.0, $1.1) }
+    }
+
+    private func applyMixedFillTemplate(_ urls: [URL], in folder: URL) async throws -> MetadataViewModel {
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        try #require(model.batchDifferingFields.isSuperset(of: ["description", "keywords"]))
+        model.applyTemplateFields(["description": "Filled caption", "credit": "Agency",
+                                   "city": "Oslo", "keywords": "desk"], mode: .fillEmpty)
+        // The mixed fields keep their mixed state and record a per-photo fill.
+        #expect((model.editingMetadata.description ?? "").isEmpty)
+        #expect(model.editingMetadata.keywords.isEmpty)
+        #expect(model.batchFieldMutations[.description] == .fillIfEmpty(.scalar("Filled caption")))
+        #expect(model.batchFieldMutations[.keywords] == .fillIfEmpty(.repeatable(["desk"])))
+        #expect(model.batchPlaceholder(for: "description") == "Will fill “Filled caption” where empty on 1 photo")
+        // Shared values are left alone; a field every photo has empty is filled like a replace.
+        #expect(model.editingMetadata.credit == "Desk")
+        #expect(model.batchFieldMutations[.credit] == nil)
+        #expect(model.editingMetadata.city == "Oslo")
+        return model
+    }
+
+    @Test("batch fill empty fields fills a mixed field only on the photos where it is empty")
+    func batchTemplateFillEmptyEmbedded() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await mixedFillFixture(in: folder)
+        let model = try await applyMixedFillTemplate(urls, in: folder)
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        let expected: [(String, [String])] = [("First caption", ["own"]), ("Filled caption", ["desk"]),
+                                              ("Third caption", ["desk"])]
+        for (url, (caption, keywords)) in zip(urls, expected) {
+            let read = try await SwiftExifReadService().readFullMetadata(url: url)
+            #expect(read.description == caption)
+            #expect(read.keywords == keywords)
+            #expect(read.credit == "Desk")
+            #expect(read.city == "Oslo")
+        }
+    }
+
+    @Test("batch fill empty fields applies per photo to JSON sidecar drafts")
+    func batchTemplateFillEmptySidecarDrafts() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await mixedFillFixture(in: folder)
+        let model = try await applyMixedFillTemplate(urls, in: folder)
+        model.saveToSidecar()
+        try await waitForSave(model)
+
+        let expected: [(String, [String])] = [("First caption", ["own"]), ("Filled caption", ["desk"]),
+                                              ("Third caption", ["desk"])]
+        for (url, (caption, keywords)) in zip(urls, expected) {
+            let sidecar = try #require(MetadataSidecarService().loadSidecar(for: url, in: folder))
+            #expect(sidecar.metadata.description == caption)
+            #expect(sidecar.metadata.keywords == keywords)
+            #expect(sidecar.metadata.credit == "Desk")
+            #expect(sidecar.metadata.city == "Oslo")
+        }
     }
 }

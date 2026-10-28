@@ -325,6 +325,9 @@ struct BackupEditedFilesSheet: View {
         case .skipped(_):
             break
         case .failed(let detail):
+            // A verification mismatch also fails the copy; it is counted (and listed) once,
+            // as a verification failure, below.
+            if case .mismatch = result.primaryVerification { break }
             failedFiles += 1
             failures.append(ImportFailureRecord(source: result.source, kind: .copyFailed, detail: detail))
         }

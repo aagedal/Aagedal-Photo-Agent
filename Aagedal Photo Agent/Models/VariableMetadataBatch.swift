@@ -76,6 +76,7 @@ enum VoiceMemoTranscriptVariablePolicy {
 enum VoiceMemoVariablePreviewAction: String, Equatable, Sendable {
     case append = "Append"
     case replace = "Replace"
+    case fillEmpty = "Fill Empty Fields"
     case processExisting = "Process Existing Variables"
 }
 

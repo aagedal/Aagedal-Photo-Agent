@@ -22,7 +22,8 @@ struct CaptionWorkspaceView: View {
     let settingsViewModel: SettingsViewModel
     let deadlineProfile: DeadlineProfile?
     let initialFocusedField: MetadataFieldID?
-    let onApplyTemplate: (Bool?) -> Void
+    /// nil lets the template palette's modifier keys choose the mode.
+    let onApplyTemplate: (TemplateApplyMode?) -> Void
     let onClose: () -> Void
 
     @State private var session: CaptionSession
@@ -124,7 +125,7 @@ struct CaptionWorkspaceView: View {
         settingsViewModel: SettingsViewModel,
         deadlineProfile: DeadlineProfile? = nil,
         initialFocusedField: MetadataFieldID? = nil,
-        onApplyTemplate: @escaping (Bool?) -> Void,
+        onApplyTemplate: @escaping (TemplateApplyMode?) -> Void,
         onClose: @escaping () -> Void
     ) {
         self.metadataViewModel = metadataViewModel
@@ -205,7 +206,7 @@ struct CaptionWorkspaceView: View {
                             browserViewModel: browserViewModel,
                             settingsViewModel: settingsViewModel,
                             initialFocusedField: requestedFocusedField,
-                            onApplyTemplate: { applyTemplateAfterFlush(append: nil) },
+                            onApplyTemplate: { applyTemplateAfterFlush(mode: nil) },
                             onSaveTemplate: nil,
                             onPendingStatusChanged: browserViewModel.refreshPendingStatus,
                             commitsToHistorySidecarOnly: true,
@@ -857,8 +858,9 @@ struct CaptionWorkspaceView: View {
                 Divider().frame(height: 20)
 
                 Menu("Apply Template", systemImage: "wand.and.stars") {
-                    Button("Replace…") { applyTemplateAfterFlush(append: false) }
-                    Button("Append…") { applyTemplateAfterFlush(append: true) }
+                    Button("Replace…") { applyTemplateAfterFlush(mode: .replace) }
+                    Button("Fill Empty Fields…") { applyTemplateAfterFlush(mode: .fillEmpty) }
+                    Button("Append…") { applyTemplateAfterFlush(mode: .append) }
                 }
                 .accessibilityIdentifier("caption.applyTemplate")
                 .disabled(session.currentURL == nil || isEditorTransitioning)
@@ -1138,13 +1140,13 @@ struct CaptionWorkspaceView: View {
         photoList.image(forStandardizedURL: sessionURL)?.url ?? sessionURL
     }
 
-    private func applyTemplateAfterFlush(append: Bool?) {
+    private func applyTemplateAfterFlush(mode: TemplateApplyMode?) {
         Task { @MainActor in
             guard !flushCoordinator.isTransitioning else { return }
             do {
                 try await prepareAndPerform(.applyTemplate) {
                     isAwaitingTemplatePalette = true
-                    onApplyTemplate(append)
+                    onApplyTemplate(mode)
                 }
             } catch {
                 errorMessage = error.localizedDescription

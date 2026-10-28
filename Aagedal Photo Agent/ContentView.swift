@@ -399,7 +399,7 @@ struct ContentView: View {
 
     @State private var isShowingTemplateEditor = false
     @State private var isShowingTemplatePalette = false
-    @State private var captionTemplateAppendOverride: Bool?
+    @State private var captionTemplateModeOverride: TemplateApplyMode?
     @State private var isShowingDevelopTemplatePalette = false
     @State private var ftpUploadItem: FTPUploadItem?
     @State private var isShowingSaveTemplateName = false
@@ -1069,13 +1069,13 @@ struct ContentView: View {
                         }
                     TemplatePaletteView(
                         templates: templateViewModel.templates,
-                        onApply: { template, append in
-                            let resolvedAppend = captionTemplateAppendOverride ?? append
+                        onApply: { template, mode in
+                            let resolvedMode = captionTemplateModeOverride ?? mode
                             closeTemplatePalette(restoringGridFocus: true)
                             // Presenting the picker is read-only and stays reachable during
                             // recovery. Applying a choice still crosses the persistence barrier.
                             performAfterCaptionFlush {
-                                applyTemplate(template, append: resolvedAppend)
+                                applyTemplate(template, mode: resolvedMode)
                             }
                         },
                         onSaveNew: {
@@ -1403,8 +1403,8 @@ struct ContentView: View {
                     settingsViewModel: settingsViewModel,
                     deadlineProfile: MainViewMode.isDeadlineAvailable ? deadlineProfileLibrary.selectedProfile : nil,
                     initialFocusedField: pendingDeadlineCaptionField,
-                    onApplyTemplate: { append in
-                        captionTemplateAppendOverride = append
+                    onApplyTemplate: { mode in
+                        captionTemplateModeOverride = mode
                         isShowingTemplatePalette = true
                     },
                     onClose: {
@@ -3013,7 +3013,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Render and Save Folder")
                 .accessibilityIdentifier("toolbar.renderAndSave")
-                .help("Render all images in the folder to Edited/ as sRGB JPEG")
+                .help("Render every photo in the folder with the export format, size and location set in Settings")
                 .disabled(!browserViewModel.hasImages || isRenderingEditedFolder)
             }
         }
@@ -3569,30 +3569,37 @@ struct ContentView: View {
         // A Set backs selection, so derive the queue from visibleImages to preserve
         // the exact order the user sees in the browser.
         let selectedIDs = browserViewModel.selectedImageIDs
+        // Videos and other non-image files in an "All media" view can't be rendered.
         let orderedImages = AdvancedExportQueueBuilder.orderedSelection(
             from: browserViewModel.visibleImages,
             selectedIDs: selectedIDs
-        )
+        ).filter(\.isImageFile)
         guard !orderedImages.isEmpty else {
-            browserViewModel.errorMessage = "No images selected"
+            browserViewModel.errorMessage = selectedIDs.isEmpty
+                ? "No images selected"
+                : "The selection has no photos that can be exported"
             return
         }
 
-        let inputs = orderedImages.map { image in
-            AdvancedExportPreparationInput(
-                sourceURL: image.url,
-                filename: image.filename,
-                liveCameraRaw: browserViewModel.currentCameraRawSettings(for: image.url),
-                sourceFileSize: image.fileSize > 0 ? image.fileSize : nil,
-                exifOrientation: image.exifOrientation,
-                isICloudDownloadPending: image.isICloudDownloadPending
-            )
-        }
         advancedExportPreparationTask?.cancel()
         let requestID = UUID()
         advancedExportPreparationRequestID = requestID
         let service = AdvancedExportPreparationService.shared
         advancedExportPreparationTask = Task {
+            // The preview must show the same develop state the export renders: load the
+            // persisted settings of photos the browser's lazy batch hasn't reached yet.
+            await browserViewModel.loadDevelopSettings(for: orderedImages.map(\.url))
+            guard advancedExportPreparationRequestID == requestID, !Task.isCancelled else { return }
+            let inputs = orderedImages.map { image in
+                AdvancedExportPreparationInput(
+                    sourceURL: image.url,
+                    filename: image.filename,
+                    liveCameraRaw: browserViewModel.currentCameraRawSettings(for: image.url),
+                    sourceFileSize: image.fileSize > 0 ? image.fileSize : nil,
+                    exifOrientation: image.exifOrientation,
+                    isICloudDownloadPending: image.isICloudDownloadPending
+                )
+            }
             let result = await service.prepare(inputs, requestID: requestID)
             guard advancedExportPreparationRequestID == requestID else { return }
             advancedExportPreparationTask = nil
@@ -3600,7 +3607,7 @@ struct ContentView: View {
             let currentOrderedURLs = AdvancedExportQueueBuilder.orderedSelection(
                 from: browserViewModel.visibleImages,
                 selectedIDs: browserViewModel.selectedImageIDs
-            ).map(\.url)
+            ).filter(\.isImageFile).map(\.url)
             guard currentOrderedURLs == snapshot.requestedURLs else { return }
             advancedExportSession = AdvancedExportSession(items: snapshot.preparedItems)
         }
@@ -3806,14 +3813,19 @@ struct ContentView: View {
                     successCount += 1
                     signedURLs.append(renderedURL)
                 } catch {
-                    failureCount += 1
-                    signFailures.append(.init(filename: image.url.lastPathComponent, error: error))
+                    // A cancelled run is reported as cancelled, not as a failed file.
+                    let cancelled = error is CancellationError
+                    if !cancelled {
+                        failureCount += 1
+                        signFailures.append(.init(filename: image.url.lastPathComponent, error: error))
+                    }
                     // A Signed_* folder must only hold signed files: discard the unsigned
                     // render so it can't be mistaken for (or delivered as) a signed copy.
                     // A metadata-incomplete render throws after finalizing, before returning.
                     if let unsigned = unsignedRenderURL ?? (error as? ExportMetadataIncompleteError)?.renderedURL {
                         try? FileManager.default.removeItem(at: unsigned)
                     }
+                    if cancelled { break }
                 }
             }
 
@@ -3936,7 +3948,7 @@ struct ContentView: View {
 
     private func closeTemplatePalette(restoringGridFocus: Bool) {
         isShowingTemplatePalette = false
-        captionTemplateAppendOverride = nil
+        captionTemplateModeOverride = nil
         switch CaptionWorkspaceFocusRestorePolicy.target(
             afterTransientPresentationInCaptionWorkspace: mainViewMode == .caption,
             restoreRequested: restoringGridFocus
@@ -3966,7 +3978,7 @@ struct ContentView: View {
         metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
     }
 
-    private func applyTemplate(_ template: MetadataTemplate, append: Bool = false) {
+    private func applyTemplate(_ template: MetadataTemplate, mode: TemplateApplyMode = .replace) {
         // The template belongs to the photos selected when it was invoked. The editor loads a
         // new selection only after a debounce, and that load replaces the editor; applying
         // before it completes would hit the previous photo or be discarded.
@@ -3975,7 +3987,7 @@ struct ContentView: View {
         let metadataViewModel = metadataViewModel
         let editorMatches = Set(metadataViewModel.selectedURLs) == targetURLs
         if editorMatches, !metadataViewModel.isLoading, !metadataViewModel.isLoadingBatchMetadata {
-            applyTemplateToEditor(template, to: targets, append: append)
+            applyTemplateToEditor(template, to: targets, mode: mode)
             return
         }
         if !editorMatches {
@@ -3995,11 +4007,11 @@ struct ContentView: View {
                     severity: .warning)
                 return
             }
-            applyTemplateToEditor(template, to: targets, append: append)
+            applyTemplateToEditor(template, to: targets, mode: mode)
         }
     }
 
-    private func applyTemplateToEditor(_ template: MetadataTemplate, to appliedImages: [ImageFile], append: Bool) {
+    private func applyTemplateToEditor(_ template: MetadataTemplate, to appliedImages: [ImageFile], mode: TemplateApplyMode) {
         // Apply raw template values — variables like {date} and {persons}
         // stay as-is until the user clicks "Process Variables"
         var raw: [String: String] = [:]
@@ -4011,9 +4023,9 @@ struct ContentView: View {
             // The user may change the selection while the async variable
             // resolution runs, so the resolved values must be written back to
             // exactly these images, not whatever is selected later.
-            metadataViewModel.applyTemplateFieldsAndProcessVariables(raw, to: appliedImages, append: append)
+            metadataViewModel.applyTemplateFieldsAndProcessVariables(raw, to: appliedImages, mode: mode)
         } else {
-            metadataViewModel.applyTemplateFields(raw, append: append)
+            metadataViewModel.applyTemplateFields(raw, mode: mode)
         }
     }
 
@@ -4448,6 +4460,9 @@ struct ContentView: View {
                         outputFolder: destinationFolder, folderURL: sourceFolderURL,
                         writeEngine: browser.writeEngine, failureTracker: failureTracker)
                     savedURLs.append(outputURL)
+                } catch is CancellationError {
+                    // A cancelled run is reported as cancelled, not as a failed file.
+                    break
                 } catch {
                     saveFailures.append(.init(filename: url.lastPathComponent, error: error))
                 }
@@ -4693,6 +4708,9 @@ struct ContentView: View {
                     )
                     convertedURLs.append(receipt.archiveURL)
                     cleanupFailurePaths.append(contentsOf: receipt.cleanupResidualURLs.map(\.path))
+                } catch is CancellationError {
+                    // A cancelled run is reported as cancelled, not as a failed file.
+                    break
                 } catch {
                     archiveFailures.append(.init(filename: url.lastPathComponent, error: error))
                 }
@@ -4827,7 +4845,8 @@ struct ContentView: View {
     ) {
         guard !isRenderingEditedFolder,
               let folderURL = browserViewModel.currentFolderURL else { return }
-        let urls = urls ?? browserViewModel.images.map(\.url)
+        // The whole folder: skip videos and other files that can't be rendered.
+        let urls = urls ?? browserViewModel.images.filter(\.isImageFile).map(\.url)
         guard !urls.isEmpty else { return }
 
         let exportConfigurations: [AdvancedExportConfiguration?]
@@ -4940,6 +4959,9 @@ struct ContentView: View {
                         )
                         successCount += 1
                         exportedURLs.append(outputURL)
+                    } catch is CancellationError {
+                        // A cancelled run is reported as cancelled, not as a failed file.
+                        break
                     } catch {
                         failureCount += 1
                         renderFailures.append(.init(

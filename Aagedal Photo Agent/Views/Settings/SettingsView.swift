@@ -1373,6 +1373,14 @@ struct SettingsView: View {
                 Text(settingsViewModel.exportColorGamutHDR.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if let note = settingsViewModel.exportFormatHDR.gamutFallbackNote(
+                    for: settingsViewModel.exportColorGamutHDR
+                ) {
+                    Label(note, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("Output Resolution") {

@@ -221,6 +221,38 @@ actor ImportCopyService {
         willPlacePrimary: (@Sendable (CopyJob, URL) -> Void)?
     ) throws -> CopyResult {
         if let reason = job.preflightSkipReason {
+            // Skip Existing found this exposure's own file at the frozen primary path but not
+            // at the backup path (e.g. a backup drive added after the first import): fill the
+            // missing backup from the card instead of skipping both legs.
+            if reason == .destinationExists, job.frozenDestination, job.backupSkipReason == nil,
+               let backupURL = job.desiredBackupDest {
+                let backupOutcome: DestinationOutcome
+                let backupVerification: VerificationOutcome
+                do {
+                    (backupOutcome, backupVerification) = try copyLeg(
+                        source: job.source,
+                        destination: backupURL,
+                        wasRenamed: job.plannedRename,
+                        shouldVerify: verificationMode == .on && verifyBackup,
+                        allowOverwrite: false,
+                        wasReplaced: false
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    copyLog.warning("Backup copy failed for \(job.source.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+                    backupOutcome = .failed(error.localizedDescription)
+                    backupVerification = .skipped
+                }
+                return CopyResult(
+                    id: job.id,
+                    source: job.source,
+                    primary: .skipped(reason),
+                    primaryVerification: .skipped,
+                    backup: backupOutcome,
+                    backupVerification: backupVerification
+                )
+            }
             return CopyResult(
                 id: job.id,
                 source: job.source,
