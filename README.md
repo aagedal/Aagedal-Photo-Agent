@@ -4,7 +4,7 @@ A native macOS desktop application for photo metadata management and face recogn
 
 **License:** GPL-3.0
 
-[**3.0.0 Beta 3**](https://github.com/aagedal/Aagedal-Photo-Agent/releases/tag/3.0.0-beta.3) is available as a public testing release. See the [3.0 feature guide](docs/feature-help-3.0.md),
+[**3.0.0 Beta 4**](https://github.com/aagedal/Aagedal-Photo-Agent/releases/tag/3.0.0-beta.4) is available as a public testing release. See the [3.0 feature guide](docs/feature-help-3.0.md),
 [known limitations](docs/limitations-3.0.md), and [privacy draft](PRIVACY.md) for the release-candidate
 behavior and boundaries.
 
@@ -350,7 +350,7 @@ run tied to the exact source revision; a successful lightweight PR run does not 
 
 ## Releasing
 
-The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Releases are signed with an EdDSA key and advertised through the canonical `appcast.xml` on GitHub. Codeberg keeps a synchronized legacy copy for older installed builds whose feed URL still points there.
+The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Releases are signed with an EdDSA key and advertised through the canonical `appcast.xml` on GitHub. The website keeps a backup copy at `https://aagedal.me/apps/appcast/photoagent.xml`. Codeberg is no longer used.
 
 ### One-time setup
 
@@ -387,14 +387,14 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
    scripts/release.sh
    ```
    Before accessing signing credentials or building, it rejects a dirty worktree and verifies a successful CI run tied to the exact `HEAD` SHA. The accepted run is recorded under `build/release/`. It then archives, exports with Developer ID, notarizes and staples the app and DMG, Sparkle-signs the DMG, and inserts the appcast item. When an archive or valid exported app has matching version/build metadata **and** the source-revision marker written by the script, its terminal menu can resume from that artifact instead of rebuilding; unmarked or stale-revision artifacts are rejected. Set `RELEASE_BUILD_MODE=reuse` or `RELEASE_BUILD_MODE=rebuild` to make that choice non-interactively.
-5. Upload the DMG to `https://aagedal.me/apps/photoagent/`, using the exact filename printed by the script.
+5. Publish the DMG as a GitHub release asset tagged with the version (the appcast's download URL), and copy it to
+   the backup host `https://aagedal.me/apps/photoagent/`, using the exact filename printed by the script.
    Also upload the FFmpeg corresponding-source companion built by
    `python3 scripts/ffmpeg/make_source_companion.py --sources <ffmpeg build sources>` (see
    [its provenance](docs/provenance/ffmpeg-photo-agent-9.0.2.md#corresponding-source-companion))
    and link it from the release notes, as GPLv3 §6 requires.
-6. Commit and push the generated `appcast.xml` to GitHub, tag the release, then copy the same appcast to the feeds
-   older installs still poll (listed by the script): Codeberg `raw/branch/main/appcast.xml` (2.1.x), the Codeberg
-   `releases/download/appcast/appcast.xml` release asset (2.0.x), and `https://aagedal.me/apps/appcast/photoagent.xml`.
+6. Commit and push the generated `appcast.xml` to GitHub (after the release asset exists), then update the website
+   fallback feed `https://aagedal.me/apps/appcast/photoagent.xml` with enclosures pointing at the backup host.
 7. For stable releases, bump the cask in the `aagedal/homebrew-tap` repo.
    For public betas, publish a GitHub prerelease tagged with the beta version (for example `3.1.0-beta.1`), attach the
    notarized DMG and its SHA-256, and leave the stable cask/latest release unchanged.

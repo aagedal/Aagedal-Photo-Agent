@@ -11,6 +11,38 @@
         <!-- New release items are inserted here by scripts/release.sh. -->
 
         <item>
+            <title>Version 3.0.0-beta.4</title>
+            <sparkle:channel>beta</sparkle:channel>
+            <pubDate>Thu, 29 Oct 2026 22:22:40 +0100</pubDate>
+            <sparkle:version>743</sparkle:version>
+            <sparkle:shortVersionString>3.0.0-beta.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:minimumAutoupdateVersion>740</sparkle:minimumAutoupdateVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>The Anonymizer now has the full Redact Anonymizer controls on the Global layer and every mask: distortion, blur and mosaic layers with their own sliders, square, triangle or hexagon cells, cell and colour noise, desaturate, blur after mosaic, frosted glass and a random seed.</li>
+                    <li>Failed saves are no longer silent: metadata, Develop, rename, Teams, watermark and Reset All Edits failures name the photo and say what happened and what to do.</li>
+                    <li>Exports, saves, signing and FTP uploads keep rotations, GPS, captions and face blurs that live only in the XMP sidecar; FTP uploads use temporary names so hot folders never ingest partial files.</li>
+                    <li>RAW+JPEG pairs keep their own Develop settings, share one name through rename and moves, and write metadata like Photo Mechanic (JPEG embedded, RAW sidecar).</li>
+                    <li>Import shows time remaining, offers Eject for memory cards, never skips a different photo that shares a filename, and defaults to your Pictures folder on new installs.</li>
+                    <li>Develop: type exact slider values, faster navigation between pre-loaded photos, and templates or pastes never weaken face-blur masks.</li>
+                    <li>Faster folder opening, navigation and multi-photo selection, especially on SD cards and network volumes.</li>
+                    <li>Upgrading from 2.x shows a one-time What's New sheet and keeps every metadata field the panel showed before; 3.0 sidecars and templates stay readable by 2.x.</li>
+                    <li>Clearer, plainer error messages and labels throughout, and VoiceOver support for sidebar folders, filmstrip, face bar and about 80 icon-only buttons.</li>
+                    <li>Settings search, keyboard shortcut recording, Instagram and X web import, text watermarks and the dedicated FFmpeg 9.0.2 build.</li>
+                    <li>Reliability fixes for quitting with unsaved edits, long batch saves, settings synced from another Mac, Caption, Image Analysis and transcription.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/aagedal/Aagedal-Photo-Agent/releases/download/3.0.0-beta.4/Aagedal-Photo-Agent-3.0.0-beta.4.dmg"
+                sparkle:version="743"
+                sparkle:shortVersionString="3.0.0-beta.4"
+                sparkle:edSignature="6tGY3CwWi40Z7BQeg4kH4mDffRb8X14fqlZZjbTuEF2MQSkM+kKy0osdL3vK9rkKjLpytiJbngRLC9hnzrsXDQ=="
+                length="265941992"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 3.0.0-beta.3</title>
             <sparkle:channel>beta</sparkle:channel>
             <pubDate>Mon, 12 Oct 2026 00:06:28 +0200</pubDate>

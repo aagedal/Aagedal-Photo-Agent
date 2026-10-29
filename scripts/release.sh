@@ -3,9 +3,10 @@
 # release.sh — Build, sign, notarize, package, and Sparkle-sign a release of
 # Aagedal Photo Agent, then write the matching <item> into appcast.xml.
 #
-# It does NOT publish anything: the final step prints a checklist for uploading
-# the DMG and synchronizing the GitHub and legacy Codeberg appcasts, because
-# those steps need your accounts and are safer to keep explicit.
+# It does NOT publish anything: the final step prints a checklist for publishing
+# the DMG (GitHub release, aagedal.me backup) and the appcast, because those
+# steps need your accounts and are safer to keep explicit. Codeberg is no
+# longer used.
 #
 # No private or account-specific data is baked in. Anything machine-specific is
 # either auto-detected from the project / keychain, or prompted for at runtime
@@ -31,8 +32,11 @@ CHANGELOG="${CHANGELOG:-CHANGELOG.md}"
 OUTPUT_DIR="${OUTPUT_DIR:-build/release}"
 # Base URL the published DMG will live under. The enclosure URL becomes
 # "$RELEASE_URL_BASE/<stem>-<version>.dmg" — must match where you actually
-# upload the DMG.
-RELEASE_URL_BASE="${RELEASE_URL_BASE:-https://aagedal.me/apps/photoagent}"
+# upload the DMG. Defaults (once the version is known) to the GitHub release
+# for the version's tag, the primary download host; aagedal.me is the backup
+# (BACKUP_URL_BASE), served by the website fallback feed.
+RELEASE_URL_BASE="${RELEASE_URL_BASE:-}"
+BACKUP_URL_BASE="${BACKUP_URL_BASE:-https://aagedal.me/apps/photoagent}"
 # What to do when a matching archive or exported app already exists:
 #   ask (default, interactive), reuse (best valid artifact), or rebuild.
 RELEASE_BUILD_MODE="${RELEASE_BUILD_MODE:-ask}"
@@ -513,6 +517,7 @@ NOTES="$(awk -v ver="$VERSION" '
 [ -n "$NOTES" ] \
   || die "$CHANGELOG needs a '## $VERSION' section with at least one bullet under '### Highlights'."
 PUBDATE="$(date '+%a, %d %b %Y %H:%M:%S %z')"
+RELEASE_URL_BASE="${RELEASE_URL_BASE:-https://github.com/aagedal/Aagedal-Photo-Agent/releases/download/$VERSION}"
 DMG_URL="$RELEASE_URL_BASE/$DMG_STEM-$VERSION.dmg"
 ITEM="        <item>
             <title>Version $VERSION</title>
@@ -582,14 +587,15 @@ $(printf '\033[1;32m━━━ Release build complete ━━━\033[0m')
   Size:    $LENGTH bytes
 
 Publish steps (manual — outward-facing, not automated):
-  1. Upload the DMG to your web host so it is reachable at exactly:
+  1. Publish the DMG (plus SHA256SUMS.txt) so it is reachable at exactly:
         $DMG_URL
+     (a GitHub pre-release/release tagged $VERSION by default), and copy it to
+     the backup host: $BACKUP_URL_BASE/$DMG_STEM-$VERSION.dmg
   2. Update the Sparkle appcast feed (SUFeedURL:
         $(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$INFO_PLIST" 2>/dev/null))
      with the now-updated $APPCAST.
   3. Commit + push the $APPCAST change, and tag the release ($VERSION).
-  4. Copy the same appcast to the feeds older installs still poll:
-        https://codeberg.org/taagedal/Aagedal-Photo-Agent/raw/branch/main/appcast.xml   (2.1.x)
-        https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download/appcast/appcast.xml   (2.0.x)
-        https://aagedal.me/apps/appcast/photoagent.xml   (website fallback)
+  4. Update the website fallback feed, with its enclosures pointing at the
+     backup host:
+        https://aagedal.me/apps/appcast/photoagent.xml
 EOF
