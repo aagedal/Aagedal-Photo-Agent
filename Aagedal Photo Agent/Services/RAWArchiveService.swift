@@ -393,8 +393,10 @@ nonisolated enum RAWArchiveService {
             at: sourceSidecar,
             to: destinationSidecar
         )
-        carryEmbeddedOrientation(from: sourceURL, intoArchiveSidecar: destinationSidecar,
-                                 archiveURL: destinationURL)
+        // Throws: an archive without its orientation would display unrotated, so the caller's
+        // transaction must fail rather than report success.
+        try carryEmbeddedOrientation(from: sourceURL, intoArchiveSidecar: destinationSidecar,
+                                     archiveURL: destinationURL)
     }
 
     /// Rendered (TIFF/JPEG XL) archives are written in the RAW's sensor frame whenever a
@@ -408,17 +410,17 @@ nonisolated enum RAWArchiveService {
         from sourceURL: URL,
         intoArchiveSidecar sidecarURL: URL,
         archiveURL: URL
-    ) {
+    ) throws {
         guard !SupportedImageFormats.isRaw(url: archiveURL),
               XMPSidecarService().sidecarOrientation(for: sourceURL) == nil else { return }
         let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: sourceURL)
-        guard fileOrientation != 1,
-              var xmp = try? XMPSidecar.read(from: sidecarURL) else { return }
+        guard fileOrientation != 1 else { return }
+        var xmp = try XMPSidecar.read(from: sidecarURL)
         let value = String(fileOrientation)
         xmp.setValue(.simple(value), namespace: XMPNamespace.tiff, property: "Orientation")
         xmp.setValue(.simple(value), namespace: XMPNamespace.exif, property: "Orientation")
         guard let data = XMPWriter.generateXML(xmp).data(using: .utf8) else { return }
-        try? data.write(to: sidecarURL, options: .atomic)
+        try data.write(to: sidecarURL, options: .atomic)
     }
 
     static func saveBookmark(for url: URL, key: String) {

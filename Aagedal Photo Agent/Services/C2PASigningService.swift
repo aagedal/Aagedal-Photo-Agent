@@ -142,6 +142,9 @@ enum C2PASigningError: Error, LocalizedError {
     case processFailed(String)
     case outputMissing
     case manifestSerializationFailed
+    /// Installing the signed file failed and the original couldn't be put back; it is kept at
+    /// the backup path (a hidden file next to the photo).
+    case originalKeptAtBackup(fileName: String, backupName: String)
 
     var errorDescription: String? {
         switch self {
@@ -157,6 +160,8 @@ enum C2PASigningError: Error, LocalizedError {
             return "c2patool produced no output file"
         case .manifestSerializationFailed:
             return "Failed to serialize C2PA manifest JSON"
+        case .originalKeptAtBackup(let fileName, let backupName):
+            return "Signing \(fileName) failed and the original couldn't be put back. It is kept as the hidden file \(backupName) in the same folder; rename it to \(fileName) to restore it."
         }
     }
 }
@@ -495,29 +500,7 @@ nonisolated enum C2PASigningService {
         }
 
         // Replace original with signed output
-        let backupURL = imageURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(imageURL.lastPathComponent).c2pa_backup")
-        defer { try? FileManager.default.removeItem(at: backupURL) }
-
-        // Preserve creation date
-        let attrs = try? FileManager.default.attributesOfItem(atPath: imagePath)
-        let creationDate = attrs?[.creationDate] as? Date
-
-        try FileManager.default.moveItem(at: imageURL, to: backupURL)
-        do {
-            try FileManager.default.moveItem(at: outputFile, to: imageURL)
-        } catch {
-            // Restore the original to prevent data loss if the second move fails.
-            try? FileManager.default.moveItem(at: backupURL, to: imageURL)
-            throw error
-        }
-
-        if let creationDate {
-            try? FileManager.default.setAttributes(
-                [.creationDate: creationDate],
-                ofItemAtPath: imagePath
-            )
-        }
+        try replaceWithSignedOutput(outputFile, at: imageURL)
 
         logger.info("Signed successfully: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
     }
@@ -613,27 +596,7 @@ nonisolated enum C2PASigningService {
         }
 
         // Replace original with signed output
-        let backupURL = imageURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(imageURL.lastPathComponent).c2pa_backup")
-        defer { try? FileManager.default.removeItem(at: backupURL) }
-
-        let attrs = try? FileManager.default.attributesOfItem(atPath: imagePath)
-        let creationDate = attrs?[.creationDate] as? Date
-
-        try FileManager.default.moveItem(at: imageURL, to: backupURL)
-        do {
-            try FileManager.default.moveItem(at: outputFile, to: imageURL)
-        } catch {
-            try? FileManager.default.moveItem(at: backupURL, to: imageURL)
-            throw error
-        }
-
-        if let creationDate {
-            try? FileManager.default.setAttributes(
-                [.creationDate: creationDate],
-                ofItemAtPath: imagePath
-            )
-        }
+        try replaceWithSignedOutput(outputFile, at: imageURL)
 
         logger.info("Re-signed successfully: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
     }
@@ -731,29 +694,40 @@ nonisolated enum C2PASigningService {
         }
 
         // Replace rendered output with signed version
-        let backupURL = imageURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(imageURL.lastPathComponent).c2pa_backup")
-        defer { try? FileManager.default.removeItem(at: backupURL) }
-
-        let attrs = try? FileManager.default.attributesOfItem(atPath: imagePath)
-        let creationDate = attrs?[.creationDate] as? Date
-
-        try FileManager.default.moveItem(at: imageURL, to: backupURL)
-        do {
-            try FileManager.default.moveItem(at: outputFile, to: imageURL)
-        } catch {
-            try? FileManager.default.moveItem(at: backupURL, to: imageURL)
-            throw error
-        }
-
-        if let creationDate {
-            try? FileManager.default.setAttributes(
-                [.creationDate: creationDate],
-                ofItemAtPath: imagePath
-            )
-        }
+        try replaceWithSignedOutput(outputFile, at: imageURL)
 
         logger.info("Signed with parent ingredient: \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
+    }
+
+    /// Swaps the signed output into place. The original is moved aside first and only deleted
+    /// once the signed file is installed; if installing fails and the original can't be moved
+    /// back, the backup is kept and the error names it.
+    static func replaceWithSignedOutput(_ outputFile: URL, at imageURL: URL,
+                                        fileManager: FileManager = .default) throws {
+        let imagePath = imageURL.path(percentEncoded: false)
+        let backupURL = imageURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(imageURL.lastPathComponent).c2pa_backup")
+        let creationDate = (try? fileManager.attributesOfItem(atPath: imagePath))?[.creationDate] as? Date
+
+        try fileManager.moveItem(at: imageURL, to: backupURL)
+        do {
+            try fileManager.moveItem(at: outputFile, to: imageURL)
+        } catch {
+            // A move across volumes copies; a failed copy can leave a partial file in the way.
+            if fileManager.fileExists(atPath: imagePath) { try? fileManager.removeItem(at: imageURL) }
+            do {
+                try fileManager.moveItem(at: backupURL, to: imageURL)
+            } catch {
+                throw C2PASigningError.originalKeptAtBackup(
+                    fileName: imageURL.lastPathComponent, backupName: backupURL.lastPathComponent)
+            }
+            throw error
+        }
+        try? fileManager.removeItem(at: backupURL)
+
+        if let creationDate {
+            try? fileManager.setAttributes([.creationDate: creationDate], ofItemAtPath: imagePath)
+        }
     }
 
     // MARK: - c2patool arguments

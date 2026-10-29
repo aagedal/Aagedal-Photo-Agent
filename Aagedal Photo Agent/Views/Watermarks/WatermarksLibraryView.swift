@@ -16,6 +16,8 @@ struct WatermarksLibraryContent: View {
     @State private var importTask: Task<Void, Never>?
     @State private var importRequestID: UUID?
     @State private var deletionErrorMessage: String?
+    /// Name and default placement save on edit, with no Save button: a failed write must say so.
+    @State private var saveErrorMessage: String?
     @State private var searchText = ""
 
     private var filteredAssets: [WatermarkAsset] {
@@ -140,6 +142,17 @@ struct WatermarksLibraryContent: View {
             Text(deletionErrorMessage ?? "")
         }
         .alert(
+            "Watermark Not Saved",
+            isPresented: Binding(
+                get: { saveErrorMessage != nil },
+                set: { if !$0 { saveErrorMessage = nil } }
+            )
+        ) {
+            Button("OK") { saveErrorMessage = nil }
+        } message: {
+            Text(saveErrorMessage ?? "")
+        }
+        .alert(
             "Import Failed",
             isPresented: Binding(
                 get: { importErrorMessage != nil },
@@ -208,7 +221,10 @@ struct WatermarksLibraryContent: View {
     @ViewBuilder
     private var editor: some View {
         if let id = selection, let asset = store.asset(byID: id) {
-            WatermarkAssetEditorView(asset: asset, store: store)
+            WatermarkAssetEditorView(asset: asset, store: store) { change, error in
+                guard !(error is CancellationError) else { return }
+                saveErrorMessage = "The watermark's \(change) couldn't be saved. \(UserFacingErrorCause.sentence(for: error))"
+            }
                 .id(id)
         } else {
             ContentUnavailableView(
@@ -233,10 +249,13 @@ private struct WatermarkAssetEditorView: View {
     @State private var marginUnit: WatermarkMarginUnit
     @State private var marginValue: Double
     @FocusState private var isNameFocused: Bool
+    /// Reports a failed save: what was being saved ("new name", "default placement") and why.
+    private let onSaveFailure: (String, Error) -> Void
 
-    init(asset: WatermarkAsset, store: WatermarkStore) {
+    init(asset: WatermarkAsset, store: WatermarkStore, onSaveFailure: @escaping (String, Error) -> Void) {
         self.asset = asset
         self.store = store
+        self.onSaveFailure = onSaveFailure
         _name = State(initialValue: asset.name)
         _sizeDimension = State(initialValue: asset.defaultSizeDimension)
         _sizeUnit = State(initialValue: asset.defaultSizeUnit)
@@ -322,7 +341,16 @@ private struct WatermarkAssetEditorView: View {
         }
         if trimmed != name { name = trimmed }
         guard trimmed != asset.name else { return }
-        Task { try? await store.rename(asset.id, to: trimmed) }
+        let onSaveFailure = onSaveFailure
+        let savedName = asset.name
+        Task {
+            do {
+                try await store.rename(asset.id, to: trimmed)
+            } catch {
+                name = savedName
+                onSaveFailure("new name", error)
+            }
+        }
     }
 
     /// Geometry view of the default-placement fields, so unit switches reuse the edit view's
@@ -385,15 +413,20 @@ private struct WatermarkAssetEditorView: View {
     }
 
     private func saveDefaults() {
+        let onSaveFailure = onSaveFailure
         Task {
-            try? await store.updateDefaults(
-                asset.id,
-                sizeDimension: sizeDimension,
-                sizeUnit: sizeUnit,
-                sizeValue: sizeValue,
-                marginUnit: marginUnit,
-                marginValue: marginValue
-            )
+            do {
+                try await store.updateDefaults(
+                    asset.id,
+                    sizeDimension: sizeDimension,
+                    sizeUnit: sizeUnit,
+                    sizeValue: sizeValue,
+                    marginUnit: marginUnit,
+                    marginValue: marginValue
+                )
+            } catch {
+                onSaveFailure("default placement", error)
+            }
         }
     }
 

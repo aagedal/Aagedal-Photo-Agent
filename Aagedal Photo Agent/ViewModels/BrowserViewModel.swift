@@ -360,6 +360,9 @@ final class BrowserViewModel {
     @ObservationIgnored private let metadataReviewBaselineLoader: (@Sendable (URL, URL) async throws -> MetadataReviewLoadedBaseline)?
     let metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator
     @ObservationIgnored private var batchReadTask: Task<Void, Never>?
+    /// Reset All Edits writes run to completion even when the folder changes: cancelling one
+    /// halfway would leave some photos reset on disk and others not, with nothing reported.
+    @ObservationIgnored private var resetEditsTask: Task<Void, Never>?
     @ObservationIgnored private var removeIPTCPreflightTask: Task<Void, Never>?
     @ObservationIgnored private var removeIPTCPreflightRequestID: UUID?
     @ObservationIgnored private var pendingStatusRefreshTask: Task<Void, Never>?
@@ -5190,9 +5193,16 @@ final class BrowserViewModel {
         let urls = Array(selectedImageIDs)
         guard !urls.isEmpty else { return }
 
-        // Immediately update in-memory state for visual feedback
+        // Immediately update in-memory state for visual feedback, keeping what was there so a
+        // photo whose reset can't be written gets its edits back instead of looking reset.
+        var previousStates: [URL: ResetEditsPreviousState] = [:]
         for url in urls {
             guard let index = urlToImageIndex[url] else { continue }
+            previousStates[url] = ResetEditsPreviousState(
+                cameraRawSettings: images[index].cameraRawSettings,
+                hasDevelopEdits: images[index].hasDevelopEdits,
+                hasCropEdits: images[index].hasCropEdits,
+                cropRegion: images[index].cropRegion)
             images[index].cameraRawSettings = nil
             images[index].hasDevelopEdits = false
             images[index].hasCropEdits = false
@@ -5204,8 +5214,11 @@ final class BrowserViewModel {
             fullScreenImageCache.invalidateEditedImage(for: url)
         }
 
-        batchReadTask?.cancel()
-        batchReadTask = Task {
+        let previousReset = resetEditsTask
+        resetEditsTask = Task {
+            await previousReset?.value
+            var failures: [URL: Error] = [:]
+            var refusalMessage: String?
             // Clear CRS from the XMP sidecar for EVERY file (not just RAW). Develop edits now
             // persist to the sidecar during editing for non-RAW too (the sidecar is authoritative
             // and wins over embedded crs on load), so a reset that only cleared the embedded file
@@ -5220,6 +5233,7 @@ final class BrowserViewModel {
                     )
                 } catch {
                     logger.error("Failed to clear CRS from XMP sidecar for \(url.lastPathComponent): \(error.localizedDescription)")
+                    failures[url] = error
                 }
             }
 
@@ -5271,18 +5285,75 @@ final class BrowserViewModel {
             // RAW files keep their CRS in the XMP sidecar (cleared above) — never embed
             // into the RAW container, which corrupts proprietary maker data (e.g. Sony's
             // SR2Private WB block) and breaks the decode. Only write into non-RAW files.
-            let fileURLs = urls.filter { !SupportedImageFormats.isRaw(url: $0) }
-            guard !fileURLs.isEmpty else { return }
-            do {
-                // Camera Raw-only: no descriptive rewrite, refused (not degraded) when the file's
-                // metadata wouldn't fit or, outside Simple, when it carries Content Credentials.
-                let report = try await writeEngine.writeDevelopFields(clearFields, to: fileURLs,
-                    structuredData: structuredData,
-                    allowsCredentialedEmbed: MetadataWritePreset.current == .simple)
-                if let message = report.message { errorMessage = "Reset All Edits: " + message }
-            } catch {
-                logger.error("Failed to clear camera raw XMP fields: \(error.localizedDescription)")
+            // A file whose sidecar couldn't be cleared is skipped: its sidecar would win anyway.
+            let fileURLs = urls.filter { !SupportedImageFormats.isRaw(url: $0) && failures[$0] == nil }
+            if !fileURLs.isEmpty {
+                do {
+                    // Camera Raw-only: no descriptive rewrite, refused (not degraded) when the file's
+                    // metadata wouldn't fit or, outside Simple, when it carries Content Credentials.
+                    let report = try await writeEngine.writeDevelopFields(clearFields, to: fileURLs,
+                        structuredData: structuredData,
+                        allowsCredentialedEmbed: MetadataWritePreset.current == .simple)
+                    refusalMessage = report.message
+                    for url in report.refusedForContentCredentials + report.refusedForMetadataSize
+                        + report.refusedForRoundTripMismatch {
+                        failures[url] = failures[url] ?? DevelopEmbedRefusedError(report: report)
+                    }
+                } catch {
+                    logger.error("Failed to clear camera raw XMP fields: \(error.localizedDescription)")
+                    // The engine stops at the first failing file; the earlier ones may be reset,
+                    // but reporting all of them as unreset is the safe side (a retry is harmless).
+                    for url in fileURLs where failures[url] == nil { failures[url] = error }
+                }
             }
+            restoreDevelopStateAfterFailedReset(failures: failures, previousStates: previousStates,
+                                                refusalMessage: refusalMessage)
+        }
+    }
+
+    /// What Reset All Edits cleared in memory, restored for photos whose reset wasn't written.
+    private struct ResetEditsPreviousState {
+        let cameraRawSettings: CameraRawSettings?
+        let hasDevelopEdits: Bool
+        let hasCropEdits: Bool
+        let cropRegion: ThumbnailCropRegion?
+    }
+
+    private func restoreDevelopStateAfterFailedReset(
+        failures: [URL: Error],
+        previousStates: [URL: ResetEditsPreviousState],
+        refusalMessage: String?
+    ) {
+        guard !failures.isEmpty else { return }
+        for (url, _) in failures {
+            guard let previous = previousStates[url], let index = urlToImageIndex[url],
+                  // Leave a photo alone if it was edited again since the reset.
+                  images[index].cameraRawSettings == nil, !images[index].hasDevelopEdits,
+                  !images[index].hasCropEdits else { continue }
+            images[index].cameraRawSettings = previous.cameraRawSettings
+            images[index].hasDevelopEdits = previous.hasDevelopEdits
+            images[index].hasCropEdits = previous.hasCropEdits
+            images[index].cropRegion = previous.cropRegion
+            thumbnailService.invalidateThumbnail(for: url)
+            fullScreenImageCache.invalidateEditedImage(for: url)
+        }
+        // Refusals carry their own explanation; other failures get the photo and the cause.
+        let unexplained = failures.filter { !($0.value is DevelopEmbedRefusedError) }
+            .sorted { $0.key.lastPathComponent.localizedStandardCompare($1.key.lastPathComponent) == .orderedAscending }
+        var parts: [String] = []
+        if !unexplained.isEmpty {
+            let names = unexplained.map(\.key.lastPathComponent).joined(separator: ", ")
+            parts.append("Couldn't reset \(names). \(UserFacingErrorCause.sentence(for: unexplained[0].value)) Their edits are kept.")
+        }
+        if let refusalMessage { parts.append(refusalMessage) }
+        errorMessage = "Reset All Edits: " + parts.joined(separator: " ")
+    }
+
+    /// Waits for Reset All Edits writes, including resets queued while waiting.
+    func waitForResetAllEdits() async {
+        while let task = resetEditsTask {
+            await task.value
+            if resetEditsTask == task { return }
         }
     }
 
@@ -5381,16 +5452,27 @@ final class BrowserViewModel {
             return false
         }
 
+        var draftsKept: [URL] = []
+        var draftError: Error?
         for url in urls {
             guard let index = urlToImageIndex[url] else { continue }
             images[index].starRating = .none
             images[index].colorLabel = .none
             images[index].metadata = nil
             images[index].personShown = []
-            images[index].hasPendingMetadataChanges = false
-            images[index].pendingFieldNames = []
-
-            try? sidecarService.deleteSidecar(for: url, in: folderURL)
+            do {
+                try sidecarService.deleteSidecar(for: url, in: folderURL)
+                images[index].hasPendingMetadataChanges = false
+                images[index].pendingFieldNames = []
+            } catch {
+                // The pending draft is still on disk and comes back on reload: keep showing it.
+                draftsKept.append(url)
+                draftError = draftError ?? error
+            }
+        }
+        if let draftError {
+            let names = draftsKept.map(\.lastPathComponent).joined(separator: ", ")
+            errorMessage = "Removed the metadata from the files, but couldn't discard the unsaved edits for \(names). \(UserFacingErrorCause.sentence(for: draftError))"
         }
         return true
     }

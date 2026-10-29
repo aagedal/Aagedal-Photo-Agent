@@ -2337,3 +2337,49 @@ private nonisolated final class FieldMutationLoadCounter: @unchecked Sendable {
     var value: Int { lock.withLock { count } }
     func increment() { lock.withLock { count += 1 } }
 }
+
+@Suite("Reset All Edits write failures", .serialized)
+@MainActor
+struct ResetAllEditsFailureTests {
+    @Test("A reset that can't be written restores the photo's edits and names it")
+    func unwritableResetRestoresEdits() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("reset-edits-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let raw = folder.appendingPathComponent("a.arw")
+        try Data("not really a raw".utf8).write(to: raw)
+        let sidecar = folder.appendingPathComponent("a.xmp")
+        try Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Exposure2012="+1.00" crs:HasSettings="True"/>
+        </rdf:RDF></x:xmpmeta>
+        """.utf8).write(to: sidecar)
+        // A read-only folder: the sidecar can't be rewritten.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+            try? FileManager.default.removeItem(at: folder)
+        }
+
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1
+        var image = ImageFile(url: raw)
+        image.cameraRawSettings = settings
+        image.hasDevelopEdits = true
+        model.images = [image]
+        model.selectedImageIDs = [raw]
+        model.batchUpdate {}
+
+        model.resetAllEditsOnSelected()
+        #expect(model.images[0].hasDevelopEdits == false)
+        await model.waitForResetAllEdits()
+
+        #expect(model.images[0].hasDevelopEdits)
+        #expect(model.images[0].cameraRawSettings?.exposure2012 == 1)
+        let message = try #require(model.errorMessage)
+        #expect(message.contains("a.arw"))
+        #expect(message.contains("edits are kept"))
+    }
+}
