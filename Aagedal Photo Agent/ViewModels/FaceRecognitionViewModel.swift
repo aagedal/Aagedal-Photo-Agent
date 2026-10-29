@@ -2534,6 +2534,17 @@ final class FaceRecognitionViewModel {
         }
     }
 
+    /// The match setup lives in the photo folder (which can be a read-only card): say when it
+    /// wasn't saved, or it silently disappears the next time the folder opens.
+    private func persistMatchRoster(_ roster: MatchRoster) async {
+        do {
+            _ = try await matchRosterService.save(roster, requestID: UUID())
+        } catch is CancellationError {
+        } catch {
+            errorMessage = "The match setup for this folder couldn't be saved, so it will be gone when you reopen the folder. \(UserFacingErrorCause.sentence(for: error))"
+        }
+    }
+
     /// Set the two teams for this folder, embedding current library snapshots.
     /// Changing teams invalidates any previous colour-mapping confirmation.
     func setMatchTeams(homeTeamID: UUID?, awayTeamID: UUID?, folderURL: URL) async {
@@ -2546,7 +2557,7 @@ final class FaceRecognitionViewModel {
         roster.awayTeamSnapshot = awayTeamID.flatMap { RosterStore.shared.team(byID: $0) }
         roster.clusterMappingConfirmed = false
         matchRoster = roster
-        _ = try? await matchRosterService.save(roster, requestID: UUID())
+        await persistMatchRoster(roster)
     }
 
     /// Set a single startlist for an individual-sport event (bib mode). Bib numbers resolve
@@ -2564,7 +2575,7 @@ final class FaceRecognitionViewModel {
         roster.clusterMappingConfirmed = true
         roster.clusterFlipped = false
         matchRoster = roster
-        _ = try? await matchRosterService.save(roster, requestID: UUID())
+        await persistMatchRoster(roster)
     }
 
     /// Cluster sampled jersey colours into the two teams. If the mapping is
@@ -2613,7 +2624,7 @@ final class FaceRecognitionViewModel {
         roster.clusterMappingConfirmed = true
         roster.clusterFlipped = flip
         matchRoster = roster
-        _ = try? await matchRosterService.save(roster, requestID: UUID())
+        await persistMatchRoster(roster)
 
         let cluster = pendingColorClusterConfirmation
         pendingColorClusterConfirmation = nil

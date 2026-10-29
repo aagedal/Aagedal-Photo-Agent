@@ -2566,11 +2566,11 @@ final class MetadataViewModel {
                 let refusedURLs = Set(lossRefusals.map(\.imageURL))
                 // Refused files whose change actually landed in a pending draft.
                 var draftedRefusedURLs: Set<URL> = []
-                let mirroredURLs = await self.mirrorEmbeddedStateToExistingSidecars(for: writableEmbedURLs())
+                let mirror = await self.mirrorEmbeddedStateToExistingSidecars(for: writableEmbedURLs())
                 if let draftMutation {
                     // The mirror copied each file's complete post-write record, appended text
                     // included, into its existing .xmp: a dual-write XMP phase must not append again.
-                    for url in mirroredURLs { draftMutation.mutation.markDelivered(to: url, channel: .xmpSidecar) }
+                    for url in mirror.mirrored { draftMutation.mutation.markDelivered(to: url, channel: .xmpSidecar) }
                 }
 
                 // A pending draft is the photo's record until it is written. Apply the same batch
@@ -2639,6 +2639,15 @@ final class MetadataViewModel {
                     let message = EmbeddedMetadataBatchRefusal(refusals: lossRefusals).localizedDescription
                     self.saveError = message
                     self.embeddedWriteFailures[generation] = message
+                }
+                if let message = mirror.message {
+                    // A stale sidecar wins on read and export: keep the edit dirty so saving
+                    // again re-embeds and re-mirrors it.
+                    if Set(self.selectedURLs) == selectionSnapshot { self.hasChanges = true }
+                    let combined = [self.embeddedWriteFailures[generation], message].compactMap { $0 }
+                        .joined(separator: " ")
+                    self.saveError = combined
+                    self.embeddedWriteFailures[generation] = combined
                 }
             } catch is CancellationError {
                 // Superseded or torn down; not a user-facing failure.
@@ -2847,23 +2856,51 @@ final class MetadataViewModel {
     /// don't track per-file post-state, so read it back from each file that has a
     /// sidecar. The sidecar's Camera Raw settings and orientation are preserved —
     /// develop edits (RAW especially) live in the sidecar, not the embedded read-back.
-    @discardableResult
-    private func mirrorEmbeddedStateToExistingSidecars(for urls: [URL]) async -> Set<URL> {
-        guard let sidecarURLs = try? await MetadataSidecarMirrorPreflight.shared.existingImageURLs(urls) else {
-            return []
+    private struct SidecarMirrorResult {
+        var mirrored: Set<URL> = []
+        /// Photos whose existing `.xmp` may still hold the old values, with the first cause.
+        var unmirrored: [URL] = []
+        var cause: Error?
+
+        /// The embedded write landed, but these photos' sidecars still shadow it on read.
+        var message: String? {
+            guard !unmirrored.isEmpty else { return nil }
+            let names = unmirrored.map(\.lastPathComponent).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            let reason = cause.map { " " + UserFacingErrorCause.sentence(for: $0) } ?? ""
+            return "Saved into \(names.joined(separator: ", ")), but couldn't update \(names.count == 1 ? "its XMP file" : "their XMP files"), which still \(names.count == 1 ? "shows" : "show") the old values.\(reason) Save again."
         }
-        guard !sidecarURLs.isEmpty else { return [] }
+    }
+
+    private func mirrorEmbeddedStateToExistingSidecars(for urls: [URL]) async -> SidecarMirrorResult {
+        var result = SidecarMirrorResult()
+        let sidecarURLs: [URL]
+        do {
+            // Not cancellable either (an unstructured task doesn't inherit cancellation): a
+            // superseded save already embedded its values, and its sidecars must follow.
+            sidecarURLs = try await Task { try await MetadataSidecarMirrorPreflight.shared.existingImageURLs(urls) }.value
+        } catch {
+            logger.error("Sidecar mirror: couldn't check for existing .xmp sidecars: \(error.localizedDescription)")
+            result.unmirrored = urls
+            result.cause = error
+            return result
+        }
+        guard !sidecarURLs.isEmpty else { return result }
         // Not cancellable: the embedded write already happened, so skipping the read-back
         // would leave the sidecar shadowing it with stale values.
-        guard let postWrite = try? await readService.readBatchFullMetadata(
-            urls: sidecarURLs, stopsWhenCancelled: false
-        ) else {
+        let postWrite: [URL: IPTCMetadata]
+        do {
+            postWrite = try await readService.readBatchFullMetadata(urls: sidecarURLs, stopsWhenCancelled: false)
+        } catch {
             logger.error("Sidecar mirror: post-write metadata read-back failed; existing .xmp sidecars left untouched")
-            return []
+            result.unmirrored = sidecarURLs
+            result.cause = error
+            return result
         }
-        var mirrored: Set<URL> = []
         for url in sidecarURLs {
-            guard let record = postWrite[url] else { continue }
+            guard let record = postWrite[url] else {
+                result.unmirrored.append(url)
+                continue
+            }
             do {
                 try await xmpSidecarService.saveSidecarPreservingDevelopSettingsSerialized(
                     metadata: record,
@@ -2871,12 +2908,14 @@ final class MetadataViewModel {
                     onlyIfExisting: true,
                     preserveExistingOrientationIfMissing: true
                 )
-                mirrored.insert(url)
+                result.mirrored.insert(url)
             } catch {
                 logger.error("Sidecar mirror failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                result.unmirrored.append(url)
+                result.cause = result.cause ?? error
             }
         }
-        return mirrored
+        return result
     }
 
     /// Everything an XMP sidecar write needs, captured when the save is requested so a write

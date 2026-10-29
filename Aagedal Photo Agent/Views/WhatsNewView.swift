@@ -93,7 +93,7 @@ struct WhatsNewContent: View {
         "Face scans default to Fast. Choose Thorough in Settings ▸ Face Recognition for small or turned faces.",
         "Develop Save writes to the Export Location folder (for example Edited_JPEG) and never overwrites a file.",
         "SFTP never worked. Existing SFTP servers are flagged with a one-click switch to FTPS.",
-        "Your metadata panel still shows every field it did before. New fields can be hidden in Settings ▸ Metadata.",
+        "Choose which metadata fields show, and in what order, in Settings ▸ Metadata.",
         "If you sync through iCloud, update every Mac to 3.0.",
     ]
 

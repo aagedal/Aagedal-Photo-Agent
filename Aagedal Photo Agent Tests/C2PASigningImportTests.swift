@@ -520,3 +520,79 @@ private nonisolated final class BlockingImporterProbe: C2PAIdentityImporting, @u
         return maximumActive
     }
 }
+
+/// Fails the moves a test names, to exercise the signed-file swap's recovery paths.
+nonisolated private final class FailingMoveFileManager: FileManager, @unchecked Sendable {
+    var failsInstall = false
+    var failsRestore = false
+    var backupURL: URL?
+
+    override func moveItem(at srcURL: URL, to dstURL: URL) throws {
+        if srcURL.lastPathComponent.hasSuffix(".c2pa_backup") {
+            if failsRestore { throw CocoaError(.fileWriteOutOfSpace) }
+        } else if dstURL.lastPathComponent.hasSuffix(".c2pa_backup") {
+            backupURL = dstURL
+        } else if failsInstall {
+            // A cross-volume move that ran out of space halfway leaves a partial file behind.
+            try Data("partial".utf8).write(to: dstURL)
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        try super.moveItem(at: srcURL, to: dstURL)
+    }
+}
+
+@Suite("C2PA signed-file replacement", .serialized)
+struct C2PASignedOutputReplacementTests {
+    private func makeFiles() throws -> (folder: URL, image: URL, output: URL) {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("c2pa-replace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let image = folder.appendingPathComponent("photo.jpg")
+        let output = folder.appendingPathComponent("signed-output.jpg")
+        try Data("original".utf8).write(to: image)
+        try Data("signed".utf8).write(to: output)
+        return (folder, image, output)
+    }
+
+    @Test("A successful swap installs the signed file and removes the backup")
+    func successfulSwap() throws {
+        let (folder, image, output) = try makeFiles()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try C2PASigningService.replaceWithSignedOutput(output, at: image)
+        #expect(try Data(contentsOf: image) == Data("signed".utf8))
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        #expect(leftovers == ["photo.jpg"])
+    }
+
+    @Test("A failed install puts the original back over a partial file")
+    func failedInstallRestoresOriginal() throws {
+        let (folder, image, output) = try makeFiles()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fileManager = FailingMoveFileManager()
+        fileManager.failsInstall = true
+        #expect(throws: CocoaError.self) {
+            try C2PASigningService.replaceWithSignedOutput(output, at: image, fileManager: fileManager)
+        }
+        #expect(try Data(contentsOf: image) == Data("original".utf8))
+        let backup = try #require(fileManager.backupURL)
+        #expect(!FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    @Test("When the original can't be put back, its backup is kept and named")
+    func failedRestoreKeepsBackup() throws {
+        let (folder, image, output) = try makeFiles()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fileManager = FailingMoveFileManager()
+        fileManager.failsInstall = true
+        fileManager.failsRestore = true
+        do {
+            try C2PASigningService.replaceWithSignedOutput(output, at: image, fileManager: fileManager)
+            Issue.record("Expected the swap to fail")
+        } catch C2PASigningError.originalKeptAtBackup(let fileName, let backupName) {
+            #expect(fileName == "photo.jpg")
+            #expect(backupName == ".photo.jpg.c2pa_backup")
+        }
+        let backup = try #require(fileManager.backupURL)
+        #expect(try Data(contentsOf: backup) == Data("original".utf8))
+    }
+}

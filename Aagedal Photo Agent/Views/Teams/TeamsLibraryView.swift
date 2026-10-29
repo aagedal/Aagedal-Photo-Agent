@@ -45,6 +45,8 @@ struct TeamsLibraryContent: View {
     @State private var searchText = ""
     @State private var sportFilter: TeamSport?
     @State private var deletionErrorMessage: String?
+    /// Autosave has no Save button, so a failed write must say so or the edit is lost on relaunch.
+    @State private var saveErrorMessage: String?
 
     /// Teams matching the current search text and sport filter, sorted by name.
     private var filteredTeams: [Team] {
@@ -185,12 +187,29 @@ struct TeamsLibraryContent: View {
         } message: {
             Text(deletionErrorMessage ?? "")
         }
+        .alert(
+            "Team Not Saved",
+            isPresented: Binding(
+                get: { saveErrorMessage != nil },
+                set: { if !$0 { saveErrorMessage = nil } }
+            )
+        ) {
+            Button("OK") { saveErrorMessage = nil }
+        } message: {
+            Text(saveErrorMessage ?? "")
+        }
+    }
+
+    private func reportSaveFailure(_ error: Error) {
+        // A superseded debounced save is replaced by the next one, not lost.
+        guard !(error is CancellationError) else { return }
+        saveErrorMessage = "Your latest team changes couldn't be saved. \(UserFacingErrorCause.sentence(for: error)) Edit the team again to retry."
     }
 
     @ViewBuilder
     private var editor: some View {
         if let id = selection, let team = store.team(byID: id) {
-            TeamEditorView(team: team, store: store)
+            TeamEditorView(team: team, store: store, onSaveFailure: reportSaveFailure)
                 .id(id)
         } else {
             ContentUnavailableView("No Team Selected", systemImage: "tshirt",
@@ -204,8 +223,12 @@ struct TeamsLibraryContent: View {
         sportFilter = nil
         let team = Team(name: "", primaryColor: TeamKitColor(r: 0.2, g: 0.4, b: 0.9))
         Task { @MainActor in
-            try? await store.upsert(team)
-            selection = team.id
+            do {
+                try await store.upsert(team)
+                selection = team.id
+            } catch {
+                reportSaveFailure(error)
+            }
         }
     }
 }
@@ -236,8 +259,11 @@ private struct TeamEditorView: View {
     private let teamID: UUID
     private let createdAt: Date
 
-    init(team: Team, store: RosterStore) {
+    private let onSaveFailure: (Error) -> Void
+
+    init(team: Team, store: RosterStore, onSaveFailure: @escaping (Error) -> Void) {
         self.store = store
+        self.onSaveFailure = onSaveFailure
         self.teamID = team.id
         self.createdAt = team.createdAt
         _name = State(initialValue: team.name)
@@ -479,14 +505,23 @@ private struct TeamEditorView: View {
         // If the team was deleted while its editor was on screen, onDisappear
         // would otherwise resurrect it via upsert. Skip when it's already gone.
         guard store.team(byID: teamID) != nil else { return }
-        try? await store.upsert(currentTeam())
+        do {
+            try await store.upsert(currentTeam())
+        } catch {
+            onSaveFailure(error)
+        }
     }
 
     private func saveIfPresent() {
         guard store.team(byID: teamID) != nil else { return }
         let team = currentTeam()
+        let onSaveFailure = onSaveFailure
         Task { @MainActor in
-            try? await store.upsert(team)
+            do {
+                try await store.upsert(team)
+            } catch {
+                onSaveFailure(error)
+            }
         }
     }
 
