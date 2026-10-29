@@ -532,13 +532,14 @@ struct DevelopInteractionBehaviorTests {
         #expect(BrushStrokeAxis.vertical.constrain(point, from: start) == CGPoint(x: 40, y: 80))
     }
 
-    @Test("Enabling anonymizer starts at a useful strength")
+    @Test("Enabling anonymizer starts at the Redact defaults")
     func anonymizerToggleUsesDefaultStrength() {
         var settings: AnonymizerSettings?
 
         AnonymizerToggleBehavior.setEnabled(true, settings: &settings)
 
-        #expect(settings?.amount == 30)
+        #expect(settings?.seed != nil)
+        #expect(settings?.mosaicSize == RedactDefaults.mosaicSize)
         #expect(AnonymizerToggleBehavior.isEnabled(settings))
 
         AnonymizerToggleBehavior.setEnabled(false, settings: &settings)

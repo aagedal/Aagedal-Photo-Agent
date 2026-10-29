@@ -91,21 +91,6 @@ extension CameraRawSettings {
     }
 }
 
-extension AnonymizerSettings {
-    /// The global Anonymizer a paste/template leaves when the target already redacts: it may be
-    /// turned on or strengthened from the source, never turned off or weakened (privacy rule).
-    nonisolated static func atLeastAsStrong(
-        target: AnonymizerSettings?,
-        incoming: AnonymizerSettings?
-    ) -> AnonymizerSettings? {
-        guard let target, !target.isEmpty else { return incoming }
-        guard let incoming, !incoming.isEmpty else { return target }
-        let amount = max(target.amount ?? 0, incoming.amount ?? 0)
-        let blackOut = target.blackOut == true || incoming.blackOut == true
-        return AnonymizerSettings(amount: amount > 0 ? amount : nil, blackOut: blackOut ? true : nil)
-    }
-}
-
 extension CameraRawSettings {
     /// The Develop record a paste (Lightroom-like) leaves on one target: scalar sliders from the
     /// source; tone curve / HSL kept from the target when the source has none; the crop only

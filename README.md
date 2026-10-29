@@ -85,7 +85,7 @@ Non-destructive RAW development with real-time Metal GPU preview:
 - Reorderable develop layer chain — a horizontal strip of cards (Global node plus local masks) that you can drag to reorder
 - Local adjustments with elliptical/radial masks — each mask has independent tonal and color controls
 - Freeform brush masks and click-to-select AI masks for people and objects
-- Anonymizer: blur, mosaic or black out faces and areas; redactions are kept in every export, upload and preview
+- Anonymizer: the Redact Anonymizer's distortion, blur and mosaic layers (square, triangle or hexagon cells, cell and colour noise, frosted glass) or black out faces and areas; redactions are kept in every export, upload and preview
 - Watermark layers from a PNG library or reusable text watermarks, placed relative to the crop
 - Develop templates for saving and applying edits, crops, masks and watermarks
 - HDR/EDR rendering with extended dynamic range

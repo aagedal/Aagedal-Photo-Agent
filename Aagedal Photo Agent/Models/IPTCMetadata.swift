@@ -968,16 +968,43 @@ nonisolated struct HSLAdjustments: Codable, Sendable, Equatable {
     }
 }
 
-/// Multi-layer redaction effect (random distortion + blur + mosaic sampled in one pass,
-/// or a hard "Black Out") — not an ACR/Lightroom concept, persisted as an app-private
-/// XMP extension. `amount` is a 0...100 strength (nil/0 means off); `blackOut` overrides
-/// the layered effect with full opaque redaction.
+/// Redact Anonymizer settings (random distortion → Gaussian blur → mosaic, optional Frosted
+/// Glass finish, or a hard "Black Out") — not an ACR/Lightroom concept, persisted as an
+/// app-private XMP extension. Mirrors the Redact Anonymizer plugin's still-image (Photoshop)
+/// parameter set; pixel values are at a 1080p short-side reference (see `RedactParameters`).
+///
+/// `seed` marks a Redact-era anonymizer: when it is set the Redact fields are authoritative
+/// (nil fields take Redact's defaults). Without it, the anonymizer is a legacy single-strength
+/// edit (`amount`, 0...100) that renders through `RedactParameters(legacyAmount:)`. `amount`
+/// is still written to XMP for Redact-era settings as a compatible strength, so versions that
+/// only know `AnonymizerAmount` keep redacting; it is ignored on read once `seed` is present.
 nonisolated struct AnonymizerSettings: Codable, Sendable, Equatable {
     var amount: Double?
     var blackOut: Bool?
+    var seed: Int?
+    var distortionEnabled: Bool?
+    var blurEnabled: Bool?
+    var mosaicEnabled: Bool?
+    var distortionAmount: Double?
+    var distortionScale: Double?
+    var blurRadius: Double?
+    var mosaicSize: Double?
+    var mosaicShape: AnonymizerMosaicShape?
+    var cellNoise: Double?
+    var colorNoise: Double?
+    var desaturate: Double?
+    var blurAfterMosaic: Bool?
+    var frostedGlass: Bool?
+    var frostAmount: Double?
+    var frostColor: AnonymizerColor?
+
+    init(amount: Double? = nil, blackOut: Bool? = nil) {
+        self.amount = amount
+        self.blackOut = blackOut
+    }
 
     nonisolated var isEmpty: Bool {
-        (amount ?? 0) <= 0 && (blackOut ?? false) == false
+        (amount ?? 0) <= 0 && (blackOut ?? false) == false && seed == nil
     }
 }
 

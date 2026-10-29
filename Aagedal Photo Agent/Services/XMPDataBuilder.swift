@@ -556,8 +556,9 @@ enum XMPDataBuilder {
         xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
         xmp.removeValue(namespace: aaphotoNamespace, property: "LayerOrder")
         xmp.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
-        xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
-        xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+        for property in AnonymizerXMP.propertyNames {
+            xmp.removeValue(namespace: aaphotoNamespace, property: property)
+        }
         xmp.removeValue(namespace: aaphotoNamespace, property: "EmbeddedRedactionsReviewed")
         xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalDensity")
         xmp.removeValue(namespace: aaphotoNamespace, property: "FilmGrain")
@@ -721,25 +722,18 @@ enum XMPDataBuilder {
         xmp.setValue(.array(resolved.map(\.token)), namespace: aaphotoNamespace, property: "LayerOrder")
     }
 
-    /// Write the global Anonymizer redaction settings as app-private XMP (`aaphoto:AnonymizerAmount`
-    /// / `AnonymizerBlackOut`) — not an ACR/Lightroom concept, so other tools silently ignore it;
-    /// this app's own render/export pipeline is the only consumer. nil/empty clears both fields.
+    /// Write the global Anonymizer redaction settings as app-private XMP (`aaphoto:Anonymizer*`,
+    /// see `AnonymizerXMP`) — not an ACR/Lightroom concept, so other tools silently ignore it;
+    /// this app's own render/export pipeline is the only consumer. nil/empty clears every field.
     /// Shared with the embedded-file writer via `SwiftExifWriteEngine.applyAnonymizer`.
     nonisolated static func applyAnonymizer(_ anon: AnonymizerSettings?, into xmp: inout XMPData) {
-        guard let anon, !anon.isEmpty else {
-            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
-            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
-            return
+        let fields = AnonymizerXMP.fields(for: anon)
+        let written = Set(fields.map(\.0))
+        for property in AnonymizerXMP.propertyNames where !written.contains(property) {
+            xmp.removeValue(namespace: aaphotoNamespace, property: property)
         }
-        if let amount = anon.amount, amount > 0 {
-            xmp.setValue(.simple(String(format: "%.1f", amount)), namespace: aaphotoNamespace, property: "AnonymizerAmount")
-        } else {
-            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
-        }
-        if anon.blackOut == true {
-            xmp.setValue(.simple(formatBool(true)), namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
-        } else {
-            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+        for (property, value) in fields {
+            xmp.setValue(.simple(value), namespace: aaphotoNamespace, property: property)
         }
     }
 

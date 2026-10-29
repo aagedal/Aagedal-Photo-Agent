@@ -2,7 +2,7 @@ import Foundation
 
 /// Cheap on-disk check for whether a folder (recursively) holds photos with Anonymizer
 /// redactions, for dragging a sidebar folder out of the app. Anonymizer settings are
-/// app-private XMP (`aaphoto:AnonymizerAmount` / `AnonymizerBlackOut`, on the global layer and
+/// app-private XMP (`aaphoto:Anonymizer*` — see `AnonymizerXMP` — on the global layer and
 /// on masks), so a byte search for the property name finds them without parsing: in `.xmp`
 /// sidecars (the whole file) and in the XMP packet of non-RAW photos (the file's head, and its
 /// tail for larger files, where HEIC/TIFF may keep metadata). RAW files never carry embedded

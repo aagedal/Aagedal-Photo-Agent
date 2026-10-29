@@ -82,20 +82,51 @@ private struct DevelopVersionDialogsModifier: ViewModifier {
 /// Shared semantics for the Global and per-mask anonymizer switches. Keeping the default here
 /// prevents the two control panels from drifting apart while leaving imported strengths intact.
 nonisolated enum AnonymizerToggleBehavior {
-    static let defaultAmount = 30.0
-
     static func isEnabled(_ settings: AnonymizerSettings?) -> Bool {
         settings?.isEmpty == false
     }
 
+    /// Turning on creates a Redact anonymizer at the plugin's defaults with a fresh seed.
     static func setEnabled(_ enabled: Bool, settings: inout AnonymizerSettings?) {
         guard enabled else {
             settings = nil
             return
         }
         if settings?.isEmpty != false {
-            settings = AnonymizerSettings(amount: defaultAmount, blackOut: nil)
+            settings = .redactDefaults()
         }
+    }
+}
+
+/// Reads and writes one anonymizer inside the develop settings — the Global layer's or a
+/// mask's — so the Redact controls are shared by both panels.
+struct AnonymizerSettingsAccess {
+    let get: (CameraRawSettings?) -> AnonymizerSettings?
+    let set: (inout CameraRawSettings, AnonymizerSettings?) -> Void
+
+    static let global = AnonymizerSettingsAccess(
+        get: { $0?.anonymizer },
+        set: { $0.anonymizer = $1 }
+    )
+
+    static func mask(_ index: Int) -> AnonymizerSettingsAccess {
+        AnonymizerSettingsAccess(
+            get: { settings in
+                guard let masks = settings?.localAdjustments, index < masks.count else { return nil }
+                return masks[index].anonymizer
+            },
+            set: { settings, value in
+                guard let masks = settings.localAdjustments, index < masks.count else { return }
+                settings.localAdjustments?[index].anonymizer = value
+            }
+        )
+    }
+
+    /// Applies `change` to the resolved Redact parameters of an enabled anonymizer.
+    func updateParameters(in settings: inout CameraRawSettings, _ change: (inout RedactParameters) -> Void) {
+        guard var anonymizer = get(settings), !anonymizer.isEmpty else { return }
+        anonymizer.updateParameters(change)
+        set(&settings, anonymizer)
     }
 }
 
@@ -4561,24 +4592,6 @@ struct EditWorkspaceView: View {
         )
     }
 
-    private var anonymizerAmountBinding: Binding<Double> {
-        Binding(
-            get: { metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.amount ?? 0 },
-            set: { newValue in
-                updateCameraRaw { cameraRaw in
-                    let clamped = min(max(newValue.rounded(), 0), 100)
-                    if clamped <= 0 {
-                        cameraRaw.anonymizer?.amount = nil
-                        if cameraRaw.anonymizer?.isEmpty == true { cameraRaw.anonymizer = nil }
-                    } else {
-                        if cameraRaw.anonymizer == nil { cameraRaw.anonymizer = AnonymizerSettings() }
-                        cameraRaw.anonymizer?.amount = clamped
-                    }
-                }
-            }
-        )
-    }
-
     private var anonymizerEnabledBinding: Binding<Bool> {
         Binding(
             get: {
@@ -4604,7 +4617,7 @@ struct EditWorkspaceView: View {
             set: { newValue in
                 updateCameraRaw(actionName: "Black Out") { cameraRaw in
                     if newValue {
-                        if cameraRaw.anonymizer == nil { cameraRaw.anonymizer = AnonymizerSettings() }
+                        if cameraRaw.anonymizer == nil { cameraRaw.anonymizer = .redactDefaults() }
                         cameraRaw.anonymizer?.blackOut = true
                     } else {
                         cameraRaw.anonymizer?.blackOut = nil
@@ -5318,7 +5331,7 @@ struct EditWorkspaceView: View {
                 Toggle("Enable anonymizer", isOn: anonymizerEnabledBinding)
                     .labelsHidden()
                     .controlSize(.mini)
-                    .help("Enable anonymizer at strength 30")
+                    .help("Enable the Redact anonymizer at its default settings")
                 Spacer()
                 Button {
                     resetAnonymizerAdjustments()
@@ -5335,33 +5348,229 @@ struct EditWorkspaceView: View {
             .padding(.top, 2)
             Divider()
 
-            sliderRow(
-                "Anonymizer",
-                value: anonymizerAmountBinding,
-                range: 0...100,
-                step: 1,
-                formatter: { "\(Int($0.rounded()))" },
-                visibility: .anonymizer,
-                settingsMutator: { settings, value in
-                    let clamped = min(max(value.rounded(), 0), 100)
-                    if clamped <= 0 {
-                        settings.anonymizer?.amount = nil
-                        if settings.anonymizer?.isEmpty == true { settings.anonymizer = nil }
-                    } else {
-                        if settings.anonymizer == nil { settings.anonymizer = AnonymizerSettings() }
-                        settings.anonymizer?.amount = clamped
-                    }
-                },
-                onReset: {
-                    anonymizerAmountBinding.wrappedValue = 0
-                }
-            )
-            .disabled(!anonymizerEnabledBinding.wrappedValue || anonymizerBlackOutBinding.wrappedValue)
+            if anonymizerEnabledBinding.wrappedValue && !anonymizerBlackOutBinding.wrappedValue {
+                redactAnonymizerControls(.global)
+            }
 
             Toggle("Black out", isOn: anonymizerBlackOutBinding)
                 .toggleStyle(.checkbox)
                 .disabled(!anonymizerEnabledBinding.wrappedValue)
-                .help("Fully redact this region instead of the mosaic effect")
+                .help("Fill this region with solid black instead of the distortion, blur and mosaic layers")
+        }
+    }
+
+    // MARK: - Redact Anonymizer Controls
+
+    private func redactParameters(_ access: AnonymizerSettingsAccess) -> RedactParameters {
+        access.get(metadataViewModel.editingMetadata.cameraRaw)?.redactParameters ?? .defaults
+    }
+
+    private func redactBinding<Value>(
+        _ access: AnonymizerSettingsAccess,
+        _ keyPath: WritableKeyPath<RedactParameters, Value>,
+        actionName: String? = nil,
+        commit: Bool = false
+    ) -> Binding<Value> {
+        Binding(
+            get: { redactParameters(access)[keyPath: keyPath] },
+            set: { newValue in
+                updateCameraRaw(actionName: actionName) { cameraRaw in
+                    access.updateParameters(in: &cameraRaw) { $0[keyPath: keyPath] = newValue }
+                }
+                if commit { commitEditAdjustments() }
+            }
+        )
+    }
+
+    /// Blur After Mosaic also switches Blur Radius between its two defaults (20 ↔ 40), like
+    /// the plugin; customized radii are kept.
+    private func redactBlurAfterMosaicBinding(_ access: AnonymizerSettingsAccess) -> Binding<Bool> {
+        Binding(
+            get: { redactParameters(access).blurAfterMosaic },
+            set: { newValue in
+                updateCameraRaw(actionName: "Blur After Mosaic") { cameraRaw in
+                    access.updateParameters(in: &cameraRaw) { p in
+                        p.blurAfterMosaic = newValue
+                        p.blurRadius = RedactDefaults.blurRadiusForOrderChange(
+                            p.blurRadius, blurAfterMosaic: newValue
+                        )
+                    }
+                }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    private func redactFrostColorBinding(_ access: AnonymizerSettingsAccess) -> Binding<Color> {
+        Binding(
+            get: {
+                let c = redactParameters(access).frostColor
+                return Color(.sRGB, red: c.red, green: c.green, blue: c.blue)
+            },
+            set: { newValue in
+                guard let rgb = NSColor(newValue).usingColorSpace(.sRGB) else { return }
+                let color = AnonymizerColor(
+                    red: Double(rgb.redComponent),
+                    green: Double(rgb.greenComponent),
+                    blue: Double(rgb.blueComponent)
+                )
+                updateCameraRaw(actionName: "Frost Colour") { cameraRaw in
+                    access.updateParameters(in: &cameraRaw) { $0.frostColor = color }
+                }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    private func redactSlider(
+        _ label: String,
+        _ access: AnonymizerSettingsAccess,
+        _ keyPath: WritableKeyPath<RedactParameters, Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        defaultValue: Double,
+        unit: String = ""
+    ) -> some View {
+        sliderRow(
+            label,
+            value: redactBinding(access, keyPath),
+            range: range,
+            step: step,
+            formatter: { value in
+                let text = step < 1 ? String(format: "%.1f", value) : "\(Int(value.rounded()))"
+                return text + unit
+            },
+            visibility: .anonymizer,
+            settingsMutator: { settings, value in
+                access.updateParameters(in: &settings) { $0[keyPath: keyPath] = value }
+            },
+            onReset: {
+                redactBinding(access, keyPath).wrappedValue = defaultValue
+            },
+            showReset: redactParameters(access)[keyPath: keyPath] != defaultValue
+        )
+    }
+
+    /// The Redact Anonymizer parameter set (the plugin's still-image dialog): layer switches,
+    /// the three layer strengths, mosaic shape, cell/colour noise, desaturation, Blur After
+    /// Mosaic, the Frosted Glass finish and the seed. Shown for an enabled, non-Black-Out
+    /// anonymizer on the Global layer or a mask.
+    @ViewBuilder
+    private func redactAnonymizerControls(_ access: AnonymizerSettingsAccess) -> some View {
+        let parameters = redactParameters(access)
+        HStack(spacing: 10) {
+            Text("Layers")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle("Distortion", isOn: redactBinding(
+                access, \.distortionEnabled, actionName: "Distortion Layer", commit: true
+            ))
+            Toggle("Blur", isOn: redactBinding(
+                access, \.blurEnabled, actionName: "Blur Layer", commit: true
+            ))
+            Toggle("Mosaic", isOn: redactBinding(
+                access, \.mosaicEnabled, actionName: "Mosaic Layer", commit: true
+            ))
+        }
+        .toggleStyle(.checkbox)
+        .controlSize(.small)
+        .help("Switch a layer off to see what the others do. Switch every layer back on before exporting.")
+
+        if parameters.hasNoActiveLayer {
+            Label("No layer is on, so this region isn't anonymized.", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+
+        if parameters.distortionEnabled {
+            redactSlider(
+                "Distortion", access, \.distortionAmount,
+                range: RedactDefaults.distortionAmountRange, step: 1,
+                defaultValue: RedactDefaults.distortionAmount
+            )
+            redactSlider(
+                "Distortion Scale", access, \.distortionScale,
+                range: RedactDefaults.distortionScaleRange, step: 1,
+                defaultValue: RedactDefaults.distortionScale
+            )
+        }
+        if parameters.blurEnabled {
+            redactSlider(
+                "Blur Radius", access, \.blurRadius,
+                range: RedactDefaults.blurRadiusRange, step: 1,
+                defaultValue: parameters.blurAfterMosaic
+                    ? RedactDefaults.blurAfterMosaicRadius : RedactDefaults.blurRadius
+            )
+        }
+        if parameters.mosaicEnabled {
+            redactSlider(
+                "Mosaic Size", access, \.mosaicSize,
+                range: RedactDefaults.mosaicSizeRange, step: 1,
+                defaultValue: RedactDefaults.mosaicSize
+            )
+            Picker("Shape", selection: redactBinding(
+                access, \.mosaicShape, actionName: "Mosaic Shape", commit: true
+            )) {
+                Text("Square").tag(AnonymizerMosaicShape.square)
+                Text("Triangle").tag(AnonymizerMosaicShape.triangle)
+                Text("Hexagon").tag(AnonymizerMosaicShape.hexagon)
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            redactSlider(
+                "Cell Noise", access, \.cellNoise,
+                range: RedactDefaults.noiseRange, step: 0.5,
+                defaultValue: RedactDefaults.cellNoise, unit: "%"
+            )
+            .help("Random brightness offset per mosaic cell, so cells no longer match the source averages")
+            redactSlider(
+                "Colour Noise", access, \.colorNoise,
+                range: RedactDefaults.noiseRange, step: 0.5,
+                defaultValue: RedactDefaults.colorNoise, unit: "%"
+            )
+            .help("Random hue shift per mosaic cell")
+        }
+        redactSlider(
+            "Desaturate", access, \.desaturate,
+            range: RedactDefaults.percentRange, step: 1,
+            defaultValue: RedactDefaults.desaturate, unit: "%"
+        )
+        .help("Removes colour, for example to hide skin tone or clothing colour")
+
+        Toggle("Blur after mosaic", isOn: redactBlurAfterMosaicBinding(access))
+            .toggleStyle(.checkbox)
+            .controlSize(.small)
+            .help("Distort, then mosaic, then blur: softens the cell edges")
+        Toggle("Frosted glass", isOn: redactBinding(
+            access, \.frostedGlass, actionName: "Frosted Glass", commit: true
+        ))
+        .toggleStyle(.checkbox)
+        .controlSize(.small)
+        .help("Finishes the result as frosted glass: extra blur, a lift toward the frost colour and a still grain")
+        if parameters.frostedGlass {
+            redactSlider(
+                "Frost Amount", access, \.frostAmount,
+                range: RedactDefaults.percentRange, step: 1,
+                defaultValue: RedactDefaults.frostAmount, unit: "%"
+            )
+            ColorPicker("Frost colour", selection: redactFrostColorBinding(access), supportsOpacity: false)
+                .controlSize(.small)
+        }
+
+        HStack(spacing: 6) {
+            Text("Seed \(parameters.seed)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Randomize") {
+                let seed = RedactDefaults.randomSeed()
+                updateCameraRaw(actionName: "Randomize Seed") { cameraRaw in
+                    access.updateParameters(in: &cameraRaw) { $0.seed = seed }
+                }
+                commitEditAdjustments()
+            }
+            .controlSize(.small)
+            .help("Pick a new random distortion and noise pattern")
         }
     }
 
@@ -6751,46 +6960,21 @@ struct EditWorkspaceView: View {
                     Toggle("Enable anonymizer", isOn: maskAnonymizerEnabledBinding(idx))
                         .labelsHidden()
                         .controlSize(.mini)
-                        .help("Enable anonymizer at strength 30")
+                        .help("Enable the Redact anonymizer at its default settings")
                     Spacer()
                 }
                 .padding(.top, 2)
                 Divider()
 
-                sliderRow(
-                    "Anonymizer",
-                    value: maskAnonymizerAmountBinding(idx),
-                    range: 0...100,
-                    step: 1,
-                    formatter: { "\(Int($0.rounded()))" },
-                    visibility: .anonymizer,
-                    settingsMutator: { settings, value in
-                        let clamped = min(max(value.rounded(), 0), 100)
-                        if clamped <= 0 {
-                            settings.localAdjustments?[idx].anonymizer?.amount = nil
-                            if settings.localAdjustments?[idx].anonymizer?.isEmpty == true {
-                                settings.localAdjustments?[idx].anonymizer = nil
-                            }
-                        } else {
-                            if settings.localAdjustments?[idx].anonymizer == nil {
-                                settings.localAdjustments?[idx].anonymizer = AnonymizerSettings()
-                            }
-                            settings.localAdjustments?[idx].anonymizer?.amount = clamped
-                        }
-                    },
-                    onReset: {
-                        maskAnonymizerAmountBinding(idx).wrappedValue = 0
-                    }
-                )
-                .disabled(
-                    !maskAnonymizerEnabledBinding(idx).wrappedValue
-                        || maskAnonymizerBlackOutBinding(idx).wrappedValue
-                )
+                if maskAnonymizerEnabledBinding(idx).wrappedValue
+                    && !maskAnonymizerBlackOutBinding(idx).wrappedValue {
+                    redactAnonymizerControls(.mask(idx))
+                }
 
                 Toggle("Black out", isOn: maskAnonymizerBlackOutBinding(idx))
                     .toggleStyle(.checkbox)
                     .disabled(!maskAnonymizerEnabledBinding(idx).wrappedValue)
-                    .help("Fully redact this mask instead of the mosaic effect")
+                    .help("Fill this mask with solid black instead of the distortion, blur and mosaic layers")
             }
         }
     }
@@ -7259,41 +7443,6 @@ struct EditWorkspaceView: View {
         )
     }
 
-    private func maskAnonymizerAmountBinding(_ maskIndex: Int) -> Binding<Double> {
-        Binding(
-            get: {
-                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
-                      maskIndex < masks.count else { return 0 }
-                return masks[maskIndex].anonymizer?.amount ?? 0
-            },
-            set: { newValue in
-                let clamped = min(max(newValue.rounded(), 0), 100)
-                updateCameraRaw { cameraRaw in
-                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
-                    if clamped <= 0 {
-                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.amount = nil
-                        if cameraRaw.localAdjustments?[maskIndex].anonymizer?.isEmpty == true {
-                            cameraRaw.localAdjustments?[maskIndex].anonymizer = nil
-                        }
-                    } else {
-                        if cameraRaw.localAdjustments?[maskIndex].anonymizer == nil {
-                            cameraRaw.localAdjustments?[maskIndex].anonymizer = AnonymizerSettings()
-                        }
-                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.amount = clamped
-                    }
-                }
-                // Anonymizing wants full coverage — a partially-opaque mask would leak the
-                // underlying detail through the pixelation. Nudge the brush to 100% flow so
-                // subsequent strokes fully obscure (only for brush masks).
-                if clamped > 0,
-                   let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
-                   maskIndex < masks.count, masks[maskIndex].brush != nil {
-                    maskInteraction.brushFlow = 1.0
-                }
-            }
-        )
-    }
-
     private func maskAnonymizerEnabledBinding(_ maskIndex: Int) -> Binding<Bool> {
         Binding(
             get: {
@@ -7330,7 +7479,7 @@ struct EditWorkspaceView: View {
                     guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
                     if newValue {
                         if cameraRaw.localAdjustments?[maskIndex].anonymizer == nil {
-                            cameraRaw.localAdjustments?[maskIndex].anonymizer = AnonymizerSettings()
+                            cameraRaw.localAdjustments?[maskIndex].anonymizer = .redactDefaults()
                         }
                         cameraRaw.localAdjustments?[maskIndex].anonymizer?.blackOut = true
                     } else {
