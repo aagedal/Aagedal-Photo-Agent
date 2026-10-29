@@ -4,6 +4,25 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+## 3.0.0-beta.4 — 2026-10-29
+
+This fourth public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.
+
+### Highlights
+
+- Failed saves are no longer silent: metadata, Develop, rename, Teams, watermark and Reset All Edits failures name the photo and say what happened and what to do.
+- Exports, saves, signing and FTP uploads keep rotations, GPS, captions and face blurs that live only in the XMP sidecar; FTP uploads use temporary names so hot folders never ingest partial files.
+- RAW+JPEG pairs keep their own Develop settings, share one name through rename and moves, and write metadata like Photo Mechanic (JPEG embedded, RAW sidecar).
+- Import shows time remaining, offers Eject for memory cards, never skips a different photo that shares a filename, and defaults to your Pictures folder on new installs.
+- Develop: type exact slider values, faster navigation between pre-loaded photos, and templates or pastes never weaken face-blur masks.
+- Faster folder opening, navigation and multi-photo selection, especially on SD cards and network volumes.
+- Upgrading from 2.x shows a one-time What's New sheet and keeps every metadata field the panel showed before; 3.0 sidecars and templates stay readable by 2.x.
+- Clearer, plainer error messages and labels throughout, and VoiceOver support for sidebar folders, filmstrip, face bar and about 80 icon-only buttons.
+- Settings search, keyboard shortcut recording, Instagram and X web import, text watermarks and the dedicated FFmpeg 9.0.2 build.
+- Reliability fixes for quitting with unsaved edits, long batch saves, settings synced from another Mac, Caption, Image Analysis and transcription.
+
+### Changes since 3.0.0-beta.3
+
 - Failed saves are no longer silent: Reset All Edits that can't be written (for example on a read-only share) gives the photos their edits back and says which ones; a metadata save into the file that couldn't update the photo's existing XMP file says so and stays unsaved, instead of the old XMP values winning on the next load; Teams, a folder's match setup (teams, startlist, kit colours) and watermark names and default placement report a failed save instead of losing it on relaunch; Remove IPTC says when an unsaved edit couldn't be discarded; a RAW archive whose orientation can't be written fails instead of coming out unrotated. Signing with Content Credentials can no longer delete the original if the signed file can't be put in place and the original can't be moved back: it is kept as a hidden backup and the error says where.
 - Templates and Develop: appending a template to a multi-photo selection that still has an unsaved Fill Empty Fields for the same field now asks you to save first instead of silently dropping the fill; Fill Empty Fields says which fields it can't fill on a mixed selection (Date Created, Urgency, Digital Source Type, Image Supplier) instead of doing nothing; resetting only Temperature or only Tint on a RAW that had a preset white balance (such as Daylight) switches it to Custom, so Camera Raw shows the same result; Settings ▸ Metadata Fields picks up validation levels synced from another Mac instead of saving its older copy over them.
 - People upgrading from 2.x see a one-time What's New sheet with the main new workspaces, what changed from 2.x, and links to the feature guide and known limitations. New installs don't see it. The Help menu opens the feature guide, known limitations and What's New at any time.
