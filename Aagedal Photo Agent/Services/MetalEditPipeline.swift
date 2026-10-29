@@ -488,6 +488,9 @@ nonisolated struct EditRenderPass: Sendable, Equatable {
     var orderOffset: Int
     var orderCount: Int
     var requiresMipmappedInput: Bool
+    /// The Redact Anonymizer chain this pass's anonymizer node samples (run on the pass's
+    /// input before the edit kernel); nil when the pass has no layered anonymizer.
+    var redact: RedactParameters? = nil
 }
 
 /// Pure layer-order compiler kept separate from Metal resource management so ordering behavior
@@ -499,7 +502,9 @@ nonisolated enum EditRenderPassPlanner {
     static func makePlan(
         orderEntries: [UInt32],
         globalSpatialEffectsActive: Bool,
-        anonymizerMaskIndices: Set<Int>
+        anonymizerMaskIndices: Set<Int>,
+        globalRedact: RedactParameters? = nil,
+        maskRedact: [Int: RedactParameters] = [:]
     ) -> [EditRenderPass] {
         guard !orderEntries.isEmpty else { return [] }
 
@@ -524,7 +529,8 @@ nonisolated enum EditRenderPassPlanner {
             result.append(EditRenderPass(
                 orderOffset: index,
                 orderCount: 1,
-                requiresMipmappedInput: true
+                requiresMipmappedInput: true,
+                redact: entry == globalOrderSentinel ? globalRedact : maskRedact[Int(entry)]
             ))
             pointwiseStart = index + 1
         }
@@ -982,6 +988,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         struct Storage {
             var ping: MTLTexture?
             var pong: MTLTexture?
+            var redactA: MTLTexture?
+            var redactB: MTLTexture?
+            var redactOut: MTLTexture?
             var intermediateAllocationCount = 0
             var aiMaskTextures: [(key: AIMaskTextureKey, texture: MTLTexture)] = []
             var aiMaskTextureDecodeCount = 0
@@ -1012,6 +1021,9 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLComputePipelineState
+    /// Redact Anonymizer layer passes (RedactAnonymizer.metal), in `RedactKernel` order. Empty
+    /// when the shaders are missing; an anonymizer render then fails closed.
+    private let redactPipelineStates: [MTLComputePipelineState]
 
     private let sourceState = SourceState()
     private let sourcePublicationGate = MetalSourcePublicationGate()
@@ -1168,6 +1180,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         updateRenderScratchState {
             $0.ping = nil
             $0.pong = nil
+            $0.redactA = nil
+            $0.redactB = nil
+            $0.redactOut = nil
         }
     }
 
@@ -1177,6 +1192,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         updateRenderScratchState {
             $0.ping = nil
             $0.pong = nil
+            $0.redactA = nil
+            $0.redactB = nil
+            $0.redactOut = nil
             $0.aiMaskTextures = []
         }
     }
@@ -1663,6 +1681,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         } catch {
             return nil
         }
+        let redactStates = RedactKernel.allCases.compactMap { kernel in
+            library.makeFunction(name: kernel.functionName).flatMap {
+                try? device.makeComputePipelineState(function: $0)
+            }
+        }
+        self.redactPipelineStates = redactStates.count == RedactKernel.allCases.count ? redactStates : []
 
         // Overlay pipeline (optional — graceful degradation if shader missing)
         if let overlayFunc = library.makeFunction(name: "maskOverlay") {
@@ -2190,10 +2214,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         // 6. Anonymizer (global) — multi-layer redaction effect or full Black Out.
+        var globalRedact: RedactParameters?
         if let anon = settings.anonymizer, !anon.isEmpty {
-            params.anonymizerAmount = Float(min(max((anon.amount ?? 0) / 100.0, 0.0), 1.0))
+            params.anonymizerAmount = 1
             params.anonymizerBlackOut = (anon.blackOut == true) ? 1.0 : 0.0
             flags |= (1 << 5)
+            if anon.blackOut != true { globalRedact = anon.redactParameters }
         }
 
         if let film = settings.filmEmulation, !film.isEmpty {
@@ -2251,6 +2277,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         var maskIndexByID: [UUID: Int] = [:]
         var enabledMaskIndexByID: [UUID: Int] = [:]
         var anonymizerMaskIndices = Set<Int>()
+        var maskRedact: [Int: RedactParameters] = [:]
         var maskAlphaSources: [MaskAlphaSource] = []
         if maskCount > 0, let maskBuf = maskBufferHandle.resource {
             let maskPtr = maskBuf.contents().bindMemory(to: MaskParams.self, capacity: Self.maxMasks)
@@ -2331,11 +2358,12 @@ final class MetalEditPipeline: @unchecked Sendable {
                     maskFlags |= (1 << 7)
                 }
                 if let anon = mask.anonymizer, !anon.isEmpty {
-                    mp.anonymizerAmount = Float(min(max((anon.amount ?? 0) / 100.0, 0.0), 1.0))
+                    mp.anonymizerAmount = 1
                     mp.anonymizerBlackOut = (anon.blackOut == true) ? 1.0 : 0.0
                     maskFlags |= (1 << 8)
                     if mask.enabled {
                         anonymizerMaskIndices.insert(i)
+                        if anon.blackOut != true { maskRedact[i] = anon.redactParameters }
                     }
                 }
                 if let temp = mask.temperature, temp != 0 {
@@ -2466,7 +2494,9 @@ final class MetalEditPipeline: @unchecked Sendable {
             replaceRenderPassPlan(with: EditRenderPassPlanner.makePlan(
                 orderEntries: orderEntries,
                 globalSpatialEffectsActive: globalAnonymizerActive || globalFilmSpatialActive,
-                anonymizerMaskIndices: anonymizerMaskIndices
+                anonymizerMaskIndices: anonymizerMaskIndices,
+                globalRedact: globalRedact,
+                maskRedact: maskRedact
             ))
         }
 
@@ -3171,12 +3201,16 @@ final class MetalEditPipeline: @unchecked Sendable {
         source: MTLTexture,
         destination: MTLTexture,
         params: EditParams,
+        redacted: MTLTexture? = nil,
         commandBuffer: MTLCommandBuffer
     ) -> Bool {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
         var passParams = params
         encoder.setComputePipelineState(pipelineState)
         encoder.setTexture(source, index: 0)
+        // The Redact chain's output for this pass's anonymizer node; passes without one bind
+        // their input (never sampled) so the slot is always valid.
+        encoder.setTexture(redacted ?? source, index: 6)
         encoder.setTexture(destination, index: 1)
         encoder.setTexture(lutTextureHandle.resource, index: 2)
         encoder.setTexture(brushAlphaTexture ?? emptyBrushAlphaHandle.resource, index: 3)
@@ -3207,6 +3241,133 @@ final class MetalEditPipeline: @unchecked Sendable {
         return true
     }
 
+    /// Returns a non-mipmapped working texture for the Redact chain (reused like ping/pong).
+    nonisolated private func redactScratch(
+        _ slot: WritableKeyPath<ExecutorOwnedRenderScratchState.Storage, MTLTexture?>,
+        width: Int,
+        height: Int,
+        reuse: Bool
+    ) -> MTLTexture? {
+        if reuse,
+           let cached = executorOwnedRenderScratchStateSnapshot()[keyPath: slot],
+           cached.width == width, cached.height == height {
+            return cached
+        }
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+        )
+        desc.usage = [.shaderRead, .shaderWrite]
+        desc.storageMode = .private
+        guard let texture = device.makeTexture(descriptor: desc) else { return nil }
+        updateRenderScratchState { state in
+            state.intermediateAllocationCount += 1
+            if reuse { state[keyPath: slot] = texture }
+        }
+        return texture
+    }
+
+    /// Encodes the Redact Anonymizer chain (distort → blur → mosaic → frost) over `input` and
+    /// returns its output, a texture of the same size and frame. `imageSize` is the render's
+    /// full source frame (the plugin's resolution reference); `frame` maps `input`'s pixels
+    /// into it. Returns nil when the chain can't be encoded — the caller then fails the render
+    /// rather than presenting un-redacted pixels.
+    nonisolated private func encodeRedactChain(
+        _ parameters: RedactParameters,
+        input: MTLTexture,
+        imageSize: SIMD2<Float>,
+        frame: RedactFrameTransform,
+        commandBuffer: MTLCommandBuffer,
+        reuse: Bool
+    ) -> MTLTexture? {
+        guard redactPipelineStates.count == RedactKernel.allCases.count else {
+            metalPipelineLog.error("Redact Anonymizer kernels unavailable; refusing anonymizer render")
+            return nil
+        }
+        let width = input.width
+        let height = input.height
+        let settings = RedactRenderSettings(parameters, imageSize: imageSize)
+        let stages = RedactStage.stages(for: settings, textureScale: frame.textureScale)
+        guard let output = redactScratch(\.redactOut, width: width, height: height, reuse: reuse)
+        else { return nil }
+        var scratchA: MTLTexture?
+        var scratchB: MTLTexture?
+        if stages.count > 1 {
+            scratchA = redactScratch(\.redactA, width: width, height: height, reuse: reuse)
+            guard scratchA != nil else { return nil }
+        }
+        if stages.count > 2 {
+            scratchB = redactScratch(\.redactB, width: width, height: height, reuse: reuse)
+            guard scratchB != nil else { return nil }
+        }
+        let base = settings.passParams(width: width, height: height, frame: frame)
+        var current = input
+        for (index, stage) in stages.enumerated() {
+            let target: MTLTexture
+            if index == stages.count - 1 {
+                target = output
+            } else if let scratchA, current !== scratchA {
+                target = scratchA
+            } else if let scratchB {
+                target = scratchB
+            } else {
+                return nil
+            }
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return nil }
+            var params = base
+            params.blurDir = stage.blurDirection
+            params.blurRadius = Int32(min(stage.blurRadius.rounded(.up), 512))
+            params.blurSigma = max(stage.blurRadius * 0.5, 0.1)
+            encoder.setComputePipelineState(redactPipelineStates[stage.kernel.rawValue])
+            encoder.setTexture(current, index: 0)
+            encoder.setTexture(target, index: 1)
+            encoder.setBytes(&params, length: MemoryLayout<RedactPassParams>.stride, index: 0)
+            encoder.dispatchThreads(
+                MTLSize(width: width, height: height, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1)
+            )
+            encoder.endEncoding()
+            current = target
+        }
+        return output
+    }
+
+    /// The Redact chain for `renderPass` (nil output and true when it needs none).
+    nonisolated private func encodeRedactIfNeeded(
+        for renderPass: EditRenderPass?,
+        input: MTLTexture,
+        inputInDrawableFrame: Bool,
+        params: EditParams,
+        commandBuffer: MTLCommandBuffer,
+        reuse: Bool
+    ) -> (ok: Bool, texture: MTLTexture?) {
+        guard let redact = renderPass?.redact else { return (true, nil) }
+        let frame = inputInDrawableFrame
+            ? RedactFrameTransform.viewport(
+                drawableSize: SIMD2(Float(input.width), Float(input.height)),
+                sourceSize: params.sourceSize,
+                viewportOrigin: params.viewportOrigin,
+                viewportSize: params.viewportSize,
+                viewportCenter: params.viewportCenter,
+                viewportRotation: params.viewportRotation
+            )
+            : RedactFrameTransform(
+                linear: simd_float2x2(diagonal: SIMD2(
+                    params.sourceSize.x / Float(max(input.width, 1)),
+                    params.sourceSize.y / Float(max(input.height, 1))
+                )),
+                offset: .zero
+            )
+        let texture = encodeRedactChain(
+            redact,
+            input: input,
+            imageSize: params.sourceSize,
+            frame: frame,
+            commandBuffer: commandBuffer,
+            reuse: reuse
+        )
+        return (texture != nil, texture)
+    }
+
     /// Encodes either the historical one-dispatch fast path or the compiled multi-pass graph.
     /// Source-frame graphs render stable full-image intermediates; crop-output graphs retain the
     /// current drawable mapping so crop-relative watermarks preserve their existing semantics.
@@ -3227,10 +3388,20 @@ final class MetalEditPipeline: @unchecked Sendable {
                 renderPassPlan.first?.orderCount ?? Int(baseParams.orderCount)
             )
             params.executionFlags = 0
+            let redacted = encodeRedactIfNeeded(
+                for: renderPassPlan.first,
+                input: source,
+                inputInDrawableFrame: false,
+                params: baseParams,
+                commandBuffer: commandBuffer,
+                reuse: reuseIntermediates
+            )
+            guard redacted.ok else { return false }
             return encodeEditPass(
                 source: source,
                 destination: destination,
                 params: params,
+                redacted: redacted.texture,
                 commandBuffer: commandBuffer
             )
         }
@@ -3310,10 +3481,20 @@ final class MetalEditPipeline: @unchecked Sendable {
                 }
             }
 
+            let redacted = encodeRedactIfNeeded(
+                for: renderPass,
+                input: current,
+                inputInDrawableFrame: workingInOutputFrame && index > 0,
+                params: baseParams,
+                commandBuffer: commandBuffer,
+                reuse: reuseIntermediates
+            )
+            guard redacted.ok else { return false }
             guard encodeEditPass(
                 source: current,
                 destination: output,
                 params: params,
+                redacted: redacted.texture,
                 commandBuffer: commandBuffer
             ) else { return false }
             current = output

@@ -13,6 +13,7 @@
 		C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13000000000000000000101 /* RAWSourceDecoder.swift */; };
 		C12700000000000000000102 /* DevelopTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12700000000000000000101 /* DevelopTemplate.swift */; };
 		C12700000000000000000202 /* DevelopLayerMerge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12700000000000000000201 /* DevelopLayerMerge.swift */; };
+		C12700000000000000000302 /* RedactAnonymizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12700000000000000000301 /* RedactAnonymizer.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
@@ -81,6 +82,7 @@
 		AB2100000000000000000002 /* TechnicalMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2100000000000000000001 /* TechnicalMetadataTests.swift */; };
 		AB2200000000000000000002 /* WatermarkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2200000000000000000001 /* WatermarkStoreTests.swift */; };
 		AB2300000000000000000002 /* WatermarkRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2300000000000000000001 /* WatermarkRenderingTests.swift */; };
+		AB5300000000000000000002 /* RedactAnonymizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5300000000000000000001 /* RedactAnonymizerTests.swift */; };
 		AB2400000000000000000002 /* DevelopInteractionBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */; };
 		AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2500000000000000000001 /* DevelopTemplateTests.swift */; };
 		CA1600000000000000000006 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */; };
@@ -324,6 +326,7 @@
 		C13000000000000000000101 /* RAWSourceDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/RAWSourceDecoder.swift"; sourceTree = SOURCE_ROOT; };
 		C12700000000000000000101 /* DevelopTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DevelopTemplate.swift; path = "Aagedal Photo Agent/Models/DevelopTemplate.swift"; sourceTree = SOURCE_ROOT; };
 		C12700000000000000000201 /* DevelopLayerMerge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DevelopLayerMerge.swift; path = "Aagedal Photo Agent/Models/DevelopLayerMerge.swift"; sourceTree = SOURCE_ROOT; };
+		C12700000000000000000301 /* RedactAnonymizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RedactAnonymizer.swift; path = "Aagedal Photo Agent/Models/RedactAnonymizer.swift"; sourceTree = SOURCE_ROOT; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -390,6 +393,7 @@
 		AB2100000000000000000001 /* TechnicalMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TechnicalMetadataTests.swift; sourceTree = "<group>"; };
 		AB2200000000000000000001 /* WatermarkStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkStoreTests.swift; sourceTree = "<group>"; };
 		AB2300000000000000000001 /* WatermarkRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkRenderingTests.swift; sourceTree = "<group>"; };
+		AB5300000000000000000001 /* RedactAnonymizerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RedactAnonymizerTests.swift; sourceTree = "<group>"; };
 		AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopInteractionBehaviorTests.swift; sourceTree = "<group>"; };
 		AB2500000000000000000001 /* DevelopTemplateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateTests.swift; sourceTree = "<group>"; };
 		CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationNativeFaceScanReviewInvocationServiceTests.swift; sourceTree = "<group>"; };
@@ -751,6 +755,7 @@
 				AB2100000000000000000001 /* TechnicalMetadataTests.swift */,
 				AB2200000000000000000001 /* WatermarkStoreTests.swift */,
 				AB2300000000000000000001 /* WatermarkRenderingTests.swift */,
+				AB5300000000000000000001 /* RedactAnonymizerTests.swift */,
 				AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */,
 				AB2500000000000000000001 /* DevelopTemplateTests.swift */,
 				AB2600000000000000000001 /* ActivityHistoryTests.swift */,
@@ -921,6 +926,7 @@
 				C13000000000000000000101 /* RAWSourceDecoder.swift */,
 				C12700000000000000000101 /* DevelopTemplate.swift */,
 				C12700000000000000000201 /* DevelopLayerMerge.swift */,
+				C12700000000000000000301 /* RedactAnonymizer.swift */,
 				C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */,
 				C91000000000000000000401 /* MCPMetadataTemplatePreview.swift */,
 				C80000000000000000000101 /* MetadataPreservationSnapshot.swift */,
@@ -1258,6 +1264,7 @@
 				AB2100000000000000000002 /* TechnicalMetadataTests.swift in Sources */,
 				AB2200000000000000000002 /* WatermarkStoreTests.swift in Sources */,
 				AB2300000000000000000002 /* WatermarkRenderingTests.swift in Sources */,
+				AB5300000000000000000002 /* RedactAnonymizerTests.swift in Sources */,
 				AB2400000000000000000002 /* DevelopInteractionBehaviorTests.swift in Sources */,
 				AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */,
 				AB2600000000000000000002 /* ActivityHistoryTests.swift in Sources */,
@@ -1402,6 +1409,7 @@
 				C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */,
 				C12700000000000000000102 /* DevelopTemplate.swift in Sources */,
 				C12700000000000000000202 /* DevelopLayerMerge.swift in Sources */,
+				C12700000000000000000302 /* RedactAnonymizer.swift in Sources */,
 				C92000000000000000000402 /* MCPMetadataTemplateBatchPreview.swift in Sources */,
 				C91000000000000000000402 /* MCPMetadataTemplatePreview.swift in Sources */,
 				C80000000000000000000102 /* MetadataPreservationSnapshot.swift in Sources */,

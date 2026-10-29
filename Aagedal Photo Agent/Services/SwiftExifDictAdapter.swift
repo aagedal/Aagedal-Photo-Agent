@@ -321,13 +321,10 @@ extension ImageMetadata {
             }
 
             // App-private global Anonymizer redaction settings.
-            if let v = xmp.simpleValue(namespace: aaphotoNamespaceURI,
-                                       property: MetadataDictKey.anonymizerAmount) {
-                dict[MetadataDictKey.anonymizerAmount] = v
-            }
-            if let v = xmp.simpleValue(namespace: aaphotoNamespaceURI,
-                                       property: MetadataDictKey.anonymizerBlackOut) {
-                dict[MetadataDictKey.anonymizerBlackOut] = v
+            for property in AnonymizerXMP.propertyNames {
+                if let v = xmp.simpleValue(namespace: aaphotoNamespaceURI, property: property) {
+                    dict[property] = v
+                }
             }
             if let v = xmp.simpleValue(namespace: aaphotoNamespaceURI,
                                        property: MetadataDictKey.embeddedRedactionsReviewed) {

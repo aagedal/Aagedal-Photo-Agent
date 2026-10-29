@@ -119,9 +119,6 @@ nonisolated enum MetadataDictKey {
     static let layerOrderExplicit = "LayerOrder"
     /// App-private (aaphoto namespace): the watermark layer library-reference array.
     static let watermarkLayers = "WatermarkLayers"
-    /// App-private (aaphoto namespace): the global Anonymizer redaction settings.
-    static let anonymizerAmount = "AnonymizerAmount"
-    static let anonymizerBlackOut = "AnonymizerBlackOut"
     /// App-private (aaphoto namespace): the develop record already reflects the file's embedded
     /// redactions (`CameraRawSettings.embeddedRedactionsReviewed`).
     static let embeddedRedactionsReviewed = "EmbeddedRedactionsReviewed"
@@ -706,11 +703,7 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
 
     // App-private (aaphoto namespace): Anonymizer isn't a real ACR concept, so it's a
     // sibling field on the correction rather than a `crs:Local*` property.
-    let anonymizerAmount = parseDoubleValue(aaphotoMaskField(corr, "AnonymizerAmount"))
-    let anonymizerBlackOut = parseBoolValue(aaphotoMaskField(corr, "AnonymizerBlackOut"))
-    let anonymizer: AnonymizerSettings? = (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true
-        ? AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
-        : nil
+    let anonymizer = AnonymizerXMP.settings(reading: { aaphotoMaskField(corr, $0) })
     let fullFrame = parseBoolValue(aaphotoMaskField(corr, "FullFrame")) == true
     let colorTransform: ColorTransformSettings? = {
         guard let rawMode = aaphotoMaskField(corr, "ColorTransformMode") as? String,
@@ -1087,14 +1080,7 @@ nonisolated private func encodeMaskAppPrivateFields(_ mask: MaskAdjustment) -> [
         }
         appPrivateFields.append(("AIMaskPNG", aiMask.pngData.base64EncodedString()))
     }
-    if let anon = mask.anonymizer, !anon.isEmpty {
-        if let amount = anon.amount, amount > 0 {
-            appPrivateFields.append(("AnonymizerAmount", String(format: "%.1f", amount)))
-        }
-        if anon.blackOut == true {
-            appPrivateFields.append(("AnonymizerBlackOut", "True"))
-        }
-    }
+    appPrivateFields.append(contentsOf: AnonymizerXMP.fields(for: mask.anonymizer))
     return appPrivateFields
 }
 
@@ -1241,10 +1227,8 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         cameraRaw.unparsedMaskCorrections = preserved
     }
     // App-private Anonymizer redaction (not an ACR concept — Adobe tools ignore it).
-    let anonymizerAmount = parseDoubleValue(dict[MetadataDictKey.anonymizerAmount])
-    let anonymizerBlackOut = parseBoolValue(dict[MetadataDictKey.anonymizerBlackOut])
-    if (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true {
-        cameraRaw.anonymizer = AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
+    if let anonymizer = AnonymizerXMP.settings(reading: { dict[$0] }) {
+        cameraRaw.anonymizer = anonymizer
     }
     if parseBoolValue(dict[MetadataDictKey.embeddedRedactionsReviewed]) == true {
         cameraRaw.embeddedRedactionsReviewed = true

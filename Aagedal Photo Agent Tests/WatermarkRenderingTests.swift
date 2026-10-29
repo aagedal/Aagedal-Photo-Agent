@@ -1012,7 +1012,8 @@ struct AnonymizerMultiPassRenderingTests {
 
         let first = try renderFrame(reused)
         let allocationsAfterFirstFrame = reused.renderGraphIntermediateAllocationCount
-        #expect(allocationsAfterFirstFrame == 2)
+        // Ping and pong, plus the Redact chain's two scratch textures and its output.
+        #expect(allocationsAfterFirstFrame == 5)
         let second = try renderFrame(reused)
         let third = try renderFrame(reused)
         #expect(reused.renderGraphIntermediateAllocationCount == allocationsAfterFirstFrame)

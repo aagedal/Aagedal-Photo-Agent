@@ -398,7 +398,7 @@ EXISTING_ARCHIVE="$ARCHIVE"
 if [ ! -d "$EXISTING_ARCHIVE" ] && archive_matches_release "$LEGACY_ARCHIVE"; then
   EXISTING_ARCHIVE="$LEGACY_ARCHIVE"
 fi
-EXISTING_APP="$(/usr/bin/find "$OUTPUT_DIR/export" -maxdepth 1 -name '*.app' -type d 2>/dev/null | head -1)"
+EXISTING_APP="$(/usr/bin/find "$OUTPUT_DIR/export" -maxdepth 1 -name '*.app' -type d 2>/dev/null | head -1 || true)"
 BUILD_CHOICE=""
 choose_build_source "$EXISTING_APP" "$EXISTING_ARCHIVE"
 ok "Release path: $BUILD_CHOICE"

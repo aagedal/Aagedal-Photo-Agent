@@ -788,9 +788,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
     /// watermarks, anonymizer, film emulation) from a packet.
     nonisolated static func removeDevelopRecord(from metadata: inout ImageMetadata) {
         metadata.xmp?.removeAll(namespace: crsNamespace)
-        for property in ["GlobalLayerIndex", "LayerOrder", "WatermarkLayers", "AnonymizerAmount",
-                         "AnonymizerBlackOut", "EmbeddedRedactionsReviewed", "GlobalDensity", "FilmGrain", "FilmGrainCoarseness",
-                         "FilmHalation", "FilmBloom", "FilmVignette", "FilmEdgeBlur"] {
+        for property in ["GlobalLayerIndex", "LayerOrder", "WatermarkLayers",
+                         "EmbeddedRedactionsReviewed", "GlobalDensity", "FilmGrain", "FilmGrainCoarseness",
+                         "FilmHalation", "FilmBloom", "FilmVignette", "FilmEdgeBlur"]
+            + AnonymizerXMP.propertyNames {
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: property)
         }
     }
@@ -944,8 +945,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "LayerOrder")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
-            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
-            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+            for property in AnonymizerXMP.propertyNames {
+                metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: property)
+            }
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalDensity")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmGrain")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmGrainCoarseness")

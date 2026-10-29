@@ -22,7 +22,7 @@ struct MaskParams {
                             // bit5=blacks, bit6=saturation, bit7=vibrance,
                             // bit8=anonymizer (replaces the other tonal bits when set),
                             // bit9=temperature, bit10=tint
-    float anonymizerAmount;   // 0-1 strength, gated by activeFlags bit8
+    float anonymizerAmount;   // unused (1 when set); the Redact chain carries the parameters
     float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
     float temperature;       // -1..1, local white balance warm/cool shift
     float tint;              // -1..1, local white balance green/magenta shift
@@ -95,7 +95,7 @@ struct EditParams {
                              // (0.5,0.5) = no crop mask. Pixels beyond → background.
 
     uint orderCount;         // entries in the layer-order buffer (buffer 3); always ≥ 1
-    float anonymizerAmount;   // 0-1 global slider strength, gated by activeFlags bit5
+    float anonymizerAmount;   // unused (1 when set); the Redact chain carries the parameters
     float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
 
     int  maskOverlayIndex;    // mask buffer index to visualize, or -1 = none
@@ -714,13 +714,6 @@ static float sdrOutputToneMap(float x)
     return 1.0 + 0.3 * u * u * u;
 }
 
-struct AnonymizerShape {
-    float distortAmountPx;
-    float distortScalePx;
-    float blurRadiusPx;
-    float mosaicSizePx;
-};
-
 static uint anonymizerIHash(uint x)
 {
     x ^= x >> 16;
@@ -760,51 +753,6 @@ static float anonymizerVNoise(float px, float py, uint seed, uint channel)
     float ab = a + (b - a) * tx;
     float cd = c + (d - c) * tx;
     return ab + (cd - ab) * ty;
-}
-
-/// Maps the app's single 0-1 amount slider onto the same 1080p-short-side pixel-space
-/// family as the standalone Multi-Layer Anonymizer: random distortion, Gaussian blur,
-/// then mosaic. The app still evaluates it in one shader sample so global and per-mask
-/// anonymizers remain cheap enough for live masked editing.
-static AnonymizerShape anonymizerShape(float strength, float2 sourceSize)
-{
-    float t = clamp(strength, 0.0, 1.0);
-    float shortSide = max(min(sourceSize.x, sourceSize.y), 1.0);
-    float resolutionScale = shortSide / 1080.0;
-    float mosaicBase = mix(4.0, 128.0, t * t);
-    AnonymizerShape shape;
-    shape.mosaicSizePx = max(mosaicBase * resolutionScale, 3.0);
-    shape.blurRadiusPx = max(shape.mosaicSizePx * 0.6, 1.0);
-    shape.distortAmountPx = max(shape.mosaicSizePx * 0.6, 1.0);
-    shape.distortScalePx = max(shape.mosaicSizePx * 0.4, 2.0);
-    return shape;
-}
-
-/// Anonymizer base-color sampler: approximates the standalone effect's
-/// distort -> Gaussian blur -> mosaic stack in one texture fetch. The square mosaic cell
-/// is resolved first; the cell center is spatially distorted by the same deterministic
-/// value-noise family as the plugin; blur is provided by the source texture's mip chain.
-static half3 sampleAnonymized(texture2d<half, access::sample> source,
-                              float2 uv,
-                              float2 sourceSize,
-                              AnonymizerShape shape)
-{
-    constexpr sampler mipSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
-    float2 px = uv * sourceSize;
-    float b = max(shape.mosaicSizePx, 1.0);
-    float2 blockOrigin = floor(px / b) * b;
-    float2 samplePx = min(blockOrigin + b * 0.5, sourceSize - 1.0);
-
-    uint seed = anonymizerIHash(0x5BD1E995u);
-    float invScale = 1.0 / max(shape.distortScalePx, 2.0);
-    float nx = anonymizerVNoise(samplePx.x * invScale, samplePx.y * invScale, seed, 0u);
-    float ny = anonymizerVNoise(samplePx.x * invScale, samplePx.y * invScale, seed, 1u);
-    float2 displacement = (float2(nx, ny) * 2.0 - 1.0) * shape.distortAmountPx;
-    float2 sampleUV = clamp((samplePx + displacement) / sourceSize, 0.0, 1.0);
-
-    float maxLevel = float(source.get_num_mip_levels() - 1);
-    float mipLevel = clamp(log2(max(shape.blurRadiusPx * 2.0, 1.0)), 0.0, maxLevel);
-    return source.sample(mipSampler, sampleUV, level(mipLevel)).rgb;
 }
 
 /// A small, explicitly sampled blur used by the optical edge-softness effect. Sampling a very
@@ -942,6 +890,9 @@ kernel void editAdjustments(
     texture2d_array<half, access::sample> brushAlpha [[texture(3)]],
     texture2d_array<half, access::sample> watermarkTex [[texture(4)]],
     texture2d_array<half, access::sample> colorLUTs [[texture(5)]],
+    // Redact Anonymizer output for this pass's anonymizer node (RedactAnonymizer.metal), in
+    // the same frame and size as `source`. Bound to `source` itself in passes without one.
+    texture2d<half, access::sample> redacted [[texture(6)]],
     constant EditParams &params [[buffer(0)]],
     constant MaskParams *masks [[buffer(1)]],
     constant HSLParams &hslParams [[buffer(2)]],
@@ -1039,10 +990,7 @@ kernel void editAdjustments(
                     destination.write(half4(0.0h, 0.0h, 0.0h, 1.0h), gid);
                     return;
                 } else {
-                    AnonymizerShape anonShape = anonymizerShape(
-                        params.anonymizerAmount, inputTextureSize
-                    );
-                    rgb = sampleAnonymized(source, inputUV, inputTextureSize, anonShape);
+                    rgb = redacted.sample(bilinear, inputUV).rgb;
                 }
             }
             rgb = applyGlobal(rgb, params, toneLUT, hslParams);
@@ -1100,12 +1048,7 @@ kernel void editAdjustments(
                 if (mask.anonymizerBlackOut > 0.5) {
                     adjusted = half3(0.0h, 0.0h, 0.0h);
                 } else {
-                    AnonymizerShape anonShape = anonymizerShape(
-                        mask.anonymizerAmount, inputTextureSize
-                    );
-                    adjusted = sampleAnonymized(
-                        source, inputUV, inputTextureSize, anonShape
-                    );
+                    adjusted = redacted.sample(bilinear, inputUV).rgb;
                     adjusted = applyMaskColor(adjusted, mask);
                 }
             } else {
