@@ -31,6 +31,9 @@ final class BrowserAutoRefreshCoordinator {
     /// further event may arrive to trigger another one.
     private let localSafetyInterval: TimeInterval = 300
     private var lastFallbackScan: [ObjectIdentifier: Date] = [:]
+    /// Background tabs whose fallback scan came due while hidden. Rescanning folders nobody
+    /// can see is wasted work (and network traffic); they refresh once when brought forward.
+    private var staleHiddenPaneIDs: Set<ObjectIdentifier> = []
     /// Folder an import is copying into. Panes showing it (or a folder inside it) do not
     /// rescan on every arriving file (a rescan storm over thousands of copies); they refresh
     /// at most once per `ImportRefreshThrottle.defaultInterval` so the user can cull while the
@@ -87,9 +90,14 @@ final class BrowserAutoRefreshCoordinator {
                 }
                 guard let self, !Task.isCancelled else { return }
                 self.synchronizeMonitors()
+                let visibleIDs = Set(self.panes.visiblePanes.map(ObjectIdentifier.init))
                 for pane in self.panesToMonitor() {
                     guard let folderURL = pane.currentFolderURL,
                           self.needsFallbackScan(paneID: ObjectIdentifier(pane)) else { continue }
+                    guard visibleIDs.contains(ObjectIdentifier(pane)) else {
+                        self.staleHiddenPaneIDs.insert(ObjectIdentifier(pane))
+                        continue
+                    }
                     self.scheduleRefresh(
                         paneID: ObjectIdentifier(pane),
                         folderURL: folderURL,
@@ -109,6 +117,7 @@ final class BrowserAutoRefreshCoordinator {
         guard standardized == nil else { return }
         let deferred = importDeferredPaneIDs
         importDeferredPaneIDs.removeAll()
+        staleHiddenPaneIDs.removeAll()
         importRefreshThrottle.reset()
         for paneID in deferred {
             guard let folderURL = monitoredURLs[paneID] else { continue }
@@ -147,6 +156,7 @@ final class BrowserAutoRefreshCoordinator {
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
         importDeferredPaneIDs.removeAll()
+        staleHiddenPaneIDs.removeAll()
         importRefreshThrottle.reset()
         for task in monitorSetupTasks.values { task.cancel() }
         monitorSetupTasks.removeAll()
@@ -169,6 +179,7 @@ final class BrowserAutoRefreshCoordinator {
             monitoredURLs.removeValue(forKey: paneID)
             refreshTasks.removeValue(forKey: paneID)?.cancel()
             lastFallbackScan.removeValue(forKey: paneID)
+            staleHiddenPaneIDs.remove(paneID)
         }
 
         for (paneID, folderURL) in desired where monitoredURLs[paneID] != folderURL {
@@ -205,6 +216,18 @@ final class BrowserAutoRefreshCoordinator {
                     break
                 }
             }
+        }
+    }
+
+    /// Refreshes background tabs that missed a fallback scan while hidden and are now on
+    /// screen. Called when the active pane changes (bringing a tab forward activates it).
+    func refreshNewlyVisiblePanes() {
+        guard !staleHiddenPaneIDs.isEmpty else { return }
+        for pane in panes.visiblePanes {
+            let paneID = ObjectIdentifier(pane)
+            guard staleHiddenPaneIDs.remove(paneID) != nil,
+                  let folderURL = monitoredURLs[paneID] else { continue }
+            scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: .zero)
         }
     }
 
@@ -351,6 +374,24 @@ final class BrowserAutoRefreshCoordinator {
         // Develop may have started an edit while the folder was scanned; reloading now would
         // swap that edit's save baseline. Its save then reports the conflict instead.
         if metadataViewModel.isInEditView, !metadataViewModel.canAdoptExternalChangesInDevelop { return }
+        guard selectedURLs.count == 1, let imageURL = selectedURLs.first else {
+            reloadSelectedMetadata(in: pane)
+            return
+        }
+        // The file watcher can't tell our own saves from other apps' writes. Skip the reload
+        // when the files are exactly what the editor last wrote.
+        Task { @MainActor [weak self, weak pane] in
+            guard let self, let pane else { return }
+            if await self.metadataViewModel.diskMatchesEditorBaseline(for: imageURL) { return }
+            guard pane === self.panes.active,
+                  self.metadataViewModel.selectedURLs == [imageURL],
+                  !self.metadataViewModel.isSaving else { return }
+            if self.metadataViewModel.isInEditView, !self.metadataViewModel.canAdoptExternalChangesInDevelop { return }
+            self.reloadSelectedMetadata(in: pane)
+        }
+    }
+
+    private func reloadSelectedMetadata(in pane: BrowserViewModel) {
         metadataViewModel.loadMetadata(
             for: pane.selectedImages,
             folderURL: pane.currentFolderURL,

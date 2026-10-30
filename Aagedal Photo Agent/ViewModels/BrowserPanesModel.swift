@@ -21,6 +21,11 @@ final class BrowserPanesModel {
     /// its other panes at folders we haven't reloaded yet.
     private(set) var tree: BrowserPaneTree
     private(set) var activePaneID: BrowserPaneID
+    /// Summaries of `tree` for views outside the grid (sidebar, toolbar). Stored and only
+    /// reassigned when they differ, so a divider drag — which replaces `tree` every frame —
+    /// doesn't re-render those views.
+    private(set) var visiblePaneIDs: [BrowserPaneID]
+    private(set) var groupCount: Int = 1
 
     private let sharedThumbnailService: ThumbnailService
     private let sharedFullScreenImageCache: FullScreenImageCache
@@ -38,6 +43,16 @@ final class BrowserPanesModel {
         let primaryID = BrowserPaneID(primary)
         self.tree = BrowserPaneTree(single: primaryID)
         self.activePaneID = primaryID
+        self.visiblePaneIDs = [primaryID]
+    }
+
+    /// Every `tree` change goes through here so the stored summaries stay in sync.
+    private func updateTree(_ change: (inout BrowserPaneTree) -> Void) {
+        change(&tree)
+        let visible = tree.visiblePaneIDs
+        if visible != visiblePaneIDs { visiblePaneIDs = visible }
+        let count = tree.groups.count
+        if count != groupCount { groupCount = count }
     }
 
     /// The pane every single consumer (sidebar, metadata, faces, edit) follows.
@@ -62,7 +77,7 @@ final class BrowserPanesModel {
 
     /// Panes currently on screen (the front tab of every group), active pane included.
     var visiblePanes: [BrowserViewModel] {
-        tree.visiblePaneIDs.compactMap(pane(withID:))
+        visiblePaneIDs.compactMap(pane(withID:))
     }
 
     /// Folders shown by on-screen panes other than the active one — the sidebar marks
@@ -76,7 +91,7 @@ final class BrowserPanesModel {
     /// Focus a pane (and bring it to the front of its tab group).
     func activate(_ id: BrowserPaneID) {
         guard pane(withID: id) != nil else { return }
-        if tree.group(containing: id)?.selectedPaneID != id { tree.select(id) }
+        if tree.group(containing: id)?.selectedPaneID != id { updateTree { $0.select(id) } }
         if activePaneID != id { activePaneID = id }
     }
 
@@ -100,7 +115,7 @@ final class BrowserPanesModel {
         guard let target = groupID ?? tree.group(containing: activePaneID)?.id,
               let pane = makePane() else { return nil }
         let id = BrowserPaneID(pane)
-        tree.addTab(id, toGroup: target)
+        updateTree { $0.addTab(id, toGroup: target) }
         activate(id)
         return pane
     }
@@ -111,7 +126,7 @@ final class BrowserPanesModel {
         guard let target = tree.group(containing: activePaneID)?.id,
               let pane = makePane() else { return nil }
         let id = BrowserPaneID(pane)
-        tree.split(id, besideGroup: target, edge: edge)
+        updateTree { $0.split(id, besideGroup: target, edge: edge) }
         activate(id)
         return pane
     }
@@ -126,10 +141,10 @@ final class BrowserPanesModel {
             remaining.remove(at: tab)
             return remaining[min(tab, remaining.count - 1)]
         }
-        tree.remove(id)
+        updateTree { $0.remove(id) }
         panes.remove(at: index)
         if activePaneID == id {
-            activate(replacement ?? tree.visiblePaneIDs.first ?? BrowserPaneID(panes[0]))
+            activate(replacement ?? visiblePaneIDs.first ?? BrowserPaneID(panes[0]))
         }
     }
 
@@ -145,18 +160,19 @@ final class BrowserPanesModel {
 
     /// Gather every pane into one tab group.
     func mergeAllIntoTabs() {
-        tree.mergeAllIntoTabs(selected: activePaneID)
+        let selected = activePaneID
+        updateTree { $0.mergeAllIntoTabs(selected: selected) }
     }
 
     // MARK: Drag and drop / resizing
 
     /// Move a pane's tab onto a group edge (split) or into its tab bar.
     func move(_ id: BrowserPaneID, toGroup groupID: UUID, edge: BrowserPaneDropEdge, tabIndex: Int? = nil) {
-        tree.move(id, toGroup: groupID, edge: edge, tabIndex: tabIndex)
+        updateTree { _ = $0.move(id, toGroup: groupID, edge: edge, tabIndex: tabIndex) }
         activate(id)
     }
 
     func setFractions(_ fractions: [Double], forSplit splitID: UUID) {
-        tree.setFractions(fractions, forSplit: splitID)
+        updateTree { $0.setFractions(fractions, forSplit: splitID) }
     }
 }

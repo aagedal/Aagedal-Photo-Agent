@@ -9,7 +9,7 @@ features work, see the [3.0 feature guide](feature-help-3.0.md).
 
 - **Back up your app data first.** 3.0 replaces 2.x and uses the same data locations. Older versions
   may not understand some data written by 3.0. Export your Known People library (Settings ▸ Known
-  People ▸ Export People Library…), metadata templates (Settings ▸ Templates ▸ Export All…) and keyword
+  People ▸ People Library ▸ Export People Library…), metadata templates (Settings ▸ Templates ▸ Export All…) and keyword
   lists (Settings ▸ Keywords ▸ Export Lists…), or copy
   `~/Library/Application Support/Aagedal Photo Agent/`.
 - **Update every Mac that syncs through iCloud.** 2.x and 3.0 can read the same synced Known People,

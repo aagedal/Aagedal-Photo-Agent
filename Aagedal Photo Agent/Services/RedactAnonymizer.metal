@@ -44,6 +44,7 @@ struct RedactPassParams {
     float b0; float b1;
     // Image-space vector → texture-space vector: inverse of A.
     float i00; float i01; float i10; float i11;
+    int scaleFactor;      // downsample/upsample: full-size pixels per reduced pixel
 };
 
 static inline float2 redactToImage(constant RedactPassParams& p, float2 tex)
@@ -179,6 +180,51 @@ kernel void redactBlur(
         sum += wgt;
     }
     float4 c = acc / sum;
+    c.a = 1.0f;
+    dst.write(half4(c), gid);
+}
+
+// Wide blurs run on a reduced copy (RedactStage.maximumDirectBlurRadius): an f×f box average
+// down, the separable Gaussian, then a bilinear sample back up. `width`/`height` are the
+// dispatch (destination) size.
+kernel void redactDownsample(
+    texture2d<half, access::read> src [[texture(0)]],
+    texture2d<half, access::write> dst [[texture(1)]],
+    constant RedactPassParams& p [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(p.width) || gid.y >= uint(p.height)) return;
+    int f = max(p.scaleFactor, 1);
+    int sw = int(src.get_width());
+    int sh = int(src.get_height());
+    int x0 = int(gid.x) * f;
+    int y0 = int(gid.y) * f;
+    int x1 = min(x0 + f, sw);
+    int y1 = min(y0 + f, sh);
+    float4 acc = float4(0.0f);
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            acc += float4(src.read(uint2(x, y)));
+        }
+    }
+    float4 c = acc / float(max((x1 - x0) * (y1 - y0), 1));
+    c.a = 1.0f;
+    dst.write(half4(c), gid);
+}
+
+kernel void redactUpsample(
+    texture2d<half, access::sample> src [[texture(0)]],
+    texture2d<half, access::write> dst [[texture(1)]],
+    constant RedactPassParams& p [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(p.width) || gid.y >= uint(p.height)) return;
+    constexpr sampler linearClamp(coord::normalized, address::clamp_to_edge, filter::linear);
+    float f = float(max(p.scaleFactor, 1));
+    float2 size = float2(src.get_width(), src.get_height());
+    // Reduced pixel i covers full-size pixels [i*f, (i+1)*f): its centre is at (i + 0.5) * f.
+    float2 uv = ((float2(gid) + 0.5f) / f) / size;
+    float4 c = float4(src.sample(linearClamp, uv));
     c.a = 1.0f;
     dst.write(half4(c), gid);
 }

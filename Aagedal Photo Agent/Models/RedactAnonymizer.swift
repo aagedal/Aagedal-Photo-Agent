@@ -411,8 +411,10 @@ nonisolated enum AnonymizerXMP {
         var settings = AnonymizerSettings(amount: double(amount), blackOut: bool(blackOut))
         if let seedValue = double(seed), seedValue.isFinite {
             settings.amount = nil
-            settings.seed = min(max(Int(seedValue), RedactDefaults.seedRange.lowerBound),
-                                RedactDefaults.seedRange.upperBound)
+            // Clamp as Double first: Int(_:) traps on values outside Int's range ("1e30").
+            let range = RedactDefaults.seedRange
+            settings.seed = Int(min(max(seedValue.rounded(.towardZero), Double(range.lowerBound)),
+                                    Double(range.upperBound)))
             settings.distortionEnabled = bool(distortion)
             settings.blurEnabled = bool(blur)
             settings.mosaicEnabled = bool(mosaic)

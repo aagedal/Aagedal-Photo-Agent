@@ -2748,7 +2748,7 @@ struct ContentView: View {
             } label: {
                 Label("Merge All into Tabs", systemImage: "square.on.square")
             }
-            .disabled(panes.tree.groups.count < 2)
+            .disabled(panes.groupCount < 2)
             Button(action: collapseToSinglePane) {
                 Label("Single Pane", systemImage: "rectangle")
             }
@@ -2761,7 +2761,7 @@ struct ContentView: View {
     }
 
     private var paneLayoutIcon: String {
-        if panes.tree.groups.count > 1 { return "rectangle.split.2x1" }
+        if panes.groupCount > 1 { return "rectangle.split.2x1" }
         return panes.hasMultiplePanes ? "square.on.square" : "rectangle"
     }
 
@@ -5460,6 +5460,7 @@ struct AutoRefreshModifier: ViewModifier {
             }
             .onChange(of: panes.activePaneID) {
                 coordinator.synchronizeMonitors()
+                coordinator.refreshNewlyVisiblePanes()
             }
             .onDisappear {
                 coordinator.stop()

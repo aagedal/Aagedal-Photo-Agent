@@ -483,6 +483,8 @@ final class MetadataViewModel {
     /// Failures of embedded writes keyed by their write generation, so a caller chained behind
     /// other writes reads its own outcome instead of the shared, overwritable `saveError`.
     @ObservationIgnored private var embeddedWriteFailures: [Int: String] = [:]
+    /// Bumped when a newer save retires an earlier session's backup, so Develop hides its banner.
+    private(set) var primaryDevelopBackupRetirementGeneration = 0
     @ObservationIgnored private var primaryDevelopSourceBaseline: (imageURL: URL, loadID: UUID, revision: SourceImageRevision)?
     private(set) var retainedPrimaryDevelopWrites: [PrimaryDevelopWriteRequest] = []
     @ObservationIgnored private var primaryDevelopResults: [UUID: PrimaryDevelopWriteResult] = [:]
@@ -2007,6 +2009,7 @@ final class MetadataViewModel {
                     hasChanges = false; selectedHavePendingSidecars = false; saveError = nil
                 }
                 removePrimaryDevelopBackupIfResolved(request.imageURL)
+                retireSupersededPrimaryDevelopBackup(request.imageURL)
                 synchronizePrimaryDevelopRetention(); onComplete(.succeeded)
             } else if result.refusedForContentCredentials || result.refusedBeforeWrite {
                 // Nothing was written (Content Credentials, or develop metadata too large for the
@@ -2048,6 +2051,14 @@ final class MetadataViewModel {
         })?.id == request.id || !hasUnsavedPrimaryDevelop(for: request.imageURL) else {
             return primaryDevelopBackupURL(for: request.imageURL) != nil
         }
+        // A request from a later visit to the photo was edited on top of what's on disk, not on
+        // top of the earlier visit's unsaved edit, so it must not replace that edit's backup.
+        if retainedPrimaryDevelopWrites.contains(where: {
+            Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(request.imageURL)
+                && $0.loadID != request.loadID
+        }), primaryDevelopBackupURL(for: request.imageURL) != nil {
+            return true
+        }
         do {
             primaryDevelopBackups[Self.variablePhotoKey(request.imageURL)] = try PrimaryDevelopBackup.write(request)
             synchronizePrimaryDevelopRetention()
@@ -2063,6 +2074,14 @@ final class MetadataViewModel {
         guard !hasUnsavedPrimaryDevelop(for: image),
               let url = primaryDevelopBackups.removeValue(forKey: Self.variablePhotoKey(image)) else { return }
         PrimaryDevelopBackup.remove(at: url)
+    }
+
+    /// A newer Develop save landed: a backup left by an earlier session is outdated. Retire it
+    /// (hidden now, deleted at the next launch) instead of offering to restore over the save.
+    private func retireSupersededPrimaryDevelopBackup(_ image: URL) {
+        guard let backup = restorablePrimaryDevelopBackup(for: image) else { return }
+        PrimaryDevelopBackup.retire(at: backup)
+        primaryDevelopBackupRetirementGeneration &+= 1
     }
 
     /// Try Again for the selected photo's unsaved Develop edit. A save that wrote nothing failed
@@ -2081,6 +2100,11 @@ final class MetadataViewModel {
         guard let latest = pending.last else { return }
         guard pending.allSatisfy({ primaryDevelopResults[$0.id].map { !$0.completed && !$0.requiresRecovery } == true }) else {
             throw PrimaryDevelopWriteError(message: "This edit may be only partly saved, so it can't simply be saved again. Use Review to export it, then discard it and redo the changes you still want.")
+        }
+        // Edits made after leaving and reopening the photo started from what's on disk, without
+        // the earlier visit's unsaved edit; saving them would silently drop that edit.
+        guard Set(pending.map(\.loadID)).count == 1 else {
+            throw PrimaryDevelopWriteError(message: "An earlier unsaved edit of \(image.lastPathComponent) isn't included in the current settings. Use Review to export or discard it, then redo the changes you still want.")
         }
         let ownsEditor = metadataLoadRequestID == latest.loadID && currentFolderURL == latest.folderURL
         let intended = ownsEditor ? editingMetadata : latest.edited
@@ -6408,6 +6432,32 @@ final class MetadataViewModel {
                 saveError = "Couldn't save changes to \(imageURL.lastPathComponent). \(UserFacingErrorCause.sentence(for: error)) Try again."
             }
         }
+    }
+
+    /// True when the photo's XMP sidecar holds exactly the bytes this editor last read or wrote,
+    /// and the image file is byte-for-byte the revision it last recorded. A folder change for
+    /// such a photo is the echo of our own save; reloading would only interrupt editing (Develop
+    /// ignores input while a load runs). Any outside change — to the sidecar or to the file,
+    /// such as another app re-saving a JPEG — makes this false.
+    func diskMatchesEditorBaseline(for imageURL: URL) async -> Bool {
+        let loadID = metadataLoadRequestID
+        guard let folder = currentFolderURL, selectedURLs == [imageURL],
+              let xmp = editorXMPWriteBaseline, xmp.imageURL == imageURL, xmp.folderURL == folder,
+              xmp.loadID == loadID, let expectedXMP = xmp.snapshot,
+              let source = primaryDevelopSourceBaseline, source.imageURL == imageURL, source.loadID == loadID
+        else { return false }
+        guard await Self.currentXMPSnapshot(for: imageURL) == expectedXMP,
+              let revision = try? await SourceImageRevision.capture(at: imageURL),
+              revision.relationship(to: source.revision) == .exactRevision
+        else { return false }
+        // The editor may have moved on (another photo, a reload, a save) while we read.
+        return metadataLoadRequestID == loadID
+            && editorXMPWriteBaseline?.snapshot == expectedXMP
+            && primaryDevelopSourceBaseline?.revision == source.revision
+    }
+
+    @concurrent nonisolated private static func currentXMPSnapshot(for imageURL: URL) async -> XMPSidecarWriteSnapshot {
+        XMPSidecarWriteSnapshot(data: XMPSidecarService().sidecarDataIfExists(for: imageURL))
     }
 
     private func editorXMPWriteEvidence(for imageURL: URL, in folderURL: URL) -> Result<XMPSidecarWriteSnapshot, any Error> {
