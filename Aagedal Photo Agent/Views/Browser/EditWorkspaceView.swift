@@ -305,6 +305,7 @@ struct EditWorkspaceView: View {
     /// Owns local AppKit monitor registration and transient hover/Space-hand navigation state.
     /// Event interpretation remains at the view boundary.
     @State private var workspaceInput = DevelopWorkspaceInputCoordinator()
+    @State private var filmstripActions = EditFilmstripActions()
     @State private var keyboardWindow = DevelopKeyboardWindowReference()
     /// Owns workspace-wide named-version flush registration and replaceable transient notices.
     @State private var workspaceSession = DevelopWorkspaceSessionCoordinator()
@@ -2586,82 +2587,23 @@ struct EditWorkspaceView: View {
     }
 
     private var filmstrip: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: true) {
-                LazyHStack(spacing: 8) {
-                    ForEach(browserViewModel.visibleImages) { image in
-                        EditFilmstripItemView(
-                            image: image,
-                            thumbnailService: browserViewModel.thumbnailService,
-                            isSelected: browserViewModel.selectedImageIDs.contains(image.url)
-                        )
-                        .id(image.url)
-                        .onTapGesture {
-                            let modifiers = NSEvent.modifierFlags
-                            requestDevelopImageSelection(image.url, modifiers: modifiers)
-                        }
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(image.url.lastPathComponent)
-                        .accessibilityAddTraits(browserViewModel.selectedImageIDs.contains(image.url) ? [.isButton, .isSelected] : .isButton)
-                        .accessibilityAction {
-                            requestDevelopImageSelection(image.url, modifiers: [])
-                        }
-                        .onContinuousHover { phase in
-                            switch phase {
-                            case .active:
-                                hoveredFilmstripURL = image.url
-                            case .ended:
-                                if hoveredFilmstripURL == image.url {
-                                    hoveredFilmstripURL = nil
-                                }
-                            }
-                        }
-                        .contextMenu {
-                            Button("Copy Settings", systemImage: "doc.on.doc") {
-                                copyFilmstripSettings(from: image)
-                            }
-
-                            Button("Paste Settings", systemImage: "doc.on.clipboard") {
-                                pasteCopiedSettings(to: [image.url])
-                            }
-                            .disabled(browserViewModel.copiedCameraRawSettings == nil)
-
-                            if image.url != selectedImageURL {
-                                Divider()
-                                Button("Compare with Current Image", systemImage: "rectangle.split.2x1") {
-                                    openDevelopComparison(with: image)
-                                }
-
-                                Button("Copy Settings to Current Selection", systemImage: "paintbrush") {
-                                    applyFilmstripSettingsFromImageToCurrentSelection(image)
-                                }
-                                .disabled(browserViewModel.selectedImageIDs.isEmpty)
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-            }
-            .onChange(of: filmstripKeyboardScrollTarget) { _, target in
-                guard let target else { return }
-                withAnimation(.easeInOut(duration: 0.16)) {
-                    // No anchor means SwiftUI moves only as far as necessary to reveal the item.
-                    proxy.scrollTo(target)
-                }
-            }
-            .onAppear {
-                // Defer until the lazy stack has completed its first layout. Otherwise a
-                // selection far into the folder can be highlighted while remaining outside
-                // the filmstrip's initial visible range.
-                DispatchQueue.main.async {
-                    guard let target = selectedImageURL else { return }
-                    proxy.scrollTo(target, anchor: .center)
-                }
-            }
+        // Refreshed on every evaluation (no observation, so it triggers nothing): the strip keeps
+        // calling the current workspace's handlers without being rebuilt to receive them.
+        filmstripActions.select = { url, modifiers in
+            requestDevelopImageSelection(url, modifiers: modifiers)
         }
-        .frame(height: 120)
-        .background(Color(nsColor: .underPageBackgroundColor))
+        filmstripActions.copySettings = { image in copyFilmstripSettings(from: image) }
+        filmstripActions.pasteSettings = { url in pasteCopiedSettings(to: [url]) }
+        filmstripActions.compare = { image in openDevelopComparison(with: image) }
+        filmstripActions.applySettingsToSelection = { image in
+            applyFilmstripSettingsFromImageToCurrentSelection(image)
+        }
+        return EditFilmstripView(
+            browserViewModel: browserViewModel,
+            workspaceInput: workspaceInput,
+            actions: filmstripActions,
+            selectedImageURL: selectedImageURL
+        )
     }
 
     private func handleDevelopVersionImageChange(from oldURL: URL?, to newURL: URL?) {
@@ -4581,9 +4523,11 @@ struct EditWorkspaceView: View {
         }
         let oldSettings = browserViewModel.images[index].cameraRawSettings
         guard newSettings != oldSettings else { return }
-        browserViewModel.images[index].cameraRawSettings = newSettings
-        browserViewModel.images[index].hasDevelopEdits = newSettings?.hasEffectiveEdits == true
-        browserViewModel.images[index].hasCropEdits = newSettings?.crop?.isEffectiveCrop == true
+        browserViewModel.updateImagesInPlace([url]) { image in
+            image.cameraRawSettings = newSettings
+            image.hasDevelopEdits = newSettings?.hasEffectiveEdits == true
+            image.hasCropEdits = newSettings?.crop?.isEffectiveCrop == true
+        }
         browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
         // The full-screen cache's edited render was baked under the old settings.
         browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
@@ -8690,32 +8634,36 @@ struct EditWorkspaceView: View {
         // previous state so files whose write fails or is refused can be restored.
         var previousState: [URL: (settings: CameraRawSettings?, hasDevelopEdits: Bool, hasCropEdits: Bool)] = [:]
         var skippedLayers = 0
-        for url in urls {
-            if let index = browserViewModel.urlToImageIndex[url] {
-                let image = browserViewModel.images[index]
-                previousState[url] = (image.cameraRawSettings, image.hasDevelopEdits, image.hasCropEdits)
-                let result = CameraRawSettings.pastedResult(
-                    cameraRaw, onto: image.cameraRawSettings, includeCrop: includeCrop,
-                    maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
-                )
-                skippedLayers += result.skippedLayerCount
-                browserViewModel.images[index].cameraRawSettings = result.settings
-                browserViewModel.images[index].hasDevelopEdits = true
-                if includeCrop, cameraRaw.crop?.isEffectiveCrop == true {
-                    browserViewModel.images[index].hasCropEdits = true
-                }
-                browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
-                browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
-                persistenceSession.recordPublishedSettingsChanges(for: [url])
+        var pastedURLs: [URL] = []
+        browserViewModel.updateImagesInPlace(urls) { image in
+            let url = image.url
+            previousState[url] = (image.cameraRawSettings, image.hasDevelopEdits, image.hasCropEdits)
+            let result = CameraRawSettings.pastedResult(
+                cameraRaw, onto: image.cameraRawSettings, includeCrop: includeCrop,
+                maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
+            )
+            skippedLayers += result.skippedLayerCount
+            image.cameraRawSettings = result.settings
+            image.hasDevelopEdits = true
+            if includeCrop, cameraRaw.crop?.isEffectiveCrop == true {
+                image.hasCropEdits = true
             }
+            pastedURLs.append(url)
         }
+        for url in pastedURLs {
+            browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
+            browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
+        }
+        persistenceSession.recordPublishedSettingsChanges(for: pastedURLs)
         @MainActor func restorePreviousState(of failedURLs: some Sequence<URL>) {
-            for url in failedURLs {
-                guard let previous = previousState[url],
-                      let index = browserViewModel.urlToImageIndex[url] else { continue }
-                browserViewModel.images[index].cameraRawSettings = previous.settings
-                browserViewModel.images[index].hasDevelopEdits = previous.hasDevelopEdits
-                browserViewModel.images[index].hasCropEdits = previous.hasCropEdits
+            let restoredURLs = failedURLs.filter { previousState[$0] != nil }
+            browserViewModel.updateImagesInPlace(restoredURLs) { image in
+                guard let previous = previousState[image.url] else { return }
+                image.cameraRawSettings = previous.settings
+                image.hasDevelopEdits = previous.hasDevelopEdits
+                image.hasCropEdits = previous.hasCropEdits
+            }
+            for url in restoredURLs {
                 browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
                 browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
             }

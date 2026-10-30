@@ -40,11 +40,30 @@ struct XMPSidecarService: Sendable {
     /// `tiff:Orientation` (Adobe's authoritative tag), falling back to `exif:Orientation`. For
     /// off-main thumbnail generation, which needs only the orientation. Returns nil when there's no
     /// sidecar or it carries no orientation.
+    ///
+    /// The grid thumbnail, the full-screen prefetch and the folder's eager orientation pass all
+    /// ask for the same file, so the parsed value is memoized per sidecar and revalidated with a
+    /// single `stat` (inode, size, nanosecond mtime): any rewrite — ours are atomic replaces,
+    /// Bridge/Lightroom's change size or mtime — re-reads the file.
     nonisolated func sidecarOrientation(for imageURL: URL) -> Int? {
-        guard let data = sidecarDataIfExists(for: imageURL),
+        let url = sidecarURL(for: imageURL)
+        guard let stamp = SidecarOrientationMemo.Stamp(path: url.path) else {
+            SidecarOrientationMemo.shared.remove(url.path)
+            return nil
+        }
+        if let cached = SidecarOrientationMemo.shared.value(for: url.path, stamp: stamp) {
+            return cached
+        }
+        guard let data = try? Data(contentsOf: url),
               let xmp = try? XMPReader.readFromXML(data) else { return nil }
         let raw = xmp.tiffOrientation ?? xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
-        return raw.flatMap { Int($0) }
+        let orientation = raw.flatMap { Int($0) }
+        // Store only if the file did not change while it was read; a mismatched stamp would
+        // otherwise pin the older value until the next write.
+        if SidecarOrientationMemo.Stamp(path: url.path) == stamp {
+            SidecarOrientationMemo.shared.store(orientation, for: url.path, stamp: stamp)
+        }
+        return orientation
     }
 
     /// Pretty-prints the sidecar's XML for the metadata inspector by round-tripping it through the
@@ -741,5 +760,55 @@ struct XMPSidecarService: Sendable {
     nonisolated private func imageAspectIfCropAngled(for imageURL: URL, crop: CameraRawCrop?) -> Double? {
         guard let crop, abs(crop.angle ?? 0) > 0.0001 else { return nil }
         return ImagePixelAspect.aspect(at: imageURL)
+    }
+}
+
+/// Parsed `.xmp` orientations keyed by sidecar path, each tagged with the file identity it was
+/// read from (see `XMPSidecarService.sidecarOrientation`). Bounded: a folder larger than the
+/// cap simply starts over, which costs one re-parse per file.
+nonisolated final class SidecarOrientationMemo: Sendable {
+    struct Stamp: Equatable, Sendable {
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+
+        init?(path: String) {
+            var info = stat()
+            guard stat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+            inode = UInt64(info.st_ino)
+            size = Int64(info.st_size)
+            modifiedSeconds = info.st_mtimespec.tv_sec
+            modifiedNanoseconds = info.st_mtimespec.tv_nsec
+        }
+    }
+
+    private struct Entry: Sendable {
+        let stamp: Stamp
+        let orientation: Int?
+    }
+
+    static let shared = SidecarOrientationMemo()
+    private static let capacity = 20_000
+
+    private let entries = OSAllocatedUnfairLock(initialState: [String: Entry]())
+
+    /// The memoized orientation (`.some(nil)` = the sidecar has none), or nil when unknown or stale.
+    func value(for path: String, stamp: Stamp) -> Int?? {
+        entries.withLock { entries in
+            guard let entry = entries[path], entry.stamp == stamp else { return nil }
+            return .some(entry.orientation)
+        }
+    }
+
+    func store(_ orientation: Int?, for path: String, stamp: Stamp) {
+        entries.withLock { entries in
+            if entries.count >= Self.capacity, entries[path] == nil { entries.removeAll(keepingCapacity: true) }
+            entries[path] = Entry(stamp: stamp, orientation: orientation)
+        }
+    }
+
+    func remove(_ path: String) {
+        _ = entries.withLock { $0.removeValue(forKey: path) }
     }
 }

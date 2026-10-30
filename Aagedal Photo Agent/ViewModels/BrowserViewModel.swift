@@ -2800,6 +2800,27 @@ final class BrowserViewModel {
         if let index = urlToSelectedIndex[url] { selectedImagesCache[index] = image }
     }
 
+    /// Develop edits, pastes and their rollbacks change render settings and badges on existing
+    /// rows — never the URL inventory or a sort key (name, type, date, rating, label). Mutate
+    /// the rows in place and publish only those, instead of letting each `images[i].x = …`
+    /// re-sort and re-filter the whole folder (a 1,000-photo paste into a large folder did
+    /// that thousands of times).
+    func updateImagesInPlace(_ urls: some Sequence<URL>, _ mutate: (inout ImageFile) -> Void) {
+        // A metadata load can hold the cascade suppressed across awaits; restore its state.
+        let wasSuppressed = suppressImagesCascade
+        suppressImagesCascade = true
+        var changedURLs: [URL] = []
+        for url in urls {
+            guard let index = validImageIndex(for: url) else { continue }
+            let before = images[index]
+            mutate(&images[index])
+            if images[index] != before { changedURLs.append(url) }
+        }
+        suppressImagesCascade = wasSuppressed
+        guard !wasSuppressed, !changedURLs.isEmpty else { return }
+        publishMetadataBatch(for: changedURLs, sortKeyChanged: false)
+    }
+
     func captureTagReadRevisions(for urls: [URL]) -> [URL: UUID] {
         var revisions: [URL: UUID] = [:]
         for url in urls { revisions[url] = tagReadRevisions[url] }
@@ -5204,17 +5225,18 @@ final class BrowserViewModel {
         // Immediately update in-memory state for visual feedback, keeping what was there so a
         // photo whose reset can't be written gets its edits back instead of looking reset.
         var previousStates: [URL: ResetEditsPreviousState] = [:]
-        for url in urls {
-            guard let index = urlToImageIndex[url] else { continue }
-            previousStates[url] = ResetEditsPreviousState(
-                cameraRawSettings: images[index].cameraRawSettings,
-                hasDevelopEdits: images[index].hasDevelopEdits,
-                hasCropEdits: images[index].hasCropEdits,
-                cropRegion: images[index].cropRegion)
-            images[index].cameraRawSettings = nil
-            images[index].hasDevelopEdits = false
-            images[index].hasCropEdits = false
-            images[index].cropRegion = nil
+        updateImagesInPlace(urls) { image in
+            previousStates[image.url] = ResetEditsPreviousState(
+                cameraRawSettings: image.cameraRawSettings,
+                hasDevelopEdits: image.hasDevelopEdits,
+                hasCropEdits: image.hasCropEdits,
+                cropRegion: image.cropRegion)
+            image.cameraRawSettings = nil
+            image.hasDevelopEdits = false
+            image.hasCropEdits = false
+            image.cropRegion = nil
+        }
+        for url in urls where previousStates[url] != nil {
             thumbnailService.invalidateThumbnail(for: url)
             // Drop the rendered (edited) full-screen entries too — otherwise the
             // full-screen viewer can serve a cached image still carrying the old
@@ -5333,15 +5355,19 @@ final class BrowserViewModel {
         refusalMessage: String?
     ) {
         guard !failures.isEmpty else { return }
-        for (url, _) in failures {
-            guard let previous = previousStates[url], let index = urlToImageIndex[url],
+        var restoredURLs: [URL] = []
+        updateImagesInPlace(failures.keys) { image in
+            guard let previous = previousStates[image.url],
                   // Leave a photo alone if it was edited again since the reset.
-                  images[index].cameraRawSettings == nil, !images[index].hasDevelopEdits,
-                  !images[index].hasCropEdits else { continue }
-            images[index].cameraRawSettings = previous.cameraRawSettings
-            images[index].hasDevelopEdits = previous.hasDevelopEdits
-            images[index].hasCropEdits = previous.hasCropEdits
-            images[index].cropRegion = previous.cropRegion
+                  image.cameraRawSettings == nil, !image.hasDevelopEdits,
+                  !image.hasCropEdits else { return }
+            image.cameraRawSettings = previous.cameraRawSettings
+            image.hasDevelopEdits = previous.hasDevelopEdits
+            image.hasCropEdits = previous.hasCropEdits
+            image.cropRegion = previous.cropRegion
+            restoredURLs.append(image.url)
+        }
+        for url in restoredURLs {
             thumbnailService.invalidateThumbnail(for: url)
             fullScreenImageCache.invalidateEditedImage(for: url)
         }

@@ -1522,9 +1522,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         private let pipeline: MetalEditPipeline?
         private var pressureRegistration: ImageMemoryCoordinator.Registration?
 
-        init() {
+        init(label: String) {
             let ownerQueue = DispatchSerialQueue(
-                label: "com.aagedal.photo-agent.offscreen-render",
+                label: label,
                 qos: .userInitiated
             )
             queue = ownerQueue
@@ -1615,7 +1615,33 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
-    nonisolated private static let offscreenRenderer = OffscreenRendererExecutor()
+    nonisolated private static let offscreenRenderer = OffscreenRendererExecutor(
+        label: "com.aagedal.photo-agent.offscreen-render"
+    )
+
+    /// Which offscreen engine serves a render. Export renders are full resolution and can
+    /// queue back to back for a whole batch; on the shared FIFO queue every visible grid
+    /// thumbnail, filmstrip render and full-screen prefetch waited behind them. Exports run on
+    /// their own engine (queue, command queue, scratch textures) so interactive renders
+    /// interleave on the GPU instead. Set with `$offscreenLane.withValue(.export)`.
+    nonisolated enum OffscreenLane: Sendable {
+        case interactive
+        case export
+    }
+
+    @TaskLocal nonisolated static var offscreenLane: OffscreenLane = .interactive
+
+    /// Created on the first export, so a session that never exports pays nothing for it.
+    nonisolated private static let exportOffscreenRenderer = OffscreenRendererExecutor(
+        label: "com.aagedal.photo-agent.offscreen-render.export"
+    )
+
+    nonisolated private static var laneOffscreenRenderer: OffscreenRendererExecutor {
+        switch offscreenLane {
+        case .interactive: offscreenRenderer
+        case .export: exportOffscreenRenderer
+        }
+    }
 
     /// Max 2D texture dimension. Metal exposes no runtime query for this; every macOS GPU
     /// family (Apple and Mac2) caps a 2D texture at 16384 px per side, so we use that.
@@ -4217,7 +4243,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         exifOrientation: Int = 1,
         outputSize: CGSize? = nil
     ) -> CIImage? {
-        offscreenRenderer.render(
+        laneOffscreenRenderer.render(
             source: source,
             settings: settings,
             exifOrientation: exifOrientation,
@@ -4233,7 +4259,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         settings: CameraRawSettings?,
         exifOrientation: Int = 1
     ) -> CIImage? {
-        offscreenRenderer.render(
+        laneOffscreenRenderer.render(
             source: source,
             settings: settings,
             exifOrientation: exifOrientation,
@@ -4255,7 +4281,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         settings: CameraRawSettings?,
         exifOrientation: Int = 1
     ) async -> CIImage? {
-        await offscreenRenderer.renderAsync(
+        await laneOffscreenRenderer.renderAsync(
             source: source,
             settings: settings,
             exifOrientation: exifOrientation,
@@ -4269,7 +4295,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         settings: CameraRawSettings?,
         exifOrientation: Int = 1
     ) async -> CIImage? {
-        await offscreenRenderer.renderAsync(
+        await laneOffscreenRenderer.renderAsync(
             source: source,
             settings: settings,
             exifOrientation: exifOrientation,
