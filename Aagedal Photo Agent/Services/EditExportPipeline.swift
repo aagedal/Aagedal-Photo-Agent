@@ -708,7 +708,7 @@ enum EditExportPipeline {
             // don't queue behind a batch of full-resolution renders.
             let forceGPUFailure = GPURenderFaultInjection.forceFailure
             let renderedURL = try await Task.detached(priority: .userInitiated) {
-                try await MetalEditPipeline.$offscreenLane.withValue(.export) {
+                try await OffscreenRenderLane.$current.withValue(.export) {
                     try await GPURenderFaultInjection.$forceFailure.withValue(forceGPUFailure) {
                         switch kind {
                         case .format:
