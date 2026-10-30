@@ -1801,6 +1801,16 @@ final class MetadataViewModel {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// True when the backup records a different photo than the one now at this path: neither its
+    /// bytes nor its file identity match the loaded photo's. Unknown (no recorded identity, or the
+    /// photo's revision isn't captured yet) is false; the backup is still offered either way.
+    func primaryDevelopBackupRecordsAnotherPhoto(_ backup: URL, for image: URL) -> Bool {
+        guard let recorded = PrimaryDevelopBackup.recordedSource(at: backup),
+              let source = primaryDevelopSourceBaseline, source.imageURL == image,
+              source.loadID == metadataLoadRequestID else { return false }
+        return !recorded.matches(source.revision)
+    }
+
     /// The backup's Develop settings, for Develop to apply as an ordinary (undoable) edit. The
     /// backup is tracked again from here on, so the save that follows deletes it once it lands,
     /// and a failed save overwrites it with the restored edit.

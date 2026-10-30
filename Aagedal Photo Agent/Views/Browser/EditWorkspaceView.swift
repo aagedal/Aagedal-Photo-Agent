@@ -325,6 +325,8 @@ struct EditWorkspaceView: View {
     /// The selected photo's backup of an earlier failed save that is no longer queued (see
     /// `MetadataViewModel.restorablePrimaryDevelopBackup`), re-checked as each load completes.
     @State private var restorableDevelopBackup: URL?
+    /// The backup records a different photo than the one now at its path (set with the above).
+    @State private var restorableDevelopBackupRecordsAnotherPhoto = false
     /// Photo whose metadata load last completed; a load for a different photo starts a fresh
     /// Develop undo history so no entry can restore another photo's (or a placeholder) state.
     @State private var undoHistoryImageURL: URL?
@@ -2246,6 +2248,12 @@ struct EditWorkspaceView: View {
                   systemImage: "clock.arrow.circlepath")
                 .font(.caption2)
                 .foregroundStyle(.orange)
+            if restorableDevelopBackupRecordsAnotherPhoto {
+                Label("It was made for a different file with this name, so it may belong to another photo.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
             HStack(spacing: 8) {
                 Button("Restore Backup") { restoreDevelopBackup(backup, for: url) }
                     .help("Replace this photo's Develop settings with the backed-up edit and save it. You can undo this.")
@@ -2267,6 +2275,9 @@ struct EditWorkspaceView: View {
         restorableDevelopBackup = selectedImageURL.flatMap {
             metadataViewModel.selectedURLs == [$0] ? metadataViewModel.restorablePrimaryDevelopBackup(for: $0) : nil
         }
+        restorableDevelopBackupRecordsAnotherPhoto = restorableDevelopBackup.map { backup in
+            selectedImageURL.map { metadataViewModel.primaryDevelopBackupRecordsAnotherPhoto(backup, for: $0) } ?? false
+        } ?? false
     }
 
     private func restoreDevelopBackup(_ backup: URL, for url: URL) {
