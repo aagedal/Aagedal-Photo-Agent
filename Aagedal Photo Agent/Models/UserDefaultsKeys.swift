@@ -114,10 +114,6 @@ nonisolated enum UserDefaultsKeys {
     static let lastScopeMode = "lastScopeMode"
     static let scopesExpanded = "scopesExpanded"
     static let metadataPanelWidth = "metadataPanelWidth"
-    /// Split-view layout of the thumbnail area (BrowserPaneLayout raw value).
-    static let browserPaneLayout = "browserPaneLayout"
-    /// First-pane fraction of the thumbnail split (0.15…0.85).
-    static let browserPaneSplitFraction = "browserPaneSplitFraction"
     /// True → full-screen viewer uses nearest-neighbor (pixel) magnification;
     /// false (default) → linear/bilinear smoothing.
     static let imageScalingNearestNeighbor = "imageScalingNearestNeighbor"

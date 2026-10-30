@@ -32,6 +32,11 @@ struct FolderTreeRow: View {
     /// The active pane's current folder — drives the highlight, independent of which
     /// pane backs the tree.
     let currentFolderURL: URL?
+    /// Folders shown by the other on-screen panes in split view; marked more quietly.
+    var otherPaneFolderURLs: Set<URL> = []
+    /// Several panes are open, so "which folder is the active pane" needs a stronger cue
+    /// than the single-browser tint: a solid selection fill.
+    var emphasizesCurrent: Bool = false
     /// Opens a folder into the active pane (and registers it in the shared sidebar).
     /// Bool = whether to add it to the Open Folders section.
     let openFolder: (URL, Bool) -> Void
@@ -45,6 +50,23 @@ struct FolderTreeRow: View {
 
     private var isCurrent: Bool {
         url == currentFolderURL
+    }
+
+    private var isInOtherPane: Bool {
+        !isCurrent && otherPaneFolderURLs.contains(url)
+    }
+
+    /// Solid accent selection (active pane's folder in split view).
+    private var isStrongCurrent: Bool {
+        isCurrent && emphasizesCurrent
+    }
+
+    private var rowFill: Color {
+        if isStrongCurrent { return Color.accentColor }
+        if isCurrent { return Color.accentColor.opacity(0.15) }
+        if isDropHighlighted { return Color.accentColor.opacity(0.1) }
+        if isInOtherPane { return Color.primary.opacity(0.08) }
+        return Color.clear
     }
 
     private var isExpanded: Bool {
@@ -87,6 +109,8 @@ struct FolderTreeRow: View {
                         isRootOfSection: false,
                         viewModel: viewModel,
                         currentFolderURL: currentFolderURL,
+                        otherPaneFolderURLs: otherPaneFolderURLs,
+                        emphasizesCurrent: emphasizesCurrent,
                         openFolder: openFolder,
                         closeFolder: closeFolder,
                         revealInFinder: revealInFinder
@@ -112,7 +136,7 @@ struct FolderTreeRow: View {
                     Image(systemName: "chevron.right")
                         .font(.caption2)
                         .fontWeight(.semibold)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isStrongCurrent ? AnyShapeStyle(Color.white.opacity(0.85)) : AnyShapeStyle(.secondary))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .animation(.easeInOut(duration: 0.15), value: isExpanded)
                         // Hit target much larger than the glyph, so expanding
@@ -130,18 +154,28 @@ struct FolderTreeRow: View {
                     .frame(width: 20)
             }
 
-            Image(systemName: isCurrent || isRootOfSection ? "folder.fill" : "folder")
-                .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+            Image(systemName: isCurrent || isInOtherPane || isRootOfSection ? "folder.fill" : "folder")
+                .foregroundStyle(isStrongCurrent ? Color.white : isCurrent ? Color.accentColor : Color.secondary)
                 .accessibilityHidden(true)
             Text(url.lastPathComponent)
                 .font(.callout)
-                .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
+                .fontWeight(isStrongCurrent ? .semibold : nil)
+                .foregroundStyle(isStrongCurrent ? Color.white : isCurrent ? Color.accentColor : Color.primary)
                 // The row's tap gesture opens the folder; VoiceOver needs the same action here,
                 // separate from the expand and close buttons in the row.
                 .accessibilityLabel("Folder \(url.lastPathComponent)")
                 .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
+                .accessibilityValue(isStrongCurrent ? "Shown in active pane" : isInOtherPane ? "Shown in another pane" : "")
                 .accessibilityAction { openFolder(url, section == .openRoot) }
             Spacer()
+
+            if isInOtherPane {
+                Image(systemName: "rectangle.split.2x1")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .help("Shown in another pane")
+                    .accessibilityHidden(true)
+            }
 
             if isRootOfSection && section == .openRoot && isHovered {
                 Button {
@@ -160,8 +194,7 @@ struct FolderTreeRow: View {
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isCurrent ? Color.accentColor.opacity(0.15) :
-                      isDropHighlighted ? Color.accentColor.opacity(0.1) : Color.clear)
+                .fill(rowFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)

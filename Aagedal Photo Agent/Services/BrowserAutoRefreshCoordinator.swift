@@ -225,7 +225,7 @@ final class BrowserAutoRefreshCoordinator {
     }
 
     private func panesToMonitor() -> [BrowserViewModel] {
-        panes.layout.usesSecondPane ? panes.panes : [panes.active]
+        panes.panes
     }
 
     private func filesystemDidChange(
