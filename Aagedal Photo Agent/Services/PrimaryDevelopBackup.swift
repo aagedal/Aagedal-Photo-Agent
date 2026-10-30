@@ -51,6 +51,29 @@ nonisolated enum PrimaryDevelopBackup {
         return url
     }
 
+    static let retiredExtension = "retired"
+
+    /// A newer Develop save of the photo landed, so a backup left from an earlier session (a
+    /// quit, a crash, a Review discard) is no longer offered. It stays in Finder until the next
+    /// launch (`purgeRetired`), in case the newer save wasn't what the user wanted after all.
+    static func retire(at url: URL) {
+        let retired = url.appendingPathExtension(retiredExtension)
+        try? FileManager.default.removeItem(at: retired)
+        try? FileManager.default.moveItem(at: url, to: retired)
+    }
+
+    /// Deletes backups retired in an earlier session. Run once at launch, off the main thread.
+    static func purgeRetired(in root: URL = PrimaryDevelopBackup.root) {
+        let fileManager = FileManager.default
+        guard let folders = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
+        for folder in folders {
+            guard let files = try? fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { continue }
+            for file in files where file.pathExtension == retiredExtension {
+                remove(at: file)
+            }
+        }
+    }
+
     /// Called once the photo's edit has been saved for real; an emptied folder is removed too.
     static func remove(at url: URL) {
         try? FileManager.default.removeItem(at: url)

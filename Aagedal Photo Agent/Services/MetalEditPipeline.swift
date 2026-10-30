@@ -991,6 +991,9 @@ final class MetalEditPipeline: @unchecked Sendable {
             var redactA: MTLTexture?
             var redactB: MTLTexture?
             var redactOut: MTLTexture?
+            /// Reduced copies for wide blurs (`RedactStage.maximumDirectBlurRadius`).
+            var redactReducedA: MTLTexture?
+            var redactReducedB: MTLTexture?
             var intermediateAllocationCount = 0
             var aiMaskTextures: [(key: AIMaskTextureKey, texture: MTLTexture)] = []
             var aiMaskTextureDecodeCount = 0
@@ -1187,6 +1190,8 @@ final class MetalEditPipeline: @unchecked Sendable {
                 $0.redactA = nil
                 $0.redactB = nil
                 $0.redactOut = nil
+                $0.redactReducedA = nil
+                $0.redactReducedB = nil
             }
         }
     }
@@ -1200,6 +1205,8 @@ final class MetalEditPipeline: @unchecked Sendable {
             $0.redactA = nil
             $0.redactB = nil
             $0.redactOut = nil
+            $0.redactReducedA = nil
+            $0.redactReducedB = nil
             $0.aiMaskTextures = []
         }
     }
@@ -3308,7 +3315,17 @@ final class MetalEditPipeline: @unchecked Sendable {
         var current = input
         for (index, stage) in stages.enumerated() {
             let target: MTLTexture
-            if index == stages.count - 1 {
+            let reduced = stage.kernel == .downsample || (stage.kernel == .blur && stage.scaleFactor > 1)
+            if reduced {
+                let factor = max(stage.scaleFactor, 1)
+                let reducedWidth = (width + factor - 1) / factor
+                let reducedHeight = (height + factor - 1) / factor
+                let slot: WritableKeyPath<ExecutorOwnedRenderScratchState.Storage, MTLTexture?> =
+                    stage.kernel == .downsample || stage.blurDirection == 1 ? \.redactReducedA : \.redactReducedB
+                guard let texture = redactScratch(slot, width: reducedWidth, height: reducedHeight, reuse: reuse)
+                else { return nil }
+                target = texture
+            } else if index == stages.count - 1 {
                 target = output
             } else if let scratchA, current !== scratchA {
                 target = scratchA
@@ -3319,15 +3336,18 @@ final class MetalEditPipeline: @unchecked Sendable {
             }
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return nil }
             var params = base
+            params.width = Int32(target.width)
+            params.height = Int32(target.height)
             params.blurDir = stage.blurDirection
-            params.blurRadius = Int32(min(stage.blurRadius.rounded(.up), 512))
-            params.blurSigma = max(stage.blurRadius * 0.5, 0.1)
+            params.blurRadius = Int32(stage.blurRadius.rounded(.up))
+            params.blurSigma = stage.blurSigma
+            params.scaleFactor = Int32(stage.scaleFactor)
             encoder.setComputePipelineState(redactPipelineStates[stage.kernel.rawValue])
             encoder.setTexture(current, index: 0)
             encoder.setTexture(target, index: 1)
             encoder.setBytes(&params, length: MemoryLayout<RedactPassParams>.stride, index: 0)
             encoder.dispatchThreads(
-                MTLSize(width: width, height: height, depth: 1),
+                MTLSize(width: target.width, height: target.height, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1)
             )
             encoder.endEncoding()

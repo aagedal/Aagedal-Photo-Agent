@@ -28,6 +28,8 @@ nonisolated struct RedactPassParams {
     var a00: Float = 1, a01: Float = 0, a10: Float = 0, a11: Float = 1
     var b0: Float = 0, b1: Float = 0
     var i00: Float = 1, i01: Float = 0, i10: Float = 0, i11: Float = 1
+    /// Downsample / upsample stages: full-size texture pixels per reduced pixel.
+    var scaleFactor: Int32 = 1
 }
 
 /// Maps working-texture pixels to image pixels (the full source frame of the render), so the
@@ -244,7 +246,7 @@ nonisolated enum RedactDisplacement {
 
 /// The Redact compute kernels, in `MetalEditPipeline.redactPipelineStates` order.
 nonisolated enum RedactKernel: Int, CaseIterable {
-    case distort, blur, mosaic, frost
+    case distort, blur, mosaic, frost, downsample, upsample
 
     var functionName: String {
         switch self {
@@ -252,6 +254,8 @@ nonisolated enum RedactKernel: Int, CaseIterable {
         case .blur: "redactBlur"
         case .mosaic: "redactMosaic"
         case .frost: "redactFrost"
+        case .downsample: "redactDownsample"
+        case .upsample: "redactUpsample"
         }
     }
 }
@@ -260,20 +264,46 @@ nonisolated enum RedactKernel: Int, CaseIterable {
 nonisolated struct RedactStage: Equatable {
     var kernel: RedactKernel
     var blurDirection: Int32 = 0
-    /// Texture pixels (blur stages only).
+    /// Texture pixels of the texture the stage works on (blur stages only).
     var blurRadius: Float = 0
+    var blurSigma: Float = 0.1
+    /// Blur stages between a downsample and an upsample work on a texture reduced by this
+    /// factor; the downsample/upsample stages carry it too. 1 = full size.
+    var scaleFactor: Int = 1
+
+    /// Largest blur radius run at full size. A wider Gaussian is computed on a box-downsampled
+    /// copy and scaled back up: same result to within a fraction of a level, without a
+    /// thousand-tap kernel per pixel (or the plugin's 512 px cap, which made large exports
+    /// blur less than their preview).
+    static let maximumDirectBlurRadius: Float = 256
 
     /// The plugin's pass order: distort → blur → mosaic (or distort → mosaic → blur with Blur
     /// After Mosaic), then the frost blur and finish. The mosaic stage always runs: it also
     /// desaturates, and passes pixels through when the mosaic layer is off. Blur radii are in
-    /// texture pixels, capped at 512 like the plugin.
+    /// texture pixels; the kernel is truncated at 2 sigma like the plugin.
     static func stages(for settings: RedactRenderSettings, textureScale: Float) -> [RedactStage] {
         var result: [RedactStage] = []
         func addBlur(_ imageRadius: Float) {
-            let radius = min(imageRadius * textureScale, 512)
+            let radius = imageRadius * textureScale
             guard Int(radius.rounded(.up)) >= 1 else { return }
-            result.append(RedactStage(kernel: .blur, blurDirection: 0, blurRadius: radius))
-            result.append(RedactStage(kernel: .blur, blurDirection: 1, blurRadius: radius))
+            let sigma = max(radius * 0.5, 0.1)
+            guard radius > maximumDirectBlurRadius else {
+                result.append(RedactStage(kernel: .blur, blurDirection: 0, blurRadius: radius, blurSigma: sigma))
+                result.append(RedactStage(kernel: .blur, blurDirection: 1, blurRadius: radius, blurSigma: sigma))
+                return
+            }
+            let factor = Int((radius / maximumDirectBlurRadius).rounded(.up))
+            let f = Float(factor)
+            // The f×f box average (variance f²/12) and the bilinear upsample (f²/6) already
+            // blur by f²/4; the reduced Gaussian supplies the rest.
+            let reducedSigma = max((sigma * sigma - f * f / 4).squareRoot(), 0.25 * f) / f
+            let reducedRadius = 2 * reducedSigma
+            result.append(RedactStage(kernel: .downsample, scaleFactor: factor))
+            result.append(RedactStage(kernel: .blur, blurDirection: 0, blurRadius: reducedRadius,
+                                      blurSigma: reducedSigma, scaleFactor: factor))
+            result.append(RedactStage(kernel: .blur, blurDirection: 1, blurRadius: reducedRadius,
+                                      blurSigma: reducedSigma, scaleFactor: factor))
+            result.append(RedactStage(kernel: .upsample, scaleFactor: factor))
         }
         if settings.distortAmount > 0.001 {
             result.append(RedactStage(kernel: .distort))

@@ -43,6 +43,8 @@ struct AppStartupWorkDependencies {
             startPortableServices: {
                 PreferencesSyncService.shared.start()
                 KeywordListsBackupService.shared.start()
+                // Develop backups retired by a newer save in the previous session.
+                Task.detached(priority: .utility) { PrimaryDevelopBackup.purgeRetired() }
             },
             refreshC2PATrustList: {
                 await C2PATrustListService.shared.refreshIfNeeded()

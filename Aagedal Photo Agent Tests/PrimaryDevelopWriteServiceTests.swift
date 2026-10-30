@@ -704,6 +704,36 @@ struct PrimaryDevelopWriteServiceTests {
         }
     }
 
+    @Test("Our own Develop save is recognised as an echo; another app's sidecar or file write is not")
+    func ownSaveEchoIsRecognised() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+        try await load(model, image: image, folder: folder)
+        #expect(await model.diskMatchesEditorBaseline(for: image))
+
+        model.editingMetadata.cameraRaw = settings(1.5)
+        model.markChanged()
+        var outcome: MetadataCommitResult?
+        model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar, onComplete: { outcome = $0 })
+        await model.waitForPrimaryDevelopWrites()
+        guard case .succeeded? = outcome else { Issue.record("save failed: \(String(describing: outcome))"); return }
+        #expect(await model.diskMatchesEditorBaseline(for: image))
+
+        // Another app rewrites the sidecar.
+        let sidecar = XMPSidecarService().sidecarURL(for: image)
+        let saved = try Data(contentsOf: sidecar)
+        try (saved + Data(" ".utf8)).write(to: sidecar)
+        #expect(await !model.diskMatchesEditorBaseline(for: image))
+        try saved.write(to: sidecar)
+        #expect(await model.diskMatchesEditorBaseline(for: image))
+
+        // Another app re-saves the image itself (sidecar untouched).
+        let original = try Data(contentsOf: image)
+        try (original + Data([0])).write(to: image)
+        #expect(await !model.diskMatchesEditorBaseline(for: image))
+    }
+
     @Test("After leaving and reopening a photo, a new tweak neither replaces the failed edit's backup nor is saved over it by Try Again")
     func reopenedPhotoKeepsEarlierFailedEdit() async throws {
         let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
@@ -771,6 +801,47 @@ struct PrimaryDevelopWriteServiceTests {
             #expect(XMPSidecarService().loadSidecar(for: image)?.cameraRaw?.exposure2012 == 2)
             #expect(!FileManager.default.fileExists(atPath: backup.path))
             #expect(model.restorablePrimaryDevelopBackup(for: image) == nil)
+        }
+    }
+
+    @Test("A newer save retires an earlier session's backup; it is deleted at the next launch")
+    func newerSaveRetiresStaleBackup() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let backups = folder.appendingPathComponent("Backups", isDirectory: true)
+        try await PrimaryDevelopBackup.$rootOverride.withValue(backups) {
+            let first = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+                primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+            try await load(first, image: image, folder: folder)
+            var external = IPTCMetadata(); external.title = "Written elsewhere"
+            try XMPSidecarService().saveSidecar(metadata: external, for: image)
+            first.editingMetadata.cameraRaw = settings(2)
+            first.markChanged()
+            first.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar, onComplete: { _ in })
+            await first.waitForPrimaryDevelopWrites()
+            let backup = try #require(first.primaryDevelopBackupURL(for: image))
+
+            // "Relaunch", then make and save a different edit instead of restoring.
+            let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+                primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+            try await load(model, image: image, folder: folder)
+            #expect(model.restorablePrimaryDevelopBackup(for: image) == backup)
+            model.editingMetadata.cameraRaw = settings(-1)
+            model.markChanged()
+            var outcome: MetadataCommitResult?
+            model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar, onComplete: { outcome = $0 })
+            await model.waitForPrimaryDevelopWrites()
+            guard case .succeeded? = outcome else { Issue.record("save failed: \(String(describing: outcome))"); return }
+
+            #expect(model.restorablePrimaryDevelopBackup(for: image) == nil)
+            #expect(model.primaryDevelopBackupRetirementGeneration == 1)
+            let retired = backup.appendingPathExtension(PrimaryDevelopBackup.retiredExtension)
+            #expect(FileManager.default.fileExists(atPath: retired.path))
+            #expect(!FileManager.default.fileExists(atPath: backup.path))
+
+            // Next launch.
+            PrimaryDevelopBackup.purgeRetired(in: backups)
+            #expect(!FileManager.default.fileExists(atPath: retired.path))
+            #expect(XMPSidecarService().loadSidecar(for: image)?.cameraRaw?.exposure2012 == -1)
         }
     }
 

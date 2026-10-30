@@ -374,6 +374,24 @@ final class BrowserAutoRefreshCoordinator {
         // Develop may have started an edit while the folder was scanned; reloading now would
         // swap that edit's save baseline. Its save then reports the conflict instead.
         if metadataViewModel.isInEditView, !metadataViewModel.canAdoptExternalChangesInDevelop { return }
+        guard selectedURLs.count == 1, let imageURL = selectedURLs.first else {
+            reloadSelectedMetadata(in: pane)
+            return
+        }
+        // The file watcher can't tell our own saves from other apps' writes. Skip the reload
+        // when the files are exactly what the editor last wrote.
+        Task { @MainActor [weak self, weak pane] in
+            guard let self, let pane else { return }
+            if await self.metadataViewModel.diskMatchesEditorBaseline(for: imageURL) { return }
+            guard pane === self.panes.active,
+                  self.metadataViewModel.selectedURLs == [imageURL],
+                  !self.metadataViewModel.isSaving else { return }
+            if self.metadataViewModel.isInEditView, !self.metadataViewModel.canAdoptExternalChangesInDevelop { return }
+            self.reloadSelectedMetadata(in: pane)
+        }
+    }
+
+    private func reloadSelectedMetadata(in pane: BrowserViewModel) {
         metadataViewModel.loadMetadata(
             for: pane.selectedImages,
             folderURL: pane.currentFolderURL,

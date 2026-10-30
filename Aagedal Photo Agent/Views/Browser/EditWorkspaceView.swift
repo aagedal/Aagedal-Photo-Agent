@@ -1008,6 +1008,9 @@ struct EditWorkspaceView: View {
             if !retained { clearResolvedPrimaryTransitionNotice() }
             refreshRestorableDevelopBackup()
         }
+        .onChange(of: metadataViewModel.primaryDevelopBackupRetirementGeneration) { _, _ in
+            refreshRestorableDevelopBackup()
+        }
     }
 
     private var workspaceWithPreviewObservers: some View {
