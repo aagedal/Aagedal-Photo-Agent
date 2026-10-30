@@ -790,6 +790,8 @@ struct PrimaryDevelopWriteServiceTests {
                 primaryDevelopLifecycle: lifecycle)
             try await load(model, image: image, folder: folder)
             #expect(model.restorablePrimaryDevelopBackup(for: image) == backup)
+            #expect(PrimaryDevelopBackup.recordedSource(at: backup) != nil)
+            #expect(!model.primaryDevelopBackupRecordsAnotherPhoto(backup, for: image))
             let restored = try model.adoptPrimaryDevelopBackup(backup, for: image)
             #expect(restored?.exposure2012 == 2)
             model.editingMetadata.cameraRaw = restored
@@ -801,6 +803,41 @@ struct PrimaryDevelopWriteServiceTests {
             #expect(XMPSidecarService().loadSidecar(for: image)?.cameraRaw?.exposure2012 == 2)
             #expect(!FileManager.default.fileExists(atPath: backup.path))
             #expect(model.restorablePrimaryDevelopBackup(for: image) == nil)
+        }
+    }
+
+    @Test("A backup found for a different photo later given the same name is flagged, still offered")
+    func backupForReplacedPhotoIsFlagged() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let backups = folder.appendingPathComponent("Backups", isDirectory: true)
+        try await PrimaryDevelopBackup.$rootOverride.withValue(backups) {
+            let first = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+                primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+            try await load(first, image: image, folder: folder)
+            var external = IPTCMetadata(); external.title = "Written elsewhere"
+            try XMPSidecarService().saveSidecar(metadata: external, for: image)
+            first.editingMetadata.cameraRaw = settings(2)
+            first.markChanged()
+            first.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar, onComplete: { _ in })
+            await first.waitForPrimaryDevelopWrites()
+            let backup = try #require(first.primaryDevelopBackupURL(for: image))
+
+            // The photo is deleted and a different one is given its name (new file, new bytes).
+            try FileManager.default.removeItem(at: image)
+            let other = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 7, pixelsHigh: 4,
+                bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            try #require(other.representation(using: .png, properties: [:])).write(to: image)
+
+            let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+                primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+            try await load(model, image: image, folder: folder)
+            #expect(model.restorablePrimaryDevelopBackup(for: image) == backup)
+            #expect(model.primaryDevelopBackupRecordsAnotherPhoto(backup, for: image))
+
+            // A backup without a recorded identity (older build) isn't flagged.
+            removexattr(backup.path, PrimaryDevelopBackup.sourceAttributeName, 0)
+            #expect(!model.primaryDevelopBackupRecordsAnotherPhoto(backup, for: image))
         }
     }
 

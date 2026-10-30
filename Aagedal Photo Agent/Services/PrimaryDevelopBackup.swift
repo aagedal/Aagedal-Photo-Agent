@@ -48,7 +48,45 @@ nonisolated enum PrimaryDevelopBackup {
         let url = url(for: request.imageURL, pairedWithRAW: request.embedsDevelopOnly)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data(for: request.edited, imageURL: request.imageURL).write(to: url, options: .atomic)
+        if let source = request.sourceRevision { recordSource(source, at: url) }
         return url
+    }
+
+    /// The photo a backup was made for. A backup is found by folder + file name only, so a
+    /// different photo later given the same name would otherwise be offered it.
+    struct SourceIdentity: Codable, Equatable {
+        let sha256: String
+        let fileResourceIdentifier: SourceImageRevision.FileResourceIdentifier?
+
+        /// Same bytes, or the same file since changed (e.g. another app re-saved the JPEG).
+        func matches(_ revision: SourceImageRevision) -> Bool {
+            sha256 == revision.sha256
+                || (fileResourceIdentifier != nil && fileResourceIdentifier == revision.fileResourceIdentifier)
+        }
+    }
+
+    static let sourceAttributeName = "com.aagedal.photo-agent.develop-backup-source"
+
+    /// Kept in an extended attribute so the backup stays a plain `.xmp`; `retire` moves it along.
+    static func recordSource(_ revision: SourceImageRevision, at url: URL) {
+        let identity = SourceIdentity(sha256: revision.sha256,
+                                      fileResourceIdentifier: revision.fileResourceIdentifier)
+        guard let data = try? JSONEncoder().encode(identity) else { return }
+        _ = data.withUnsafeBytes { bytes in
+            setxattr(url.path, sourceAttributeName, bytes.baseAddress, bytes.count, 0, 0)
+        }
+    }
+
+    /// Nil for a backup written before identities were recorded, or copied without its attribute.
+    static func recordedSource(at url: URL) -> SourceIdentity? {
+        let size = getxattr(url.path, sourceAttributeName, nil, 0, 0, 0)
+        guard size > 0, size <= 4_096 else { return nil }
+        var data = Data(count: size)
+        let read = data.withUnsafeMutableBytes { bytes in
+            getxattr(url.path, sourceAttributeName, bytes.baseAddress, size, 0, 0)
+        }
+        guard read == size else { return nil }
+        return try? JSONDecoder().decode(SourceIdentity.self, from: data)
     }
 
     static let retiredExtension = "retired"
