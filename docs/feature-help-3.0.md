@@ -20,8 +20,11 @@ their requested category and clear any active search.
 ## Open a focused workspace
 
 Use the **Workspace** menu in the toolbar to open one of these workspaces. The separate
-**Layout** menu in Browser arranges its panes as Single, Split Side by Side, Split Top and Bottom,
-or Tabs. Returning to Browser preserves that layout. Metadata Review also has a **Back to Browser**
+**Layout** menu in Browser adds a New Tab, splits the active pane right or down, merges every pane
+into tabs, or returns to a Single Pane. Drag a pane's tab onto the edge of any pane to split it there,
+or onto another tab bar to move it in as a tab. Click a pane (or its tab), then a sidebar folder, to
+open that folder in it; the sidebar shows the active pane's folder with a solid highlight and the
+other panes' folders with a split icon. Returning to Browser preserves the layout. Metadata Review also has a **Back to Browser**
 button for leaving the review table.
 
 - **Caption Workspace** works through the visible folder with a compact field navigator, validation,

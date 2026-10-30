@@ -2721,38 +2721,60 @@ struct ContentView: View {
     }
 
     /// Layout changes only rearrange the browser panes; they never switch workspaces.
+    /// Tabs can also be dragged onto any pane edge to split it (BrowserPaneContainer).
     private var paneLayoutMenu: some View {
         Menu {
-            paneLayoutButton(.single, "Single", "rectangle")
-            paneLayoutButton(.splitHorizontal, "Split Side by Side", "rectangle.split.2x1")
-            paneLayoutButton(.splitVertical, "Split Top and Bottom", "rectangle.split.1x2")
-            paneLayoutButton(.tabs, "Tabs", "square.on.square")
+            Button {
+                panes.addTab()
+            } label: {
+                Label("New Tab", systemImage: "plus.square.on.square")
+            }
+            .disabled(!panes.canAddPane)
+            Button {
+                panes.splitActive(.trailing)
+            } label: {
+                Label("Split Right", systemImage: "rectangle.split.2x1")
+            }
+            .disabled(!panes.canAddPane)
+            Button {
+                panes.splitActive(.bottom)
+            } label: {
+                Label("Split Down", systemImage: "rectangle.split.1x2")
+            }
+            .disabled(!panes.canAddPane)
+            Divider()
+            Button {
+                panes.mergeAllIntoTabs()
+            } label: {
+                Label("Merge All into Tabs", systemImage: "square.on.square")
+            }
+            .disabled(panes.tree.groups.count < 2)
+            Button(action: collapseToSinglePane) {
+                Label("Single Pane", systemImage: "rectangle")
+            }
+            .disabled(!panes.hasMultiplePanes)
         } label: {
             Label("Layout", systemImage: paneLayoutIcon)
         }
-        .help("Arrange browser panes")
+        .help("Arrange browser panes — drag a tab onto the edge of a pane to split it")
         .accessibilityLabel("Layout")
     }
 
-    private func paneLayoutButton(_ layout: BrowserPaneLayout, _ title: String, _ icon: String) -> some View {
-        Button {
-            panes.setLayout(layout)
-        } label: {
-            Label(
-                title,
-                systemImage: mainViewMode == .browser && panes.layout == layout
-                    ? "checkmark"
-                    : icon
-            )
-        }
+    private var paneLayoutIcon: String {
+        if panes.tree.groups.count > 1 { return "rectangle.split.2x1" }
+        return panes.hasMultiplePanes ? "square.on.square" : "rectangle"
     }
 
-    private var paneLayoutIcon: String {
-        switch panes.layout {
-        case .single: return "rectangle"
-        case .splitHorizontal: return "rectangle.split.2x1"
-        case .splitVertical: return "rectangle.split.1x2"
-        case .tabs: return "square.on.square"
+    /// Close every other pane but keep showing the active pane's folder. The primary pane
+    /// owns the sidebar state and always survives, so a non-primary folder is reopened in it.
+    private func collapseToSinglePane() {
+        let folder = panes.active.currentFolderURL
+        let primary = panes.primary
+        performAfterBrowserEditorCommit {
+            panes.closeAllButPrimary()
+            if let folder, primary.currentFolderURL != folder {
+                primary.loadFolder(url: folder, addToOpenFolders: false)
+            }
         }
     }
 
@@ -3202,6 +3224,8 @@ struct ContentView: View {
                                 isRootOfSection: true,
                                 viewModel: sidebarViewModel,
                                 currentFolderURL: browserViewModel.currentFolderURL,
+                                otherPaneFolderURLs: panes.otherVisibleFolderURLs,
+                                emphasizesCurrent: panes.hasMultiplePanes,
                                 openFolder: openFolderInActivePane,
                                 closeFolder: closeFolderInAllPanes,
                                 revealInFinder: revealInFinder
@@ -3227,6 +3251,8 @@ struct ContentView: View {
                                 isRootOfSection: true,
                                 viewModel: sidebarViewModel,
                                 currentFolderURL: browserViewModel.currentFolderURL,
+                                otherPaneFolderURLs: panes.otherVisibleFolderURLs,
+                                emphasizesCurrent: panes.hasMultiplePanes,
                                 openFolder: openFolderInActivePane,
                                 closeFolder: closeFolderInAllPanes,
                                 revealInFinder: revealInFinder
@@ -5429,10 +5455,10 @@ struct AutoRefreshModifier: ViewModifier {
             .onChange(of: folderURLs) {
                 coordinator.synchronizeMonitors()
             }
-            .onChange(of: panes.layout) {
+            .onChange(of: panes.panes.count) {
                 coordinator.synchronizeMonitors()
             }
-            .onChange(of: panes.activePaneIndex) {
+            .onChange(of: panes.activePaneID) {
                 coordinator.synchronizeMonitors()
             }
             .onDisappear {

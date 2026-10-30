@@ -83,6 +83,7 @@
 		AB2200000000000000000002 /* WatermarkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2200000000000000000001 /* WatermarkStoreTests.swift */; };
 		AB2300000000000000000002 /* WatermarkRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2300000000000000000001 /* WatermarkRenderingTests.swift */; };
 		AB5300000000000000000002 /* RedactAnonymizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5300000000000000000001 /* RedactAnonymizerTests.swift */; };
+		AB5400000000000000000002 /* BrowserPaneTreeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5400000000000000000001 /* BrowserPaneTreeTests.swift */; };
 		AB2400000000000000000002 /* DevelopInteractionBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */; };
 		AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2500000000000000000001 /* DevelopTemplateTests.swift */; };
 		CA1600000000000000000006 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */; };
@@ -394,6 +395,7 @@
 		AB2200000000000000000001 /* WatermarkStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkStoreTests.swift; sourceTree = "<group>"; };
 		AB2300000000000000000001 /* WatermarkRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkRenderingTests.swift; sourceTree = "<group>"; };
 		AB5300000000000000000001 /* RedactAnonymizerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RedactAnonymizerTests.swift; sourceTree = "<group>"; };
+		AB5400000000000000000001 /* BrowserPaneTreeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserPaneTreeTests.swift; sourceTree = "<group>"; };
 		AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopInteractionBehaviorTests.swift; sourceTree = "<group>"; };
 		AB2500000000000000000001 /* DevelopTemplateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateTests.swift; sourceTree = "<group>"; };
 		CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationNativeFaceScanReviewInvocationServiceTests.swift; sourceTree = "<group>"; };
@@ -756,6 +758,7 @@
 				AB2200000000000000000001 /* WatermarkStoreTests.swift */,
 				AB2300000000000000000001 /* WatermarkRenderingTests.swift */,
 				AB5300000000000000000001 /* RedactAnonymizerTests.swift */,
+				AB5400000000000000000001 /* BrowserPaneTreeTests.swift */,
 				AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */,
 				AB2500000000000000000001 /* DevelopTemplateTests.swift */,
 				AB2600000000000000000001 /* ActivityHistoryTests.swift */,
@@ -1265,6 +1268,7 @@
 				AB2200000000000000000002 /* WatermarkStoreTests.swift in Sources */,
 				AB2300000000000000000002 /* WatermarkRenderingTests.swift in Sources */,
 				AB5300000000000000000002 /* RedactAnonymizerTests.swift in Sources */,
+				AB5400000000000000000002 /* BrowserPaneTreeTests.swift in Sources */,
 				AB2400000000000000000002 /* DevelopInteractionBehaviorTests.swift in Sources */,
 				AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */,
 				AB2600000000000000000002 /* ActivityHistoryTests.swift in Sources */,

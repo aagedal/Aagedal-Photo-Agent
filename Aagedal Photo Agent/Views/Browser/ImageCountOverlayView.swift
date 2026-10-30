@@ -8,6 +8,8 @@ struct ImageCountOverlayView: View {
     let faceCount: Int
     let faceGroupCount: Int
 
+    @State private var showsBadgeLegend = false
+
     var body: some View {
         HStack(spacing: 8) {
             if isFiltering {
@@ -24,6 +26,17 @@ struct ImageCountOverlayView: View {
                 } else {
                     Text("\(faceCount) faces")
                 }
+            }
+            Button {
+                showsBadgeLegend.toggle()
+            } label: {
+                Image(systemName: "info.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("What the thumbnail icons mean")
+            .accessibilityLabel("Thumbnail icon legend")
+            .popover(isPresented: $showsBadgeLegend, arrowEdge: .top) {
+                ThumbnailBadgeLegendView()
             }
         }
         .font(.caption)
