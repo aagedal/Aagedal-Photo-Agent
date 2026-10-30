@@ -791,6 +791,7 @@ enum EditExportPipeline {
         for imageURL: URL,
         flush: @MainActor () async throws -> Void = { try await DevelopPrimaryLifecycleCoordinator.shared.flush() },
         live: @MainActor () -> CameraRawSettings?,
+        liveIsNamedVersion: Bool = false,
         access: ExportSavedRedactionAccess = .system
     ) async throws -> CameraRawSettings? {
         do {
@@ -803,8 +804,40 @@ enum EditExportPipeline {
         // Read after the flush: capture may have finished an in-progress adjustment.
         let current = live()
         let saved = await loadSavedDevelopState(imageURL, access: access)
+        if liveIsNamedVersion {
+            return namedVersionRenderSettings(current, saved: saved.persisted)
+        }
         return ExportCameraRawSourcePolicy.resolve(
             live: current, persisted: saved.persisted, liveIsAuthoritative: true)
+    }
+
+    /// A named Develop version's render settings: the version's own stack — never the Main
+    /// Edit's, so an empty version renders unedited instead of falling back to the saved XMP —
+    /// plus every redaction saved with the photo (`RedactionUnion`), so exporting a version
+    /// can't publish a face the Main Edit blurs.
+    nonisolated static func namedVersionRenderSettings(
+        _ version: CameraRawSettings?,
+        saved: CameraRawSettings?
+    ) -> CameraRawSettings? {
+        var result = version ?? CameraRawSettings()
+        if let saved, !saved.isEmpty {
+            result = RedactionUnion.merged(result, adding: [saved])
+        }
+        return result.isEmpty ? nil : result
+    }
+
+    /// The filename suffix that tells a named version's export apart from the Main Edit's
+    /// (`IMG_1234 Black and White.jpg`). Path separators and control characters become dashes;
+    /// overlong names are truncated. Same-named versions are kept apart by the collision policy.
+    nonisolated static func namedVersionFilenameSuffix(_ name: String) -> String {
+        let disallowed = CharacterSet(charactersIn: "/\\:").union(.controlCharacters).union(.newlines)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = String(String.UnicodeScalarView(trimmed.unicodeScalars.map {
+            disallowed.contains($0) ? "-" : $0
+        }))
+        .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        guard !cleaned.isEmpty else { return " Version" }
+        return " " + String(cleaned.prefix(64)).trimmingCharacters(in: .whitespaces)
     }
 
     /// Library asset IDs referenced by enabled watermark layers whose PNG isn't readable at the

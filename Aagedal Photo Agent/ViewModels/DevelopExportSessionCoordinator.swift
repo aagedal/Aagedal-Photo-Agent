@@ -11,6 +11,10 @@ nonisolated struct DevelopExportPersistenceResult: Equatable, Sendable {
     let metadataWasCopied: Bool
     /// A watermark layer's library image was missing, so the file was saved without it.
     var watermarkWasMissing = false
+    /// Files written by this request (Export All Versions writes one per version).
+    var savedCount = 1
+    /// Versions that couldn't be exported while others were (`Name: reason`).
+    var failures: [String] = []
 }
 
 /// Owns the one-at-a-time export lifecycle for a Develop workspace.

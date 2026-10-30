@@ -373,6 +373,14 @@ nonisolated struct PrimaryDevelopWriteHooks: Sendable {
 nonisolated struct PrimaryDevelopWriteService: Sendable {
     let engine: any MetadataWriteEngine
     var hooks = PrimaryDevelopWriteHooks()
+
+    /// The owning RAW sibling from a fresh directory listing. `execute` runs on its caller's
+    /// actor (the main actor for Develop commits), so the listing hops off it.
+    @concurrent
+    nonisolated static func freshDevelopOwningRawSibling(of imageURL: URL) async -> URL? {
+        PhotoSidecarOwnership.developOwningRawSibling(of: imageURL, requiringFreshListing: true)
+    }
+
     func execute(_ request: PrimaryDevelopWriteRequest, predecessorResult: PrimaryDevelopWriteResult? = nil,
                  heldReservation: MCPProcessReservationLease? = nil,
                  validateAuthority: @escaping @Sendable () async throws -> Void = {},
@@ -417,10 +425,12 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
             let target = DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: request.imageURL, requestedMode: request.mode)
             // The JPEG of a RAW+JPEG pair keeps its develop settings embedded (Adobe); the shared
             // stem sidecar's crs belongs to the RAW and is never written for the JPEG. A
-            // sidecar-only target would therefore drop the edit — refuse it visibly instead.
+            // sidecar-only target would therefore drop the edit — refuse it visibly instead. The
+            // editor chose `mode` from the cached stem index; a RAW that arrived since is caught
+            // here by a fresh listing, taken off the main actor.
             if !target.writesEmbedded, request.replaceDevelop,
                PrimaryDevelopWriteRequestBuilder.developSettingsChanged(request.edited.cameraRaw, request.previous?.cameraRaw),
-               let rawURL = PhotoSidecarOwnership.developOwningRawSibling(of: request.imageURL) {
+               let rawURL = await Self.freshDevelopOwningRawSibling(of: request.imageURL) {
                 throw StemSidecarDevelopOwnedByRawError(imageURL: request.imageURL, rawURL: rawURL)
             }
             try await validateAuthority()

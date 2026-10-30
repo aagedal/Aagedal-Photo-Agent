@@ -2069,6 +2069,52 @@ struct EditWorkspaceView: View {
                             developVersionDialogs.requestDelete(activeVersion.id)
                         }
                     }
+
+                    // Compare and export used to sit in a second menu beside this one; one
+                    // version menu keeps every version action in the same place.
+                    Divider()
+                    Menu("Compare With", systemImage: "rectangle.split.2x1") {
+                        if developVersionCatalog?.activeVersionID != nil {
+                            Button {
+                                beginDevelopVersionComparison(with: .primary)
+                            } label: {
+                                Label(
+                                    "Main Edit",
+                                    systemImage: developVersionComparisonTarget == .primary
+                                        ? "checkmark" : "photo"
+                                )
+                            }
+                        }
+
+                        if let catalog = developVersionCatalog {
+                            ForEach(catalog.versions.filter { $0.id != catalog.activeVersionID }) { version in
+                                Button {
+                                    beginDevelopVersionComparison(with: .named(version.id))
+                                } label: {
+                                    Label(
+                                        version.name,
+                                        systemImage: developVersionComparisonTarget == .named(version.id)
+                                            ? "checkmark" : "camera.filters"
+                                    )
+                                }
+                            }
+                        }
+
+                        if isDevelopComparisonActive {
+                            Divider()
+                            Button("Close Comparison") { closeDevelopComparison() }
+                        }
+                    }
+                    .disabled(!hasDevelopVersionComparisonTargets || isDevelopVersionTransitioning)
+
+                    Button("Export All Versions", systemImage: "square.and.arrow.down.on.square") {
+                        exportAllDevelopVersions()
+                    }
+                    .disabled(
+                        (developVersionCatalog?.versions.isEmpty ?? true)
+                            || exportSession.isExporting
+                            || isDevelopVersionTransitioning
+                    )
                 } label: {
                     HStack(spacing: 5) {
                         Text(activeDevelopVersionLabel)
@@ -2084,47 +2130,7 @@ struct EditWorkspaceView: View {
                         || developVersionPersistenceState == .loading
                         || developVersionPersistenceState == .saving
                 )
-
-                Menu {
-                    if developVersionCatalog?.activeVersionID != nil {
-                        Button {
-                            beginDevelopVersionComparison(with: .primary)
-                        } label: {
-                            Label(
-                                "Main Edit",
-                                systemImage: developVersionComparisonTarget == .primary
-                                    ? "checkmark" : "photo"
-                            )
-                        }
-                    }
-
-                    if let catalog = developVersionCatalog {
-                        ForEach(catalog.versions.filter { $0.id != catalog.activeVersionID }) { version in
-                            Button {
-                                beginDevelopVersionComparison(with: .named(version.id))
-                            } label: {
-                                Label(
-                                    version.name,
-                                    systemImage: developVersionComparisonTarget == .named(version.id)
-                                        ? "checkmark" : "camera.filters"
-                                )
-                            }
-                        }
-                    }
-
-                    if isDevelopComparisonActive {
-                        Divider()
-                        Button("Close Comparison") { closeDevelopComparison() }
-                    }
-                } label: {
-                    Text("Compare Version…")
-                        .font(.caption)
-                        .lineLimit(1)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .disabled(!hasDevelopVersionComparisonTargets || isDevelopVersionTransitioning)
-                .help("Compare the current Develop version with the Main Edit or another named version")
+                .help("Switch, manage, compare, or export Develop versions")
 
                 Image(systemName: developVersionPersistenceState.systemImage)
                     .foregroundStyle(developVersionStatusColor)
@@ -3230,8 +3236,14 @@ struct EditWorkspaceView: View {
         let screenMaxPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160) * screenScale
         let fsSettingsSnapshot = fsSettings
         let orientationSnapshot = orientationByURL
+        // Nearest to the photo being left first: those are what the loupe shows next.
+        let anchorIndex = selectedImageURL.flatMap { browserViewModel.urlToVisibleIndex[$0] } ?? 0
+        let warmOrder = fsSettingsSnapshot.keys.sorted {
+            abs((browserViewModel.urlToVisibleIndex[$0] ?? Int.max / 2) - anchorIndex)
+                < abs((browserViewModel.urlToVisibleIndex[$1] ?? Int.max / 2) - anchorIndex)
+        }
         browserViewModel.fullScreenImageCache.warmEditedPreviews(
-            for: Array(fsSettingsSnapshot.keys),
+            for: warmOrder,
             screenMaxPx: screenMaxPx,
             settingsForURL: { fsSettingsSnapshot[$0] },
             orientationForURL: { orientationSnapshot[$0] ?? 1 }
@@ -8344,23 +8356,18 @@ struct EditWorkspaceView: View {
             }
         }
         let folderURL = metadataViewModel.currentFolderURL ?? selectedImageURL.deletingLastPathComponent()
-        // Honor the Export Location setting like the browser's Export/Save As/Sign paths.
-        var askedFolder: URL?
-        if EditedImageRenderer.currentLocationMode == .askOnSave {
-            let panel = NSOpenPanel()
-            panel.canChooseDirectories = true
-            panel.canChooseFiles = false
-            panel.canCreateDirectories = true
-            panel.allowsMultipleSelection = false
-            panel.prompt = "Choose"
-            panel.message = "Choose a destination folder for the exported file"
-            panel.directoryURL = folderURL
-            guard panel.runModal() == .OK, let chosen = panel.url else { return }
-            askedFolder = chosen
-        }
+        let askedFolder = askForDevelopExportFolder(
+            startingAt: folderURL, message: "Choose a destination folder for the exported file"
+        )
+        guard !askedFolder.cancelled else { return }
+        // A named version's file is told apart from the Main Edit's, as in Export All Versions.
+        let activeVersion = activeNamedDevelopVersion
+        let filenameSuffix = activeVersion.map {
+            EditExportPipeline.namedVersionFilenameSuffix($0.name)
+        } ?? ""
         let outputFolder = EditedImageRenderer.resolveOutputFolder(
             sourceURL: selectedImageURL, rootFolder: folderURL,
-            isHDR: settings?.hdrEditMode == 1, formatPrefix: "Edited", askedFolder: askedFolder)
+            isHDR: settings?.hdrEditMode == 1, formatPrefix: "Edited", askedFolder: askedFolder.url)
         exportSession.requestExport {
             let directoryCommit = try await ExportDirectoryService.shared.ensureDirectory(
                 at: outputFolder
@@ -8384,7 +8391,8 @@ struct EditWorkspaceView: View {
                     metadataViewModel.selectedURLs.count == 1
                         && metadataViewModel.selectedURLs.first == selectedImageURL
                         ? metadataViewModel.editingMetadata.cameraRaw : settings
-                }
+                },
+                liveIsNamedVersion: activeVersion != nil
             )
             // Never overwrite: a RAW+JPEG pair (IMG_1.ARW / IMG_1.JPG) or a repeated save
             // would otherwise silently replace an existing file with the same name.
@@ -8394,6 +8402,7 @@ struct EditWorkspaceView: View {
                     sourceURL: selectedImageURL, cameraRaw: renderSettings, kind: .format,
                     outputFolder: outputFolder, folderURL: folderURL,
                     writeEngine: engine, failureTracker: failureTracker,
+                    outputFilenameSuffix: filenameSuffix,
                     collisionPolicy: .appendNumber
                 )
             } catch is RedactionMissingFromRenderError {
@@ -8418,6 +8427,132 @@ struct EditWorkspaceView: View {
                 "Saved \(url.lastPathComponent) to \(url.deletingLastPathComponent().lastPathComponent)\(watermarkWarning)",
                 revealURL: url
             )
+        }
+    }
+
+    /// Honors the Export Location setting like the browser's Export/Save As/Sign paths.
+    /// `cancelled` when the user dismisses the folder prompt; `url` is nil when none is configured.
+    private func askForDevelopExportFolder(startingAt folderURL: URL, message: String) -> (cancelled: Bool, url: URL?) {
+        guard EditedImageRenderer.currentLocationMode == .askOnSave else { return (false, nil) }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = message
+        panel.directoryURL = folderURL
+        guard panel.runModal() == .OK, let chosen = panel.url else { return (true, nil) }
+        return (false, chosen)
+    }
+
+    /// Renders the Main Edit and every named version of the open photo, one file each. The Main
+    /// Edit keeps the plain filename; each version adds its name (`IMG_1234 Black and White.jpg`).
+    /// The open version renders from the live buffer (after the same flush as Save); the others
+    /// from their saved snapshots. Every render carries the photo's saved redactions.
+    private func exportAllDevelopVersions() {
+        guard let selectedImageURL, let catalog = developVersionCatalog,
+              !catalog.versions.isEmpty else { return }
+        let folderURL = metadataViewModel.currentFolderURL ?? selectedImageURL.deletingLastPathComponent()
+        let askedFolder = askForDevelopExportFolder(
+            startingAt: folderURL, message: "Choose a destination folder for the exported versions"
+        )
+        guard !askedFolder.cancelled else { return }
+        let activeVersionID = catalog.activeVersionID
+        let versions = catalog.versions
+        let fallbackLive = metadataViewModel.editingMetadata.cameraRaw
+
+        exportSession.requestExport {
+            // Flushes the pending Primary write and resolves the open state exactly like Save.
+            let liveSettings = try await EditExportPipeline.resolveDevelopSaveSettings(
+                for: selectedImageURL,
+                live: {
+                    metadataViewModel.selectedURLs.count == 1
+                        && metadataViewModel.selectedURLs.first == selectedImageURL
+                        ? metadataViewModel.editingMetadata.cameraRaw : fallbackLive
+                },
+                liveIsNamedVersion: activeVersionID != nil
+            )
+            let saved = await EditExportPipeline.loadSavedDevelopState(selectedImageURL)
+
+            struct Variant { let name: String; let suffix: String; let settings: CameraRawSettings? }
+            var variants = [Variant(
+                name: "Main Edit", suffix: "",
+                settings: activeVersionID == nil ? liveSettings : saved.persisted
+            )]
+            for version in versions {
+                variants.append(Variant(
+                    name: version.name,
+                    suffix: EditExportPipeline.namedVersionFilenameSuffix(version.name),
+                    settings: version.id == activeVersionID
+                        ? liveSettings
+                        : EditExportPipeline.namedVersionRenderSettings(
+                            version.snapshot.settings, saved: saved.persisted)
+                ))
+            }
+
+            let engine = browserViewModel.writeEngine
+            let failureTracker = MetadataFailureTracker()
+            var outputURLs: [URL] = []
+            var failures: [String] = []
+            var firstError: Error?
+            var createdFolders: Set<URL> = []
+            for variant in variants {
+                try Task.checkCancellation()
+                // HDR and SDR versions of one photo can land in different folders.
+                let outputFolder = EditedImageRenderer.resolveOutputFolder(
+                    sourceURL: selectedImageURL, rootFolder: folderURL,
+                    isHDR: variant.settings?.hdrEditMode == 1, formatPrefix: "Edited",
+                    askedFolder: askedFolder.url)
+                do {
+                    if !createdFolders.contains(outputFolder) {
+                        let commit = try await ExportDirectoryService.shared.ensureDirectory(at: outputFolder)
+                        guard !commit.cancellationRequestedAfterCommit else { throw CancellationError() }
+                        createdFolders.insert(outputFolder)
+                    }
+                    let outputURL = try await EditExportPipeline.renderItem(
+                        sourceURL: selectedImageURL, cameraRaw: variant.settings, kind: .format,
+                        outputFolder: outputFolder, folderURL: folderURL,
+                        writeEngine: engine, failureTracker: failureTracker,
+                        outputFilenameSuffix: variant.suffix,
+                        collisionPolicy: .appendNumber
+                    )
+                    browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
+                    outputURLs.append(outputURL)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    let mapped: Error = error is RedactionMissingFromRenderError
+                        ? DevelopSaveError.redactionMissing(selectedImageURL.lastPathComponent)
+                        : error
+                    firstError = firstError ?? mapped
+                    failures.append("\(variant.name): \(mapped.localizedDescription)")
+                }
+            }
+            guard let firstURL = outputURLs.first else {
+                throw firstError ?? CancellationError()
+            }
+            let copyFailures = await failureTracker.metadataCopyFailures
+            let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let watermarkWarnings = await failureTracker.missingWatermarkWarnings
+            return DevelopExportPersistenceResult(
+                outputURL: firstURL,
+                metadataWasCopied: copyFailures.isEmpty && overlayFailures.isEmpty,
+                watermarkWasMissing: !watermarkWarnings.isEmpty,
+                savedCount: outputURLs.count,
+                failures: failures
+            )
+        } onPersisted: { result in
+            let url = result.outputURL
+            var notice = "Saved \(result.savedCount) version\(result.savedCount == 1 ? "" : "s") of "
+                + "\(selectedImageURL.lastPathComponent) to \(url.deletingLastPathComponent().lastPathComponent)"
+            if result.watermarkWasMissing {
+                notice += " — a watermark image is missing (saved without it)"
+            }
+            if !result.failures.isEmpty {
+                notice += " — not saved: " + result.failures.joined(separator: "; ")
+            }
+            workspaceSession.showNotice(notice, revealURL: url)
         }
     }
 

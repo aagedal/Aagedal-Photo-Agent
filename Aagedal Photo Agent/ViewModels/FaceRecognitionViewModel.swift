@@ -1401,6 +1401,12 @@ final class FaceRecognitionViewModel {
                 var pendingFaces: [DetectedFace] = []
                 var faceIndexByID = Dictionary(uniqueKeysWithValues: allFaces.enumerated().map { ($1.id, $0) })
                 let saveInterval = 10
+                // Each progress save re-encodes and rewrites the whole document (every face so
+                // far, ~3.5 KB each), so a fixed 10-image cadence grows quadratically: a
+                // 3,000-photo scan wrote GBs of JSON to the photo folder. Past the first images,
+                // save every 10% of progress, or after 15 s, whichever comes first.
+                let progressSaveMinimumSeconds: TimeInterval = 15
+                var lastProgressSave = Date()
                 // Cluster one completion wave at a time instead of rebuilding the all-face lookup
                 // and walking every group after every image.
                 let clusteringImageBatchSize = 4
@@ -1502,7 +1508,10 @@ final class FaceRecognitionViewModel {
                     imagesSinceLastSave += 1
 
                     // Periodic save to preserve progress and update live UI
-                    if imagesSinceLastSave >= saveInterval {
+                    if imagesSinceLastSave >= saveInterval,
+                       imagesSinceLastSave >= processed / 10
+                        || Date().timeIntervalSince(lastProgressSave) >= progressSaveMinimumSeconds {
+                        lastProgressSave = Date()
                         flushPendingClustering()
                         let progressData = FolderFaceData(
                             folderURL: folderURL,

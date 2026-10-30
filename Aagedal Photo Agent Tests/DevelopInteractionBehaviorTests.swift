@@ -468,6 +468,34 @@ struct DevelopInteractionBehaviorTests {
         viewModel.setImagesCascadeSuppressedForTesting(false)
     }
 
+    @Test("A folder refresh that lists a copy before Duplicate finishes doesn't insert it twice")
+    @MainActor
+    func duplicateRacingRefreshDoesNotDuplicateURL() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-dup-race-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("a.jpg")
+        try Data("a".utf8).write(to: source)
+
+        let viewModel = BrowserViewModel(imageTrashHandler: TrashStub())
+        viewModel.currentFolderURL = root
+        viewModel.images = [ImageFile(url: source)]
+        await Task.yield()
+        viewModel.applySelection(ids: [source], active: source)
+
+        viewModel.duplicateSelectedImages()
+        // The auto-refresh publishes the finished copy while the duplicate task is in flight.
+        let copy = root.appendingPathComponent("a copy.jpg")
+        viewModel.images = [ImageFile(url: source), ImageFile(url: copy)]
+        await viewModel.waitForPendingImageMutation()
+
+        #expect(viewModel.images.map(\.url) == [source, copy])
+        #expect(viewModel.urlToImageIndex == [source: 0, copy: 1])
+        #expect(viewModel.selectedImageIDs == [copy])
+    }
+
     @Test("Full Screen delete trashes only the shown photo, not the hidden multi-selection")
     @MainActor
     func fullScreenDeleteTargetsShownPhoto() async {

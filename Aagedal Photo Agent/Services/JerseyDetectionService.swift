@@ -93,48 +93,36 @@ nonisolated struct JerseyDetectionService: Sendable {
         mappedTo region: CGRect,
         ocrConfidenceThreshold: Float
     ) async throws -> [RawNumber] {
-        // Parse into the Sendable `[RawNumber]` *inside* the completion handler —
-        // `VNRecognizedTextObservation` is not Sendable and must not cross the
-        // continuation boundary.
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[RawNumber], any Error>) in
-            let request = VNRecognizeTextRequest { request, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
-                var results: [RawNumber] = []
-                for observation in observations {
-                    guard let candidate = observation.topCandidates(1).first,
-                          candidate.confidence >= ocrConfidenceThreshold,
-                          let value = Self.parseJerseyNumber(candidate.string) else { continue }
+        // `perform` is synchronous; read the results after it instead of bridging a completion
+        // handler through a continuation (a failing request can both call the handler with an
+        // error and throw from `perform`, which would resume a continuation twice).
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en"]
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        try handler.perform([request])
+        var results: [RawNumber] = []
+        for observation in request.results ?? [] {
+            guard let candidate = observation.topCandidates(1).first,
+                  candidate.confidence >= ocrConfidenceThreshold,
+                  let value = Self.parseJerseyNumber(candidate.string) else { continue }
 
-                    let box = observation.boundingBox
-                    let mappedBox = CGRect(
-                        x: region.origin.x + box.origin.x * region.width,
-                        y: region.origin.y + box.origin.y * region.height,
-                        width: box.width * region.width,
-                        height: box.height * region.height
-                    )
-                    results.append(RawNumber(
-                        value: value,
-                        confidence: candidate.confidence,
-                        box: mappedBox,
-                        color: nil
-                    ))
-                }
-                continuation.resume(returning: results)
-            }
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = false
-            request.recognitionLanguages = ["en"]
-            let handler = VNImageRequestHandler(cgImage: image, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                continuation.resume(throwing: error)
-            }
+            let box = observation.boundingBox
+            let mappedBox = CGRect(
+                x: region.origin.x + box.origin.x * region.width,
+                y: region.origin.y + box.origin.y * region.height,
+                width: box.width * region.width,
+                height: box.height * region.height
+            )
+            results.append(RawNumber(
+                value: value,
+                confidence: candidate.confidence,
+                box: mappedBox,
+                color: nil
+            ))
         }
+        return results
     }
 
     /// Extract a jersey number from an OCR string, tolerating a single junk character —

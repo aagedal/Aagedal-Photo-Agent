@@ -379,14 +379,17 @@ actor C2PASigningConfigurationService {
             ?? pemBlock(in: content, header: "EC PRIVATE KEY")
     }
 
-    private static func pemBlock(in content: String, header: String) -> String? {
+    nonisolated static func pemBlock(in content: String, header: String) -> String? {
         let beginMarker = "-----BEGIN \(header)-----"
         let endMarker = "-----END \(header)-----"
+        // The END marker must follow BEGIN, and may be the file's last bytes (no trailing
+        // newline): a closed range to `endRange.upperBound` would then run past `endIndex`.
         guard let beginRange = content.range(of: beginMarker),
-              let endRange = content.range(of: endMarker) else {
+              let endRange = content.range(of: endMarker,
+                                           range: beginRange.upperBound..<content.endIndex) else {
             return nil
         }
-        return String(content[beginRange.lowerBound...endRange.upperBound])
+        return String(content[beginRange.lowerBound..<endRange.upperBound]) + "\n"
     }
 
     private static func certificateInfo(from pem: String) -> (subject: String, expiry: String) {
