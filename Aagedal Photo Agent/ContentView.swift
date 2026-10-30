@@ -411,7 +411,6 @@ struct ContentView: View {
     @State private var backupEditedFolderItem: BackupEditedItem?
     @State private var isShowingWriteAllC2PAWarning = false
     @State private var isShowingVariableRecovery = false
-    @State private var isShowingPrimaryDevelopRecovery = false
     @State private var c2paDetailPresentation: C2PADetailPresentation?
     @State private var c2paValidation: C2PAValidationResult?
     @State private var pendingWriteAllC2PACount = 0
@@ -717,7 +716,7 @@ struct ContentView: View {
                     }
                 )
             }
-            .sheet(isPresented: $isShowingPrimaryDevelopRecovery) {
+            .sheet(isPresented: Bindable(metadataViewModel).isShowingPrimaryDevelopRecovery) {
                 PrimaryDevelopRecoveryHost(viewModel: metadataViewModel)
             }
             .sheet(isPresented: $isShowingVariableRecovery) {
@@ -1934,7 +1933,8 @@ struct ContentView: View {
     ) {
         guard mainViewMode == .editing else { transition(); return }
         Task { @MainActor in
-            let outcome = await DevelopVersionFlushCoordinator.shared.flush(reason)
+            let outcome = await DevelopVersionFlushCoordinator.shared.flush(reason,
+                allowingBackedUpPrimary: reason != .applicationTermination)
             guard outcome == .succeeded, mainViewMode == .editing else { return }
             transition()
         }
@@ -2859,8 +2859,7 @@ struct ContentView: View {
             ToolbarItem(id: "develop-primary-review", placement: .secondaryAction) {
                 Button {
                     do {
-                        try DevelopPrimaryLifecycleCoordinator.shared.captureEditors()
-                        isShowingPrimaryDevelopRecovery = true
+                        try metadataViewModel.showPrimaryDevelopReview()
                     } catch {
                         OperationIssueDetailsPresenter.present(title: "Develop Recovery", message: error.localizedDescription)
                     }

@@ -321,6 +321,10 @@ struct EditWorkspaceView: View {
     @State private var primaryTransitionRequestID = UUID()
     @State private var primaryRecoveryReloadPending = false
     @State private var primaryTransitionNotice: String?
+    @State private var isRetryingPrimaryDevelop = false
+    /// The selected photo's backup of an earlier failed save that is no longer queued (see
+    /// `MetadataViewModel.restorablePrimaryDevelopBackup`), re-checked as each load completes.
+    @State private var restorableDevelopBackup: URL?
     /// Photo whose metadata load last completed; a load for a different photo starts a fresh
     /// Develop undo history so no entry can restore another photo's (or a placeholder) state.
     @State private var undoHistoryImageURL: URL?
@@ -932,6 +936,7 @@ struct EditWorkspaceView: View {
         }
         .onChange(of: selectedImageURL) { oldURL, newURL in
             if oldURL != newURL {
+                restorableDevelopBackup = nil
                 closeDevelopComparison()
                 handleDevelopVersionImageChange(from: oldURL, to: newURL)
             }
@@ -951,6 +956,17 @@ struct EditWorkspaceView: View {
                 primaryDevelopSettings = metadataViewModel.editingMetadata.cameraRaw
                 syncCameraRawToImageFile()
                 loadSelectedImagePreview()
+            }
+            // Another app (e.g. Camera Raw) changed this photo's develop while it sat open and
+            // idle here: adopt it as the Main Edit and refresh the filmstrip, like Bridge does.
+            if developVersionCatalog?.activeVersionID == nil,
+               metadataViewModel.selectedURLs.count == 1,
+               undoHistoryImageURL == metadataViewModel.selectedURLs.first,
+               DevelopUndoHistoryPolicy.reloadComparable(DevelopUndoHistoryPolicy.roundTripped(undoHistorySettings))
+                != DevelopUndoHistoryPolicy.reloadComparable(metadataViewModel.editingMetadata.cameraRaw) {
+                editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] adopted develop changed outside Develop")
+                primaryDevelopSettings = metadataViewModel.editingMetadata.cameraRaw
+                syncCameraRawToImageFile()
             }
             let replacedExternally = metadataViewModel.developSettingsReplacementGeneration
                 != undoHistoryReplacementGeneration
@@ -974,6 +990,7 @@ struct EditWorkspaceView: View {
             undoHistorySettings = metadataViewModel.editingMetadata.cameraRaw
             // A crop tool left open across navigation adopts this photo's framing for Esc.
             captureCropEntryForLoadedPhotoIfNeeded()
+            refreshRestorableDevelopBackup()
             renderPreview()
         }
         .onChange(of: metadataViewModel.primaryDevelopRecoveryReloadGeneration) { _, _ in
@@ -989,6 +1006,7 @@ struct EditWorkspaceView: View {
         }
         .onChange(of: metadataViewModel.hasRetainedPrimaryDevelopWrites) { _, retained in
             if !retained { clearResolvedPrimaryTransitionNotice() }
+            refreshRestorableDevelopBackup()
         }
     }
 
@@ -2164,9 +2182,129 @@ struct EditWorkspaceView: View {
                     .font(.caption2)
                     .foregroundStyle(.red)
             }
+            if developVersionCatalog?.activeVersionID == nil, let url = selectedImageURL,
+               metadataViewModel.hasFailedPrimaryDevelop(for: url) {
+                unsavedPrimaryDevelopActions(for: url)
+            } else if developVersionCatalog?.activeVersionID == nil, let url = selectedImageURL,
+                      let backup = restorableDevelopBackup {
+                restorableDevelopBackupActions(for: url, backup: backup)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Develop version selector")
+    }
+
+    /// Recovery for a Main Edit whose save failed: redo the save against a fresh read, review and
+    /// export it, or find its backup copy.
+    private func unsavedPrimaryDevelopActions(for url: URL) -> some View {
+        let backup = metadataViewModel.primaryDevelopBackupURL(for: url)
+        return VStack(alignment: .leading, spacing: 4) {
+            if primaryTransitionNotice == nil {
+                Label("This photo's latest Develop edit isn't saved yet.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+            if backup != nil {
+                Text("A backup copy of the edit is kept, so you can leave Develop.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                Button("Try Again", action: tryAgainPrimaryDevelop)
+                    .disabled(isRetryingPrimaryDevelop)
+                    .help("Read the photo again and save this edit on top of what's on disk now.")
+                    .accessibilityIdentifier("develop.primary.tryAgain")
+                Button("Review…") {
+                    finishPrimaryDevelopControls()
+                    do { try metadataViewModel.showPrimaryDevelopReview() }
+                    catch { primaryTransitionNotice = error.localizedDescription }
+                }
+                .disabled(isRetryingPrimaryDevelop)
+                .help("Export the unsaved edit to a recovery file and discard it.")
+                .accessibilityIdentifier("develop.primary.review")
+                if let backup {
+                    Button("Show Backup") { NSWorkspace.shared.activateFileViewerSelecting([backup]) }
+                        .help(backup.path)
+                        .accessibilityIdentifier("develop.primary.showBackup")
+                }
+                if isRetryingPrimaryDevelop { ProgressView().controlSize(.small) }
+            }
+            .controlSize(.small)
+        }
+    }
+
+    /// A backup left by an earlier failed save (the app quit, or the edit was discarded in
+    /// Review): put it back as an undoable edit, or let it go.
+    private func restorableDevelopBackupActions(for url: URL, backup: URL) -> some View {
+        let date = (try? backup.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        return VStack(alignment: .leading, spacing: 4) {
+            Label(date.map { "A Develop edit from \($0.formatted(date: .abbreviated, time: .shortened)) wasn't saved, but a backup is kept." }
+                    ?? "An earlier Develop edit wasn't saved, but a backup is kept.",
+                  systemImage: "clock.arrow.circlepath")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+            HStack(spacing: 8) {
+                Button("Restore Backup") { restoreDevelopBackup(backup, for: url) }
+                    .help("Replace this photo's Develop settings with the backed-up edit and save it. You can undo this.")
+                    .accessibilityIdentifier("develop.primary.restoreBackup")
+                Button("Show Backup") { NSWorkspace.shared.activateFileViewerSelecting([backup]) }
+                    .help(backup.path)
+                    .accessibilityIdentifier("develop.primary.showRestorableBackup")
+                Button("Delete Backup", role: .destructive) {
+                    metadataViewModel.deletePrimaryDevelopBackup(backup, for: url)
+                    refreshRestorableDevelopBackup()
+                }
+                .accessibilityIdentifier("develop.primary.deleteBackup")
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private func refreshRestorableDevelopBackup() {
+        restorableDevelopBackup = selectedImageURL.flatMap {
+            metadataViewModel.selectedURLs == [$0] ? metadataViewModel.restorablePrimaryDevelopBackup(for: $0) : nil
+        }
+    }
+
+    private func restoreDevelopBackup(_ backup: URL, for url: URL) {
+        guard isSelectedImageMetadataReady, selectedImageURL == url,
+              developVersionCatalog?.activeVersionID == nil else { return }
+        finishPrimaryDevelopControls()
+        let settings: CameraRawSettings?
+        do { settings = try metadataViewModel.adoptPrimaryDevelopBackup(backup, for: url) }
+        catch { primaryTransitionNotice = error.localizedDescription; return }
+        let current = metadataViewModel.editingMetadata.cameraRaw
+        if DevelopUndoHistoryPolicy.reloadComparable(DevelopUndoHistoryPolicy.roundTripped(settings))
+            == DevelopUndoHistoryPolicy.reloadComparable(DevelopUndoHistoryPolicy.roundTripped(current)) {
+            // The photo already carries this edit (saved since, or by another app).
+            metadataViewModel.deletePrimaryDevelopBackup(backup, for: url)
+            refreshRestorableDevelopBackup()
+            return
+        }
+        updateCameraRaw(actionName: "Restore Backup") { $0 = settings ?? CameraRawSettings() }
+        restorableDevelopBackup = nil
+        // Same write as Reset All: the restored record replaces the whole crs block, including
+        // a JPEG's embedded one.
+        commitDevelopReset()
+        renderPreview()
+    }
+
+    private func tryAgainPrimaryDevelop() {
+        guard !isRetryingPrimaryDevelop else { return }
+        finishPrimaryDevelopControls()
+        isRetryingPrimaryDevelop = true
+        Task { @MainActor in
+            defer { isRetryingPrimaryDevelop = false }
+            do {
+                try await metadataViewModel.tryAgainPrimaryDevelop()
+                clearResolvedPrimaryTransitionNotice()
+            } catch {
+                primaryTransitionNotice = error.localizedDescription
+            }
+            // The editor was re-read and the edit re-applied; keep grid and preview in step.
+            syncCameraRawToImageFile()
+            renderPreview()
+        }
     }
 
     private func developVersionDiagnostics(
@@ -2809,7 +2947,8 @@ struct EditWorkspaceView: View {
         reason: DevelopVersionFlushReason
     ) async -> DevelopVersionFlushOutcome {
         finishPrimaryDevelopControls()
-        do { try await DevelopPrimaryLifecycleCoordinator.shared.flush() }
+        // Leaving the photo or Develop accepts a failed edit that has a backup copy.
+        do { try await DevelopPrimaryLifecycleCoordinator.shared.flush(allowingBackedUp: reason != .applicationTermination) }
         catch {
             let message = error.localizedDescription
             primaryTransitionNotice = message
@@ -3023,6 +3162,7 @@ struct EditWorkspaceView: View {
         )
 
         metadataViewModel.isInEditView = false
+        metadataViewModel.developAllowsExternalReload = nil
         metalSession.endWorkspace()
         scopeViewModel.metalScopeCoordinator?.stopContinuousRendering()
         scopeViewModel.clearMetal()
@@ -3114,6 +3254,10 @@ struct EditWorkspaceView: View {
 
         updateGamutClipMode()
         metadataViewModel.isInEditView = true
+        metadataViewModel.developAllowsExternalReload = { [self] in
+            developVersionCatalog?.activeVersionID == nil && !hasUncapturedPrimaryDevelopWork
+                && !interactiveRender.isSliderInteractionActive
+        }
         DevelopPrimaryLifecycleCoordinator.shared.unregisterEditor(ownerID: primaryEditorOwnerID)
         metadataViewModel.unregisterPrimaryDevelopRecoveryEditorBarrier(owner: primaryEditorOwnerID)
         primaryEditorOwnerID = UUID()

@@ -23,7 +23,7 @@ final class DevelopVersionFlushCoordinator {
 
     private let primaryLifecycle: DevelopPrimaryLifecycleCoordinator
     private var registration: (id: UUID, handler: Handler)?
-    private var inFlightFlush: (id: UUID, task: Task<DevelopVersionFlushOutcome, Never>)?
+    private var inFlightFlush: (id: UUID, allowingBackedUp: Bool, task: Task<DevelopVersionFlushOutcome, Never>)?
 
     init(primaryLifecycle: DevelopPrimaryLifecycleCoordinator = .shared) {
         self.primaryLifecycle = primaryLifecycle
@@ -43,14 +43,21 @@ final class DevelopVersionFlushCoordinator {
         registration = nil
     }
 
-    func flush(_ reason: DevelopVersionFlushReason) async -> DevelopVersionFlushOutcome {
+    /// `allowingBackedUpPrimary`: the user is leaving Develop, so a failed Primary edit that has
+    /// a backup copy doesn't block (see `DevelopPrimaryLifecycleCoordinator.flush`).
+    func flush(_ reason: DevelopVersionFlushReason,
+               allowingBackedUpPrimary: Bool = false) async -> DevelopVersionFlushOutcome {
         if let inFlightFlush {
-            return await inFlightFlush.task.value
+            // A flush with a different Primary rule can't answer for this one.
+            let outcome = await inFlightFlush.task.value
+            if inFlightFlush.allowingBackedUp == allowingBackedUpPrimary { return outcome }
+            if self.inFlightFlush?.id == inFlightFlush.id { self.inFlightFlush = nil }
+            return await flush(reason, allowingBackedUpPrimary: allowingBackedUpPrimary)
         }
         let namedRegistration = registration
         let id = UUID()
         let task = Task { @MainActor in
-            do { try await primaryLifecycle.flush() }
+            do { try await primaryLifecycle.flush(allowingBackedUp: allowingBackedUpPrimary) }
             catch { return DevelopVersionFlushOutcome.failed(error.localizedDescription) }
             guard registration?.id == namedRegistration?.id else {
                 return DevelopVersionFlushOutcome.failed("The Develop workspace changed while its save was finishing. Retry the transition to save the current workspace.")
@@ -58,7 +65,7 @@ final class DevelopVersionFlushCoordinator {
             if let handler = namedRegistration?.handler { return await handler(reason) }
             return DevelopVersionFlushOutcome.succeeded
         }
-        inFlightFlush = (id, task)
+        inFlightFlush = (id, allowingBackedUpPrimary, task)
         let outcome = await task.value
         if inFlightFlush?.id == id {
             inFlightFlush = nil

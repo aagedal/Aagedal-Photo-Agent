@@ -209,6 +209,18 @@ final class MetadataViewModel {
     @ObservationIgnored private let automationDraftEditorOwner = UUID()
     var hasChanges = false
     var isInEditView = false
+    /// Set by Develop while it is open: false while it holds work that isn't in the editor yet
+    /// (a crop drag, a named version shown instead of the Main Edit).
+    @ObservationIgnored var developAllowsExternalReload: (() -> Bool)?
+
+    /// Develop shows another app's sidecar changes live (like Bridge with Camera Raw), but only
+    /// while the open photo has nothing of ours in flight: no unsaved or saving edit and no
+    /// retained failed save. Otherwise our save's baseline would be swapped underneath it.
+    var canAdoptExternalChangesInDevelop: Bool {
+        isInEditView && developAllowsExternalReload?() == true
+            && selectedURLs.count == 1 && !isLoading && !isSaving
+            && !hasUnpersistedEditorChanges && !hasRetainedPrimaryDevelopWrites
+    }
     var saveError: String? {
         didSet { captionPersistenceFailureRequestID = nil }
     }
@@ -476,6 +488,11 @@ final class MetadataViewModel {
     @ObservationIgnored private var primaryDevelopResults: [UUID: PrimaryDevelopWriteResult] = [:]
     @ObservationIgnored private var primaryDevelopTask: Task<Void, Never>?
     private(set) var primaryDevelopActiveCount = 0
+    /// Standalone `.xmp` copies of Develop edits whose save failed, keyed by photo
+    /// (`variablePhotoKey`). A backed-up edit doesn't keep the user in Develop.
+    private(set) var primaryDevelopBackups: [String: URL] = [:]
+    /// Presents the Review Unsaved Develop Edits sheet (toolbar or the Develop banner).
+    var isShowingPrimaryDevelopRecovery = false
     @ObservationIgnored private let primaryDevelopOwnerID = UUID()
     @ObservationIgnored private let primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator
     @ObservationIgnored private let primaryDevelopExecutor: (@Sendable (PrimaryDevelopWriteRequest) async -> PrimaryDevelopWriteResult)?
@@ -717,6 +734,22 @@ final class MetadataViewModel {
             isLoading = true
             metadataLoadTask = Task {
                 await phase.waitUntilFinished()
+                guard !Task.isCancelled else { return }
+                metadataLoadTask = nil
+                loadMetadata(for: images, folderURL: folderURL, preservingUnsavedEdits: preservingUnsavedEdits)
+            }
+            return
+        }
+        // A reload of a photo whose Develop save is still writing would read the pre-save XMP
+        // and sidecar. The next Develop edit is then admitted against that stale baseline and
+        // refused ("changed while saving"), and the retained failure blocks every later edit
+        // and leaving Develop. Reload once the writes settle; until then the current load stays
+        // the editor, so edits made meanwhile still chain onto the in-flight save.
+        if images.count == 1, let image = images.first, primaryDevelopActiveCount > 0,
+           primaryDevelopReviewOwner == nil,
+           retainedPrimaryDevelopWrites.contains(where: { Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(image.url) }) {
+            metadataLoadTask = Task {
+                await waitForPrimaryDevelopWrites()
                 guard !Task.isCancelled else { return }
                 metadataLoadTask = nil
                 loadMetadata(for: images, folderURL: folderURL, preservingUnsavedEdits: preservingUnsavedEdits)
@@ -1738,9 +1771,59 @@ final class MetadataViewModel {
         if primaryDevelopEditorBarrier?.owner == owner { primaryDevelopEditorBarrier = nil }
     }
     func waitForPrimaryDevelopWrites() async { await primaryDevelopTask?.value }
+    /// Leaving Develop (another photo, or the browser) is allowed once every unsaved edit has a
+    /// backup copy: the edit is still kept for Try Again/Review, and survives on disk regardless.
+    /// Quit, export and file renames still require the edits to be saved or resolved.
+    var primaryDevelopEditsAreBackedUp: Bool {
+        primaryDevelopActiveCount == 0 && primaryDevelopReviewOwner == nil
+            && primaryDevelopRecoveryPhotos.allSatisfy { primaryDevelopBackups[Self.variablePhotoKey($0)] != nil }
+    }
+    func primaryDevelopBackupURL(for image: URL) -> URL? { primaryDevelopBackups[Self.variablePhotoKey(image)] }
+    /// A save of this photo's Develop edit finished without saving it (not merely in flight).
+    func hasFailedPrimaryDevelop(for image: URL) -> Bool {
+        retainedPrimaryDevelopWrites.contains {
+            Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(image)
+                && primaryDevelopResults[$0.id].map { !$0.completed } == true
+        }
+    }
+    func hasUnsavedPrimaryDevelop(for image: URL) -> Bool {
+        retainedPrimaryDevelopWrites.contains { Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(image) }
+    }
+    /// A backup of an earlier failed save of this photo that is no longer queued here: the app
+    /// quit before it was saved, or the edit was discarded in Review (which keeps the file).
+    func restorablePrimaryDevelopBackup(for image: URL) -> URL? {
+        guard !hasUnsavedPrimaryDevelop(for: image) else { return nil }
+        let url = primaryDevelopBackupURL(for: image) ?? PrimaryDevelopBackup.url(for: image,
+            pairedWithRAW: !SupportedImageFormats.isRaw(url: image)
+                && PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: image))
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// The backup's Develop settings, for Develop to apply as an ordinary (undoable) edit. The
+    /// backup is tracked again from here on, so the save that follows deletes it once it lands,
+    /// and a failed save overwrites it with the restored edit.
+    func adoptPrimaryDevelopBackup(_ url: URL, for image: URL) throws -> CameraRawSettings? {
+        guard let data = try? Data(contentsOf: url),
+              let backup = XMPSidecarService().loadSidecar(fromData: data, imageAspect: { ImagePixelAspect.aspect(at: image) })
+        else { throw PrimaryDevelopWriteError(message: "The backup couldn't be read. It is kept at \(url.path).") }
+        primaryDevelopBackups[Self.variablePhotoKey(image)] = url
+        return backup.cameraRaw
+    }
+
+    /// Deletes a backup that won't be restored, or whose edit already matches the photo.
+    func deletePrimaryDevelopBackup(_ url: URL, for image: URL) {
+        guard !hasUnsavedPrimaryDevelop(for: image) else { return }
+        primaryDevelopBackups.removeValue(forKey: Self.variablePhotoKey(image))
+        PrimaryDevelopBackup.remove(at: url)
+    }
+
+    func showPrimaryDevelopReview() throws {
+        try primaryDevelopLifecycle.captureEditors()
+        isShowingPrimaryDevelopRecovery = true
+    }
     func requirePrimaryDevelopWritesPersisted() throws {
         guard !hasRetainedPrimaryDevelopWrites else {
-            throw PrimaryDevelopWriteError(message: "This photo has Develop edits that haven't been saved yet. Try saving again, or export them for review, before leaving.")
+            throw PrimaryDevelopWriteError(message: "A Develop edit hasn't been saved yet. Use Try Again or Review in Develop (or Review Develop Conflicts in the toolbar) first.")
         }
     }
     private func synchronizePrimaryDevelopRetention() {
@@ -1748,7 +1831,8 @@ final class MetadataViewModel {
         if hasRetainedPrimaryDevelopWrites {
             primaryDevelopLifecycle.register(ownerID: primaryDevelopOwnerID,
                 waitForAccepted: { await self.waitForPrimaryDevelopWrites() },
-                requirePersisted: { try self.requirePrimaryDevelopWritesPersisted() })
+                requirePersisted: { try self.requirePrimaryDevelopWritesPersisted() },
+                isBackedUp: { self.primaryDevelopEditsAreBackedUp })
         } else {
             primaryDevelopLifecycle.unregister(ownerID: primaryDevelopOwnerID)
             primaryDevelopResults.removeAll()
@@ -1822,8 +1906,25 @@ final class MetadataViewModel {
             } ?? "Your edits to \(image.lastPathComponent) are still being saved."
             onComplete(.failed(message: message)); return
         }
-        let predecessor = retainedPrimaryDevelopWrites.last {
+        var predecessor = retainedPrimaryDevelopWrites.last {
             $0.imageURL == image && $0.folderURL == folder && $0.loadID == loadID
+        }
+        // This edit carries the latest intent, so it replaces earlier ones whose save failed
+        // without writing anything; queued behind them it could only fail ("earlier edit").
+        // A partly written save is never replaced: it needs Review.
+        var superseded = Set<UUID>()
+        while let candidate = predecessor, let result = primaryDevelopResults[candidate.id],
+              !result.completed, !result.requiresRecovery {
+            superseded.insert(candidate.id)
+            predecessor = candidate.predecessor
+        }
+        if !superseded.isEmpty {
+            retainedPrimaryDevelopWrites.removeAll { superseded.contains($0.id) }
+            for id in superseded { primaryDevelopResults[id] = nil }
+            // A completed ancestor already advanced this editor's baselines.
+            if let kept = predecessor, !retainedPrimaryDevelopWrites.contains(where: { $0.id == kept.id }) {
+                predecessor = nil
+            }
         }
         let token: XMPSidecarWriteSnapshot?
         let captureFailure: String?
@@ -1905,6 +2006,7 @@ final class MetadataViewModel {
                     else if metadataReferenceSource == .xmp { metadata = xmpMetadata; originalImageMetadata = xmpMetadata }
                     hasChanges = false; selectedHavePendingSidecars = false; saveError = nil
                 }
+                removePrimaryDevelopBackupIfResolved(request.imageURL)
                 synchronizePrimaryDevelopRetention(); onComplete(.succeeded)
             } else if result.refusedForContentCredentials || result.refusedBeforeWrite {
                 // Nothing was written (Content Credentials, or develop metadata too large for the
@@ -1922,17 +2024,104 @@ final class MetadataViewModel {
                     revertPrimaryDevelopToPersisted()
                     saveError = message
                 }
+                removePrimaryDevelopBackupIfResolved(request.imageURL)
                 synchronizePrimaryDevelopRetention()
                 onComplete(.failed(message: message))
             } else {
-                let message = PrimaryDevelopFailureText.userMessage(failure: result.failure,
+                var message = PrimaryDevelopFailureText.userMessage(failure: result.failure,
                     fileName: request.imageURL.lastPathComponent, requiresRecovery: result.requiresRecovery)
+                if backUpPrimaryDevelop(request) {
+                    message += " A backup copy of the edit was saved, so you can leave Develop."
+                }
                 if matches { saveError = message }
                 synchronizePrimaryDevelopRetention()
                 onComplete(result.wasCancelled ? .cancelled(message: message) : .failed(message: message))
             }
         }
     }
+    /// Copies a failed edit to its standalone backup `.xmp`. A newer failure of the same photo
+    /// overwrites it, so the backup always holds the latest unsaved intent.
+    private func backUpPrimaryDevelop(_ request: PrimaryDevelopWriteRequest) -> Bool {
+        // An older request finishing after a newer one was queued must not replace its backup.
+        guard retainedPrimaryDevelopWrites.last(where: {
+            Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(request.imageURL)
+        })?.id == request.id || !hasUnsavedPrimaryDevelop(for: request.imageURL) else {
+            return primaryDevelopBackupURL(for: request.imageURL) != nil
+        }
+        do {
+            primaryDevelopBackups[Self.variablePhotoKey(request.imageURL)] = try PrimaryDevelopBackup.write(request)
+            synchronizePrimaryDevelopRetention()
+            return true
+        } catch {
+            logger.error("Develop backup failed for \(request.imageURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// The photo's edits are all saved (or refused with nothing written): its backup is obsolete.
+    private func removePrimaryDevelopBackupIfResolved(_ image: URL) {
+        guard !hasUnsavedPrimaryDevelop(for: image),
+              let url = primaryDevelopBackups.removeValue(forKey: Self.variablePhotoKey(image)) else { return }
+        PrimaryDevelopBackup.remove(at: url)
+    }
+
+    /// Try Again for the selected photo's unsaved Develop edit. A save that wrote nothing failed
+    /// on evidence that went stale (the files changed after the photo was read), so re-running
+    /// it as captured could only fail again. Instead the photo is re-read and the edit's Develop
+    /// settings and orientation are saved on top of what's on disk now, as a new edit.
+    func tryAgainPrimaryDevelop() async throws {
+        guard primaryDevelopReviewOwner == nil else {
+            throw PrimaryDevelopWriteError(message: "Finish the recovery review before retrying.")
+        }
+        await waitForPrimaryDevelopWrites()
+        guard selectedURLs.count == 1, let image = selectedURLs.first, let folder = currentFolderURL, !isLoading else {
+            throw PrimaryDevelopWriteError(message: "Open the photo in Develop and wait for it to load, then try again.")
+        }
+        let pending = retainedPrimaryDevelopWrites.filter { Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(image) }
+        guard let latest = pending.last else { return }
+        guard pending.allSatisfy({ primaryDevelopResults[$0.id].map { !$0.completed && !$0.requiresRecovery } == true }) else {
+            throw PrimaryDevelopWriteError(message: "This edit may be only partly saved, so it can't simply be saved again. Use Review to export it, then discard it and redo the changes you still want.")
+        }
+        let ownsEditor = metadataLoadRequestID == latest.loadID && currentFolderURL == latest.folderURL
+        let intended = ownsEditor ? editingMetadata : latest.edited
+        let baseline = ownsEditor ? previousEditingMetadata : latest.previous
+        var withoutDevelop = intended
+        withoutDevelop.cameraRaw = baseline?.cameraRaw
+        withoutDevelop.exifOrientation = baseline?.exifOrientation
+        guard let baseline, withoutDevelop == baseline else {
+            // Unsaved descriptive changes ride along with this edit; a re-read would replace
+            // them, so save it exactly as captured instead.
+            try await retryPrimaryDevelopWrites()
+            removePrimaryDevelopBackupIfResolved(image)
+            return
+        }
+        loadMetadata(for: [ImageFile(url: image)], folderURL: folder)
+        let reloadID = metadataLoadRequestID
+        await waitForMetadataLoad()
+        let ids = Set(pending.map(\.id))
+        guard metadataLoadRequestID == reloadID, selectedURLs == [image], !isLoading, metadata != nil,
+              primaryDevelopReviewOwner == nil,
+              retainedPrimaryDevelopWrites.allSatisfy({
+                  Self.variablePhotoKey($0.imageURL) != Self.variablePhotoKey(image) || ids.contains($0.id)
+              }) else {
+            throw PrimaryDevelopWriteError(message: "The photo couldn't be read again. Your edit is kept; try again.")
+        }
+        // Nothing of these was written; the new edit carries their latest intent.
+        retainedPrimaryDevelopWrites.removeAll { ids.contains($0.id) }
+        for id in ids { primaryDevelopResults[id] = nil }
+        editingMetadata.cameraRaw = intended.cameraRaw
+        editingMetadata.exifOrientation = intended.exifOrientation
+        markChanged()
+        synchronizePrimaryDevelopRetention()
+        let result = await withCheckedContinuation { continuation in
+            commitPrimaryDevelopEdits(mode: latest.mode) { continuation.resume(returning: $0) }
+        }
+        switch result {
+        case .succeeded: return
+        case .failed(let message), .cancelled(let message): throw PrimaryDevelopWriteError(message: message)
+        }
+    }
+
     /// A develop-only embed (RAW+JPEG pair's JPEG) changed only the file's Camera Raw block;
     /// its descriptive record is untouched, so only the develop part of the baselines moves.
     private func adoptEmbeddedPrimaryDevelop(_ request: PrimaryDevelopWriteRequest) {
@@ -2039,6 +2228,11 @@ final class MetadataViewModel {
             }
         }
         retainedPrimaryDevelopWrites.removeAll { ids.contains($0.id) }
+        // The backup file stays on disk next to the exported recovery file; it just no longer
+        // stands in for a kept edit.
+        if !hasUnsavedPrimaryDevelop(for: snapshot.photoURL) {
+            primaryDevelopBackups.removeValue(forKey: Self.variablePhotoKey(snapshot.photoURL))
+        }
         // Keep receipts referenced by surviving causal successors; they remain part of export.
         releasePrimaryDevelopReview()
     }
