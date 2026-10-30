@@ -213,13 +213,14 @@ final class ThumbnailItemView: NSView {
         addSubview(downloadStatusField)
 
         // Badge layers — fully composited at 2x
-        configureBadge(c2paBadge, color: .systemBlue, systemName: "checkmark.seal.fill")
-        configureBadge(editedBadge, color: .systemOrange, systemName: "slider.horizontal.3")
+        // Symbols and colours live in ThumbnailBadgeKind so the legend popover matches.
+        configureBadge(c2paBadge, kind: .contentCredentials)
+        configureBadge(editedBadge, kind: .developEdits)
         // Same yellow dot as full screen's "Pending" badge; distinct from develop edits.
-        configureBadge(pendingBadge, color: .systemYellow, systemName: "circle.fill")
-        configureBadge(cropBadge, color: .systemGreen, systemName: "crop")
-        configureBadge(hdrBadge, color: .systemPurple, systemName: "sun.max.fill")
-        configureBadge(voiceMemoBadge, color: .systemOrange, systemName: "waveform")
+        configureBadge(pendingBadge, kind: .pendingMetadata)
+        configureBadge(cropBadge, kind: .cropped)
+        configureBadge(hdrBadge, kind: .hdr)
+        configureBadge(voiceMemoBadge, kind: .voiceMemoUntranscribed)
 
         for badge in [c2paBadge, editedBadge, pendingBadge, cropBadge, hdrBadge, voiceMemoBadge] {
             badge.isHidden = true
@@ -283,11 +284,11 @@ final class ThumbnailItemView: NSView {
         addSubview(ratingLabelRow)
     }
 
-    private func configureBadge(_ badge: CALayer, color: NSColor, systemName: String) {
+    private func configureBadge(_ badge: CALayer, kind: ThumbnailBadgeKind) {
         badge.bounds = CGRect(x: 0, y: 0, width: 20, height: 20)
         badge.contentsGravity = .resizeAspect
         badge.contentsScale = ThumbnailItemView.retinaScale
-        badge.contents = ThumbnailItemView.badgeImage(systemName: systemName, color: color)
+        badge.contents = ThumbnailItemView.badgeImage(systemName: kind.systemName, color: kind.color)
     }
 
     // MARK: - Layout
@@ -441,8 +442,7 @@ final class ThumbnailItemView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         voiceMemoBadge.isHidden = status != .needsTranscription && status != .transcribed
-        configureBadge(voiceMemoBadge, color: status == .transcribed ? .systemGreen : .systemOrange,
-            systemName: "waveform")
+        configureBadge(voiceMemoBadge, kind: status == .transcribed ? .voiceMemoTranscribed : .voiceMemoUntranscribed)
         CATransaction.commit()
         needsLayout = true
         refreshAccessibilityValue()

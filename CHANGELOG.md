@@ -4,6 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- An info button next to the browser's image count explains the thumbnail icons (Content Credentials, Develop edits, metadata not written yet, cropped, HDR, voice memo, rating, colour label, iCloud download).
 - Browser layout works like Adobe Bridge: drag a pane's tab onto the edge of any pane to split it (side by side or top and bottom, as many splits as you like, up to eight panes), or onto another tab bar to make it a tab there; drag tabs within a bar to reorder them. The Layout menu adds New Tab, Split Right, Split Down, Merge All into Tabs and Single Pane. In split view the sidebar marks the active pane's folder with a solid highlight and the folders shown in the other panes with a split icon.
 
 ## 3.0.0-beta.4 — 2026-10-29
