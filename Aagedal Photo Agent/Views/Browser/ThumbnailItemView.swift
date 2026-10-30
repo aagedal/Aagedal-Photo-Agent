@@ -216,7 +216,7 @@ final class ThumbnailItemView: NSView {
         // Symbols and colours live in ThumbnailBadgeKind so the legend popover matches.
         configureBadge(c2paBadge, kind: .contentCredentials)
         configureBadge(editedBadge, kind: .developEdits)
-        // Same yellow dot as full screen's "Pending" badge; distinct from develop edits.
+        // Same yellow pencil as full screen's "Pending" badge; distinct from develop edits.
         configureBadge(pendingBadge, kind: .pendingMetadata)
         configureBadge(cropBadge, kind: .cropped)
         configureBadge(hdrBadge, kind: .hdr)

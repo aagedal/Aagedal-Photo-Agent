@@ -16,7 +16,7 @@ enum ThumbnailBadgeKind: CaseIterable {
         switch self {
         case .contentCredentials: "checkmark.seal.fill"
         case .developEdits: "slider.horizontal.3"
-        case .pendingMetadata: "circle.fill"
+        case .pendingMetadata: "pencil"
         case .cropped: "crop"
         case .hdr: "sun.max.fill"
         case .voiceMemoUntranscribed, .voiceMemoTranscribed: "waveform"

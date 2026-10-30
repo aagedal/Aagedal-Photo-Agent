@@ -649,7 +649,7 @@ struct FullScreenImageView: View {
                                                 .background(.purple.opacity(0.8), in: Capsule())
                                         }
                                         if file.hasPendingMetadataChanges {
-                                            Label("Pending", systemImage: "circle.fill")
+                                            Label("Pending", systemImage: ThumbnailBadgeKind.pendingMetadata.systemName)
                                                 .font(.caption)
                                                 .foregroundStyle(.white)
                                                 .padding(.horizontal, 10)
