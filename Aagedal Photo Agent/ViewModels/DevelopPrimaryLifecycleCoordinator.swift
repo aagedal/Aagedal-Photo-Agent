@@ -10,6 +10,7 @@ final class DevelopPrimaryLifecycleCoordinator {
     private struct Owner {
         let waitForAccepted: @MainActor () async -> Void
         let requirePersisted: @MainActor () throws -> Void
+        let isBackedUp: @MainActor () -> Bool
     }
     private struct Editor {
         let hasPendingWork: @MainActor () -> Bool
@@ -27,8 +28,10 @@ final class DevelopPrimaryLifecycleCoordinator {
     /// or an exact verified export authorizes its explicit discard.
     func register(ownerID: UUID,
                   waitForAccepted: @escaping @MainActor () async -> Void,
-                  requirePersisted: @escaping @MainActor () throws -> Void) {
-        owners[ownerID] = .init(waitForAccepted: waitForAccepted, requirePersisted: requirePersisted)
+                  requirePersisted: @escaping @MainActor () throws -> Void,
+                  isBackedUp: @escaping @MainActor () -> Bool = { false }) {
+        owners[ownerID] = .init(waitForAccepted: waitForAccepted, requirePersisted: requirePersisted,
+                                isBackedUp: isBackedUp)
         generation &+= 1
     }
 
@@ -57,7 +60,9 @@ final class DevelopPrimaryLifecycleCoordinator {
 
     /// Wait for every accepted generation, including work admitted while an earlier owner was
     /// finishing. Failures are retained by their owner and are never automatically retried here.
-    func flush() async throws {
+    /// `allowingBackedUp`: leaving Develop (navigation) accepts failed edits their owner has
+    /// copied to a backup file; quit, export and renames keep requiring them saved or resolved.
+    func flush(allowingBackedUp: Bool = false) async throws {
         let captureFailure = captureEditorFailure()
         while true {
             let observed = generation
@@ -67,7 +72,7 @@ final class DevelopPrimaryLifecycleCoordinator {
         }
         // A failing capture must not make another already accepted write disappear or skip its
         // completion. Report failures only after the accepted queue has settled.
-        try checkOwnersAndEditors(captureFailure: captureFailure)
+        try checkOwnersAndEditors(captureFailure: captureFailure, allowingBackedUp: allowingBackedUp)
         try Task.checkCancellation()
     }
 
@@ -85,8 +90,10 @@ final class DevelopPrimaryLifecycleCoordinator {
         return firstFailure
     }
 
-    private func checkOwnersAndEditors(captureFailure: (any Error)?) throws {
-        for owner in Array(owners.values) { try owner.requirePersisted() }
+    private func checkOwnersAndEditors(captureFailure: (any Error)?, allowingBackedUp: Bool = false) throws {
+        for owner in Array(owners.values) where !(allowingBackedUp && owner.isBackedUp()) {
+            try owner.requirePersisted()
+        }
         if let captureFailure { throw captureFailure }
         guard !editors.values.contains(where: { $0.hasPendingWork() }) else {
             throw CaptionWorkspaceFlushError.persistenceFailed(

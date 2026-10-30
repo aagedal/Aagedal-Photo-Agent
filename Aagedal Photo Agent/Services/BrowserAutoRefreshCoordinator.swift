@@ -316,7 +316,7 @@ final class BrowserAutoRefreshCoordinator {
         }
 
         if pane === panes.active,
-           metadataViewModel.isInEditView
+           (metadataViewModel.isInEditView && !metadataViewModel.canAdoptExternalChangesInDevelop)
             || metadataViewModel.hasUnpersistedEditorChanges
             || metadataViewModel.isSaving
             || pane.isEditingSearchText {
@@ -348,6 +348,9 @@ final class BrowserAutoRefreshCoordinator {
         let selectedURLs = Set(metadataViewModel.selectedURLs)
         guard !selectedURLs.isEmpty,
               !modifiedURLs.isDisjoint(with: selectedURLs) else { return }
+        // Develop may have started an edit while the folder was scanned; reloading now would
+        // swap that edit's save baseline. Its save then reports the conflict instead.
+        if metadataViewModel.isInEditView, !metadataViewModel.canAdoptExternalChangesInDevelop { return }
         metadataViewModel.loadMetadata(
             for: pane.selectedImages,
             folderURL: pane.currentFolderURL,
