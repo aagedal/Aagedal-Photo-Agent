@@ -2048,6 +2048,14 @@ final class MetadataViewModel {
         })?.id == request.id || !hasUnsavedPrimaryDevelop(for: request.imageURL) else {
             return primaryDevelopBackupURL(for: request.imageURL) != nil
         }
+        // A request from a later visit to the photo was edited on top of what's on disk, not on
+        // top of the earlier visit's unsaved edit, so it must not replace that edit's backup.
+        if retainedPrimaryDevelopWrites.contains(where: {
+            Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(request.imageURL)
+                && $0.loadID != request.loadID
+        }), primaryDevelopBackupURL(for: request.imageURL) != nil {
+            return true
+        }
         do {
             primaryDevelopBackups[Self.variablePhotoKey(request.imageURL)] = try PrimaryDevelopBackup.write(request)
             synchronizePrimaryDevelopRetention()
@@ -2081,6 +2089,11 @@ final class MetadataViewModel {
         guard let latest = pending.last else { return }
         guard pending.allSatisfy({ primaryDevelopResults[$0.id].map { !$0.completed && !$0.requiresRecovery } == true }) else {
             throw PrimaryDevelopWriteError(message: "This edit may be only partly saved, so it can't simply be saved again. Use Review to export it, then discard it and redo the changes you still want.")
+        }
+        // Edits made after leaving and reopening the photo started from what's on disk, without
+        // the earlier visit's unsaved edit; saving them would silently drop that edit.
+        guard Set(pending.map(\.loadID)).count == 1 else {
+            throw PrimaryDevelopWriteError(message: "An earlier unsaved edit of \(image.lastPathComponent) isn't included in the current settings. Use Review to export or discard it, then redo the changes you still want.")
         }
         let ownsEditor = metadataLoadRequestID == latest.loadID && currentFolderURL == latest.folderURL
         let intended = ownsEditor ? editingMetadata : latest.edited

@@ -1176,13 +1176,18 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     /// Releases the cached ping/pong intermediates (single-pass plan).
-    nonisolated private func releaseRenderGraphIntermediates() {
+    /// Frees the multi-pass ping/pong textures. Redact scratch is kept while the pass still
+    /// redacts: the single-pass path reuses it every frame, and reallocating up to three
+    /// full-source rgba16Float textures per slider tick churns hundreds of MB.
+    nonisolated private func releaseRenderGraphIntermediates(keepingRedactScratch: Bool) {
         updateRenderScratchState {
             $0.ping = nil
             $0.pong = nil
-            $0.redactA = nil
-            $0.redactB = nil
-            $0.redactOut = nil
+            if !keepingRedactScratch {
+                $0.redactA = nil
+                $0.redactB = nil
+                $0.redactOut = nil
+            }
         }
     }
 
@@ -3381,7 +3386,9 @@ final class MetalEditPipeline: @unchecked Sendable {
     ) -> Bool {
         let renderPassPlan = renderPassPlanSnapshot()
         guard renderPassPlan.count > 1 else {
-            if reuseIntermediates { releaseRenderGraphIntermediates() }
+            if reuseIntermediates {
+                releaseRenderGraphIntermediates(keepingRedactScratch: renderPassPlan.first?.redact != nil)
+            }
             var params = baseParams
             params.orderOffset = UInt32(renderPassPlan.first?.orderOffset ?? 0)
             params.orderCount = UInt32(

@@ -97,6 +97,14 @@ struct RedactAnonymizerSettingsTests {
         #expect(decoded.amount == nil)
     }
 
+    @Test("an out-of-range seed from another tool is clamped instead of trapping",
+          arguments: [("1e30", 16_777_215), ("-1e30", 0), ("42.9", 42)])
+    func outOfRangeSeedClamps(raw: String, expected: Int) throws {
+        let fields: [String: Any] = [AnonymizerXMP.seed: raw]
+        let decoded = try #require(AnonymizerXMP.settings(reading: { fields[$0] }))
+        #expect(decoded.seed == expected)
+    }
+
     @Test("a legacy strength-only anonymizer is written as it was")
     func legacyXMPUnchanged() {
         let fields = AnonymizerXMP.fields(for: AnonymizerSettings(amount: 72.5))

@@ -24,18 +24,11 @@ struct BrowserPaneContainer: View {
             activeFaceGroupCount: activeFaceGroupCount,
             selectFileVisibility: selectFileVisibility
         )
-        Group {
-            if panes.hasMultiplePanes {
-                BrowserPaneNodeView(node: panes.tree.root, context: context)
-                    .overlay { BrowserPaneDropOverlay(panes: panes, drag: drag) }
-            } else {
-                // The classic browser: no tab bar until there is something to arrange.
-                BrowserPaneSlot(paneID: panes.tree.visiblePaneIDs.first ?? BrowserPaneID(panes.primary),
-                                showsActiveChrome: false,
-                                context: context)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Always the same view path, so adding the first tab or closing the last extra one
+        // keeps the primary's grid (scroll position, snapshot) instead of rebuilding it.
+        BrowserPaneNodeView(node: panes.tree.root, context: context)
+            .overlay { BrowserPaneDropOverlay(panes: panes, drag: drag) }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         .coordinateSpace(.named(BrowserPaneDragState.space))
     }
 }
@@ -305,24 +298,23 @@ private struct BrowserPaneGroupView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            BrowserPaneTabBar(group: group, context: context)
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BrowserPaneDragState.space)) } action: {
-                    context.drag.tabBarFrames[group.id] = $0
-                }
-            Divider()
+            // The classic browser: no tab bar until there is something to arrange.
+            if panes.hasMultiplePanes {
+                BrowserPaneTabBar(group: group, context: context)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BrowserPaneDragState.space)) } action: {
+                        context.drag.tabBarFrames[group.id] = $0
+                    }
+                Divider()
+            }
             BrowserPaneSlot(
                 paneID: group.selectedPaneID,
                 // With several rectangles on screen, mark the one that is focused.
-                showsActiveChrome: panes.tree.groups.count > 1,
+                showsActiveChrome: panes.groupCount > 1,
                 context: context
             )
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BrowserPaneDragState.space)) } action: {
                 context.drag.contentFrames[group.id] = $0
             }
-        }
-        .onDisappear {
-            context.drag.tabBarFrames[group.id] = nil
-            context.drag.contentFrames[group.id] = nil
         }
     }
 }

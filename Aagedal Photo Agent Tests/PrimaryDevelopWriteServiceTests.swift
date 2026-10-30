@@ -704,6 +704,38 @@ struct PrimaryDevelopWriteServiceTests {
         }
     }
 
+    @Test("After leaving and reopening a photo, a new tweak neither replaces the failed edit's backup nor is saved over it by Try Again")
+    func reopenedPhotoKeepsEarlierFailedEdit() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let backups = folder.appendingPathComponent("Backups", isDirectory: true)
+        try await PrimaryDevelopBackup.$rootOverride.withValue(backups) {
+            let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+                primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator())
+            try await load(model, image: image, folder: folder)
+            var external = IPTCMetadata(); external.title = "Written elsewhere"
+            try XMPSidecarService().saveSidecar(metadata: external, for: image)
+            model.editingMetadata.cameraRaw = settings(2)
+            model.markChanged()
+            model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar, onComplete: { _ in })
+            await model.waitForPrimaryDevelopWrites()
+            let backup = try #require(model.primaryDevelopBackupURL(for: image))
+
+            // Reopen: the editor now shows what's on disk, without the unsaved exposure 2.
+            try await load(model, image: image, folder: folder)
+            var cameraRaw = model.editingMetadata.cameraRaw ?? CameraRawSettings()
+            cameraRaw.contrast2012 = 10
+            model.editingMetadata.cameraRaw = cameraRaw
+            model.markChanged()
+            model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar, onComplete: { _ in })
+            await model.waitForPrimaryDevelopWrites()
+
+            #expect(model.primaryDevelopBackupURL(for: image) == backup)
+            #expect(XMPSidecarService().loadSidecar(fromData: try Data(contentsOf: backup))?.cameraRaw?.exposure2012 == 2)
+            await #expect(throws: (any Error).self) { try await model.tryAgainPrimaryDevelop() }
+            #expect(model.retainedPrimaryDevelopWrites.contains { $0.edited.cameraRaw?.exposure2012 == 2 })
+        }
+    }
+
     @Test("After a relaunch the backup of an unsaved edit is offered, restores, and is deleted once saved")
     func backupRestoresAfterRelaunch() async throws {
         let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
