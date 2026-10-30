@@ -1,11 +1,11 @@
 # Aagedal Photo Agent 3.0 feature guide
 
 **Status:** release-candidate draft  
-**Last reviewed:** 2026-10-25
+**Last reviewed:** 2026-10-30
 
 This guide covers the new 3.0 investigation, comparison, versioning, caption, and rename
 workflows. It supplements the control-level hover help and accessibility hints in the app. Commands and
-shortcuts shown in Settings → Keyboard Shortcuts are authoritative when they differ from examples here. Open this guide, the known limitations and What's New from the **Help** menu.
+shortcuts shown in Settings → Shortcuts are authoritative when they differ from examples here. Open this guide, the known limitations and What's New from the **Help** menu.
 
 ## Find a setting
 
@@ -152,8 +152,8 @@ downloads Whisper models or switches providers. Changed photos, WAVs or links re
 The confirmation closes when transcription starts, and processing continues in the background.
 Open **Activity** in the left sidebar to view progress or cancel the batch. Completed batches remain
 in Activity history, with per-photo results and a **Transcriptions** filter.
-Saved batch drafts become ready for metadata
-variables when opened in Caption; IPTC fields are unchanged. **Cancel Transcription** in the Activity header requests cancellation and waits for the active item to stop.
+Saved batch transcripts are ready for metadata
+variables straight away; IPTC fields are unchanged. **Cancel Transcription** in the Activity header requests cancellation and waits for the active item to stop.
 Drafts already saved remain available in Caption, even if the
 batch fails or is cancelled. An uncertain save stops the remaining photos and requires inspection
 before retrying. The current empty transcript panel reloads a saved batch draft without replacing an existing transcript.
@@ -171,8 +171,10 @@ selection. Choose **Settings → Description Assistant → Provider**:
   settings. Supported caption languages are shown for this Mac; choose a local model for
   a language Apple’s model does not support.
 
-Both providers correct grammar or improve wording using the existing description and
-editorial prompt. They do not inspect the image. Review and edit each suggestion before
+**Correct grammar** and **Improve wording** work from the existing description and editorial
+prompt only; they do not look at the image. **Write from image** drafts a new description from
+the photo itself plus its metadata. It needs Apple Foundation Models with image support or a
+vision-capable MLX model folder; the GGUF runner cannot receive images. Review and edit each suggestion before
 **Apply to Description** or **Queue Reviewed Description**. A changed original description
 or editor load refuses stale application. Cancellation discards unfinished output; a batch
 retains completed suggestions for review. Provider failures do not switch models automatically.
@@ -197,6 +199,27 @@ subject to the connected client's own privacy and retention policy.
 
 The complete tool reference is in the
 [developer automation reference](developer/local-automation-mcp.md#tool-reference-from-the-feature-guide).
+
+## Apply a template: Replace, Fill Empty or Append
+
+Pick a metadata template in the template palette, Caption Workspace or the import sheet. The
+modifier keys held when you choose it decide how it combines with existing values; only the fields
+the template contains are touched:
+
+- **Return** (or a plain click) — **Replace**: the template's values replace the fields, and an empty
+  template field clears that field.
+- **Option-Return** — **Fill Empty Fields**: values go only into fields that are empty. On a
+  multi-photo selection this is decided per photo. Date Created, Urgency, Digital Source Type and
+  Image Supplier can't be filled on a mixed selection; the app names those fields instead.
+- **Shift-Return** — **Append**: text and lists are added after each photo's own existing value.
+  Appending over an unsaved Fill Empty Fields on the same field asks you to save first.
+
+## Import from a card
+
+The sidebar shows import progress with a time-left estimate. When an import from a memory card or
+removable disk finishes, the sidebar banner and **Import Complete** offer **Eject** for that card.
+If macOS can't eject it yet, the app says which apps or files to close first. Eject is never offered
+for the import destination or backup disk.
 
 ## Import templates
 

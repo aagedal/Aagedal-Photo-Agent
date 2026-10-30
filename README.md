@@ -164,10 +164,10 @@ Rebuilt for 2.0 around a bundled on-device AuraFace (ArcFace) model, with eye-al
 
 ### Image Scopes & Visualization
 
-- Waveform scope (Shift+1)
-- Parade / RGB scope (Shift+2)
-- Vectorscope (Shift+3)
-- CIE 1931 chromaticity diagram (Shift+4) with target gamut overlay and HDR-aware display gamut indicator
+- Waveform scope (Ctrl+Option+1)
+- Parade / RGB scope (Ctrl+Option+2)
+- Vectorscope (Ctrl+Option+3)
+- CIE 1931 chromaticity diagram (Ctrl+Option+4) with target gamut overlay and HDR-aware display gamut indicator
 - Gamut clipping soft proof for both edit and browse views
 - All scopes rendered via Metal GPU compute shaders
 
@@ -251,7 +251,7 @@ bytes. Passwords are supplied through a private temporary mode-0600 netrc file.
 Opt-in sync that keeps your library settings in step across Macs, configured in Settings → iCloud Sync:
 
 - Master "Sync everything" toggle, or per-category control
-- Synced categories: metadata templates, keyword lists, the Known People database, the Teams / roster library, and portable app settings
+- Synced categories: metadata templates, keyword lists, the Known People database, the Teams / roster library, watermarks, and portable app settings
 - Stored in the app's iCloud Drive container so it follows you to your other Macs
 - Passwords, signing keys, and machine-specific values (file paths, certificates, FTP servers) stay on-device and are never synced
 - Coordinated through `NSFileCoordinator` so syncing never forks conflicting duplicate folders
@@ -328,7 +328,7 @@ MVVM with a services layer, built primarily on Apple frameworks plus a small set
 | `~/Library/Application Support/Aagedal Photo Agent/Templates/` | Metadata presets |
 | `~/Library/Application Support/Aagedal Photo Agent/Lists/` | Keyword lists |
 
-When iCloud Sync is enabled, the Templates, KnownPeople, Teams, and Lists folders move to the app's iCloud Drive container (`iCloud.aagedal.Aagedal-Photo-Agent/Documents/`) instead of Application Support.
+When iCloud Sync is enabled, the Templates, KnownPeople, Teams, Lists, and Watermarks folders move to the app's iCloud Drive container (`iCloud.aagedal.Aagedal-Photo-Agent/Documents/`) instead of Application Support.
 
 ## Local testing and CI
 
