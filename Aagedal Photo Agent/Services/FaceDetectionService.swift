@@ -913,29 +913,16 @@ nonisolated struct FaceDetectionService: Sendable {
         in cgImage: CGImage,
         inputFaceObservations: [VNFaceObservation]? = nil
     ) async throws -> [VNFaceObservation] {
-        try await withCheckedThrowingContinuation { continuation in
-            let request = VNDetectFaceLandmarksRequest { request, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                let faces = request.results as? [VNFaceObservation] ?? []
-                // Filter to only faces with valid landmarks (eyes detected)
-                let validFaces = faces.filter { observation in
-                    guard let landmarks = observation.landmarks else { return true }
-                    // Require at least one eye to be detected
-                    return landmarks.leftEye != nil || landmarks.rightEye != nil
-                }
-                nonisolated(unsafe) let result = validFaces
-                continuation.resume(returning: result)
-            }
-            request.inputFaceObservations = inputFaceObservations
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                continuation.resume(throwing: error)
-            }
+        // Synchronous `perform`, no continuation: a failing request can both report its error
+        // to a completion handler and throw, which would resume a continuation twice.
+        let request = VNDetectFaceLandmarksRequest()
+        request.inputFaceObservations = inputFaceObservations
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        try handler.perform([request])
+        // Only faces with valid landmarks: at least one eye detected.
+        return (request.results ?? []).filter { observation in
+            guard let landmarks = observation.landmarks else { return true }
+            return landmarks.leftEye != nil || landmarks.rightEye != nil
         }
     }
 
@@ -966,26 +953,14 @@ nonisolated struct FaceDetectionService: Sendable {
         in cgImage: CGImage,
         regionOfInterest: CGRect? = nil
     ) async throws -> [VNFaceObservation] {
-        try await withCheckedThrowingContinuation { continuation in
-            let request = VNDetectFaceRectanglesRequest { request, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                let faces = request.results as? [VNFaceObservation] ?? []
-                nonisolated(unsafe) let result = faces
-                continuation.resume(returning: result)
-            }
-            if let regionOfInterest {
-                request.regionOfInterest = regionOfInterest
-            }
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                continuation.resume(throwing: error)
-            }
+        // Synchronous `perform`, no continuation (see `detectFaceLandmarks`).
+        let request = VNDetectFaceRectanglesRequest()
+        if let regionOfInterest {
+            request.regionOfInterest = regionOfInterest
         }
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        try handler.perform([request])
+        return request.results ?? []
     }
 
     /// Generate the face-identity embedding for an aligned crop and encode it for storage.

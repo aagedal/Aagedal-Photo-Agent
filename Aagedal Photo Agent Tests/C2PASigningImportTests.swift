@@ -5,6 +5,16 @@ import Testing
 @Suite("C2PA signing import transaction", .serialized)
 @MainActor
 struct C2PASigningImportTests {
+    @Test("A PEM block ending exactly at end of file (no trailing newline) is extracted, not a crash")
+    func pemBlockAtEndOfFile() {
+        let key = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----"
+        #expect(C2PASigningConfigurationService.pemBlock(in: key, header: "PRIVATE KEY") == key + "\n")
+        #expect(C2PASigningConfigurationService.pemBlock(in: key + "\n", header: "PRIVATE KEY") == key + "\n")
+        // An END marker before its BEGIN is not a block.
+        let reversed = "-----END PRIVATE KEY-----\n-----BEGIN PRIVATE KEY-----\nAAAA"
+        #expect(C2PASigningConfigurationService.pemBlock(in: reversed, header: "PRIVATE KEY") == nil)
+    }
+
     @Test("Test signer manifest omits the user certificate")
     func testSignerManifestOmitsCertificate() throws {
         let data = try C2PASigningService.buildManifestJSON(

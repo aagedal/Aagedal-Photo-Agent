@@ -62,30 +62,13 @@ nonisolated struct ClothingFeatureService: Sendable {
         }
 
         // Generate feature print using Vision
-        return try await withCheckedThrowingContinuation { continuation in
-            let request = VNGenerateImageFeaturePrintRequest { request, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                guard let observation = request.results?.first as? VNFeaturePrintObservation else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                do {
-                    let data = try NSKeyedArchiver.archivedData(withRootObject: observation, requiringSecureCoding: true)
-                    continuation.resume(returning: data)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-            let handler = VNImageRequestHandler(cgImage: croppedImage, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
+        // Synchronous `perform`, no continuation: a failing request can both report its error
+        // to a completion handler and throw, which would resume a continuation twice.
+        let request = VNGenerateImageFeaturePrintRequest()
+        let handler = VNImageRequestHandler(cgImage: croppedImage, options: [:])
+        try handler.perform([request])
+        guard let observation = request.results?.first else { return nil }
+        return try NSKeyedArchiver.archivedData(withRootObject: observation, requiringSecureCoding: true)
     }
 
     /// Compute the combined distance using face and clothing features.

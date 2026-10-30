@@ -6893,6 +6893,31 @@ struct RedactionFailClosedTests {
         #expect(DevelopSaveError.redactionMissing("photo.jpg").errorDescription?.contains("face blur") == true)
     }
 
+    @Test("A named version renders its own stack plus the photo's saved redactions, never the Main Edit's look")
+    func namedVersionRenderSettings() {
+        let saved = redacted()
+        // An empty version renders unedited (no Main Edit exposure) but keeps the blur.
+        let empty = EditExportPipeline.namedVersionRenderSettings(CameraRawSettings(), saved: saved)
+        #expect(empty?.exposure2012 == nil)
+        #expect(empty?.hasActiveRedaction == true)
+        #expect(EditExportPipeline.namedVersionRenderSettings(nil, saved: nil) == nil)
+
+        var version = CameraRawSettings()
+        version.exposure2012 = -1
+        let resolved = EditExportPipeline.namedVersionRenderSettings(version, saved: saved)
+        #expect(resolved?.exposure2012 == -1)
+        #expect(resolved?.hasActiveRedaction == true)
+        #expect(EditExportPipeline.namedVersionRenderSettings(version, saved: nil) == version)
+    }
+
+    @Test("Named-version filename suffixes are filesystem-safe")
+    func namedVersionFilenameSuffix() {
+        #expect(EditExportPipeline.namedVersionFilenameSuffix("Black and White") == " Black and White")
+        #expect(EditExportPipeline.namedVersionFilenameSuffix("  Crop 4/5: tight\n") == " Crop 4-5- tight")
+        #expect(EditExportPipeline.namedVersionFilenameSuffix("...") == " Version")
+        #expect(EditExportPipeline.namedVersionFilenameSuffix(String(repeating: "a", count: 200)).count == 65)
+    }
+
     @MainActor
     @Test("A failed-GPU placeholder preview is shown but never cached")
     func placeholderPreviewsAreNotCached() throws {

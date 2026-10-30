@@ -1905,8 +1905,14 @@ final class MetadataViewModel {
             revertPrimaryDevelopToPersisted()
             saveError = refusal; onComplete(.failed(message: refusal)); return
         }
+        // Runs on every slider release, on the main actor: use the cached stem index. A fresh
+        // listing here re-listed the whole folder on every commit after the first (each commit's
+        // own sidecar write marks the index rolled forward), a beachball on network volumes.
+        // Freshness is enforced off-main where it protects data: the write service refuses a
+        // sidecar-only target for a RAW-owned stem sidecar, and the sidecar writer re-checks
+        // ownership before touching the crs block.
         let pairedWithRAW = !SupportedImageFormats.isRaw(url: image)
-            && PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: image, requiringFreshListing: true)
+            && PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: image)
         let mode = Self.primaryDevelopMode(requestedMode, pairedWithRAW: pairedWithRAW)
         let edited = editingMetadata
         if let existing = retainedPrimaryDevelopWrites.last(where: {

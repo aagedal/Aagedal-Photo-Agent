@@ -5140,13 +5140,19 @@ final class BrowserViewModel {
 
             // Build one replacement array so multiple duplicates are inserted deterministically
             // and no stale pre-await indices can target the wrong image.
+            // A folder auto-refresh can land while the copies are still being written and
+            // already list the first finished copy; inserting it again would put one URL in
+            // `images` twice and trap the URL index (`Dictionary(uniqueKeysWithValues:)`).
+            let existingURLs = Set(images.map(\.url))
             var updatedImages: [ImageFile] = []
             updatedImages.reserveCapacity(images.count + result.completed.count)
             for image in images {
                 updatedImages.append(image)
                 if let duplicate = completedBySource[image.url] {
-                    updatedImages.append(duplicate)
                     newSelectionURLs.insert(duplicate.url)
+                    if !existingURLs.contains(duplicate.url) {
+                        updatedImages.append(duplicate)
+                    }
                 }
             }
             images = updatedImages
@@ -5155,11 +5161,13 @@ final class BrowserViewModel {
             // An empty manual order means "name order" and must stay empty.
             let duplicateURLBySource = completedBySource.mapValues(\.url)
             if !manualOrder.isEmpty {
+                let orderedURLs = Set(manualOrder)
                 var newManualOrder: [URL] = []
                 newManualOrder.reserveCapacity(manualOrder.count + result.completed.count)
                 for url in manualOrder {
                     newManualOrder.append(url)
-                    if let duplicateURL = duplicateURLBySource[url] {
+                    if let duplicateURL = duplicateURLBySource[url],
+                       !orderedURLs.contains(duplicateURL) {
                         newManualOrder.append(duplicateURL)
                     }
                 }

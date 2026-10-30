@@ -280,24 +280,18 @@ final class SwiftExifReadService {
 
     /// Read many files concurrently, returning their dicts (failures omitted).
     /// Each result carries `SourceFile` so callers can re-key by URL when needed.
-    /// Result order is not guaranteed to match input order.
+    /// Result order is not guaranteed to match input order. Bounded like full reads: a caller
+    /// may pass hundreds of URLs (a Person Shown write's C2PA lookup), and each read blocks a
+    /// cooperative-pool thread for its whole duration.
     nonisolated private func readDicts(for urls: [URL]) async -> [[String: Any]] {
-        var collected: [[String: Any]] = []
-        collected.reserveCapacity(urls.count)
-
-        await withTaskGroup(of: DictBox?.self) { group in
-            for url in urls {
-                group.addTask { [weak self] in
-                    guard let self else { return nil }
-                    if Task.isCancelled { return nil }
-                    return await self.lockedReadDict(for: url)
-                }
-            }
-            for await result in group {
-                if let result { collected.append(result.value) }
-            }
+        let results: [URL: DictBox] = await Self.boundedBatchRead(
+            urls: urls,
+            maxConcurrent: Self.batchFullReadConcurrencyLimit,
+            stopsWhenCancelled: true
+        ) { [weak self] url in
+            await self?.lockedReadDict(for: url)
         }
-        return collected
+        return results.values.map(\.value)
     }
 }
 

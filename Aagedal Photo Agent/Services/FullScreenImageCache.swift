@@ -234,7 +234,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         let perVariant = max(0, totalLimit / 2)
         cache.countLimit = 12
         cache.totalCostLimit = perVariant
-        editedCache.countLimit = editing ? 2 : 12
+        editedCache.countLimit = editing ? 2 : Self.editedCacheCountLimit
         editedCache.totalCostLimit = editing ? min(perVariant, 64 * 1_024 * 1_024) : perVariant
     }
 
@@ -677,25 +677,34 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// Proactively re-render edited screen-res previews for specific URLs into the edited cache,
     /// replacing any stale entries. Called on develop-editor exit so the return to the grid/loupe
     /// is an instant cache hit instead of a reactive re-decode (which causes a brief stale flash).
+    /// `urls` is in priority order (the current photo and its neighbours first); only the first
+    /// `editedCacheCountLimit` are rendered, every one is invalidated.
     /// Renders via the shared `decodedEditedPreview` path — same RAW/HDR/SDR handling, as-shot WB,
     /// and EDR headroom stamp as the loupe and prefetch. Low priority; never touches the unedited
     /// caches. The reactive `onChange`/folder-poll paths remain the safety net for edits that reach
     /// an image without the editor (batch paste, reset, external app).
+    nonisolated static let editedCacheCountLimit = 12
+
     nonisolated func warmEditedPreviews(
         for urls: [URL],
         screenMaxPx: CGFloat,
         settingsForURL: @escaping @Sendable (URL) -> CameraRawSettings?,
         orientationForURL: @escaping @Sendable (URL) -> Int
     ) {
-        let targets = Array(Set(urls))
+        var seen = Set<URL>()
+        let targets = urls.filter { seen.insert($0).inserted }
         guard !targets.isEmpty else { return }
         // Drop the stale edited renders synchronously so a concurrent loupe/grid read can't serve
         // an entry baked under the old settings before the fresh render lands.
         for url in targets { invalidateEditedImage(for: url) }
+        // Render only what the edited cache can hold, in the caller's priority order. After a
+        // batch paste to hundreds of photos, rendering them all (a full decode + GPU render each)
+        // would evict all but the last few and occupy the shared render queue for minutes.
+        let warmTargets = Array(targets.prefix(Self.editedCacheCountLimit))
 
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            for url in targets {
+            for url in warmTargets {
                 guard !Task.isCancelled else { break }
                 guard let settings = settingsForURL(url) else { continue }
                 let orientation = orientationForURL(url)
