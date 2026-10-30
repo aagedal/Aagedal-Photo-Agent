@@ -3755,3 +3755,41 @@ struct EditSliderTypedValueTests {
         #expect(EditSliderTypedValue.editableText(for: 1.25, step: 0.05).filter(\.isNumber) == "125")
     }
 }
+
+extension DevelopInteractionBehaviorTests {
+    @Test("Develop edits update rows in place and re-evaluate the Edited filter without a re-sort")
+    @MainActor
+    func developEditsUpdateRowsInPlace() async {
+        var images = urls.prefix(3).map { ImageFile(url: $0) }
+        images[0].starRating = .one
+        images[1].starRating = .five
+        images[2].starRating = .three
+        let viewModel = BrowserViewModel()
+        viewModel.sortOrder = .rating
+        viewModel.images = images
+        await Task.yield()
+        let order = viewModel.sortedImages.map(\.url)
+
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1
+        viewModel.updateImagesInPlace([urls[2]]) { image in
+            image.cameraRawSettings = settings
+            image.hasDevelopEdits = true
+        }
+
+        // Published synchronously, row by row, in the existing order.
+        #expect(viewModel.sortedImages.map(\.url) == order)
+        #expect(viewModel.visibleImages.first { $0.url == urls[2] }?.hasDevelopEdits == true)
+        #expect(viewModel.image(at: urls[2])?.cameraRawSettings == settings)
+
+        viewModel.editedFilter = .edited
+        await Task.yield()
+        #expect(viewModel.visibleImages.map(\.url) == [urls[2]])
+
+        viewModel.updateImagesInPlace([urls[2]]) { image in
+            image.cameraRawSettings = nil
+            image.hasDevelopEdits = false
+        }
+        #expect(viewModel.visibleImages.isEmpty)
+    }
+}

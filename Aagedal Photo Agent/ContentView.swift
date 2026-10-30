@@ -4459,54 +4459,89 @@ struct ContentView: View {
                 return
             }
 
-            var savedURLs: [URL] = []
-            var saveFailures: [BatchOperationResult.Failure] = []
-            for (index, url) in urls.enumerated() {
-                guard !Task.isCancelled else { break }
-                renderExportCurrent = index + 1
-                let cameraRaw = metadataByURL[url]?.cameraRaw
+            // Resolve and create every destination before rendering starts, so photos rendering
+            // side by side never race on the same folder. Save As always renders SDR
+            // (JPEG/PNG), so use isHDR: false for naming, and name the format sub-folder after
+            // the Save As format rather than the configured Export format.
+            let rootFolder = sourceFolderURL
+            let destinationFolders = urls.map { url in
+                EditedImageRenderer.resolveOutputFolder(
+                    sourceURL: url, rootFolder: rootFolder ?? url.deletingLastPathComponent(),
+                    isHDR: false, formatPrefix: "Edited", askedFolder: askedFolder,
+                    sdrFormat: format.exportFormat)
+            }
+            var folderErrors: [String: Error] = [:]
+            for folder in destinationFolders where !Task.isCancelled && createdFolders.insert(folder.path).inserted {
                 do {
-                    // Resolve destination folder per the configured export location mode.
-                    // Save As always renders SDR (JPEG/PNG), so use isHDR: false for naming,
-                    // and name the format sub-folder after the Save As format rather than
-                    // the configured Export format.
-                    let rootFolder = sourceFolderURL ?? url.deletingLastPathComponent()
-                    let destinationFolder = EditedImageRenderer.resolveOutputFolder(
-                        sourceURL: url, rootFolder: rootFolder,
-                        isHDR: false, formatPrefix: "Edited", askedFolder: askedFolder,
-                        sdrFormat: format.exportFormat)
-                    if !createdFolders.contains(destinationFolder.path) {
-                        _ = try await ExportDirectoryService.shared.ensureDirectory(at: destinationFolder)
-                        createdFolders.insert(destinationFolder.path)
-                    }
-
-                    let outputURL = try await EditExportPipeline.renderItem(
-                        sourceURL: url, cameraRaw: cameraRaw, kind: .saveAs(format),
-                        outputFolder: destinationFolder, folderURL: sourceFolderURL,
-                        writeEngine: browser.writeEngine, failureTracker: failureTracker)
-                    savedURLs.append(outputURL)
-                } catch is CancellationError {
-                    // A cancelled run is reported as cancelled, not as a failed file.
-                    break
+                    _ = try await ExportDirectoryService.shared.ensureDirectory(at: folder)
                 } catch {
-                    saveFailures.append(.init(filename: url.lastPathComponent, error: error))
+                    folderErrors[folder.path] = error
                 }
             }
+
+            var savedURLs: [(index: Int, url: URL)] = []
+            var saveFailures: [(index: Int, failure: BatchOperationResult.Failure)] = []
+            let writeEngine = browser.writeEngine
+            let cameraRawByURL = metadataByURL.mapValues(\.cameraRaw)
+            let folderFailures = folderErrors
+            // Save As replaces an existing output. Two sources with the same output name (a
+            // RAW+JPEG pair) must run in order, as before: side by side, the second would find
+            // the name still claimed and fail instead of replacing it.
+            let outputNames = zip(urls, destinationFolders).map { url, folder in
+                folder.appendingPathComponent(url.deletingPathExtension().lastPathComponent).path.lowercased()
+            }
+            let width = Set(outputNames).count == outputNames.count ? ExportBatchScheduler.defaultWidth : 1
+            await ExportBatchScheduler.run(
+                count: Task.isCancelled ? 0 : urls.count,
+                width: width,
+                onStart: { renderExportCurrent = $0 + 1 },
+                job: { index -> Result<URL, any Error> in
+                    let url = urls[index]
+                    let destinationFolder = destinationFolders[index]
+                    if let folderError = folderFailures[destinationFolder.path] {
+                        return .failure(folderError)
+                    }
+                    do {
+                        return .success(try await EditExportPipeline.renderItem(
+                            sourceURL: url, cameraRaw: cameraRawByURL[url] ?? nil, kind: .saveAs(format),
+                            outputFolder: destinationFolder, folderURL: sourceFolderURL,
+                            writeEngine: writeEngine, failureTracker: failureTracker))
+                    } catch {
+                        return .failure(error)
+                    }
+                },
+                onResult: { index, result in
+                    switch result {
+                    case .success(let outputURL):
+                        savedURLs.append((index, outputURL))
+                        return true
+                    case .failure(let error) where error is CancellationError:
+                        // A cancelled run is reported as cancelled, not as a failed file.
+                        return false
+                    case .failure(let error):
+                        saveFailures.append((index, .init(filename: urls[index].lastPathComponent, error: error)))
+                        return true
+                    }
+                }
+            )
+            // Photos finish out of order when two render at once; report them in order.
+            let savedURLsInOrder = savedURLs.sorted { $0.index < $1.index }.map(\.url)
+            let saveFailuresInOrder = saveFailures.sorted { $0.index < $1.index }.map(\.failure)
 
             isRenderingEditedFolder = false
 
             // Add saved files to browser if they're in the same folder; otherwise
             // surface the sub-folder(s) they landed in within the sidebar tree.
-            let destinationFolders = Set(savedURLs.map { $0.deletingLastPathComponent() })
+            let outputFolders = Set(savedURLsInOrder.map { $0.deletingLastPathComponent() })
             if let folderURL = sourceFolderURL {
-                if destinationFolders.contains(folderURL), browser.currentFolderURL == folderURL {
+                if outputFolders.contains(folderURL), browser.currentFolderURL == folderURL {
                     browser.refreshCurrentFolderIfNeeded()
                 }
-                for subfolder in destinationFolders where subfolder != folderURL {
+                for subfolder in outputFolders where subfolder != folderURL {
                     browser.revealExportedSubfolder(subfolder)
                 }
             } else {
-                for subfolder in destinationFolders {
+                for subfolder in outputFolders {
                     browser.revealExportedSubfolder(subfolder)
                 }
             }
@@ -4518,7 +4553,7 @@ struct ContentView: View {
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
-            } else if !saveFailures.isEmpty || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty || !watermarkWarnings.isEmpty {
+            } else if !saveFailuresInOrder.isEmpty || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty || !watermarkWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -4527,15 +4562,15 @@ struct ContentView: View {
             lastBatchResult = BatchOperationResult(
                 title: "Save As",
                 outcome: outcome,
-                successCount: savedURLs.count,
+                successCount: savedURLsInOrder.count,
                 totalCount: urls.count,
-                failures: saveFailures,
+                failures: saveFailuresInOrder,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,
                 missingWatermarkFilenames: watermarkWarnings,
                 sourceFolderURL: sourceFolderURL,
-                outputURLs: savedURLs
+                outputURLs: savedURLsInOrder
             )
         }
     }
@@ -4925,78 +4960,110 @@ struct ContentView: View {
 
             var successCount = 0
             var failureCount = 0
-            var renderFailures: [BatchOperationResult.Failure] = []
-            var exportedURLs: [URL] = []
-            var createdFolders: Set<String> = []
+            var renderFailures: [(job: Int, failure: BatchOperationResult.Failure)] = []
+            var exportedURLs: [(job: Int, url: URL)] = []
             var lastOutputFolder: URL?
 
-            for (urlIndex, url) in urls.enumerated() {
-                guard !Task.isCancelled else { break }
-                let cameraRaw = metadataByURL[url]?.cameraRaw
-                let isHDR = cameraRaw?.hdrEditMode == 1
-
-                for (configurationIndex, configuration) in exportConfigurations.enumerated() {
-                    guard !Task.isCancelled else { break }
-                    renderExportCurrent =
-                        urlIndex * exportConfigurations.count + configurationIndex + 1
-                    let isSecondary = configurationIndex > 0
-                    let failureDisplayName = isSecondary
-                        ? "\(url.lastPathComponent) (Secondary)"
-                        : url.lastPathComponent
-                    let outputFolder = EditedImageRenderer.resolveOutputFolder(
-                        sourceURL: url,
-                        rootFolder: folderURL,
-                        isHDR: isHDR,
-                        formatPrefix: isSecondary ? "Edited_Secondary" : "Edited",
-                        askedFolder: askedFolders[configurationIndex],
-                        configuration: configuration
-                    )
-
-                    if !createdFolders.contains(outputFolder.path) {
-                        do {
-                            _ = try await ExportDirectoryService.shared.ensureDirectory(at: outputFolder)
-                            createdFolders.insert(outputFolder.path)
-                            lastOutputFolder = outputFolder
-                        } catch {
-                            browserViewModel.errorMessage = "Failed to create \(outputFolder.lastPathComponent) folder: \(error.localizedDescription)"
-                            failureCount += 1
-                            renderFailures.append(.init(
-                                displayName: failureDisplayName,
-                                filename: url.lastPathComponent,
-                                reason: error.localizedDescription
-                            ))
-                            continue
-                        }
-                    }
-
-                    do {
-                        let outputURL = try await EditExportPipeline.renderItem(
-                            sourceURL: url,
-                            cameraRaw: cameraRaw,
-                            kind: .format,
-                            outputFolder: outputFolder,
-                            folderURL: folderURL,
-                            writeEngine: browserViewModel.writeEngine,
-                            failureTracker: failureTracker,
-                            configuration: configuration,
-                            outputFilenameSuffix: isSecondary ? " Secondary" : "",
-                            collisionPolicy: .appendNumber
-                        )
-                        successCount += 1
-                        exportedURLs.append(outputURL)
-                    } catch is CancellationError {
-                        // A cancelled run is reported as cancelled, not as a failed file.
-                        break
-                    } catch {
-                        failureCount += 1
-                        renderFailures.append(.init(
-                            displayName: failureDisplayName,
-                            filename: url.lastPathComponent,
-                            reason: error.localizedDescription
-                        ))
-                    }
+            // One job per photo and export configuration, in the order they were run before.
+            struct ExportJob {
+                let url: URL
+                let cameraRaw: CameraRawSettings?
+                let configuration: AdvancedExportConfiguration?
+                let isSecondary: Bool
+                let outputFolder: URL
+                var failureDisplayName: String {
+                    isSecondary ? "\(url.lastPathComponent) (Secondary)" : url.lastPathComponent
                 }
             }
+            var jobs: [ExportJob] = []
+            for url in urls {
+                let cameraRaw = metadataByURL[url]?.cameraRaw
+                let isHDR = cameraRaw?.hdrEditMode == 1
+                for (configurationIndex, configuration) in exportConfigurations.enumerated() {
+                    let isSecondary = configurationIndex > 0
+                    jobs.append(ExportJob(
+                        url: url,
+                        cameraRaw: cameraRaw,
+                        configuration: configuration,
+                        isSecondary: isSecondary,
+                        outputFolder: EditedImageRenderer.resolveOutputFolder(
+                            sourceURL: url,
+                            rootFolder: folderURL,
+                            isHDR: isHDR,
+                            formatPrefix: isSecondary ? "Edited_Secondary" : "Edited",
+                            askedFolder: askedFolders[configurationIndex],
+                            configuration: configuration
+                        )
+                    ))
+                }
+            }
+
+            // Create every output folder before rendering starts, so photos rendering side by
+            // side never race on the same folder. A folder that can't be created fails its jobs.
+            var folderErrors: [String: Error] = [:]
+            var checkedFolders: Set<String> = []
+            for job in jobs where !Task.isCancelled && checkedFolders.insert(job.outputFolder.path).inserted {
+                do {
+                    _ = try await ExportDirectoryService.shared.ensureDirectory(at: job.outputFolder)
+                    lastOutputFolder = job.outputFolder
+                } catch {
+                    browserViewModel.errorMessage = "Failed to create \(job.outputFolder.lastPathComponent) folder: \(error.localizedDescription)"
+                    folderErrors[job.outputFolder.path] = error
+                }
+            }
+
+            let writeEngine = browserViewModel.writeEngine
+            let snapshot = jobs
+            let folderFailures = folderErrors
+            await ExportBatchScheduler.run(
+                count: Task.isCancelled ? 0 : jobs.count,
+                onStart: { renderExportCurrent = $0 + 1 },
+                job: { index -> Result<URL, any Error> in
+                    let job = snapshot[index]
+                    if let folderError = folderFailures[job.outputFolder.path] {
+                        return .failure(folderError)
+                    }
+                    do {
+                        return .success(try await EditExportPipeline.renderItem(
+                            sourceURL: job.url,
+                            cameraRaw: job.cameraRaw,
+                            kind: .format,
+                            outputFolder: job.outputFolder,
+                            folderURL: folderURL,
+                            writeEngine: writeEngine,
+                            failureTracker: failureTracker,
+                            configuration: job.configuration,
+                            outputFilenameSuffix: job.isSecondary ? " Secondary" : "",
+                            collisionPolicy: .appendNumber
+                        ))
+                    } catch {
+                        return .failure(error)
+                    }
+                },
+                onResult: { index, result in
+                    switch result {
+                    case .success(let outputURL):
+                        successCount += 1
+                        exportedURLs.append((index, outputURL))
+                        return true
+                    case .failure(let error) where error is CancellationError:
+                        // A cancelled run is reported as cancelled, not as a failed file.
+                        return false
+                    case .failure(let error):
+                        let job = snapshot[index]
+                        failureCount += 1
+                        renderFailures.append((index, .init(
+                            displayName: job.failureDisplayName,
+                            filename: job.url.lastPathComponent,
+                            reason: error.localizedDescription
+                        )))
+                        return true
+                    }
+                }
+            )
+            // Jobs finish out of order when two run at once; report them in job order.
+            let exportedURLsInOrder = exportedURLs.sorted { $0.job < $1.job }.map(\.url)
+            let renderFailuresInOrder = renderFailures.sorted { $0.job < $1.job }.map(\.failure)
 
             renderEditedFolderSuccessCount = successCount
             renderEditedFolderFailureCount = failureCount
@@ -5031,13 +5098,13 @@ struct ContentView: View {
                 outcome: outcome,
                 successCount: successCount,
                 totalCount: urls.count * exportConfigurations.count,
-                failures: renderFailures,
+                failures: renderFailuresInOrder,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,
                 missingWatermarkFilenames: watermarkWarnings,
                 sourceFolderURL: folderURL,
-                outputURLs: exportedURLs
+                outputURLs: exportedURLsInOrder
             )
         }
     }

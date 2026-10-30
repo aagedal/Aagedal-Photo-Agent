@@ -498,6 +498,56 @@ nonisolated struct ExportMetadataIncompleteError: LocalizedError, Sendable {
     }
 }
 
+/// Overlaps the photos of a batch export. One `renderItem` alternates CPU stages (RAW
+/// decode, encode, metadata copy, sidecar overlay) with the GPU render, so a strictly
+/// sequential batch left one or the other idle; two in flight keeps both busy. More adds
+/// little but memory: every in-flight photo holds a full-resolution decode.
+enum ExportBatchScheduler {
+    static var defaultWidth: Int {
+        ProcessInfo.processInfo.physicalMemory >= 16 * 1_024 * 1_024 * 1_024 ? 2 : 1
+    }
+
+    /// Runs `job` for each index in `0..<count`, at most `width` at once, starting them in
+    /// index order. `onStart` and `onResult` run on the main actor; `onResult` sees results in
+    /// completion order and returns false to stop starting jobs (a cancelled render). Jobs
+    /// already running finish.
+    static func run<Output: Sendable>(
+        count: Int,
+        width: Int = defaultWidth,
+        onStart: (Int) -> Void = { _ in },
+        job: @escaping @Sendable @MainActor (Int) async -> Output,
+        onResult: (Int, Output) -> Bool
+    ) async {
+        guard count > 0 else { return }
+        await withTaskGroup(of: (Int, Output).self) { group in
+            var next = 0
+            var keepsStarting = true
+            while next < min(max(width, 1), count) {
+                onStart(next)
+                group.addTask(operation: indexedJob(next, job))
+                next += 1
+            }
+            while let (index, output) = await group.next() {
+                if !onResult(index, output) { keepsStarting = false }
+                guard keepsStarting, !Task.isCancelled, next < count else { continue }
+                onStart(next)
+                group.addTask(operation: indexedJob(next, job))
+                next += 1
+            }
+        }
+    }
+
+    private static func indexedJob<Output: Sendable>(
+        _ index: Int,
+        _ job: @escaping @Sendable @MainActor (Int) async -> Output
+    ) -> @Sendable @MainActor () async -> (Int, Output) {
+        { @MainActor in
+            let output = await job(index)
+            return (index, output)
+        }
+    }
+}
+
 /// The shared "render one edited photo" pipeline used by every export/publish call site
 /// (C2PA sign, Save As, export folder, FTP publish). Centralizing the steps — CameraRaw
 /// resolution, render, source-metadata copy, and pending-IPTC sidecar overlay — keeps the
@@ -654,41 +704,45 @@ enum EditExportPipeline {
             }
 
             // The detached hop drops task-locals; carry the GPU fault-injection test seam over.
+            // Export renders use their own offscreen engine so grid thumbnails and previews
+            // don't queue behind a batch of full-resolution renders.
             let forceGPUFailure = GPURenderFaultInjection.forceFailure
             let renderedURL = try await Task.detached(priority: .userInitiated) {
-                try await GPURenderFaultInjection.$forceFailure.withValue(forceGPUFailure) {
-                    switch kind {
-                    case .format:
-                        return try await EditedImageRenderer.render(
-                            from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
-                            outputFolder: outputFolder,
-                            configuration: configuration,
-                            outputFilenameSuffix: outputFilenameSuffix,
-                            collisionPolicy: collisionPolicy,
-                            metadataCopier: copier, reservationOwner: reservationOwner)
-                    case .saveAs(let format):
-                        return try await EditedImageRenderer.saveAs(
-                            from: sourceURL, cameraRaw: cameraRaw, format: format,
-                            destinationFolder: outputFolder, metadataCopier: copier,
-                            reservationOwner: reservationOwner)
-                    case .rawJXL16(let decodeProfile):
-                        return try await EditedImageRenderer.convertRAWTo16BitJXL(
-                            from: sourceURL, decodeProfile: decodeProfile,
-                            destinationFolder: outputFolder, metadataCopier: copier,
-                            reservationOwner: reservationOwner)
-                    case .rawTIFF16(let decodeProfile):
-                        return try await EditedImageRenderer.convertRAWTo16BitTIFF(
-                            from: sourceURL, decodeProfile: decodeProfile,
-                            destinationFolder: outputFolder, metadataCopier: copier,
-                            reservationOwner: reservationOwner)
-                    case .rawDNG:
-                        // Handled before constructing the rendered metadata copier above.
-                        preconditionFailure("RAW DNG archives must use the converter path")
-                    case .jpeg:
-                        return try await EditedImageRenderer.renderJPEG(
-                            from: sourceURL, cameraRaw: cameraRaw,
-                            outputFolder: outputFolder, metadataCopier: copier,
-                            collisionPolicy: collisionPolicy, reservationOwner: reservationOwner)
+                try await MetalEditPipeline.$offscreenLane.withValue(.export) {
+                    try await GPURenderFaultInjection.$forceFailure.withValue(forceGPUFailure) {
+                        switch kind {
+                        case .format:
+                            return try await EditedImageRenderer.render(
+                                from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
+                                outputFolder: outputFolder,
+                                configuration: configuration,
+                                outputFilenameSuffix: outputFilenameSuffix,
+                                collisionPolicy: collisionPolicy,
+                                metadataCopier: copier, reservationOwner: reservationOwner)
+                        case .saveAs(let format):
+                            return try await EditedImageRenderer.saveAs(
+                                from: sourceURL, cameraRaw: cameraRaw, format: format,
+                                destinationFolder: outputFolder, metadataCopier: copier,
+                                reservationOwner: reservationOwner)
+                        case .rawJXL16(let decodeProfile):
+                            return try await EditedImageRenderer.convertRAWTo16BitJXL(
+                                from: sourceURL, decodeProfile: decodeProfile,
+                                destinationFolder: outputFolder, metadataCopier: copier,
+                                reservationOwner: reservationOwner)
+                        case .rawTIFF16(let decodeProfile):
+                            return try await EditedImageRenderer.convertRAWTo16BitTIFF(
+                                from: sourceURL, decodeProfile: decodeProfile,
+                                destinationFolder: outputFolder, metadataCopier: copier,
+                                reservationOwner: reservationOwner)
+                        case .rawDNG:
+                            // Handled before constructing the rendered metadata copier above.
+                            preconditionFailure("RAW DNG archives must use the converter path")
+                        case .jpeg:
+                            return try await EditedImageRenderer.renderJPEG(
+                                from: sourceURL, cameraRaw: cameraRaw,
+                                outputFolder: outputFolder, metadataCopier: copier,
+                                collisionPolicy: collisionPolicy, reservationOwner: reservationOwner)
+                        }
                     }
                 }
             }.value

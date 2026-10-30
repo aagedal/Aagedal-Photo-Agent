@@ -138,3 +138,104 @@ struct EditFilmstripItemView: View {
         }
     }
 }
+
+/// The Develop workspace's commands for filmstrip items. A reference the workspace refreshes on
+/// each evaluation, so `EditFilmstripView` holds no closures: SwiftUI then sees its inputs as
+/// unchanged and skips re-evaluating the whole strip when only the preview or a slider changed.
+@MainActor
+final class EditFilmstripActions {
+    var select: (URL, NSEvent.ModifierFlags) -> Void = { _, _ in }
+    var copySettings: (ImageFile) -> Void = { _ in }
+    var pasteSettings: (URL) -> Void = { _ in }
+    var compare: (ImageFile) -> Void = { _ in }
+    var applySettingsToSelection: (ImageFile) -> Void = { _ in }
+}
+
+/// The Develop filmstrip. Its own view so the folder-wide `ForEach` depends only on what the
+/// strip shows (visible photos, selection, copied settings) and isn't rebuilt with every
+/// re-evaluation of the Develop workspace, such as each slider step.
+struct EditFilmstripView: View {
+    let browserViewModel: BrowserViewModel
+    let workspaceInput: DevelopWorkspaceInputCoordinator
+    let actions: EditFilmstripActions
+    let selectedImageURL: URL?
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: true) {
+                LazyHStack(spacing: 8) {
+                    ForEach(browserViewModel.visibleImages) { image in
+                        let isSelected = browserViewModel.selectedImageIDs.contains(image.url)
+                        EditFilmstripItemView(
+                            image: image,
+                            thumbnailService: browserViewModel.thumbnailService,
+                            isSelected: isSelected
+                        )
+                        .id(image.url)
+                        .onTapGesture {
+                            actions.select(image.url, NSEvent.modifierFlags)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(image.url.lastPathComponent)
+                        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+                        .accessibilityAction {
+                            actions.select(image.url, [])
+                        }
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active:
+                                workspaceInput.hoveredFilmstripURL = image.url
+                            case .ended:
+                                if workspaceInput.hoveredFilmstripURL == image.url {
+                                    workspaceInput.hoveredFilmstripURL = nil
+                                }
+                            }
+                        }
+                        .contextMenu {
+                            Button("Copy Settings", systemImage: "doc.on.doc") {
+                                actions.copySettings(image)
+                            }
+
+                            Button("Paste Settings", systemImage: "doc.on.clipboard") {
+                                actions.pasteSettings(image.url)
+                            }
+                            .disabled(browserViewModel.copiedCameraRawSettings == nil)
+
+                            if image.url != selectedImageURL {
+                                Divider()
+                                Button("Compare with Current Image", systemImage: "rectangle.split.2x1") {
+                                    actions.compare(image)
+                                }
+
+                                Button("Copy Settings to Current Selection", systemImage: "paintbrush") {
+                                    actions.applySettingsToSelection(image)
+                                }
+                                .disabled(browserViewModel.selectedImageIDs.isEmpty)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+            .onChange(of: workspaceInput.filmstripKeyboardScrollTarget) { _, target in
+                guard let target else { return }
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    // No anchor means SwiftUI moves only as far as necessary to reveal the item.
+                    proxy.scrollTo(target)
+                }
+            }
+            .onAppear {
+                // Defer until the lazy stack has completed its first layout. Otherwise a
+                // selection far into the folder can be highlighted while remaining outside
+                // the filmstrip's initial visible range.
+                DispatchQueue.main.async {
+                    guard let target = selectedImageURL else { return }
+                    proxy.scrollTo(target, anchor: .center)
+                }
+            }
+        }
+        .frame(height: 120)
+        .background(Color(nsColor: .underPageBackgroundColor))
+    }
+}

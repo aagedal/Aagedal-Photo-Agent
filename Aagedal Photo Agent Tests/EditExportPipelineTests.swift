@@ -6966,3 +6966,100 @@ struct RedactionFailClosedTests {
             sourceURL: url, cameraRaw: global, access: failedRead)
     }
 }
+
+@Suite("Sidecar orientation memo")
+struct SidecarOrientationMemoTests {
+    private func sidecarXML(orientation: Int) -> Data {
+        Data("""
+            <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\
+            <rdf:Description rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="\(orientation)"/>\
+            </rdf:RDF></x:xmpmeta>
+            """.utf8)
+    }
+
+    @Test("A rewritten or removed sidecar is never served from the memo")
+    func memoFollowsSidecarChanges() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sidecar-orientation-memo-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let image = directory.appendingPathComponent("photo.ARW")
+        let service = XMPSidecarService()
+        let sidecar = service.sidecarURL(for: image)
+
+        #expect(service.sidecarOrientation(for: image) == nil)
+
+        try sidecarXML(orientation: 6).write(to: sidecar)
+        #expect(service.sidecarOrientation(for: image) == 6)
+        #expect(service.sidecarOrientation(for: image) == 6)
+
+        // Same byte count, rewritten in place (non-atomic): the new mtime invalidates it.
+        try sidecarXML(orientation: 8).write(to: sidecar)
+        #expect(service.sidecarOrientation(for: image) == 8)
+
+        // Atomic replace (how the app writes): new inode.
+        try sidecarXML(orientation: 3).write(to: sidecar, options: .atomic)
+        #expect(service.sidecarOrientation(for: image) == 3)
+
+        try FileManager.default.removeItem(at: sidecar)
+        #expect(service.sidecarOrientation(for: image) == nil)
+    }
+}
+
+@Suite("Export batch scheduler")
+@MainActor
+struct ExportBatchSchedulerTests {
+    @MainActor
+    final class Probe {
+        var running = 0
+        var peak = 0
+        var started: [Int] = []
+        var finished: [Int] = []
+    }
+
+    @Test("Runs at most `width` jobs at once, starts them in order, and finishes every job")
+    func boundsConcurrency() async {
+        let probe = Probe()
+        await ExportBatchScheduler.run(
+            count: 7,
+            width: 2,
+            onStart: { probe.started.append($0) },
+            job: { index in
+                probe.running += 1
+                probe.peak = max(probe.peak, probe.running)
+                // Later jobs finish first, so completion order differs from start order.
+                try? await Task.sleep(for: .milliseconds(index.isMultiple(of: 2) ? 20 : 2))
+                probe.running -= 1
+                return index * 10
+            },
+            onResult: { index, output in
+                #expect(output == index * 10)
+                probe.finished.append(index)
+                return true
+            }
+        )
+        #expect(probe.peak == 2)
+        #expect(probe.started == Array(0..<7))
+        #expect(probe.finished.sorted() == Array(0..<7))
+    }
+
+    @Test("A stop result starts no further jobs but lets the running one finish")
+    func stopsStartingAfterStop() async {
+        let probe = Probe()
+        await ExportBatchScheduler.run(
+            count: 6,
+            width: 2,
+            onStart: { probe.started.append($0) },
+            job: { index in
+                try? await Task.sleep(for: .milliseconds(index == 0 ? 1 : 30))
+                return index
+            },
+            onResult: { index, _ in
+                probe.finished.append(index)
+                return index != 0
+            }
+        )
+        #expect(probe.started == [0, 1])
+        #expect(probe.finished.sorted() == [0, 1])
+    }
+}

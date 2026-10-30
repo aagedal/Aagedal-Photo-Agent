@@ -5207,7 +5207,7 @@ struct BrushRasterizationTests {
         #expect(source.contains("dispatchPrecondition(condition: .notOnQueue(queue))"))
         #expect(source.contains("dispatchPrecondition(condition: .onQueue(self.queue))"))
         #expect(source.contains("dispatchPrecondition(condition: .onQueue(queue))"))
-        #expect(source.contains("await offscreenRenderer.renderAsync("))
+        #expect(source.contains("await laneOffscreenRenderer.renderAsync("))
 
         // Worker-safe state is concentrated in lock-backed publication objects instead of one
         // unsafe isolation escape per field. These names intentionally guard against regressing
