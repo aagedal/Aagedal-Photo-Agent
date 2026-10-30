@@ -4,6 +4,22 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+## 3.0.0-beta.5 — 2026-10-30
+
+This fifth public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.
+
+### Highlights
+
+- Adobe Bridge-style browser layout: drag a tab onto the edge of any pane to split it (up to eight panes), or onto another tab bar to group it.
+- An info button next to the image count explains every thumbnail icon; metadata not written yet now shows a yellow pencil.
+- Develop: Export All Versions writes one file per named version, and every version action lives in one menu.
+- Batch exports render two photos at a time on Macs with 16 GB or more, without holding up thumbnails and previews.
+- Develop backups of unsaved edits remember their photo, survive a save failure, and are retired once a newer edit is saved; Develop no longer reloads after its own saves.
+- Anonymizer: wide blurs are no longer capped at 512 pixels, so full-resolution exports blur as much as the preview, and render faster.
+- Crash fixes for Duplicate, face and text detection, signing keys and out-of-range anonymizer seeds.
+
+### Changes since 3.0.0-beta.4
+
 - An info button next to the browser's image count explains the thumbnail icons (Content Credentials, Develop edits, metadata not written yet, cropped, HDR, voice memo, rating, colour label, iCloud download). Metadata that is saved but not yet written now shows a yellow pencil instead of a yellow dot.
 - Browser layout works like Adobe Bridge: drag a pane's tab onto the edge of any pane to split it (side by side or top and bottom, as many splits as you like, up to eight panes), or onto another tab bar to make it a tab there; drag tabs within a bar to reorder them. The Layout menu adds New Tab, Split Right, Split Down, Merge All into Tabs and Single Pane. In split view the sidebar marks the active pane's folder with a solid highlight and the folders shown in the other panes with a split icon.
 - Browser layout fixes: dragging a split divider no longer redraws the whole window on every frame; tabs hidden behind another tab no longer rescan network folders every 30 seconds (they catch up when you bring them forward); adding the first tab or closing the last extra one keeps the grid's scroll position; drop targets keep working after the first split.
@@ -11,6 +27,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Develop no longer reloads the photo after its own saves (which briefly ignored slider moves); another app's change to the sidecar or the file still reloads it. A Develop backup from an earlier session is no longer offered once you save a newer edit of that photo; it is deleted at the next launch.
 - Develop: a backup of an unsaved edit now remembers which photo it was made for. If a different photo later has the same name, the restore banner warns that the backup may belong to another photo (you can still restore it).
 - Anonymizer: wide blurs (large Blur values and Frosted Glass on high-resolution exports) are no longer capped at 512 pixels, so a full-resolution export blurs as much as its preview, and they render much faster.
+- Develop: every version action (switch, Compare With, Export All Versions) now lives in the one version menu. **Export All Versions** writes one file per named version, each with the photo's redactions, with the version name in the filename.
+- Save As and export-folder batches render two photos at a time on Macs with 16 GB or more, on their own GPU lane, so grid thumbnails and previews no longer wait behind a running export. RAW+JPEG pairs that export to the same name still finish in order.
+- Fixes a crash when a folder refreshed while Duplicate was still copying, a possible crash in face and text detection when a Vision request failed, and a crash reading a signing key whose file ends right after its END line. Large face scans save their progress less often, so they no longer slow down as the scan grows.
 
 ## 3.0.0-beta.4 — 2026-10-29
 
