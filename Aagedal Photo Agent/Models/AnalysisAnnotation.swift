@@ -700,8 +700,13 @@ nonisolated struct AnalysisAnnotationUndoHistory: Sendable {
            last.coalescingKey == coalescingKey,
            last.after == before,
            now.timeIntervalSince(last.recordedAt) < Self.coalescingInterval {
-            undoTransactions[undoTransactions.count - 1].after = after
-            undoTransactions[undoTransactions.count - 1].recordedAt = now
+            if after == last.before {
+                // Dragged back to where it started: nothing left to undo.
+                undoTransactions.removeLast()
+            } else {
+                undoTransactions[undoTransactions.count - 1].after = after
+                undoTransactions[undoTransactions.count - 1].recordedAt = now
+            }
             return
         }
         undoTransactions.append(Transaction(
@@ -718,13 +723,16 @@ nonisolated struct AnalysisAnnotationUndoHistory: Sendable {
     }
 
     mutating func undo() -> [AnalysisAnnotation]? {
-        guard let transaction = undoTransactions.popLast() else { return nil }
+        guard var transaction = undoTransactions.popLast() else { return nil }
+        // An undone or redone step never absorbs a later edit.
+        transaction.recordedAt = .distantPast
         redoTransactions.append(transaction)
         return transaction.before
     }
 
     mutating func redo() -> [AnalysisAnnotation]? {
-        guard let transaction = redoTransactions.popLast() else { return nil }
+        guard var transaction = redoTransactions.popLast() else { return nil }
+        transaction.recordedAt = .distantPast
         undoTransactions.append(transaction)
         return transaction.after
     }

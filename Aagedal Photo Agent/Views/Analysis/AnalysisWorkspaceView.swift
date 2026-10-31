@@ -1180,6 +1180,10 @@ struct AnalysisWorkspaceView: View {
                     to: destination
                 )
                 // The project is installed; open it even if Cancel arrived during the final move.
+                // The import is over, so leaving Analysis must not ask to cancel it.
+                projectArchiveTask = nil
+                projectArchiveStatus = nil
+                model.isExportRunning = isExportRunning
                 onOpenImportedProject(destination)
             } catch is CancellationError {
                 return
@@ -4213,6 +4217,8 @@ private struct AnalysisSourceThumbnail: View {
     private let loupeDisplaySize: CGFloat = 198
 
     var body: some View {
+        // A plain (unobserved) reference: updating it here re-renders nothing.
+        let _ = pointer.hitTestAnnotation = { [self] point in annotationID(atViewportPoint: point) }
         GeometryReader { geometry in
             ZStack {
                 ZStack {
@@ -4381,26 +4387,24 @@ private struct AnalysisSourceThumbnail: View {
                 selectedScopeRegion = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
             }
             .contextMenu {
-                if selectedAnnotationID != nil {
-                    Button("Rename / Add Note…") {
-                        guard let target = pointer.contextMenuAnnotationID
-                            ?? self.selectedAnnotationID else { return }
-                        onEditAnnotation(target)
-                    }
-                    .disabled(annotationsAreReadOnly)
-
-                    Divider()
-
-                    Button("Delete Photo Annotation", role: .destructive) {
-                        guard let target = pointer.contextMenuAnnotationID
-                            ?? self.selectedAnnotationID else { return }
-                        onRemoveAnnotation(target)
-                        if self.selectedAnnotationID == target { self.selectedAnnotationID = nil }
-                    }
-                    .disabled(annotationsAreReadOnly)
-                } else {
-                    Text("Select a photo annotation to delete it")
+                // Built before the right-click monitor updates the selection, so the items
+                // don't depend on it; each acts on the annotation under the pointer.
+                Button("Rename / Add Note…") {
+                    guard let target = pointer.contextMenuAnnotationID
+                        ?? self.selectedAnnotationID else { return }
+                    onEditAnnotation(target)
                 }
+                .disabled(annotationsAreReadOnly)
+
+                Divider()
+
+                Button("Delete Photo Annotation", role: .destructive) {
+                    guard let target = pointer.contextMenuAnnotationID
+                        ?? self.selectedAnnotationID else { return }
+                    onRemoveAnnotation(target)
+                    if self.selectedAnnotationID == target { self.selectedAnnotationID = nil }
+                }
+                .disabled(annotationsAreReadOnly)
                 }
                 .scaleEffect(zoomScale)
                 .offset(panOffset)
@@ -5028,7 +5032,7 @@ private struct AnalysisSourceThumbnail: View {
                 pointer.contextMenuAnnotationID = nil
                 return event
             }
-            let target = annotationID(atViewportPoint: location)
+            let target = pointer.hitTestAnnotation?(location)
             pointer.contextMenuAnnotationID = target
             // Right-clicking empty canvas deselects, so the menu can't act on a selection
             // made elsewhere (for example a hidden layer picked in the Layers list).
@@ -5712,6 +5716,9 @@ private final class AnalysisSourcePreviewCache {
 /// The pointer position inside the source viewport, for the scroll and key monitors.
 private final class AnalysisPointerLocation {
     var location: CGPoint?
+    /// Refreshed on every render so the long-lived right-click monitor hit-tests the current
+    /// annotations and transforms, not the ones captured when it was installed.
+    var hitTestAnnotation: ((CGPoint) -> UUID?)?
     /// The annotation under the pointer when the context menu was opened; the menu's
     /// actions act on it rather than on whatever happened to be selected.
     var contextMenuAnnotationID: UUID?

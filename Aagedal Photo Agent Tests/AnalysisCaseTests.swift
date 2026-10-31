@@ -3806,6 +3806,17 @@ struct AnalysisCaseTests {
                        now: start.addingTimeInterval(10.5))
         #expect(history.undoTransactions.count == 3)
 
+        // A redone step doesn't absorb the next style edit.
+        _ = history.undo()
+        _ = history.redo()
+        history.record(before: [styled(7)], after: [styled(8)], actionName: "Style", coalescingKey: key,
+                       now: start.addingTimeInterval(10.6))
+        #expect(history.undoTransactions.count == 4)
+        // Dragging back to the starting value leaves no empty step.
+        history.record(before: [styled(8)], after: [styled(7)], actionName: "Style", coalescingKey: key,
+                       now: start.addingTimeInterval(10.7))
+        #expect(history.undoTransactions.count == 3)
+
         _ = history.undo()
         let secondUndo = history.undo()
         #expect(try #require(secondUndo) == [styled(5)])
