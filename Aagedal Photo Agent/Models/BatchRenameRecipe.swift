@@ -144,6 +144,17 @@ nonisolated struct BatchRenameSequence: Codable, Equatable, Sendable {
     var step: Int
     var padding: Int
 
+    /// Imported presets outside these bounds are rejected; the renderer also clamps, so a value
+    /// typed in the sheet can't overflow the sequence arithmetic or allocate a giant name.
+    static let maximumPadding = 16
+    static let maximumMagnitude = 1_000_000_000
+
+    var isWithinBounds: Bool {
+        (0...Self.maximumPadding).contains(padding)
+            && start.magnitude <= UInt(Self.maximumMagnitude)
+            && step.magnitude <= UInt(Self.maximumMagnitude)
+    }
+
     init(start: Int = 1, step: Int = 1, padding: Int = 0) {
         self.start = start
         self.step = step

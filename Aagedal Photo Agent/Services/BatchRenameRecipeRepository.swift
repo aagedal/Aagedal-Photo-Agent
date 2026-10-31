@@ -34,6 +34,7 @@ nonisolated enum BatchRenameRecipeValidationError: Error, Equatable, LocalizedEr
     case unsupportedRecipeSchema(found: Int, supported: Int)
     case invalidTimeZone(String)
     case negativeSequencePadding(componentIndex: Int)
+    case sequenceOutOfRange(componentIndex: Int)
     case emptyDateFormat(componentIndex: Int)
     case invalidRegularExpression(substitutionIndex: Int, pattern: String)
 
@@ -50,6 +51,10 @@ nonisolated enum BatchRenameRecipeValidationError: Error, Equatable, LocalizedEr
             "The rename recipe timezone is invalid: " + identifier
         case let .negativeSequencePadding(index):
             "Rename component " + String(index + 1) + " has negative sequence padding."
+        case let .sequenceOutOfRange(index):
+            "Rename component " + String(index + 1) + " has a sequence start or step beyond "
+                + String(BatchRenameSequence.maximumMagnitude) + " or padding over "
+                + String(BatchRenameSequence.maximumPadding) + " digits."
         case let .emptyDateFormat(index):
             "Rename component " + String(index + 1) + " has an empty date format."
         case let .invalidRegularExpression(index, pattern):
@@ -172,6 +177,8 @@ nonisolated struct BatchRenameRecipePresetIO: Sendable {
                 throw BatchRenameRecipeValidationError.negativeSequencePadding(
                     componentIndex: index
                 )
+            case let .sequence(sequence) where !sequence.isWithinBounds:
+                throw BatchRenameRecipeValidationError.sequenceOutOfRange(componentIndex: index)
             case let .date(date) where date.format.isEmpty:
                 throw BatchRenameRecipeValidationError.emptyDateFormat(componentIndex: index)
             default:

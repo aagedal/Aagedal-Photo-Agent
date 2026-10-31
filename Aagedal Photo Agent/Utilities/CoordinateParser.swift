@@ -137,7 +137,7 @@ enum CoordinateParser {
 
     private static func dmsToDecimal(degrees: Int, minutes: Int, seconds: Double, direction: String?) -> Double? {
         guard minutes >= 0, minutes < 60, seconds >= 0, seconds < 60 else { return nil }
-        var decimal = Double(abs(degrees)) + Double(minutes) / 60.0 + seconds / 3600.0
+        var decimal = Double(degrees.magnitude) + Double(minutes) / 60.0 + seconds / 3600.0
         if degrees < 0 { decimal = -decimal }
         if let dir = direction?.uppercased(), dir == "S" || dir == "W" {
             decimal = -abs(decimal)
@@ -147,7 +147,7 @@ enum CoordinateParser {
 
     private static func ddmToDecimal(degrees: Int, minutes: Double, direction: String?) -> Double? {
         guard minutes >= 0, minutes < 60 else { return nil }
-        var decimal = Double(abs(degrees)) + minutes / 60.0
+        var decimal = Double(degrees.magnitude) + minutes / 60.0
         if degrees < 0 { decimal = -decimal }
         if let dir = direction?.uppercased(), dir == "S" || dir == "W" {
             decimal = -abs(decimal)

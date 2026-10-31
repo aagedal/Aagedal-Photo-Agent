@@ -15,11 +15,14 @@ nonisolated enum TextFileImportResult: Equatable, Sendable {
 
 nonisolated enum TextFileImportError: LocalizedError, Equatable {
     case unsupportedEncoding(URL)
+    case fileTooLarge(URL)
 
     var errorDescription: String? {
         switch self {
         case .unsupportedEncoding:
             return "Could not decode file contents."
+        case .fileTooLarge:
+            return "The file is too large to import as text (limit 50 MB)."
         }
     }
 }
@@ -39,8 +42,16 @@ nonisolated struct TextFileImportReader: Sendable {
         self.stopAccessing = stopAccessing
     }
 
+    /// Keyword lists and rosters are a few hundred KB; a picked multi-GB file would otherwise be
+    /// read and decoded whole before anything could reject it.
+    static let maximumByteCount = 50 * 1024 * 1024
+
     static let system = TextFileImportReader(
-        read: { try Data(contentsOf: $0) },
+        read: { url in
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            guard size <= maximumByteCount else { throw TextFileImportError.fileTooLarge(url) }
+            return try Data(contentsOf: url)
+        },
         startAccessing: { $0.startAccessingSecurityScopedResource() },
         stopAccessing: { $0.stopAccessingSecurityScopedResource() }
     )
@@ -86,6 +97,9 @@ actor TextFileImportService {
         }
 
         let data = try reader.read(sourceURL)
+        guard data.count <= TextFileImportReader.maximumByteCount else {
+            throw TextFileImportError.fileTooLarge(sourceURL)
+        }
         guard !Task.isCancelled else {
             return .cancelledAfterRead(
                 requestID: requestID,

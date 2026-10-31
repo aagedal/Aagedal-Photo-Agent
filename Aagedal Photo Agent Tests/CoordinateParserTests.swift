@@ -112,4 +112,10 @@ struct CoordinateParserTests {
         let ddm = CoordinateParser.format(latitude: 59.99999999, longitude: 10, format: .degreesDecimalMinutes)
         #expect(ddm.hasPrefix("60°0.000'N"))
     }
+
+    @Test("Int.min degrees are rejected instead of trapping in abs()",
+          arguments: ["-9223372036854775808°0'0\"N 10°0'0\"E", "-9223372036854775808°0.5'N 10°1.0'E"])
+    func extremeDegreesDoNotTrap(_ input: String) {
+        #expect(CoordinateParser.parse(input) == nil)
+    }
 }

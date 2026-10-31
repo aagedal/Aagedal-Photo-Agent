@@ -178,9 +178,26 @@ struct PresetVariableInterpolator: Sendable {
             sequenceIndex: sequenceIndex,
             initials: initials,
             voiceMemoTranscriptContext: voiceMemoTranscriptContext,
-            visitedFields: []
+            visitedFields: [],
+            fieldBudget: FieldExpansionBudget()
         )
     }
+
+    /// Widest `{seq:N}` honoured. A width from a synced template or a photo's own field could
+    /// otherwise ask `String(format:)` for gigabytes (or overflow it and crash).
+    static let maximumSequenceWidth = 12
+
+    /// Caps nested `{field:…}` expansions per top-level resolve. Cycles are already stopped by
+    /// `visitedFields`, but a photo whose fields each reference the next one twice doubles the
+    /// work per level; past the budget a field's value is inserted as written.
+    private final class FieldExpansionBudget {
+        var remaining = 64
+    }
+
+    /// One resolved value is copied into every occurrence of its token, so even a bounded number
+    /// of expansions can double the text per level. An expansion that would push the text past
+    /// this many UTF-8 bytes keeps the field's value as written instead.
+    static let maximumExpandedFieldBytes = 256 * 1024
 
     /// `visitedFields` tracks the chain of `{field:…}` names currently being
     /// expanded so a field that references another field (which may itself hold
@@ -192,7 +209,8 @@ struct PresetVariableInterpolator: Sendable {
         sequenceIndex: Int,
         initials: String,
         voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext?,
-        visitedFields: Set<String>
+        visitedFields: Set<String>,
+        fieldBudget: FieldExpansionBudget
     ) -> String {
         var result = template
 
@@ -241,7 +259,8 @@ struct PresetVariableInterpolator: Sendable {
             sequenceIndex: sequenceIndex,
             initials: initials,
             voiceMemoTranscriptContext: voiceMemoTranscriptContext,
-            visitedFields: visitedFields
+            visitedFields: visitedFields,
+            fieldBudget: fieldBudget
         )
 
         // Resolve this last. Reviewed speech is literal user-approved content: braces spoken or
@@ -351,8 +370,8 @@ struct PresetVariableInterpolator: Sendable {
         // {seq:N} — zero-padded to N digits (resolve before plain {seq})
         let padPattern = /\{seq:(\d+)\}/
         for match in result.matches(of: padPattern) {
-            let width = Int(String(match.1)) ?? 1
-            let padded = String(format: "%0\(width)d", index)
+            let width = min(Int(String(match.1)) ?? Self.maximumSequenceWidth, Self.maximumSequenceWidth)
+            let padded = String(format: "%0\(width)ld", index)
             result = result.replacingOccurrences(of: String(match.0), with: padded)
         }
 
@@ -401,19 +420,26 @@ struct PresetVariableInterpolator: Sendable {
         sequenceIndex: Int,
         initials: String,
         voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext?,
-        visitedFields: Set<String>
+        visitedFields: Set<String>,
+        fieldBudget: FieldExpansionBudget
     ) -> String {
         var result = template
         let fieldPattern = /\{field:([^}]+)\}/
 
+        var handledTokens = Set<String>()
         for match in result.matches(of: fieldPattern) {
+            let token = String(match.0)
+            // Every occurrence of a token is replaced at once; a repeat has nothing left to do.
+            guard handledTokens.insert(token).inserted else { continue }
             let fieldName = String(match.1)
-            var value = fieldValue(for: fieldName, from: metadata)
+            let rawValue = fieldValue(for: fieldName, from: metadata)
+            var value = rawValue
             // A referenced field may itself contain variables (e.g. event =
             // "{date}", or another {field:…}). Resolve them recursively, keyed
             // by normalized name so a reference cycle stops instead of looping.
             let key = normalizeFieldName(fieldName)
-            if !value.isEmpty, !visitedFields.contains(key) {
+            if !value.isEmpty, !visitedFields.contains(key), fieldBudget.remaining > 0 {
+                fieldBudget.remaining -= 1
                 value = resolve(
                     value,
                     filename: filename,
@@ -421,10 +447,14 @@ struct PresetVariableInterpolator: Sendable {
                     sequenceIndex: sequenceIndex,
                     initials: initials,
                     voiceMemoTranscriptContext: voiceMemoTranscriptContext,
-                    visitedFields: visitedFields.union([key])
+                    visitedFields: visitedFields.union([key]),
+                    fieldBudget: fieldBudget
                 )
             }
-            result = result.replacingOccurrences(of: String(match.0), with: value)
+            let expanded = result.replacingOccurrences(of: token, with: value)
+            result = expanded.utf8.count > Self.maximumExpandedFieldBytes
+                ? result.replacingOccurrences(of: token, with: rawValue)
+                : expanded
         }
 
         return result

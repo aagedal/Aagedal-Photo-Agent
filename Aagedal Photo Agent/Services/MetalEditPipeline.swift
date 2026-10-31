@@ -3039,6 +3039,26 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // MARK: - Watermark textures
 
+    /// Longest side a watermark texture slice may have. Metal's 2D-array limit is 16384; a
+    /// synced or imported PNG beyond that would fail `makeTexture` (and assert under API
+    /// validation) and needs a multi-GB decode context, so larger art is downscaled on decode.
+    nonisolated static let maximumWatermarkTextureSide = 8192
+
+    nonisolated private static func watermarkImage(from source: CGImageSource) -> CGImage? {
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = (properties?[kCGImagePropertyPixelWidth] as? Int) ?? 0
+        let height = (properties?[kCGImagePropertyPixelHeight] as? Int) ?? 0
+        guard max(width, height) > maximumWatermarkTextureSide else {
+            return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumWatermarkTextureSide,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
     /// (Re)builds the deduped-by-asset watermark texture array from `assetIDs` (which may
     /// contain duplicates — several layers can reference the same library asset). Reads each
     /// asset's PNG directly off disk via `WatermarkStore.resolvedImageURL`/`CloudCoordinatedIO`
@@ -3077,7 +3097,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         for id in distinctIDs {
             guard let data = try? CloudCoordinatedIO.readData(at: WatermarkStore.resolvedImageURL(forAssetID: id)),
                   let source = CGImageSourceCreateWithData(data as CFData, nil),
-                  let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                  let cgImage = Self.watermarkImage(from: source),
                   cgImage.width > 0, cgImage.height > 0
             else {
                 failedIDs.append(id)

@@ -196,4 +196,14 @@ struct StructuredKeywordExpandTests {
         let expanded = StructuredKeywordService.shared.expand(path)
         #expect(expanded == ["reptile"])
     }
+
+    @Test("Nesting deeper than the cap attaches as siblings so the tree stays shallow")
+    func nestingDepthIsCapped() {
+        let levels = StructuredKeywordParser.maximumDepth + 50
+        let input = (0..<levels).map { String(repeating: "\t", count: $0) + "k\($0)" }.joined(separator: "\n")
+        let roots = StructuredKeywordParser.parseString(input)
+        func depth(_ node: StructuredKeyword) -> Int { 1 + (node.children.map(depth).max() ?? 0) }
+        #expect(roots.count == 1)
+        #expect(depth(roots[0]) == StructuredKeywordParser.maximumDepth + 1)
+    }
 }

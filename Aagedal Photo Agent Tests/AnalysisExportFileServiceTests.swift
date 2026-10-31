@@ -28,6 +28,17 @@ struct TextFileImportServiceTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("a file over the import size cap is rejected instead of decoded whole")
+    func oversizedFileIsRejected() async throws {
+        let source = URL(fileURLWithPath: "/virtual/huge.txt")
+        let probe = TextFileImportReaderProbe(data: Data(count: TextFileImportReader.maximumByteCount + 1))
+        let service = TextFileImportService(reader: TextFileImportReader(read: probe.read))
+
+        await #expect(throws: TextFileImportError.fileTooLarge(source)) {
+            _ = try await service.loadText(from: source, requestID: UUID())
+        }
+    }
+
     @Test("security-scoped access is balanced on the filesystem actor")
     @MainActor
     func securityScopeRunsOffMainActor() async throws {
