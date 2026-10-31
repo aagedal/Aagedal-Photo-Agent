@@ -1204,12 +1204,22 @@ nonisolated enum EditedImageRenderer {
         ExportLocationMode(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportLocationMode) ?? "") ?? .formatSubfolder
     }
 
+    /// The folder chosen for `.specificFolder` exports. The bookmark is kept when it can't
+    /// resolve right now (e.g. an unmounted external drive) so it comes back with the drive.
+    static var specificExportFolderURL: URL? {
+        RAWArchiveService.resolveBookmark(
+            key: UserDefaultsKeys.exportSpecificFolderBookmark,
+            removeOnFailure: false
+        )
+    }
+
     /// Resolves the destination folder for a single exported file based on the user's
     /// configured `ExportLocationMode` (read live from `UserDefaults`).
     /// - Parameters:
     ///   - rootFolder: the source folder the export was initiated from.
     ///   - formatPrefix: prefix used for `.formatSubfolder` naming (e.g. "Signed", "Edited").
-    ///   - askedFolder: the folder the user picked for `.askOnSave` (resolved once per batch).
+    ///   - askedFolder: the folder resolved once per batch for `.askOnSave` / `.specificFolder`
+    ///     (see `ExportDestinationPrompt`).
     ///   - sdrFormat: overrides the configured SDR format for `.formatSubfolder` naming.
     static func resolveOutputFolder(
         sourceURL: URL,
@@ -1242,6 +1252,8 @@ nonisolated enum EditedImageRenderer {
             )
         case .askOnSave:
             return askedFolder ?? rootFolder
+        case .specificFolder:
+            return askedFolder ?? specificExportFolderURL ?? rootFolder
         }
     }
 

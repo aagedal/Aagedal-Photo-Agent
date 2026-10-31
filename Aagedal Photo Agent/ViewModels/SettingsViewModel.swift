@@ -883,6 +883,18 @@ final class SettingsViewModel {
         didSet { persist(exportCustomSubfolderName, forKey: UserDefaultsKeys.exportCustomSubfolderName) }
     }
 
+    /// Folder used when `exportLocationMode == .specificFolder`; empty when none is chosen.
+    private(set) var exportSpecificFolderPath: String = ""
+
+    func setExportSpecificFolderURL(_ url: URL) {
+        ExportDestinationPrompt.saveSpecificFolder(url)
+        exportSpecificFolderPath = url.path
+    }
+
+    func refreshExportSpecificFolderPath() {
+        exportSpecificFolderPath = EditedImageRenderer.specificExportFolderURL?.path ?? ""
+    }
+
     /// Where “Archive RAW as…” writes files. Independent of normal export settings.
     var rawArchiveLocationMode: RAWArchiveLocationMode {
         didSet {
@@ -1139,6 +1151,7 @@ final class SettingsViewModel {
         self.exportLocationMode = ExportLocationMode(rawValue: storedLocationMode) ?? .formatSubfolder
 
         self.exportCustomSubfolderName = AppDefaults.store.string(forKey: UserDefaultsKeys.exportCustomSubfolderName) ?? "Exports"
+        self.exportSpecificFolderPath = EditedImageRenderer.specificExportFolderURL?.path ?? ""
 
         let rawArchiveMode = AppDefaults.store.string(
             forKey: UserDefaultsKeys.rawArchiveLocationMode

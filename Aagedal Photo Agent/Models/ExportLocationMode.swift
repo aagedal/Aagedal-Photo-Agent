@@ -4,6 +4,8 @@ import Foundation
 nonisolated enum ExportLocationMode: String, CaseIterable, Identifiable, Sendable {
     /// Prompt for a destination folder once per export; write files directly into it.
     case askOnSave = "askOnSave"
+    /// Write every export directly into one folder chosen once in Settings.
+    case specificFolder = "specificFolder"
     /// Write each file next to its source file.
     case sameAsOriginal = "sameAsOriginal"
     /// Write into a sub-folder of the source folder with an exact user-typed name.
@@ -16,6 +18,7 @@ nonisolated enum ExportLocationMode: String, CaseIterable, Identifiable, Sendabl
     var displayName: String {
         switch self {
         case .askOnSave: return "Ask on Save"
+        case .specificFolder: return "Specific Folder"
         case .sameAsOriginal: return "Same Folder as Original"
         case .customSubfolder: return "Custom Sub-folder"
         case .formatSubfolder: return "Sub-folder Named After Format"
@@ -25,6 +28,7 @@ nonisolated enum ExportLocationMode: String, CaseIterable, Identifiable, Sendabl
     var description: String {
         switch self {
         case .askOnSave: return "Choose a destination folder each time you export. Files are written directly into the folder you pick."
+        case .specificFolder: return "Write every export directly into the folder you choose here, wherever the source photos are."
         case .sameAsOriginal: return "Write exported files alongside each source file, in the same folder."
         case .customSubfolder: return "Write into a sub-folder of the source folder with a name you choose."
         case .formatSubfolder: return "Write into a sub-folder automatically named after the export format (e.g. Edited_JPEG)."

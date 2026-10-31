@@ -3993,6 +3993,19 @@ struct AdvancedExportTests {
         )
     }
 
+    @Test("Specific Folder writes directly into the batch's resolved folder, not the source tree")
+    func specificFolderUsesResolvedFolder() {
+        var specific = configuration
+        specific.locationMode = .specificFolder
+        let root = URL(fileURLWithPath: "/Volumes/Photos/Shoot", isDirectory: true)
+        let target = URL(fileURLWithPath: "/Volumes/Deliveries/Out", isDirectory: true)
+        let folder = EditedImageRenderer.resolveOutputFolder(
+            sourceURL: root.appendingPathComponent("Day 2/IMG_1.ARW"), rootFolder: root, isHDR: false,
+            formatPrefix: "Edited", askedFolder: target, configuration: specific
+        )
+        #expect(folder == target)
+    }
+
     @Test("Save As names its format sub-folder after the Save As format, not the Export format")
     func saveAsFolderUsesSaveAsFormat() {
         // Export is configured for JPEG; "Save as PNG" must still land in Edited_PNG.

@@ -1150,6 +1150,28 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                if settingsViewModel.exportLocationMode == .specificFolder {
+                    LabeledContent("Export Folder") {
+                        HStack {
+                            Text(
+                                settingsViewModel.exportSpecificFolderPath.isEmpty
+                                    ? "Not Selected"
+                                    : settingsViewModel.exportSpecificFolderPath
+                            )
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(
+                                settingsViewModel.exportSpecificFolderPath.isEmpty
+                                    ? .red
+                                    : .secondary
+                            )
+                            Button("Choose…") {
+                                chooseExportSpecificFolder()
+                            }
+                        }
+                    }
+                }
+
                 if settingsViewModel.exportLocationMode == .customSubfolder {
                     TextField("Sub-folder Name", text: $settingsViewModel.exportCustomSubfolderName)
                         .textFieldStyle(.roundedBorder)
@@ -1243,6 +1265,7 @@ struct SettingsView: View {
         .padding()
         .onAppear {
             settingsViewModel.refreshRAWArchivePaths()
+            settingsViewModel.refreshExportSpecificFolderPath()
         }
     }
 
@@ -1256,6 +1279,14 @@ struct SettingsView: View {
         panel.prompt = "Choose"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         settingsViewModel.setRAWArchiveSourceRootURL(url)
+    }
+
+    private func chooseExportSpecificFolder() {
+        guard let url = ExportDestinationPrompt.chooseFolder(
+            startingAt: EditedImageRenderer.specificExportFolderURL,
+            message: "Choose the folder all exports are saved to."
+        ) else { return }
+        settingsViewModel.setExportSpecificFolderURL(url)
     }
 
     private func chooseRAWArchiveRoot() {
