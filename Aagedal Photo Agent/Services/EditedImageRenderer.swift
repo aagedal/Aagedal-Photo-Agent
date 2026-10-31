@@ -1206,11 +1206,18 @@ nonisolated enum EditedImageRenderer {
 
     /// The folder chosen for `.specificFolder` exports. The bookmark is kept when it can't
     /// resolve right now (e.g. an unmounted external drive) so it comes back with the drive.
+    /// A bookmark follows its folder into the Trash; a trashed folder counts as unset, so the
+    /// next export asks instead of writing files that emptying the Trash would delete.
     static var specificExportFolderURL: URL? {
-        RAWArchiveService.resolveBookmark(
+        guard let url = RAWArchiveService.resolveBookmark(
             key: UserDefaultsKeys.exportSpecificFolderBookmark,
             removeOnFailure: false
-        )
+        ), !isInTrash(url) else { return nil }
+        return url
+    }
+
+    static func isInTrash(_ url: URL) -> Bool {
+        url.standardizedFileURL.pathComponents.contains { $0 == ".Trash" || $0 == ".Trashes" }
     }
 
     /// Resolves the destination folder for a single exported file based on the user's

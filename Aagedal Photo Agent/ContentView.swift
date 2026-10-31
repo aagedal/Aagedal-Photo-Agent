@@ -4473,13 +4473,11 @@ struct ContentView: View {
             let writeEngine = browser.writeEngine
             let cameraRawByURL = metadataByURL.mapValues(\.cameraRaw)
             let folderFailures = folderErrors
-            // Save As replaces an existing output. Two sources with the same output name (a
-            // RAW+JPEG pair) must run in order, as before: side by side, the second would find
-            // the name still claimed and fail instead of replacing it.
-            let outputNames = zip(urls, destinationFolders).map { url, folder in
-                folder.appendingPathComponent(url.deletingPathExtension().lastPathComponent).path.lowercased()
-            }
-            let width = Set(outputNames).count == outputNames.count ? ExportBatchScheduler.defaultWidth : 1
+            // Save As appends a number on a name clash. Sources sharing an output name (a
+            // RAW+JPEG pair) run in order, so the first in the list keeps the plain name.
+            let width = ExportBatchScheduler.width(forOutputNames: zip(urls, destinationFolders).map { url, folder in
+                folder.appendingPathComponent(url.deletingPathExtension().lastPathComponent).path
+            })
             await ExportBatchScheduler.run(
                 count: Task.isCancelled ? 0 : urls.count,
                 width: width,
@@ -5005,8 +5003,15 @@ struct ContentView: View {
             let writeEngine = browserViewModel.writeEngine
             let snapshot = jobs
             let folderFailures = folderErrors
+            // Jobs sharing an output name (a RAW+JPEG pair, or several Secondary configurations
+            // into one folder) run in order, so the numbering matches the job order.
+            let width = ExportBatchScheduler.width(forOutputNames: jobs.map { job in
+                job.outputFolder.appendingPathComponent(
+                    job.url.deletingPathExtension().lastPathComponent + (job.isSecondary ? " Secondary" : "")).path
+            })
             await ExportBatchScheduler.run(
                 count: Task.isCancelled ? 0 : jobs.count,
+                width: width,
                 onStart: { renderExportCurrent = $0 + 1 },
                 job: { index -> Result<URL, any Error> in
                     let job = snapshot[index]
