@@ -4435,7 +4435,12 @@ final class MetalEditPipeline: @unchecked Sendable {
             pipeline.asShotTint = asTint
         }
 
-        // 3. Generate LUT and set parameters
+        // 3. Generate LUT and set parameters. This engine outlives the render: a cropped
+        // render leaves its crop viewport (center, straighten rotation, crop extent) behind, and
+        // `updateParams` copies the stored viewport into the params. Start every render from the
+        // identity viewport so an uncropped photo after a straightened one in a batch isn't
+        // rendered rotated and masked to the previous crop; the cropped path sets its own below.
+        pipeline.replaceViewportState(with: ViewportStateSnapshot())
         pipeline.cachedWatermarkFrame = outputCrop == nil ? 0 : 1
         pipeline.cachedWatermarkImageSize = MTLSize(width: outputWidth, height: outputHeight, depth: 1)
         pipeline.updateParams(settings)
