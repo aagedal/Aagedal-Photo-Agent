@@ -111,6 +111,78 @@ struct SidebarExpansionTests {
         #expect(!viewModel.isExpanded(grandchild, in: .open))
     }
 
+    @Test("A reported sub-folder change is not swallowed by a slow periodic sweep")
+    func changedListingOvertakesStalledSweep() async throws {
+        let slow = URL(fileURLWithPath: "/virtual/slow-volume")
+        let root = URL(fileURLWithPath: "/virtual/open-folder")
+        let created = root.appendingPathComponent("Edited_JPEG")
+        let scanner = SidebarStallScanner(stalled: slow, listings: [root: [created]])
+        let viewModel = BrowserViewModel(subfolderLoader: { try await scanner.list($0) })
+        viewModel.subfoldersByOpenFolder[slow] = []
+        viewModel.subfoldersByOpenFolder[root] = []
+        viewModel.expandedOpenFolders = [slow]
+
+        viewModel.refreshExpandedSubfolders()
+        for _ in 0..<200 {
+            if await scanner.isStalled { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await scanner.isStalled)
+
+        viewModel.refreshChangedSubfolderListings([root])
+        for _ in 0..<200 {
+            if viewModel.subfoldersByOpenFolder[root] == [created] { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        await scanner.release()
+        #expect(viewModel.subfoldersByOpenFolder[root] == [created])
+        #expect(viewModel.cachedSubfolderListings[root.standardizedFileURL.path] == root)
+    }
+
+    @Test("Sidebar watch roots drop folders already covered by an enclosing root")
+    func sidebarWatchRootsCollapseNestedFolders() {
+        let pictures = URL(fileURLWithPath: "/Users/me/Pictures", isDirectory: true)
+        let shoot = pictures.appendingPathComponent("2026/Shoot", isDirectory: true)
+        let sibling = URL(fileURLWithPath: "/Users/me/Pictures 2", isDirectory: true)
+        let roots = BrowserAutoRefreshCoordinator.sidebarWatchRoots([shoot, pictures, sibling, pictures])
+        #expect(roots == [pictures.standardizedFileURL, sibling.standardizedFileURL])
+    }
+
+    @Test("A sub-folder another app creates inside a favorite appears in the sidebar")
+    func externalSubfolderAppearsInFavoriteTree() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("apa-sidebar-watch-\(UUID().uuidString)", isDirectory: true)
+        let leaf = root.appendingPathComponent("Leaf", isDirectory: true)
+        try FileManager.default.createDirectory(at: leaf, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let sidebar = BrowserViewModel(favoritesDefaults: defaults)
+        sidebar.favoriteFolders = [FavoriteFolder(url: root)]
+        sidebar.subfoldersByOpenFolder[root] = [leaf]
+        // A collapsed leaf: never re-read by the periodic sweep.
+        sidebar.subfoldersByOpenFolder[leaf] = []
+        let panes = BrowserPanesModel(primary: sidebar, thumbnailService: ThumbnailService(),
+                                      fullScreenImageCache: FullScreenImageCache())
+        let coordinator = BrowserAutoRefreshCoordinator(
+            panes: panes,
+            metadataViewModel: MetadataViewModel(readService: SwiftExifReadService(),
+                                                 writeEngine: SwiftExifWriteEngine())
+        )
+        coordinator.synchronizeSidebarRootMonitors()
+        defer { coordinator.stop() }
+        // Stream setup is asynchronous; give it a moment before changing the disk.
+        try await Task.sleep(for: .milliseconds(500))
+
+        let created = leaf.appendingPathComponent("From Finder", isDirectory: true)
+        try FileManager.default.createDirectory(at: created, withIntermediateDirectories: false)
+        for _ in 0..<100 {
+            if sidebar.subfoldersByOpenFolder[leaf]?.isEmpty == false { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(sidebar.subfoldersByOpenFolder[leaf]?.map(\.lastPathComponent) == ["From Finder"])
+    }
+
     @Test("A nested favorite expands independently from the same folder's favorite root")
     func overlappingFavoritesHaveIndependentExpansion() {
         let picturesURL = URL(fileURLWithPath: "/Pictures", isDirectory: true)
@@ -195,5 +267,33 @@ private actor SidebarRetryScanner {
         calls += 1
         if calls == 1 { throw CocoaError(.fileReadNoPermission) }
         return []
+    }
+}
+
+/// Hangs the listing of `stalled` (like an unreachable network volume) until released.
+private actor SidebarStallScanner {
+    private let stalled: URL
+    private let listings: [URL: [URL]]
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private(set) var isStalled = false
+
+    init(stalled: URL, listings: [URL: [URL]]) {
+        self.stalled = stalled
+        self.listings = listings
+    }
+
+    func list(_ url: URL) async throws -> [URL] {
+        if url == stalled && !released {
+            isStalled = true
+            await withCheckedContinuation { continuation = $0 }
+        }
+        return listings[url] ?? []
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }

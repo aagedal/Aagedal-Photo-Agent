@@ -3486,7 +3486,7 @@ struct ContentView: View {
             // expansion untouched. Cancels automatically when the sidebar goes away.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
-                browserViewModel.refreshExpandedSubfolders()
+                sidebarViewModel.refreshExpandedSubfolders()
             }
         }
     }
@@ -3856,7 +3856,7 @@ struct ContentView: View {
                 browserViewModel.refreshCurrentFolderIfNeeded()
             } else if let outputFolder = lastOutputFolder, outputFolder != folderURL {
                 // Files went into a sub-folder — surface it in the sidebar tree.
-                browserViewModel.revealExportedSubfolder(outputFolder)
+                sidebarViewModel.revealExportedSubfolder(outputFolder)
             }
 
             let copyFailures = await failureTracker.metadataCopyFailures
@@ -4527,11 +4527,11 @@ struct ContentView: View {
                     browser.refreshCurrentFolderIfNeeded()
                 }
                 for subfolder in outputFolders where subfolder != folderURL {
-                    browser.revealExportedSubfolder(subfolder)
+                    sidebarViewModel.revealExportedSubfolder(subfolder)
                 }
             } else {
                 for subfolder in outputFolders {
-                    browser.revealExportedSubfolder(subfolder)
+                    sidebarViewModel.revealExportedSubfolder(subfolder)
                 }
             }
 
@@ -4778,11 +4778,11 @@ struct ContentView: View {
                     browser.refreshCurrentFolderIfNeeded()
                 }
                 for subfolder in destinationFolders where subfolder != folderURL {
-                    browser.revealExportedSubfolder(subfolder)
+                    sidebarViewModel.revealExportedSubfolder(subfolder)
                 }
             } else {
                 for subfolder in destinationFolders {
-                    browser.revealExportedSubfolder(subfolder)
+                    sidebarViewModel.revealExportedSubfolder(subfolder)
                 }
             }
 
@@ -5067,7 +5067,7 @@ struct ContentView: View {
                 browserViewModel.refreshCurrentFolderIfNeeded()
             } else if let outputFolder = lastOutputFolder, outputFolder != folderURL {
                 // Files went into a sub-folder — surface it in the sidebar tree.
-                browserViewModel.revealExportedSubfolder(outputFolder)
+                sidebarViewModel.revealExportedSubfolder(outputFolder)
             }
 
             let copyFailures = await failureTracker.metadataCopyFailures
@@ -5405,7 +5405,7 @@ struct ContentViewModifiers: ViewModifier {
                 // sidecar tree otherwise only builds child lists on first manual expand).
                 guard completed else { return }
                 for folder in ftpViewModel.renderedUploadedFolders {
-                    browserViewModel.revealExportedSubfolder(folder)
+                    panes.primary.revealExportedSubfolder(folder)
                 }
             }
     }
@@ -5514,6 +5514,12 @@ struct AutoRefreshModifier: ViewModifier {
             }
             .onChange(of: panes.panes.count) {
                 coordinator.synchronizeMonitors()
+            }
+            .onChange(of: panes.primary.favoriteFolders.map(\.url)) {
+                coordinator.synchronizeSidebarRootMonitors()
+            }
+            .onChange(of: panes.primary.openFolders) {
+                coordinator.synchronizeSidebarRootMonitors()
             }
             .onChange(of: panes.activePaneID) {
                 coordinator.synchronizeMonitors()

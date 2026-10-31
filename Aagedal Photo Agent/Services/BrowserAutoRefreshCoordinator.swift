@@ -44,6 +44,15 @@ final class BrowserAutoRefreshCoordinator {
     /// The running import's copies that are not finished yet; mid-import refreshes never add them.
     private let unfinishedImportURLs: @MainActor () -> Set<URL>
     private var unmountObserver: NSObjectProtocol?
+    /// Changed paths awaiting a check for created/removed sub-folders, keyed by the cached
+    /// sidebar folder (standardized path) that lists them as children.
+    private var pendingSidebarChanges: [String: Set<String>] = [:]
+    private var pendingSidebarFullRescans: Set<String> = []
+    private var sidebarRefreshTask: Task<Void, Never>?
+    /// FSEvents streams over each top-level sidebar root (favorites and open folders), so a
+    /// sub-folder another app creates anywhere in a visible tree appears without a reopen.
+    private var sidebarRootMonitors: [URL: FolderChangeMonitor] = [:]
+    private var sidebarRootSetupTasks: [URL: Task<Void, Never>] = [:]
 
     init(
         panes: BrowserPanesModel,
@@ -59,6 +68,9 @@ final class BrowserAutoRefreshCoordinator {
 
     deinit {
         fallbackTask?.cancel()
+        sidebarRefreshTask?.cancel()
+        for task in sidebarRootSetupTasks.values { task.cancel() }
+        for monitor in sidebarRootMonitors.values { monitor.cancel() }
         for task in refreshTasks.values { task.cancel() }
         for task in monitorSetupTasks.values { task.cancel() }
         for monitor in monitors.values { monitor.cancel() }
@@ -153,6 +165,14 @@ final class BrowserAutoRefreshCoordinator {
         }
         fallbackTask?.cancel()
         fallbackTask = nil
+        sidebarRefreshTask?.cancel()
+        sidebarRefreshTask = nil
+        pendingSidebarChanges.removeAll()
+        pendingSidebarFullRescans.removeAll()
+        for task in sidebarRootSetupTasks.values { task.cancel() }
+        sidebarRootSetupTasks.removeAll()
+        for monitor in sidebarRootMonitors.values { monitor.cancel() }
+        sidebarRootMonitors.removeAll()
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
         importDeferredPaneIDs.removeAll()
@@ -167,6 +187,7 @@ final class BrowserAutoRefreshCoordinator {
     }
 
     func synchronizeMonitors() {
+        synchronizeSidebarRootMonitors()
         let desired = Dictionary(uniqueKeysWithValues: panesToMonitor().compactMap { pane in
             pane.currentFolderURL.map { (ObjectIdentifier(pane), $0.standardizedFileURL) }
         })
@@ -257,6 +278,7 @@ final class BrowserAutoRefreshCoordinator {
         folderURL: URL
     ) {
         guard monitoredURLs[paneID] == folderURL else { return }
+        noteSidebarChanges(batch, monitoredRoot: folderURL)
         let impact = BrowserFolderChangeImpact.classify(
             batch,
             monitoredRoot: folderURL
@@ -286,6 +308,129 @@ final class BrowserAutoRefreshCoordinator {
             }
             scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: debounceDuration)
         }
+    }
+
+    // MARK: - Sidebar folder tree
+
+    /// The sidebar tree (owned by the primary pane) caches each folder's child list and
+    /// otherwise only re-reads expanded folders every 10 s, so a sub-folder created under
+    /// the open folder — by an export, an import, or Finder — would show up late or, below
+    /// a collapsed or childless folder, not at all. Queue the folders whose children may
+    /// have changed and re-list them after the burst settles.
+    private func noteSidebarChanges(_ batch: FolderChangeBatch, monitoredRoot: URL) {
+        let cached = panes.primary.cachedSubfolderListings
+        guard !cached.isEmpty else { return }
+        let rootPath = monitoredRoot.standardizedFileURL.path
+        if batch.requiresFullRescan {
+            for path in cached.keys where path == rootPath || path.hasPrefix(rootPath + "/") {
+                pendingSidebarFullRescans.insert(path)
+            }
+        } else {
+            for url in batch.paths {
+                let standardized = url.standardizedFileURL
+                let path = standardized.path
+                guard path.hasPrefix(rootPath + "/"),
+                      !path.dropFirst(rootPath.count).split(separator: "/").contains(where: { $0.hasPrefix(".") })
+                else { continue }
+                let parentPath = standardized.deletingLastPathComponent().path
+                guard cached[parentPath] != nil else { continue }
+                pendingSidebarChanges[parentPath, default: []].insert(path)
+            }
+        }
+        guard !pendingSidebarChanges.isEmpty || !pendingSidebarFullRescans.isEmpty else { return }
+        sidebarRefreshTask?.cancel()
+        sidebarRefreshTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: self?.debounceDuration ?? .milliseconds(350))
+            } catch {
+                return
+            }
+            await self?.flushSidebarChanges()
+        }
+    }
+
+    /// Top-level sidebar folders, with any folder inside another root dropped: an FSEvents
+    /// stream already reports its whole subtree.
+    static func sidebarWatchRoots(_ urls: [URL]) -> Set<URL> {
+        let roots = Set(urls.map(\.standardizedFileURL))
+        return roots.filter { root in
+            !roots.contains { other in
+                other != root && root.path.hasPrefix(other.path == "/" ? "/" : other.path + "/")
+            }
+        }
+    }
+
+    func synchronizeSidebarRootMonitors() {
+        let sidebar = panes.primary
+        let desired = Self.sidebarWatchRoots(sidebar.favoriteFolders.map(\.url) + sidebar.openFolders)
+
+        for root in Set(sidebarRootMonitors.keys).union(sidebarRootSetupTasks.keys) where !desired.contains(root) {
+            sidebarRootSetupTasks.removeValue(forKey: root)?.cancel()
+            sidebarRootMonitors.removeValue(forKey: root)?.cancel()
+        }
+
+        for root in desired where sidebarRootMonitors[root] == nil && sidebarRootSetupTasks[root] == nil {
+            let request = FolderChangeMonitorRequest(folderURL: root) { [weak self] batch in
+                Task { @MainActor [weak self] in
+                    guard let self, self.sidebarRootMonitors[root] != nil else { return }
+                    self.noteSidebarChanges(batch, monitoredRoot: root)
+                }
+            }
+            sidebarRootSetupTasks[root] = Task { [weak self] in
+                guard let self else { return }
+                let result = await monitorService.createMonitor(request)
+                guard !Task.isCancelled, sidebarRootSetupTasks[root] != nil else {
+                    if case let .created(monitor) = result { monitor.cancel() }
+                    return
+                }
+                sidebarRootSetupTasks[root] = nil
+                if case let .created(monitor) = result {
+                    sidebarRootMonitors[root] = monitor
+                }
+                // Unavailable (missing or offline volume): the 10 s sidebar sweep still
+                // covers expanded folders, and the next synchronize retries the stream.
+            }
+        }
+    }
+
+    private func flushSidebarChanges() async {
+        let changes = pendingSidebarChanges
+        var parents = pendingSidebarFullRescans
+        pendingSidebarChanges.removeAll()
+        pendingSidebarFullRescans.removeAll()
+        sidebarRefreshTask = nil
+
+        let sidebar = panes.primary
+        // A path that is gone but was listed was a removed/renamed sub-folder; a path that
+        // exists matters only when it is a directory. Plain file writes (an export filling
+        // the open folder) never trigger a re-list. Stat off the main actor: an import or
+        // export batch can carry thousands of paths.
+        let knownChildren = Set(sidebar.subfoldersByOpenFolder.values.joined().map(\.standardizedFileURL.path))
+        parents.formUnion(await Self.parentsWithFolderChanges(changes, knownChildren: knownChildren))
+        guard !Task.isCancelled, !parents.isEmpty else { return }
+
+        let cached = sidebar.cachedSubfolderListings
+        sidebar.refreshChangedSubfolderListings(Set(parents.compactMap { cached[$0] }))
+    }
+
+    @concurrent
+    nonisolated private static func parentsWithFolderChanges(
+        _ changes: [String: Set<String>],
+        knownChildren: Set<String>
+    ) async -> Set<String> {
+        let fileManager = FileManager.default
+        var parents: Set<String> = []
+        for (parent, paths) in changes {
+            for path in paths {
+                var isDirectory: ObjCBool = false
+                let exists = fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
+                if exists ? isDirectory.boolValue : knownChildren.contains(path) {
+                    parents.insert(parent)
+                    break
+                }
+            }
+        }
+        return parents
     }
 
     private func scheduleRefresh(

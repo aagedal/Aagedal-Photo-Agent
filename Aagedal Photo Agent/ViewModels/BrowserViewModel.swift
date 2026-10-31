@@ -3543,12 +3543,12 @@ final class BrowserViewModel {
     /// view churn on the 10s tick.
     @ObservationIgnored private var subfolderRefreshTask: Task<Void, Never>?
 
-    private func rescanSubfolders(_ urls: Set<URL>, force: Bool) {
+    private func rescanSubfolders(_ urls: Set<URL>, force: Bool, replacesInFlight: Bool? = nil) {
         guard !urls.isEmpty else { return }
         // A slow volume can take longer than the timer interval. Avoid accumulating sweeps;
         // an explicit refresh replaces the old pass and propagates cancellation to its read.
         if subfolderRefreshTask != nil {
-            guard force else { return }
+            guard replacesInFlight ?? force else { return }
             subfolderRefreshTask?.cancel()
         }
         subfolderRefreshTask = Task { [weak self] in
@@ -3577,6 +3577,23 @@ final class BrowserViewModel {
         toScan.formUnion(expandedOpenFolders)
         let urls = toScan.filter { subfoldersByOpenFolder[$0] != nil }
         rescanSubfolders(Set(urls), force: false)
+    }
+
+    /// Every folder whose child list is cached, keyed by standardized path, so filesystem
+    /// event paths (which may differ in spelling) can be matched to cache keys.
+    var cachedSubfolderListings: [String: URL] {
+        Dictionary(
+            subfoldersByOpenFolder.keys.map { ($0.standardizedFileURL.path, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    /// Re-reads cached folders whose direct children the filesystem reported changing
+    /// (a sub-folder created, removed or renamed). Unlike the periodic sweep it never
+    /// yields to an in-flight pass, so the event is not lost; the view only updates
+    /// when the listing actually changed.
+    func refreshChangedSubfolderListings(_ urls: Set<URL>) {
+        rescanSubfolders(urls, force: false, replacesInFlight: true)
     }
 
     /// Manual refresh (right-click → Refresh): force a re-scan of `url` plus any of
