@@ -80,6 +80,8 @@ struct AnalysisWorkspaceView: View {
     @State private var reportExportTask: Task<Void, Never>?
     /// Notes and timed observations have no undo, so deleting one asks first.
     @State private var pendingCaseItemDeletion: AnalysisCaseItemDeletion?
+    /// The Annotated Map JPEG asks before contacting OpenStreetMap, like the PDF sheet.
+    @State private var isChoosingMapJPEGBasemap = false
     @State private var evidenceExportTask: Task<Void, Never>?
     @State private var reportExportRequestID: UUID?
     @State private var evidenceExportRequestID: UUID?
@@ -225,6 +227,20 @@ struct AnalysisWorkspaceView: View {
             Button("Cancel", role: .cancel) { pendingCaseItemDeletion = nil }
         } message: { _ in
             Text("This can't be undone.")
+        }
+        .confirmationDialog(
+            "Map Background for the JPEG",
+            isPresented: $isChoosingMapJPEGBasemap
+        ) {
+            Button("OpenStreetMap") {
+                chooseAnnotatedMapDestinationAndExport(usesOpenStreetMap: true)
+            }
+            Button("Plain Grid") {
+                chooseAnnotatedMapDestinationAndExport(usesOpenStreetMap: false)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("OpenStreetMap sends the visible map region as tile coordinates to OpenStreetMap. A plain grid keeps the export offline. Apple Maps imagery can't be embedded.")
         }
         .alert(
             "Cancel the Running Export?",
@@ -613,7 +629,7 @@ struct AnalysisWorkspaceView: View {
                             : "Annotated Map (JPEG)…",
                         systemImage: "map"
                     ) {
-                        chooseAnnotatedMapDestinationAndExport()
+                        isChoosingMapJPEGBasemap = true
                     }
                     .disabled(model.mapState.viewport == nil || evidenceExportTask != nil)
                     .help(model.mapState.viewport == nil
@@ -994,11 +1010,17 @@ struct AnalysisWorkspaceView: View {
         }
     }
 
-    private func chooseAnnotatedMapDestinationAndExport() {
+    private func chooseAnnotatedMapDestinationAndExport(usesOpenStreetMap: Bool) {
         guard let analysisCase = model.analysisCase,
               let evidence = AnalysisReportMapEvidence(
                   state: analysisCase.mapState,
                   folderMapAnnotations: model.globalMapAnnotations.map(\.annotation),
+                  // The JPEG shows the Sun and shadow rays the map shows; an overlay that can't
+                  // be computed is left out rather than blocking the export.
+                  solarEvidence: (try? AnalysisReportSolarEvidence.capture(
+                      from: analysisCase.mapState,
+                      timestampEvidence: model.timestampEvidence
+                  )) ?? nil,
                   capturedAt: Date()
               ), evidenceExportTask == nil else { return }
         guard let outputURL = chooseJPEGDestination(
@@ -1016,7 +1038,10 @@ struct AnalysisWorkspaceView: View {
                 }
             }
             do {
-                let data = try await AnalysisEvidenceJPEGRenderer.mapJPEG(evidence: evidence)
+                let data = try await AnalysisEvidenceJPEGRenderer.mapJPEG(
+                    evidence: evidence,
+                    usesOpenStreetMap: usesOpenStreetMap
+                )
                 try Task.checkCancellation()
                 let result = try await AnalysisExportFileService.shared.write(
                     data,

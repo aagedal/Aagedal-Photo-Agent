@@ -9,6 +9,8 @@ nonisolated enum AnalysisMapImageryAvailability: Equatable, Sendable {
     case offline
     case networkFailure(String)
     case unavailable(String)
+    /// OpenStreetMap answered tile requests with an error (rate limit, block, captive portal).
+    case tileServerFailure(String)
 
     var title: String? {
         switch self {
@@ -20,6 +22,8 @@ nonisolated enum AnalysisMapImageryAvailability: Equatable, Sendable {
             "Map network request failed"
         case .unavailable:
             "Map content unavailable"
+        case .tileServerFailure:
+            "OpenStreetMap tiles are not loading"
         }
     }
 
@@ -33,6 +37,8 @@ nonisolated enum AnalysisMapImageryAvailability: Equatable, Sendable {
             "The network is connected, but MapKit could not complete the imagery request. \(detail)"
         case .unavailable(let detail):
             "MapKit did not return content for this view. Try a different scale, style, or location. \(detail)"
+        case .tileServerFailure(let detail):
+            "The network is connected, but OpenStreetMap did not return map tiles (\(detail)). Its servers may be limiting requests; try again later or choose an Apple map style. Coordinates and saved annotations are unaffected."
         }
     }
 
@@ -48,6 +54,8 @@ nonisolated enum AnalysisMapImageryAvailability: Equatable, Sendable {
             "network.slash"
         case .unavailable:
             "map"
+        case .tileServerFailure:
+            "exclamationmark.icloud"
         }
     }
 
@@ -92,6 +100,7 @@ final class AnalysisMapAvailabilityMonitor {
     private var probeTask: Task<Void, Never>?
     private var lastRegion: MKCoordinateRegion?
     private var lastStyle: AnalysisMapStyle?
+    @ObservationIgnored private var tileFailureObserver: AnalysisNotificationObservation?
 
     var isOffline: Bool {
         isNetworkAvailable == false
@@ -107,6 +116,26 @@ final class AnalysisMapAvailabilityMonitor {
             }
         }
         pathMonitor.start(queue: monitorQueue)
+        tileFailureObserver = AnalysisNotificationObservation(NotificationCenter.default.addObserver(
+            forName: Self.openStreetMapTileFailed,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let detail = notification.userInfo?["detail"] as? String ?? "unknown error"
+            Task { @MainActor [weak self] in
+                self?.receiveOpenStreetMapTileFailure(detail)
+            }
+        })
+    }
+
+    /// Posted (from any thread) by the OSM tile overlay when a tile request fails.
+    nonisolated static let openStreetMapTileFailed = Notification.Name(
+        "AnalysisMapAvailabilityMonitor.openStreetMapTileFailed"
+    )
+
+    private func receiveOpenStreetMapTileFailure(_ detail: String) {
+        guard lastStyle == .openStreetMap, isNetworkAvailable != false else { return }
+        imageryAvailability = .tileServerFailure(detail)
     }
 
     func checkImagery(
@@ -195,5 +224,18 @@ final class AnalysisMapAvailabilityMonitor {
 
     deinit {
         pathMonitor.cancel()
+    }
+}
+
+/// Removes a block-based NotificationCenter observer when its owner goes away.
+nonisolated private final class AnalysisNotificationObservation {
+    private let token: any NSObjectProtocol
+
+    init(_ token: any NSObjectProtocol) {
+        self.token = token
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(token)
     }
 }

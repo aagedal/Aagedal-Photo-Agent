@@ -111,11 +111,17 @@ enum AnalysisEvidenceJPEGRenderer {
         return nsImage(rendered)
     }
 
+    /// `usesOpenStreetMap` sends the map region's tile coordinates to OpenStreetMap; without it
+    /// the figure is a plain schematic grid.
     static func mapJPEG(
         evidence: AnalysisReportMapEvidence,
+        usesOpenStreetMap: Bool = true,
         pixelSize: CGSize = CGSize(width: 2_000, height: 1_200)
     ) async throws -> Data {
-        let basemap = try await mapBasemap(evidence: evidence, pixelSize: pixelSize)
+        let evidence = evidence.fitted(toAspect: pixelSize.width / pixelSize.height)
+        let basemap = usesOpenStreetMap
+            ? try await mapBasemap(evidence: evidence, pixelSize: pixelSize)
+            : nil
         return try await renderMapJPEG(evidence: evidence, basemap: basemap, pixelSize: pixelSize)
     }
 
@@ -123,6 +129,7 @@ enum AnalysisEvidenceJPEGRenderer {
         evidence: AnalysisReportMapEvidence,
         pixelSize: CGSize = CGSize(width: 2_000, height: 1_200)
     ) async throws -> NSImage {
+        let evidence = evidence.fitted(toAspect: pixelSize.width / pixelSize.height)
         let basemap = try await mapBasemap(evidence: evidence, pixelSize: pixelSize)
         let rendered = try await renderMap(evidence: evidence, basemap: basemap, pixelSize: pixelSize)
         return nsImage(rendered)
@@ -206,6 +213,7 @@ enum AnalysisEvidenceJPEGRenderer {
                 drawMapGrid(in: rect)
             }
             drawMapEvidence(evidence, in: rect)
+            drawSolarEvidence(evidence, in: rect)
             drawMapAttribution(hasBasemap: basemap != nil, in: rect)
         }
     }
@@ -610,9 +618,11 @@ enum AnalysisEvidenceJPEGRenderer {
         let normalizedX = 0.5 + longitudeOffset / viewport.longitudeDelta
         let normalizedY = 0.5 + (coordinate.latitude - viewport.center.latitude)
             / viewport.latitudeDelta
+        // Not clamped: off-figure points stay off the figure (the bitmap clips them) instead of
+        // being pinned to the edge, which bent rays and shapes.
         return CGPoint(
-            x: rect.minX + rect.width * CGFloat(min(1, max(0, normalizedX))),
-            y: rect.minY + rect.height * CGFloat(min(1, max(0, normalizedY)))
+            x: rect.minX + rect.width * CGFloat(normalizedX),
+            y: rect.minY + rect.height * CGFloat(normalizedY)
         )
     }
 
@@ -630,10 +640,85 @@ enum AnalysisEvidenceJPEGRenderer {
         }
     }
 
+    /// The Sun, shadow, sunrise and sunset rays the OSINT map shows, with a legend.
+    nonisolated private static func drawSolarEvidence(
+        _ evidence: AnalysisReportMapEvidence,
+        in rect: CGRect
+    ) {
+        guard let solar = evidence.solarEvidence,
+              let model = AnalysisSolarMapRenderModel(
+                  overlay: solar.overlay,
+                  origin: solar.coordinate,
+                  latitudeDelta: evidence.viewport.latitudeDelta,
+                  longitudeDelta: evidence.viewport.longitudeDelta,
+                  day: solar.day
+              ),
+              !model.rays.isEmpty else { return }
+        let scale = max(1, min(rect.width, rect.height) / 1_200)
+        for ray in model.rays {
+            let style = solarRayStyle(ray.kind)
+            let path = NSBezierPath()
+            path.move(to: mapPoint(ray.origin, viewport: evidence.viewport, in: rect))
+            path.line(to: mapPoint(ray.destination, viewport: evidence.viewport, in: rect))
+            path.lineWidth = style.lineWidth * scale
+            path.lineCapStyle = .round
+            if !style.dash.isEmpty {
+                let dash = style.dash.map { $0 * scale }
+                path.setLineDash(dash, count: dash.count, phase: 0)
+            }
+            style.color.setStroke()
+            path.stroke()
+        }
+
+        let rowHeight = 22 * scale
+        let legendRect = CGRect(
+            x: rect.minX + 12 * scale,
+            y: rect.maxY - CGFloat(model.rays.count) * rowHeight - 28 * scale,
+            width: 300 * scale,
+            height: CGFloat(model.rays.count) * rowHeight + 16 * scale
+        )
+        NSColor.white.withAlphaComponent(0.88).setFill()
+        NSBezierPath(roundedRect: legendRect, xRadius: 6 * scale, yRadius: 6 * scale).fill()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13 * scale, weight: .medium),
+            .foregroundColor: NSColor.black,
+        ]
+        for (index, ray) in model.rays.enumerated() {
+            let y = legendRect.maxY - 8 * scale - (CGFloat(index) + 0.5) * rowHeight
+            let style = solarRayStyle(ray.kind)
+            let sample = NSBezierPath()
+            sample.move(to: CGPoint(x: legendRect.minX + 10 * scale, y: y))
+            sample.line(to: CGPoint(x: legendRect.minX + 44 * scale, y: y))
+            sample.lineWidth = style.lineWidth * scale
+            if !style.dash.isEmpty {
+                let dash = style.dash.map { $0 * scale }
+                sample.setLineDash(dash, count: dash.count, phase: 0)
+            }
+            style.color.setStroke()
+            sample.stroke()
+            NSAttributedString(
+                string: "\(ray.kind.displayName) \(String(format: "%.1f°", ray.bearingDegrees))",
+                attributes: attributes
+            ).draw(at: CGPoint(x: legendRect.minX + 52 * scale, y: y - 8 * scale))
+        }
+    }
+
+    /// Same palette as the on-screen rays and the PDF figure.
+    nonisolated private static func solarRayStyle(
+        _ kind: AnalysisSolarMapRayKind
+    ) -> (color: NSColor, lineWidth: CGFloat, dash: [CGFloat]) {
+        switch kind {
+        case .sun: (NSColor(srgbRed: 0.95, green: 0.72, blue: 0.04, alpha: 1), 3, [])
+        case .shadow: (NSColor(srgbRed: 0.48, green: 0.24, blue: 0.68, alpha: 1), 2.4, [7, 5])
+        case .sunrise: (NSColor(srgbRed: 0.90, green: 0.42, blue: 0.10, alpha: 0.82), 1.6, [])
+        case .sunset: (NSColor(srgbRed: 0.84, green: 0.20, blue: 0.18, alpha: 0.82), 1.6, [])
+        }
+    }
+
     nonisolated private static func drawMapAttribution(hasBasemap: Bool, in rect: CGRect) {
         let text = hasBasemap
-            ? "OpenStreetMap | © OpenStreetMap contributors"
-            : "Schematic WGS 84 viewport"
+            ? "North up | OpenStreetMap | © OpenStreetMap contributors"
+            : "North up | Schematic WGS 84 viewport"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 14, weight: .medium),
             .foregroundColor: NSColor.white,

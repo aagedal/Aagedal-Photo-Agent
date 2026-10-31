@@ -216,8 +216,8 @@ private final class Renderer {
         }
         if options.mapBasemap == .openStreetMap, let map = snapshot.mapEvidence {
             openStreetMapImage = try? await AnalysisOpenStreetMapSnapshotter.image(
-                viewport: map.viewport,
-                pixelSize: CGSize(width: 1_000, height: 520)
+                viewport: map.fitted(toAspect: mapFigureAspect).viewport,
+                pixelSize: CGSize(width: 1_000, height: 1_000 / mapFigureAspect)
             )
         }
         try checkCancellation()
@@ -814,7 +814,7 @@ private final class Renderer {
         drawFlowingText("Coordinate system: \(map.coordinateSystem)", font: .systemFont(ofSize: 8.5), color: secondary, lineSpacing: 1)
         cursorY -= 12
         ensureSpace(280)
-        let mapRect = CGRect(x: margin, y: cursorY - 260, width: contentWidth, height: 260)
+        let mapRect = CGRect(x: margin, y: cursorY - mapFigureHeight, width: contentWidth, height: mapFigureHeight)
         drawMapSchematic(map, in: mapRect)
         cursorY = mapRect.minY - 16
 
@@ -956,13 +956,22 @@ private final class Renderer {
         }
     }
 
+    private let mapFigureHeight: CGFloat = 260
+    /// Width/height of the map figure; the OSM capture and the projection share it.
+    private var mapFigureAspect: CGFloat { contentWidth / mapFigureHeight }
+
     private func drawMapSchematic(_ map: AnalysisReportMapEvidence, in rect: CGRect) {
+        // Frame the viewport to the figure's shape so directions are not stretched, and clip
+        // instead of pinning off-figure points to the edge.
+        let map = map.fitted(toAspect: mapFigureAspect)
         panelFill.setFill()
         let background = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
         background.fill()
         hairline.setStroke()
         background.lineWidth = 1
         background.stroke()
+        NSGraphicsContext.saveGraphicsState()
+        background.addClip()
 
         if let openStreetMapImage {
             openStreetMapImage.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
@@ -1029,6 +1038,7 @@ private final class Renderer {
             drawSolarRays(renderModel, viewport: map.viewport, rect: rect)
             drawSolarLegend(renderModel, in: rect)
         }
+        NSGraphicsContext.restoreGraphicsState()
 
         let viewportDescription: String
         if options.includeLocationCoordinates {
@@ -1038,7 +1048,7 @@ private final class Renderer {
             viewportDescription = "Coordinates omitted by export settings"
         }
         drawText(
-            "\(openStreetMapImage == nil ? "Schematic WGS 84 viewport" : "OpenStreetMap  |  © OpenStreetMap contributors")  |  \(viewportDescription)",
+            "North up  |  \(openStreetMapImage == nil ? "Schematic WGS 84 viewport" : "OpenStreetMap  |  © OpenStreetMap contributors")  |  \(viewportDescription)",
             font: .systemFont(ofSize: 7.5, weight: .medium),
             color: secondary,
             in: CGRect(x: rect.minX + 8, y: rect.minY + 6, width: rect.width - 16, height: 10)
@@ -1056,8 +1066,8 @@ private final class Renderer {
         let normalizedX = 0.5 + longitudeOffset / viewport.longitudeDelta
         let normalizedY = 0.5 + (coordinate.latitude - viewport.center.latitude) / viewport.latitudeDelta
         return CGPoint(
-            x: rect.minX + rect.width * CGFloat(min(1, max(0, normalizedX))),
-            y: rect.minY + rect.height * CGFloat(min(1, max(0, normalizedY)))
+            x: rect.minX + rect.width * CGFloat(normalizedX),
+            y: rect.minY + rect.height * CGFloat(normalizedY)
         )
     }
 

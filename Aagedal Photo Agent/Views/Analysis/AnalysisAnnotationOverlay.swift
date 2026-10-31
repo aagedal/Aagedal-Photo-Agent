@@ -373,7 +373,7 @@ struct AnalysisAnnotationToolbar: View {
                     .labelStyle(.iconOnly)
                     .tag(tool)
                     .help(
-                        shortcutKey.map { "\(tool.displayName) (\($0))" }
+                        shortcutKey.map { "\(tool.displayName) (\($0) while pointing at the photo)" }
                             ?? tool.displayName
                     )
             }
