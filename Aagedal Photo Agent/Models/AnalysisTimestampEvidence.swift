@@ -427,12 +427,8 @@ nonisolated enum AnalysisTimelineResolver {
         facts: AnalysisSourceFacts,
         rawMetadata: [AnalysisRawMetadataEntry]
     ) -> AnalysisTimestampValue? {
-        let gpsDate = rawMetadata.first {
-            $0.key.lowercased().contains("gpsdatestamp")
-        }?.value
-        let gpsTime = rawMetadata.first {
-            $0.key.lowercased().contains("gpstimestamp")
-        }?.value
+        let gpsDate = rawMetadata.gpsValue("DateStamp")
+        let gpsTime = rawMetadata.gpsValue("TimeStamp")
         if let gpsDate, let gpsTime,
            let combined = parseMetadataTimestamp(
             gpsDate + " " + gpsTime,

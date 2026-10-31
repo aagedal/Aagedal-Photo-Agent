@@ -4108,7 +4108,8 @@ private struct AnalysisSourceThumbnail: View {
                                 measurementScale: AnalysisMeasurementScale(
                                     annotations: annotations,
                                     annotationTransform: coordinateMapper.annotationTransform
-                                )
+                                ),
+                                zoomScale: zoomScale
                             )
                         }
                     }
@@ -4720,6 +4721,10 @@ private struct AnalysisSourceThumbnail: View {
         }
     }
 
+    /// Gesture locations are in the un-zoomed canvas space, so click radii and drag
+    /// thresholds meant in screen points are divided by the zoom.
+    private var viewPointUnit: CGFloat { 1 / max(zoomScale, 1) }
+
     private func setZoom(
         _ requestedScale: CGFloat,
         anchoredAt anchor: CGPoint? = nil,
@@ -5039,7 +5044,8 @@ private struct AnalysisSourceThumbnail: View {
                     selectedAnnotationID: selectedAnnotationID,
                     annotations: visibleAnnotations,
                     geometry: geometry,
-                    coordinateMapper: coordinateMapper
+                    coordinateMapper: coordinateMapper,
+                    zoomScale: zoomScale
                 ), let original = visibleAnnotations.first(where: {
                     $0.id == target.annotationID
                 }) else { return false }
@@ -5136,14 +5142,15 @@ private struct AnalysisSourceThumbnail: View {
                 value.location.x - value.startLocation.x,
                 value.location.y - value.startLocation.y
             )
-            if scopeSourceMode == .selectedRegion, dragDistance >= 3 {
+            if scopeSourceMode == .selectedRegion, dragDistance >= 3 * viewPointUnit {
                 return false
             }
             selectedAnnotationID = AnalysisAnnotationHitTester.annotationID(
                 at: value.location,
                 annotations: visibleAnnotations,
                 geometry: geometry,
-                coordinateMapper: coordinateMapper
+                coordinateMapper: coordinateMapper,
+                zoomScale: zoomScale
             )
             return true
         }
@@ -5165,7 +5172,8 @@ private struct AnalysisSourceThumbnail: View {
                 let firstViewPoint = geometry.viewPoint(
                     fromNormalizedDisplay: coordinateMapper.displayPoint(from: first)
                 )
-                if hypot(viewPoint.x - firstViewPoint.x, viewPoint.y - firstViewPoint.y) <= 12 {
+                if hypot(viewPoint.x - firstViewPoint.x, viewPoint.y - firstViewPoint.y)
+                    <= 12 * viewPointUnit {
                     finishPolygonDraft()
                     return true
                 }
@@ -5174,7 +5182,8 @@ private struct AnalysisSourceThumbnail: View {
                 let lastViewPoint = geometry.viewPoint(
                     fromNormalizedDisplay: coordinateMapper.displayPoint(from: last)
                 )
-                guard hypot(viewPoint.x - lastViewPoint.x, viewPoint.y - lastViewPoint.y) > 3 else {
+                guard hypot(viewPoint.x - lastViewPoint.x, viewPoint.y - lastViewPoint.y)
+                        > 3 * viewPointUnit else {
                     return true
                 }
             }
@@ -5190,7 +5199,7 @@ private struct AnalysisSourceThumbnail: View {
             guard hypot(
                 value.location.x - value.startLocation.x,
                 value.location.y - value.startLocation.y
-            ) < 3,
+            ) < 3 * viewPointUnit,
             let point = geometry.normalizedDisplayPoint(fromViewPoint: value.location) else {
                 return true
             }
@@ -5220,7 +5229,7 @@ private struct AnalysisSourceThumbnail: View {
               hypot(
                   value.location.x - value.startLocation.x,
                   value.location.y - value.startLocation.y
-              ) >= 3,
+              ) >= 3 * viewPointUnit,
               let completedGeometry = AnalysisAnnotationGeometryBuilder.geometry(
                   for: kind,
                   start: annotationDraft.start,

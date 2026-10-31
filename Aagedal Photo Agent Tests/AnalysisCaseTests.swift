@@ -2839,6 +2839,50 @@ struct AnalysisCaseTests {
         }
     }
 
+    @Test("ImageIO GPS leaf names and EXIF OffsetTimeOriginal resolve absolute times")
+    func resolvesImageIOGPSAndCaptureOffset() {
+        let raw = [
+            AnalysisRawMetadataEntry(
+                id: "gps.date", namespace: "GPS", key: "DateStamp",
+                value: "2026:07:30", origin: .gps
+            ),
+            AnalysisRawMetadataEntry(
+                id: "gps.time", namespace: "GPS", key: "TimeStamp",
+                value: "17:42:10.00", origin: .gps
+            ),
+            AnalysisRawMetadataEntry(
+                id: "exif.offset", namespace: "EXIF", key: "OffsetTimeOriginal",
+                value: "+02:00", origin: .exif
+            ),
+        ]
+        #expect(raw.gpsValue("DateStamp") == "2026:07:30")
+        #expect(raw.gpsValue("TimeStamp") == "17:42:10.00")
+
+        let capture = SourceFactsAnalyzer.captureDate("2026:07:30 19:42:10", rawMetadata: raw)
+        #expect(capture == "2026:07:30 19:42:10+02:00")
+        // An explicit offset already in the value wins; a malformed offset tag is ignored.
+        #expect(SourceFactsAnalyzer.captureDate("2026:07:30 19:42:10Z", rawMetadata: raw)
+            == "2026:07:30 19:42:10Z")
+        let badOffset = [AnalysisRawMetadataEntry(
+            id: "exif.offset", namespace: "EXIF", key: "OffsetTimeOriginal",
+            value: "   :  ", origin: .exif
+        )]
+        #expect(SourceFactsAnalyzer.captureDate("2026:07:30 19:42:10", rawMetadata: badOffset)
+            == "2026:07:30 19:42:10")
+
+        let facts = makeSourceFacts(
+            fileModificationDate: Date(timeIntervalSince1970: 1_700_000_000),
+            captureDate: capture,
+            captureTimezoneKnown: true
+        )
+        let derived = AnalysisTimelineResolver.sourceEvidence(from: facts, rawMetadata: raw)
+        let gps = derived.first { $0.kind == .gps }
+        #expect(gps?.value.timezoneKnown == true)
+        let resolvedCapture = derived.first { $0.kind == .capture }
+        #expect(resolvedCapture?.value.utcOffsetMinutes == 120)
+        #expect(resolvedCapture?.value.resolvedInstant == gps?.value.resolvedInstant)
+    }
+
     @Test("timeline keeps timezone-unknown capture evidence distinct and detects known conflicts")
     func resolvesTimestampEvidenceAndConflicts() {
         let facts = makeSourceFacts(

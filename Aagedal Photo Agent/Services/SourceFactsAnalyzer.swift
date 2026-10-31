@@ -63,11 +63,16 @@ struct SourceFactsAnalyzer: AnalysisAnalyzer {
             isPresent: c2paIsPresent,
             result: validation
         )
-        let gpsTimestamp = draft.rawMetadata.first {
-            let key = $0.key.lowercased()
-            return key.contains("gpstimestamp") || key.contains("gpsdatestamp")
-        }?.value
-        let captureDate = descriptive.captureDate ?? technical.captureDate
+        let gpsDate = draft.rawMetadata.gpsValue("DateStamp")
+        let gpsTime = draft.rawMetadata.gpsValue("TimeStamp")
+        let gpsTimestamp: String? = switch (gpsDate, gpsTime) {
+        case let (date?, time?): "\(date) \(time)"
+        case let (date, time): time ?? date
+        }
+        let captureDate = Self.captureDate(
+            descriptive.captureDate ?? technical.captureDate,
+            rawMetadata: draft.rawMetadata
+        )
 
         let facts = AnalysisSourceFacts(
             filename: draft.filename,
@@ -119,6 +124,23 @@ struct SourceFactsAnalyzer: AnalysisAnalyzer {
             rawMetadata: draft.rawMetadata,
             findings: findings
         )
+    }
+
+    /// EXIF keeps the capture time's UTC offset in a separate tag (`OffsetTimeOriginal`,
+    /// or `OffsetTime` from older writers). Append it so the capture time is absolute.
+    nonisolated static func captureDate(
+        _ value: String?,
+        rawMetadata: [AnalysisRawMetadataEntry]
+    ) -> String? {
+        guard let value, !hasExplicitTimezone(value) else { return value }
+        let offset = (rawMetadata.exifValue("OffsetTimeOriginal")
+            ?? rawMetadata.exifValue("OffsetTime"))?
+            .trimmingCharacters(in: .whitespaces)
+        guard let offset,
+              offset.range(of: #"^[+-]\d{2}:\d{2}$"#, options: .regularExpression) != nil else {
+            return value
+        }
+        return value.trimmingCharacters(in: .whitespaces) + offset
     }
 
     nonisolated private static func hasExplicitTimezone(_ value: String?) -> Bool {

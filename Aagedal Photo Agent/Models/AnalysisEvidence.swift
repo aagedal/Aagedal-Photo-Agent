@@ -74,6 +74,29 @@ nonisolated struct AnalysisRawMetadataEntry: Identifiable, Codable, Equatable, S
     let origin: AnalysisMetadataOrigin
 }
 
+nonisolated extension Array where Element == AnalysisRawMetadataEntry {
+    /// A GPS leaf by its EXIF name without the `GPS` prefix (`DateStamp`, `TimeStamp`).
+    /// ImageIO's `{GPS}` dictionary uses the bare names; ExifTool-style dumps prefix them.
+    func gpsValue(_ leaf: String) -> String? {
+        let bare = leaf.lowercased()
+        let prefixed = "gps" + bare
+        return first {
+            let key = $0.key.lowercased()
+            return ($0.origin == .gps && key == bare) || key == prefixed
+                || key.hasSuffix(":" + prefixed)
+        }?.value
+    }
+
+    /// An EXIF leaf by its exact name (case-insensitive), e.g. `OffsetTimeOriginal`.
+    func exifValue(_ key: String) -> String? {
+        let wanted = key.lowercased()
+        return first {
+            let candidate = $0.key.lowercased()
+            return ($0.origin == .exif && candidate == wanted) || candidate == "exif:" + wanted
+        }?.value
+    }
+}
+
 nonisolated enum C2PAValidityState: String, Codable, Sendable {
     case absent
     case valid
