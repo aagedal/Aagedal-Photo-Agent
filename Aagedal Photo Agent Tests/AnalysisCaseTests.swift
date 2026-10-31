@@ -1571,6 +1571,50 @@ struct AnalysisCaseTests {
         #expect(await reader.loadAllCases().isEmpty)
     }
 
+    @Test("switching tabs on a merely viewed photo writes no case file")
+    @MainActor
+    func tabSwitchDoesNotCreateCase() async throws {
+        let fixture = try AnalysisFixture(contents: "tab switch only")
+        defer { fixture.remove() }
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        let revision = try #require(model.currentRevision)
+
+        model.selectWorkspaceMode(.osint)
+        await model.flushPendingSaves()
+        #expect(model.workspaceMode == .osint)
+        #expect(await repository.loadMostRelevantCase(for: revision) == AnalysisCaseMatch.none)
+    }
+
+    @Test("pasting into the open photo while it loads is refused")
+    @MainActor
+    func pasteIntoLoadingPhotoIsRefused() async throws {
+        let fixture = try AnalysisFixture(contents: "paste while loading")
+        defer { fixture.remove() }
+        let gate = AnalysisRepositoryConstructionGate()
+        defer { Task { await gate.open() } }
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { _ in
+            await gate.wait()
+            return repository
+        })
+        let image = ImageFile(url: fixture.fileURL)
+        model.open(image)
+        #expect(model.loadState == .loading)
+        let annotation = AnalysisAnnotation(
+            kind: .line,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.1, y: 0.1),
+                end: AnalysisNormalizedPoint(x: 0.5, y: 0.5)
+            )
+        )
+        await #expect(throws: AnalysisAnnotationPasteError.self) {
+            try await model.pastePhotoAnnotations([annotation], to: image)
+        }
+    }
+
     @Test("a superseded repository construction cannot replace the same-source workspace", arguments: [false, true])
     @MainActor
     func supersededRepositoryConstruction(failsAfterRelease: Bool) async throws {
@@ -1603,6 +1647,8 @@ struct AnalysisCaseTests {
 
         await gate.open()
         try await waitForAnalysisState { firstConstructionReturned }
+        // A tab switch alone never creates a case file; a real edit does.
+        model.setObservation(AnalysisObservation(title: "Note", note: "Persist the case"))
         model.selectWorkspaceMode(.osint)
         await model.flushPendingSaves()
 
@@ -2215,6 +2261,13 @@ struct AnalysisCaseTests {
         #expect(!timezoneUnknown.isEligibleForSolarPosition)
         #expect(!dayOnly.isEligibleForSolarPosition)
         #expect(!invalid.isEligibleForSolarPosition)
+        let fileModified = AnalysisTimestampEvidence(
+            kind: .fileModification,
+            value: eligible.value,
+            source: .fileSystem,
+            sourceDetail: "File-system modification time"
+        )
+        #expect(!fileModified.isEligibleForSolarPosition)
     }
 
     @Test("workspace persists and clears solar state but remains read-only for a changed source")
@@ -2276,6 +2329,8 @@ struct AnalysisCaseTests {
         try await waitForAnalysisState { model.loadState == .ready }
         let revision = try #require(model.currentRevision)
 
+        // A tab switch alone never creates a case file; a real edit does.
+        model.setObservation(AnalysisObservation(title: "Note", note: "Persist the case"))
         model.selectWorkspaceMode(.osint)
         try await model.beginRenameQuiescence(in: fixture.directoryURL)
 
@@ -3717,6 +3772,45 @@ struct AnalysisCaseTests {
         let replaced = try #require(redoResult)
         #expect(replaced.first?.measurementCalibration == nil)
         #expect(replaced.last?.measurementCalibration?.unit == .inches)
+    }
+
+    @Test("consecutive style edits of one annotation fold into one undo step")
+    func styleEditsCoalesce() throws {
+        let base = AnalysisAnnotation(
+            kind: .line,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                end: AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+            )
+        )
+        func styled(_ width: Double) -> AnalysisAnnotation {
+            var copy = base
+            copy.style.lineWidthPoints = width
+            return copy
+        }
+        let key = "style.\(base.id.uuidString)"
+        let start = Date(timeIntervalSince1970: 100)
+        var history = AnalysisAnnotationUndoHistory()
+        history.record(before: [base], after: [styled(3)], actionName: "Style", coalescingKey: key, now: start)
+        history.record(before: [styled(3)], after: [styled(4)], actionName: "Style", coalescingKey: key,
+                       now: start.addingTimeInterval(0.5))
+        history.record(before: [styled(4)], after: [styled(5)], actionName: "Style", coalescingKey: key,
+                       now: start.addingTimeInterval(1))
+        #expect(history.undoTransactions.count == 1)
+        // A pause longer than the interval starts a new step.
+        history.record(before: [styled(5)], after: [styled(6)], actionName: "Style", coalescingKey: key,
+                       now: start.addingTimeInterval(10))
+        #expect(history.undoTransactions.count == 2)
+        // An edit without the key never merges.
+        history.record(before: [styled(6)], after: [styled(7)], actionName: "Edit",
+                       now: start.addingTimeInterval(10.5))
+        #expect(history.undoTransactions.count == 3)
+
+        _ = history.undo()
+        let secondUndo = history.undo()
+        #expect(try #require(secondUndo) == [styled(5)])
+        let thirdUndo = history.undo()
+        #expect(try #require(thirdUndo) == [base])
     }
 
     @Test("restoring an annotation transaction keeps the case persistently valid")

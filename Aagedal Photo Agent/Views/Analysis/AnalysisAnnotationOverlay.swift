@@ -312,6 +312,7 @@ struct AnalysisAnnotationToolbar: View {
             .buttonStyle(.borderless)
             .disabled(isReadOnly || !canEditLabel)
             .help(selectedHasLabel ? "Edit the selected annotation details" : "Add a label or note")
+            .accessibilityLabel(selectedHasLabel ? "Edit Details" : "Add Label or Note")
 
             Button(role: .destructive, action: onDelete) {
                 Label("Delete Annotation", systemImage: "trash")
@@ -322,7 +323,7 @@ struct AnalysisAnnotationToolbar: View {
             .help("Delete the selected annotation")
 
             if isReadOnly {
-                Label("Read-only: source changed", systemImage: "lock")
+                Label("Read-only: the file has changed", systemImage: "lock")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

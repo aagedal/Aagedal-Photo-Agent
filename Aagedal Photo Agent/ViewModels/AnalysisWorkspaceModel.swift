@@ -27,6 +27,17 @@ enum AnalysisRenameQuiescenceError: LocalizedError, Equatable {
     }
 }
 
+nonisolated enum AnalysisAnnotationPasteError: LocalizedError, Equatable {
+    case photoStillLoading(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .photoStillLoading(let name):
+            "“\(name)” is still loading. Paste again once it is shown."
+        }
+    }
+}
+
 @Observable
 final class AnalysisWorkspaceModel {
     enum LoadState: Equatable {
@@ -210,6 +221,11 @@ final class AnalysisWorkspaceModel {
         to image: ImageFile
     ) async throws {
         guard !sourceAnnotations.isEmpty else { return }
+        // Until the open photo's case has loaded, a paste would build its own repository and
+        // write a second case (or one the load then overwrites).
+        if sourceURL?.standardizedFileURL == image.url.standardizedFileURL, loadState != .ready {
+            throw AnalysisAnnotationPasteError.photoStillLoading(image.filename)
+        }
         // Opening another photo while this paste is in flight must not let its result replace the
         // newly opened case, its storage state, or its undo history.
         let generation = workspaceGeneration
@@ -827,7 +843,7 @@ final class AnalysisWorkspaceModel {
 
     func retry() {
         guard let openedImage else { return }
-        open(openedImage)
+        open(openedImage, preferredWorkspaceMode: sessionWorkspaceMode ?? analysisCase?.workspaceMode)
     }
 
     /// Re-persists the in-memory documents whose last save failed. Unlike `retry()`, this never
@@ -894,6 +910,34 @@ final class AnalysisWorkspaceModel {
         requestOpen(image, preferredWorkspaceMode: workspaceMode)
     }
 
+    /// Mirrors the workspace's running report, JPEG or project task. Leaving Analysis cancels
+    /// it, so close requests from outside the workspace ask first.
+    var isExportRunning = false
+    /// True while the "Cancel Export and Close?" prompt is showing.
+    private(set) var isConfirmingExportCancellation = false
+    @ObservationIgnored private var exportCancellationCloseTransition: (@MainActor () -> Void)?
+
+    /// Asks before a close cancels a running export. `transition` is the external workspace
+    /// switch to run afterwards; nil means the workspace's own Close.
+    func confirmExportCancellationBeforeClosing(then transition: (@MainActor () -> Void)?) {
+        exportCancellationCloseTransition = transition
+        isConfirmingExportCancellation = true
+    }
+
+    /// The prompt's Cancel Export and Close: returns the queued external switch, if any.
+    func takeExportCancellationClose() -> (@MainActor () -> Void)? {
+        defer { exportCancellationCloseTransition = nil }
+        isConfirmingExportCancellation = false
+        isExportRunning = false
+        return exportCancellationCloseTransition
+    }
+
+    /// The prompt's Keep Exporting.
+    func keepExportRunning() {
+        isConfirmingExportCancellation = false
+        exportCancellationCloseTransition = nil
+    }
+
     /// Returns true when the workspace may close now; otherwise the unsaved-changes prompt is
     /// raised and the caller closes only if `completeUnsavedChangesExit` says so.
     func requestClose() -> Bool {
@@ -910,6 +954,10 @@ final class AnalysisWorkspaceModel {
     /// through the same unsaved-changes gate as the Close button. After a failed save the
     /// transition waits for the prompt and runs only after a successful Retry Save or Discard.
     func requestClose(thenPerform transition: @escaping @MainActor () -> Void) {
+        guard !isExportRunning else {
+            confirmExportCancellationBeforeClosing(then: transition)
+            return
+        }
         guard requestClose() else {
             pendingExternalCloseTransition = transition
             return
@@ -1133,7 +1181,7 @@ final class AnalysisWorkspaceModel {
         guard var updatedCase = analysisCase,
               updatedCase.workspaceMode != mode else { return }
         updatedCase.setWorkspaceMode(mode)
-        persist(updatedCase)
+        persistViewPreference(updatedCase)
     }
 
     func selectDisplayPreference(_ representation: AnalysisSourceRepresentation) {
@@ -1141,7 +1189,18 @@ final class AnalysisWorkspaceModel {
               var updatedCase = analysisCase,
               updatedCase.displayPreference != representation else { return }
         updatedCase.setDisplayPreference(representation)
-        persist(updatedCase)
+        persistViewPreference(updatedCase)
+    }
+
+    /// Tab and version choices are not edits: a read-only (source-changed) case is never
+    /// rewritten for them, and a merely viewed photo gets no case file. The choice is kept in
+    /// memory and saved with the next real edit.
+    private func persistViewPreference(_ updatedCase: AnalysisCase) {
+        if sourceChanged || unpersistedCaseID == updatedCase.id {
+            replaceOpenCaseInMemory(updatedCase)
+        } else {
+            persist(updatedCase)
+        }
     }
 
     func cancelAnalyzer(_ analyzerID: String) {
@@ -1616,7 +1675,21 @@ final class AnalysisWorkspaceModel {
         persist(updatedCase)
     }
 
-    private func setAnnotation(_ annotation: AnalysisAnnotation, actionName: String?) {
+    /// A style change from the markup toolbar. Continuous colour-panel drags arrive as a stream
+    /// of these; consecutive ones on the same annotation share one undo step.
+    func setAnnotationStyle(_ annotation: AnalysisAnnotation) {
+        setAnnotation(
+            annotation,
+            actionName: "Change Annotation Style",
+            coalescingKey: "style.\(annotation.id.uuidString)"
+        )
+    }
+
+    private func setAnnotation(
+        _ annotation: AnalysisAnnotation,
+        actionName: String?,
+        coalescingKey: String? = nil
+    ) {
         guard var updatedCase = analysisCase, !sourceChanged else { return }
         let before = updatedCase.annotations
         let existing = before.first { $0.id == annotation.id }
@@ -1631,7 +1704,8 @@ final class AnalysisWorkspaceModel {
         photoAnnotationHistory.record(
             before: before,
             after: updatedCase.annotations,
-            actionName: actionName ?? (existing == nil ? "Add Annotation" : "Edit Annotation")
+            actionName: actionName ?? (existing == nil ? "Add Annotation" : "Edit Annotation"),
+            coalescingKey: coalescingKey
         )
         persist(updatedCase)
     }

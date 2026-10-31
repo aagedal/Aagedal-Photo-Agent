@@ -255,7 +255,8 @@ Trash fails, the template remains available and the list displays an error.
      rotated, scaled, flat, or heavily altered copies, and repeated textures (sky, walls, fabric) produce
      harmless matches.
 4. Use the linked hover sample, source-pixel readout, and true-pixel loupe to inspect corresponding areas.
-   RGB values come from the full-resolution decode; while it is still loading the readout is marked
+   RGB values come from the full-resolution decode, converted to 16-bit sRGB (wide-gamut and HDR
+   files therefore read differently from their stored numbers); while it is still loading the readout is marked
    **Preview pixel**. Toggle the loupe with **Z** while pointing at the image, or use the **Loupe**
    button. Its compact panel moves to the corner opposite the pointer to keep the inspected area visible.
    Press **Esc** to cancel an in-progress polygon or map shape, then to return to the Select tool, then to

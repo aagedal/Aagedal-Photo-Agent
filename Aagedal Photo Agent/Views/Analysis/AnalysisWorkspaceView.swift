@@ -78,6 +78,8 @@ struct AnalysisWorkspaceView: View {
     @State private var reportExportProgress: Double?
     @State private var reportExportError: String?
     @State private var reportExportTask: Task<Void, Never>?
+    /// Notes and timed observations have no undo, so deleting one asks first.
+    @State private var pendingCaseItemDeletion: AnalysisCaseItemDeletion?
     @State private var evidenceExportTask: Task<Void, Never>?
     @State private var reportExportRequestID: UUID?
     @State private var evidenceExportRequestID: UUID?
@@ -205,6 +207,37 @@ struct AnalysisWorkspaceView: View {
         } message: { _ in
             Text("The latest case or map edits could not be saved. Retry the save before leaving this photo, or discard the unsaved edits.")
         }
+        .confirmationDialog(
+            pendingCaseItemDeletion?.title ?? "",
+            isPresented: Binding(
+                get: { pendingCaseItemDeletion != nil },
+                set: { if !$0 { pendingCaseItemDeletion = nil } }
+            ),
+            presenting: pendingCaseItemDeletion
+        ) { deletion in
+            Button("Delete", role: .destructive) {
+                switch deletion {
+                case .note(let id): model.removeObservation(id: id)
+                case .timedObservation(let id): model.removeTimestampEvidence(id: id)
+                }
+                pendingCaseItemDeletion = nil
+            }
+            Button("Cancel", role: .cancel) { pendingCaseItemDeletion = nil }
+        } message: { _ in
+            Text("This can't be undone.")
+        }
+        .alert(
+            "Cancel the Running Export?",
+            isPresented: Binding(
+                get: { model.isConfirmingExportCancellation },
+                set: { if !$0 && model.isConfirmingExportCancellation { model.keepExportRunning() } }
+            )
+        ) {
+            Button("Cancel Export and Close", role: .destructive) { cancelExportsAndClose() }
+            Button("Keep Exporting", role: .cancel) { model.keepExportRunning() }
+        } message: {
+            Text("Leaving Image Analysis stops the export or project operation that is still running.")
+        }
         .alert(
             "Annotations Could Not Be Pasted",
             isPresented: Binding(
@@ -216,7 +249,12 @@ struct AnalysisWorkspaceView: View {
         } message: {
             Text(annotationPasteError ?? "The annotations could not be pasted.")
         }
+        .onChange(of: isExportRunning, initial: true) { _, running in
+            model.isExportRunning = running
+        }
         .onDisappear {
+            model.isExportRunning = false
+            model.keepExportRunning()
             reportExportTask?.cancel()
             evidenceExportTask?.cancel()
             projectArchiveTask?.cancel()
@@ -329,6 +367,8 @@ struct AnalysisWorkspaceView: View {
         scopeSourceMode = .fullImage
         pixelViewMode = .normal
         pixelChannel = .rgb
+        comparisonPixelMode = nil
+        comparisonPixelChannel = .rgb
         selectedAnnotationID = nil
         selectedMapAnnotationID = nil
         mapDraftCoordinateCount = 0
@@ -394,8 +434,32 @@ struct AnalysisWorkspaceView: View {
         return true
     }
 
+    private var isExportRunning: Bool {
+        reportExportTask != nil || evidenceExportTask != nil || projectArchiveTask != nil
+    }
+
     private func requestClose() {
+        guard !isExportRunning else {
+            model.confirmExportCancellationBeforeClosing(then: nil)
+            return
+        }
+        closeThroughUnsavedChangesGate()
+    }
+
+    private func closeThroughUnsavedChangesGate() {
         if model.requestClose() { onClose() }
+    }
+
+    private func cancelExportsAndClose() {
+        let transition = model.takeExportCancellationClose()
+        reportExportTask?.cancel()
+        evidenceExportTask?.cancel()
+        projectArchiveTask?.cancel()
+        if let transition {
+            model.requestClose(thenPerform: transition)
+        } else {
+            closeThroughUnsavedChangesGate()
+        }
     }
 
     private func completeUnsavedChangesExit(
@@ -418,7 +482,7 @@ struct AnalysisWorkspaceView: View {
                   }),
                   annotation.style != annotationStyle else { return }
             annotation.style = annotationStyle
-            model.setAnnotation(annotation)
+            model.setAnnotationStyle(annotation)
         case .map:
             guard selectedMapAnnotationID != nil,
                   var annotation = selectedMapAnnotation else { return }
@@ -573,24 +637,25 @@ struct AnalysisWorkspaceView: View {
                 .help("Export evidence, or export and import a portable Image Analysis Project")
             }
 
-            Picker(
-                "Version",
-                selection: Binding(
-                    get: { model.displayPreference },
-                    set: { model.selectDisplayPreference($0) }
-                )
-            ) {
-                Text(AnalysisSourceRepresentation.original.displayName)
-                    .tag(AnalysisSourceRepresentation.original)
-                if model.hasDevelopedRepresentation {
+            // Only photos with a Develop edit have a second version to choose.
+            if model.hasDevelopedRepresentation {
+                Picker(
+                    "Version",
+                    selection: Binding(
+                        get: { model.displayPreference },
+                        set: { model.selectDisplayPreference($0) }
+                    )
+                ) {
+                    Text(AnalysisSourceRepresentation.original.displayName)
+                        .tag(AnalysisSourceRepresentation.original)
                     Text(AnalysisSourceRepresentation.developed.displayName)
                         .tag(AnalysisSourceRepresentation.developed)
                 }
+                .pickerStyle(.menu)
+                .fixedSize()
+                .disabled(model.analysisCase == nil)
+                .help("Choose which version is displayed; findings based on the source file remain tied to the original")
             }
-            .pickerStyle(.menu)
-            .fixedSize()
-            .disabled(model.analysisCase == nil)
-            .help("Choose which version is displayed; findings based on the source file remain tied to the original")
 
             // Escape cancels the current draft, tool, or selection first and closes only when
             // nothing is left to cancel (see handleEscapeKey).
@@ -664,12 +729,12 @@ struct AnalysisWorkspaceView: View {
     private var analysisLoadingPlaceholder: some View {
         VStack(spacing: 12) {
             ProgressView()
-            Text("Validating source revision…")
+            Text("Checking the file…")
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Validating source revision")
+        .accessibilityLabel("Checking the file")
     }
 
     private func backgroundJobIndicator(
@@ -698,14 +763,14 @@ struct AnalysisWorkspaceView: View {
                 .foregroundStyle(.orange)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Source changed")
+                Text("The file has changed since this analysis")
                     .font(.headline)
-                Text("This case remains tied to its original SHA-256 revision. Create a new case to analyze the current bytes.")
+                Text("This analysis stays with the earlier version of the file and is read-only. Start a new analysis to examine the file as it is now.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Create Case for Current Source") {
+            Button("Start New Analysis") {
                 model.createCaseForCurrentRevision()
             }
         }
@@ -1115,7 +1180,10 @@ struct AnalysisWorkspaceView: View {
             copiedAnnotationSourceName: copiedAnnotationSourceName,
             annotationCount: { model.photoAnnotations(for: $0).count },
             canPasteAnnotations: { image in
-                image.url != model.sourceURL || !model.sourceChanged
+                // The open photo's case isn't known until it loads; pasting earlier would
+                // write a second case for it behind the loading one.
+                image.url != model.sourceURL
+                    || (model.loadState == .ready && !model.sourceChanged)
             },
             onSelect: onSelectImage,
             onCopyAnnotations: copyAnnotations,
@@ -1189,6 +1257,8 @@ struct AnalysisWorkspaceView: View {
                         },
                         expandsToFill: true
                     )
+                    // Layer filters belong to the photo they were set on.
+                    .id(model.sourceURL)
                 }
                 .padding(14)
             }
@@ -1212,8 +1282,8 @@ struct AnalysisWorkspaceView: View {
                         isReadOnly: model.sourceChanged,
                         onAddTimed: { isTimestampEditorPresented = true },
                         onAddNote: { isObservationEditorPresented = true },
-                        onDeleteTimestamp: model.removeTimestampEvidence,
-                        onDeleteObservation: model.removeObservation
+                        onDeleteTimestamp: { pendingCaseItemDeletion = .timedObservation($0) },
+                        onDeleteObservation: { pendingCaseItemDeletion = .note($0) }
                     )
                     .frame(minHeight: 170, idealHeight: 280)
                 } else {
@@ -1280,6 +1350,8 @@ struct AnalysisWorkspaceView: View {
                         onDeleteGlobalAnnotation: model.removeGlobalMapAnnotation,
                         onSetGlobalPhotoAnnotationLink: model.setGlobalMapAnnotationPhotoLink
                     )
+                    // Layer filters belong to the photo they were set on.
+                    .id(model.sourceURL)
                     .frame(minHeight: 220, idealHeight: 360, maxHeight: .infinity)
                 }
                 .frame(minWidth: 520, maxWidth: .infinity)
@@ -1415,7 +1487,14 @@ struct AnalysisWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.vertical, 4)
-                .accessibilityLabel("Source Facts")
+                .accessibilityLabel(sourceFactsAccessibilityLabel)
+
+                if sourceFactsFoundNothing {
+                    Text("No indicator was detected by the enabled analyzers.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 if !model.findings.isEmpty {
                     Text("FINDINGS")
@@ -1479,7 +1558,7 @@ struct AnalysisWorkspaceView: View {
                     observations: model.observations,
                     isReadOnly: model.sourceChanged,
                     onAdd: { isObservationEditorPresented = true },
-                    onDelete: model.removeObservation
+                    onDelete: { pendingCaseItemDeletion = .note($0) }
                 )
             }
             Spacer()
@@ -1574,7 +1653,12 @@ struct AnalysisWorkspaceView: View {
     }
 
     private func sourcePreview(showMarkupToolbar: Bool) -> some View {
-        VStack(spacing: 10) {
+        // Pixel View and Channel have controls only in Pixel Analysis; OSINT always shows
+        // the plain photo instead of a filter it can't switch off.
+        let isPixelAnalysis = model.workspaceMode == .pixelAnalysis
+        let pixelViewMode = isPixelAnalysis ? self.pixelViewMode : .normal
+        let pixelChannel = isPixelAnalysis ? self.pixelChannel : .rgb
+        return VStack(spacing: 10) {
             if model.workspaceMode == .pixelAnalysis, comparisonPixelMode != nil {
                 HStack(spacing: 10) {
                     Text("Compare").font(.caption)
@@ -1934,11 +2018,19 @@ struct AnalysisWorkspaceView: View {
                     )
                 } else {
                     if model.workspaceMode == .pixelAnalysis {
-                        ContentUnavailableView(
-                            "Select a Finding",
-                            systemImage: "doc.text.magnifyingglass",
-                            description: Text("Select a finding to inspect its evidence, or open the Metadata tab for source facts.")
-                        )
+                        if sourceFactsFoundNothing {
+                            ContentUnavailableView(
+                                "No Findings",
+                                systemImage: "checkmark.shield",
+                                description: Text("No indicator was detected by the enabled analyzers. That does not show the photo is unaltered. Open the Metadata tab for source facts.")
+                            )
+                        } else {
+                            ContentUnavailableView(
+                                "Select a Finding",
+                                systemImage: "doc.text.magnifyingglass",
+                                description: Text("Select a finding to inspect its evidence, or open the Metadata tab for source facts.")
+                            )
+                        }
                     } else {
                         sourceFactsDetail
                     }
@@ -1961,6 +2053,21 @@ struct AnalysisWorkspaceView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
             }
+        }
+    }
+
+    private var sourceFactsFoundNothing: Bool {
+        model.findings.isEmpty && model.sourceFactsRun?.status == .completed
+    }
+
+    /// The status icon beside Source Facts is otherwise silent to VoiceOver.
+    private var sourceFactsAccessibilityLabel: String {
+        switch model.sourceFactsRun?.status {
+        case .queued, .running: "Source Facts, analyzing"
+        case .completed: "Source Facts, complete"
+        case .cancelled: "Source Facts, cancelled"
+        case .failed: "Source Facts, failed"
+        case nil: "Source Facts"
         }
     }
 
@@ -2063,7 +2170,7 @@ private struct AnalysisReportExportSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("Choose Original, switch Scopes to Selected Region, and drag a region to include a true-pixel crop.")
+                        Text("Choose Original, switch Scopes to Selection, and drag a region to include a true-pixel crop.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -2380,6 +2487,7 @@ private struct AnalysisCaseNotesView: View {
     let isReadOnly: Bool
     let onAdd: () -> Void
     let onDelete: (UUID) -> Void
+    @State private var expandedIDs: Set<UUID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -2410,9 +2518,19 @@ private struct AnalysisCaseNotesView: View {
                                 Text(observation.note)
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(3)
+                                    .lineLimit(expandedIDs.contains(observation.id) ? nil : 3)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            // Long notes are clipped to three lines; a click shows the rest.
+                            .onTapGesture {
+                                if expandedIDs.remove(observation.id) == nil {
+                                    expandedIDs.insert(observation.id)
+                                }
+                            }
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityHint(expandedIDs.contains(observation.id)
+                                ? "Shows the first lines only" : "Shows the whole note")
                             .padding(7)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
@@ -2864,7 +2982,7 @@ private struct AnalysisMapLayersView: View {
                 )
         )
         .contextMenu {
-            Button("Rename…") {
+            Button("Rename / Add Note…") {
                 onEditPhotoAnnotation(annotation.id)
             }
             .disabled(isReadOnly)
@@ -2922,7 +3040,7 @@ private struct AnalysisMapLayersView: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
-        .help("Open \(item.sourceName) to edit this layer")
+        .help("From \(item.sourceName). Select that photo in the photo strip to edit this layer.")
     }
 
     private func globalMapLayerRow(
@@ -3430,8 +3548,11 @@ private struct AnalysisAnnotationLabelEditor: View {
                 .font(.headline)
 
             Text(
-                "Give this \(request.annotationName.lowercased()) a name so it can be identified "
-                    + "and connected to map evidence."
+                request.surface == .photo
+                    ? "Give this \(request.annotationName.lowercased()) a name so it can be identified "
+                        + "and connected to map evidence."
+                    : "Give this \(request.annotationName.lowercased()) a name so it can be identified "
+                        + "in the map layers and the report."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -4043,6 +4164,7 @@ private struct AnalysisSourceThumbnail: View {
     @State private var eventWindow = WorkspaceEventWindowReference()
     @State private var scrollEventMonitor: Any?
     @State private var keyEventMonitor: Any?
+    @State private var contextClickMonitor: Any?
     @State private var isSpaceHandToolActive = false
 
     private let loupeDisplaySize: CGFloat = 198
@@ -4216,17 +4338,21 @@ private struct AnalysisSourceThumbnail: View {
                 selectedScopeRegion = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
             }
             .contextMenu {
-                if let selectedAnnotationID {
+                if selectedAnnotationID != nil {
                     Button("Rename / Add Note…") {
-                        onEditAnnotation(selectedAnnotationID)
+                        guard let target = pointer.contextMenuAnnotationID
+                            ?? self.selectedAnnotationID else { return }
+                        onEditAnnotation(target)
                     }
                     .disabled(annotationsAreReadOnly)
 
                     Divider()
 
-                    Button("Delete Selected Photo Annotation", role: .destructive) {
-                        onRemoveAnnotation(selectedAnnotationID)
-                        self.selectedAnnotationID = nil
+                    Button("Delete Photo Annotation", role: .destructive) {
+                        guard let target = pointer.contextMenuAnnotationID
+                            ?? self.selectedAnnotationID else { return }
+                        onRemoveAnnotation(target)
+                        if self.selectedAnnotationID == target { self.selectedAnnotationID = nil }
                     }
                     .disabled(annotationsAreReadOnly)
                 } else {
@@ -4333,10 +4459,12 @@ private struct AnalysisSourceThumbnail: View {
         .onAppear {
             installScrollEventMonitor()
             installKeyEventMonitor()
+            installContextClickMonitor()
         }
         .onDisappear {
             removeScrollEventMonitor()
             removeKeyEventMonitor()
+            removeContextClickMonitor()
         }
         .onChange(of: polygonFinishRequestID) {
             finishPolygonDraft()
@@ -4385,8 +4513,13 @@ private struct AnalysisSourceThumbnail: View {
             if loadedSourceIdentity != sourceIdentity {
                 image = nil
                 comparisonImage = nil
-                resetZoom()
-                cancelPolygonDraft()
+                // Switching Original/Developed (or a Develop change) shows the same photo, so
+                // the zoom and an unfinished polygon (kept in annotation space) carry over.
+                if loadedSourceIdentity?.url != sourceIdentity.url
+                    || loadedSourceIdentity?.sourceOrientation != sourceIdentity.sourceOrientation {
+                    resetZoom()
+                    cancelPolygonDraft()
+                }
                 onImageLoaded(nil)
             }
             let loadedImage: NSImage
@@ -4819,6 +4952,60 @@ private struct AnalysisSourceThumbnail: View {
             event in
             handleKeyEvent(event)
         }
+    }
+
+    /// A right-click (or Control-click) selects the photo annotation under the pointer
+    /// before the context menu opens, so Rename and Delete act on what was clicked.
+    private func installContextClickMonitor() {
+        guard contextClickMonitor == nil else { return }
+        contextClickMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.rightMouseDown, .leftMouseDown]
+        ) { event in
+            guard event.type == .rightMouseDown || event.modifierFlags.contains(.control),
+                  eventWindow.ownsEvent(in: event.window) else { return event }
+            guard let location = pointer.location else {
+                pointer.contextMenuAnnotationID = nil
+                return event
+            }
+            let target = annotationID(atViewportPoint: location)
+            pointer.contextMenuAnnotationID = target
+            // Right-clicking empty canvas deselects, so the menu can't act on a selection
+            // made elsewhere (for example a hidden layer picked in the Layers list).
+            if target != selectedAnnotationID {
+                selectedAnnotationID = target
+            }
+            return event
+        }
+    }
+
+    private func removeContextClickMonitor() {
+        guard let contextClickMonitor else { return }
+        NSEvent.removeMonitor(contextClickMonitor)
+        self.contextClickMonitor = nil
+    }
+
+    /// Hit-tests a point in the fixed viewport (where hover is tracked) against the zoomed
+    /// and panned canvas the annotations are drawn in.
+    private func annotationID(atViewportPoint point: CGPoint) -> UUID? {
+        guard let image, let coordinateMapper, zoomScale > 0,
+              viewportSize.width > 0, viewportSize.height > 0 else { return nil }
+        let center = CGPoint(x: viewportSize.width / 2, y: viewportSize.height / 2)
+        let canvasPoint = CGPoint(
+            x: center.x + (point.x - panOffset.width - center.x) / zoomScale,
+            y: center.y + (point.y - panOffset.height - center.y) / zoomScale
+        )
+        guard let geometry = inspectionGeometry(
+            containing: canvasPoint,
+            image: image,
+            containerSize: viewportSize
+        ) else { return nil }
+        return AnalysisAnnotationHitTester.annotationID(
+            at: canvasPoint,
+            annotations: visibleAnnotations,
+            geometry: geometry,
+            coordinateMapper: coordinateMapper,
+            zoomScale: zoomScale
+        )
     }
 
     private func removeKeyEventMonitor() {
@@ -5455,6 +5642,9 @@ private final class AnalysisSourcePreviewCache {
 /// The pointer position inside the source viewport, for the scroll and key monitors.
 private final class AnalysisPointerLocation {
     var location: CGPoint?
+    /// The annotation under the pointer when the context menu was opened; the menu's
+    /// actions act on it rather than on whatever happened to be selected.
+    var contextMenuAnnotationID: UUID?
 }
 
 /// Reads the per-move sample so only this layer re-renders while the pointer moves.
@@ -5754,11 +5944,12 @@ private struct PixelInspectionReadout: View {
                                     .help("Values come from the downsampled preview; turn on the Loupe or zoom in to read full-resolution values")
                             }
                             Text(
-                                "R: \(rgba.red)  |  G: \(rgba.green)  |  "
+                                "sRGB 16-bit  R: \(rgba.red)  |  G: \(rgba.green)  |  "
                                     + "B: \(rgba.blue)  |  A: \(rgba.alpha)"
                             )
                             .monospacedDigit()
                             .textSelection(.enabled)
+                            .help("Values are converted to 16-bit sRGB, so wide-gamut and HDR files read differently from their stored numbers")
                         }
                         Spacer()
                         Text(
@@ -5791,7 +5982,7 @@ private struct PixelInspectionReadout: View {
         if let rgba = sample.rgba16 {
             let origin = sample.rgbaSource == .preview ? "Preview pixel " : ""
             return "Source pixel x \(sample.sourcePixel.x), y \(sample.sourcePixel.y). "
-                + "\(origin)16-bit red \(rgba.red), green \(rgba.green), "
+                + "\(origin)16-bit sRGB red \(rgba.red), green \(rgba.green), "
                 + "blue \(rgba.blue), alpha \(rgba.alpha)"
         }
         return "Source pixel x \(sample.sourcePixel.x), y \(sample.sourcePixel.y)"
@@ -5854,6 +6045,18 @@ private enum SourcePixelSampler {
 
 /// Window-scoped Escape handling for the Analysis workspace. Escape is left alone while a text
 /// field is editing, a sheet, alert, or modal panel is up, or the workspace is hidden.
+private enum AnalysisCaseItemDeletion: Equatable {
+    case note(UUID)
+    case timedObservation(UUID)
+
+    var title: String {
+        switch self {
+        case .note: "Delete this note?"
+        case .timedObservation: "Delete this timed observation?"
+        }
+    }
+}
+
 private struct AnalysisExportConfirmation {
     let title: String
     let url: URL

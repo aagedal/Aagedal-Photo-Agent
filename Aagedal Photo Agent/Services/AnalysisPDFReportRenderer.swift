@@ -432,7 +432,12 @@ private final class Renderer {
         drawOptionalKeyValue("Color profile", facts.colorProfile)
         drawOptionalKeyValue("Camera", facts.camera)
         drawOptionalKeyValue("Lens", facts.lens)
-        drawOptionalKeyValue("Capture time", facts.captureDate)
+        drawOptionalKeyValue(
+            "Capture time",
+            facts.captureDate.map {
+                facts.captureTimezoneKnown ? $0 : "\($0) (timezone not recorded)"
+            }
+        )
         if options.includeCameraSerialNumber {
             drawOptionalKeyValue("Camera serial number", facts.serialNumber)
         } else if facts.serialNumber != nil {
@@ -1213,7 +1218,8 @@ private final class Renderer {
         case .sunrise:
             (NSColor(srgbRed: 0.90, green: 0.42, blue: 0.10, alpha: 0.82), 1.6, [])
         case .sunset:
-            (NSColor(srgbRed: 0.18, green: 0.38, blue: 0.72, alpha: 0.82), 1.6, [])
+            // Matches the on-screen sunset ray (red).
+            (NSColor(srgbRed: 0.84, green: 0.20, blue: 0.18, alpha: 0.82), 1.6, [])
         }
     }
 

@@ -663,9 +663,15 @@ nonisolated struct AnalysisMeasurementScale: Equatable, Sendable {
 nonisolated struct AnalysisAnnotationUndoHistory: Sendable {
     nonisolated struct Transaction: Equatable, Sendable {
         let before: [AnalysisAnnotation]
-        let after: [AnalysisAnnotation]
+        var after: [AnalysisAnnotation]
         let actionName: String
+        var coalescingKey: String? = nil
+        var recordedAt: Date = .distantPast
     }
+
+    /// Edits sharing a key within this interval of the previous one fold into its undo step,
+    /// so dragging across the colour wheel is one Undo instead of dozens.
+    static let coalescingInterval: TimeInterval = 2
 
     private let maximumTransactionCount: Int
     private(set) var undoTransactions: [Transaction] = []
@@ -683,13 +689,27 @@ nonisolated struct AnalysisAnnotationUndoHistory: Sendable {
     mutating func record(
         before: [AnalysisAnnotation],
         after: [AnalysisAnnotation],
-        actionName: String
+        actionName: String,
+        coalescingKey: String? = nil,
+        now: Date = Date()
     ) {
         guard before != after else { return }
+        if let coalescingKey,
+           redoTransactions.isEmpty,
+           let last = undoTransactions.last,
+           last.coalescingKey == coalescingKey,
+           last.after == before,
+           now.timeIntervalSince(last.recordedAt) < Self.coalescingInterval {
+            undoTransactions[undoTransactions.count - 1].after = after
+            undoTransactions[undoTransactions.count - 1].recordedAt = now
+            return
+        }
         undoTransactions.append(Transaction(
             before: before,
             after: after,
-            actionName: actionName
+            actionName: actionName,
+            coalescingKey: coalescingKey,
+            recordedAt: now
         ))
         if undoTransactions.count > maximumTransactionCount {
             undoTransactions.removeFirst(undoTransactions.count - maximumTransactionCount)
