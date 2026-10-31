@@ -11,6 +11,34 @@
         <!-- New release items are inserted here by scripts/release.sh. -->
 
         <item>
+            <title>Version 3.0.0-beta.5</title>
+            <sparkle:channel>beta</sparkle:channel>
+            <pubDate>Sat, 31 Oct 2026 13:52:01 +0100</pubDate>
+            <sparkle:version>744</sparkle:version>
+            <sparkle:shortVersionString>3.0.0-beta.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:minimumAutoupdateVersion>740</sparkle:minimumAutoupdateVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Adobe Bridge-style browser layout: drag a tab onto the edge of any pane to split it (up to eight panes), or onto another tab bar to group it.</li>
+                    <li>An info button next to the image count explains every thumbnail icon; metadata not written yet now shows a yellow pencil.</li>
+                    <li>Develop: Export All Versions writes one file per named version, and every version action lives in one menu.</li>
+                    <li>Batch exports render two photos at a time on Macs with 16 GB or more, without holding up thumbnails and previews.</li>
+                    <li>Develop backups of unsaved edits remember their photo, survive a save failure, and are retired once a newer edit is saved; Develop no longer reloads after its own saves.</li>
+                    <li>Anonymizer: wide blurs are no longer capped at 512 pixels, so full-resolution exports blur as much as the preview, and render faster.</li>
+                    <li>Crash fixes for Duplicate, face and text detection, signing keys and out-of-range anonymizer seeds.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/aagedal/Aagedal-Photo-Agent/releases/download/3.0.0-beta.5/Aagedal-Photo-Agent-3.0.0-beta.5.dmg"
+                sparkle:version="744"
+                sparkle:shortVersionString="3.0.0-beta.5"
+                sparkle:edSignature="gI9QJM/C8eMM8ebUslw4R1pNN4fMspsdfrdCsm9Zw+6z7qEz9eTG9XMxTjgiFwroq5NPreRAgnjwznRxd9zIAw=="
+                length="268165383"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 3.0.0-beta.4</title>
             <sparkle:channel>beta</sparkle:channel>
             <pubDate>Thu, 29 Oct 2026 22:22:40 +0100</pubDate>
