@@ -1439,9 +1439,13 @@ struct ContentView: View {
                     folderImages: browserViewModel.sortedImages.filter(\.isImageFile),
                     thumbnailService: browserViewModel.thumbnailService,
                     onSelectImage: { image in
-                        browserViewModel.selectedImageIDs = [image.url]
-                        browserViewModel.lastClickedImageURL = image.url
+                        // The Browser selection follows once the photo actually opens
+                        // (onShownImageChanged); an unsaved-changes prompt may cancel it.
                         analysisWorkspaceModel.requestOpenInCurrentWorkspace(image)
+                    },
+                    onShownImageChanged: { url in
+                        browserViewModel.selectedImageIDs = [url]
+                        browserViewModel.lastClickedImageURL = url
                     },
                     onOpenImportedProject: { folderURL in
                         // Close through the unsaved-changes gate, like the Close button: a failed
@@ -2460,8 +2464,8 @@ struct ContentView: View {
               let index = images.firstIndex(where: { $0.url.standardizedFileURL == current }),
               images.indices.contains(index + offset) else { return }
         let image = images[index + offset]
-        browserViewModel.selectedImageIDs = [image.url]
-        browserViewModel.lastClickedImageURL = image.url
+        // The Browser selection follows when the photo opens (AnalysisWorkspaceView's
+        // onShownImageChanged), so a cancelled unsaved-changes prompt leaves it alone.
         analysisWorkspaceModel.requestOpenInCurrentWorkspace(image)
     }
 

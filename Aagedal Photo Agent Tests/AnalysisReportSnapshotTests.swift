@@ -7,6 +7,29 @@ import UniformTypeIdentifiers
 
 @Suite("Analysis report snapshot")
 struct AnalysisReportSnapshotTests {
+    @Test("map figures widen the short side so directions are not stretched")
+    func viewportFitsFigureAspect() {
+        // At 60° N one degree of longitude is half a degree of latitude on the ground.
+        let viewport = AnalysisMapViewport(
+            center: AnalysisGeoCoordinate(latitude: 60, longitude: 10),
+            latitudeDelta: 0.01,
+            longitudeDelta: 0.01,
+            heading: 35
+        )
+        let wide = viewport.fitted(toAspect: 2)
+        #expect(abs(wide.longitudeDelta - 0.04) < 1e-9)
+        #expect(wide.latitudeDelta == 0.01)
+        #expect(wide.center == viewport.center)
+        #expect(wide.heading == 0)
+
+        let tall = viewport.fitted(toAspect: 0.25)
+        #expect(tall.longitudeDelta == 0.01)
+        #expect(abs(tall.latitudeDelta - 0.02) < 1e-9)
+
+        // A fitted viewport is already at the requested shape.
+        #expect(abs(wide.fitted(toAspect: 2).longitudeDelta - wide.longitudeDelta) < 1e-12)
+    }
+
     @Test("Counter evidence freezes hidden markers and independent color totals")
     func freezesCounterEvidence() async throws {
         let fixture = try AnalysisReportFixture(contents: "counter report")

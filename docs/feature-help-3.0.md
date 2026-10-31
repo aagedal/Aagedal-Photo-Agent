@@ -255,7 +255,8 @@ Trash fails, the template remains available and the list displays an error.
      rotated, scaled, flat, or heavily altered copies, and repeated textures (sky, walls, fabric) produce
      harmless matches.
 4. Use the linked hover sample, source-pixel readout, and true-pixel loupe to inspect corresponding areas.
-   RGB values come from the full-resolution decode; while it is still loading the readout is marked
+   RGB values come from the full-resolution decode, converted to 16-bit sRGB (wide-gamut and HDR
+   files therefore read differently from their stored numbers); while it is still loading the readout is marked
    **Preview pixel**. Toggle the loupe with **Z** while pointing at the image, or use the **Loupe**
    button. Its compact panel moves to the corner opposite the pointer to keep the inspected area visible.
    Press **Esc** to cancel an in-progress polygon or map shape, then to return to the Select tool, then to
@@ -267,11 +268,14 @@ The app deliberately does not combine findings into a real/fake or AI-generated 
 
 ### Annotate and measure
 
-Use the Photo tools for line/arrow, distance, rectangle, ellipse, and label annotations. Measurements are
+Use the Photo tools for line/arrow, distance, rectangle, ellipse, polygon (shape), and label annotations,
+and the Hand tool (or hold Space) to pan a zoomed photo. The tools' letter shortcuts work while the
+pointer is over the photo. Scroll or pinch to zoom; markers, labels and click targets stay the same size
+on screen at any zoom. Right-click an annotation to rename it, add a note, or delete it. Measurements are
 in source pixels unless you explicitly calibrate a known segment and unit. Calibration is case evidence,
 not camera metadata, and does not infer physical size from DPI alone.
 
-Choose **Counter** (C) and click each person, car, or other item you want to count. Each color has its
+Choose **Counter** (C, while pointing at the photo) and click each person, car, or other item you want to count. Each color has its
 own sequence, starting at 1. Changing color starts or continues that color's sequence. Deleting a marker
 renumbers the remaining markers of its color; Undo restores the marker and count. Counter Evidence
 shows the totals automatically, and the PDF report includes those totals with the individual markers.
@@ -288,25 +292,31 @@ evidence. Delete a marker to remove it from the count.
 In OSINT mode you can:
 
 - distinguish embedded, inferred, and user-entered timestamp/location evidence;
-- add untimed observations or timezone-qualified timeline rows;
+- add untimed observations or timezone-qualified timeline rows (deleting one asks first, because notes
+  and timed observations have no Undo). A capture time is absolute when the file records its UTC offset
+  (EXIF OffsetTimeOriginal); otherwise it is shown as "timezone unresolved";
 - use Apple or OpenStreetMap map styles, add map annotations, and link them to photo annotations;
 - define photo location and optional field-of-view bearing/range; and
 - save an offline solar-position calculation for a known coordinate, civil time, timezone/offset, and
-  calculation method.
+  calculation method. Only capture, GPS and your own timed observations can supply the time; file and
+  sidecar dates record when bytes were written, not when the photo was taken. Coordinates can be typed as
+  decimal degrees (also with decimal commas, such as `59,9139 10,7522`), or as degrees-minutes(-seconds)
+  with the hemisphere letter before or after each number.
 
 The solar overlay supplies geometric directions under its documented flat-horizon and atmosphere model.
 It does not analyze shadows in the photograph or establish when or where an image was made.
 
 ### Export or move a case
 
-Use the export menu in Image Analysis to create a PDF report or a portable `.pint` Image Analysis Project.
+Use the export menu in Image Analysis to create a PDF report, an Annotated Image or Annotated Map (JPEG),
+or a portable `.pint` Image Analysis Project; the same menu imports a project.
 Report export rechecks the source revision and freezes the selected evidence. Review sensitive-field,
 map, and redaction choices before saving. A project archive contains the working-folder images, matching
 XMP sidecars, and folder-local Photo Agent case/metadata/version documents. Its manifest checks the size
 and SHA-256 of every payload file before import, and import requires a new or empty destination. Treat the
 archive as sensitive evidence: it is a portable copy of the source images and their associated data.
 Exports and project operations show progress with **Cancel** in the Image Analysis header and keep
-running if you select another photo. If a case change cannot be saved, a banner keeps your edits in
+running if you select another photo. Closing Image Analysis while one runs asks whether to cancel it. If a case change cannot be saved, a banner keeps your edits in
 the workspace and offers **Retry Save**; selecting another photo or closing first asks whether to retry,
 discard the unsaved edits, or cancel, and project export retries the save before it runs.
 
@@ -354,8 +364,10 @@ workflows, but resuming them through Deadline Workspace is unavailable in 3.0.
 
 ## External authenticity checks
 
-Image Analysis contains links to Meta's Content Seal identification page, Google's dedicated
-[SynthID Detector](https://synthid.com/) for SynthID checking. Opening a link does not
+The verification menu in Image Analysis links to outside tools: reverse image search (TinEye, Google
+Lens), provenance and watermark checks (Content Credentials Verify, Meta's Content Seal identification
+page, Google's [SynthID Detector](https://synthid.com/)), and manipulation analysis (ImageWhisperer,
+Forensically). Opening a link does not
 send the current image. If you choose to upload an image on the external
 site, that action is governed by the external provider's terms and privacy practices and is outside Photo
 Agent's report reproducibility boundary.

@@ -390,9 +390,30 @@ nonisolated private final class AnalysisOpenStreetMapTileOverlay: MKTileOverlay 
         result: @escaping @Sendable (Data?, (any Error)?) -> Void
     ) {
         let url = url(forTilePath: path)
-        Self.session.dataTask(with: url) { data, _, error in
-            result(data, error)
+        Self.session.dataTask(with: url) { data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode
+            if let error {
+                if (error as? URLError)?.code != .cancelled {
+                    Self.reportFailure(error.localizedDescription)
+                }
+                result(nil, error)
+            } else if let status, status != 200 {
+                // A 403/429 body is an error page, not a tile; drawing it would leave a grey
+                // map with no explanation.
+                Self.reportFailure("HTTP \(status)")
+                result(nil, URLError(.badServerResponse))
+            } else {
+                result(data, nil)
+            }
         }.resume()
+    }
+
+    private static func reportFailure(_ detail: String) {
+        NotificationCenter.default.post(
+            name: AnalysisMapAvailabilityMonitor.openStreetMapTileFailed,
+            object: nil,
+            userInfo: ["detail": detail]
+        )
     }
 }
 

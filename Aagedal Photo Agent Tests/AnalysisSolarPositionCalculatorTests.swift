@@ -103,6 +103,44 @@ struct AnalysisSolarPositionCalculatorTests {
         #expect(winter.sunset == nil)
     }
 
+    @Test("Polar-boundary days still return a position instead of failing")
+    func polarBoundaryDayKeepsPosition() throws {
+        // Near Alta on the last days before polar night: the noon declination still allows
+        // a sunrise, but not at every iteration instant. This used to throw nonConvergence.
+        let result = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(
+                instant: try utcDate(2024, 11, 25, 10, 0, 0),
+                coordinate: AnalysisGeoCoordinate(latitude: 69.95, longitude: 18.9)
+            ),
+            civilDayOffsetMinutes: 60
+        )
+        #expect(result.position.azimuthDegrees.isFinite)
+    }
+
+    @Test("The Sun is never below the horizon between the listed sunrise and sunset")
+    func horizonMatchesSunriseAndSunset() throws {
+        let coordinate = AnalysisGeoCoordinate(latitude: 69.65, longitude: 18.96)
+        let day = try AnalysisSolarPositionCalculator.calculate(
+            input: AnalysisSolarInput(
+                instant: try utcDate(2024, 11, 26, 10, 30, 0),
+                coordinate: coordinate
+            ),
+            civilDayOffsetMinutes: 60
+        )
+        let sunrise = try #require(day.sunrise)
+        let sunset = try #require(day.sunset)
+        var instant = sunrise.instant.addingTimeInterval(60)
+        while instant < sunset.instant.addingTimeInterval(-60) {
+            let position = try AnalysisSolarPositionCalculator.position(at: instant, coordinate: coordinate)
+            #expect(!position.isBelowHorizon)
+            instant = instant.addingTimeInterval(300)
+        }
+        let beforeRise = try AnalysisSolarPositionCalculator.position(
+            at: sunrise.instant.addingTimeInterval(-600), coordinate: coordinate
+        )
+        #expect(beforeRise.isBelowHorizon)
+    }
+
     @Test("Equatorial equinox produces near-east rise and near-west set")
     func equatorialEquinox() throws {
         let start = try utcDate(2024, 3, 20, 0, 0, 0)

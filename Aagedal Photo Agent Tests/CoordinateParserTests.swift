@@ -72,4 +72,44 @@ struct CoordinateParserTests {
         #expect(result?.latitude == 59.9139)
         #expect(result?.longitude == 10.7522)
     }
+
+    // MARK: - Hemisphere placement and decimal commas
+
+    @Test("Leading hemisphere letters stay with their own component")
+    func leadingHemisphereLetters() throws {
+        let newYork = try #require(CoordinateParser.parse("N 40°41'21\" W 74°2'40\""))
+        #expect(abs(newYork.latitude - 40.689167) < 0.0001)
+        #expect(abs(newYork.longitude + 74.044444) < 0.0001)
+        let sydney = try #require(CoordinateParser.parse("S 33°52.0' E 151°12.0'"))
+        #expect(abs(sydney.latitude + 33.866667) < 0.0001)
+        #expect(abs(sydney.longitude - 151.2) < 0.0001)
+        let oslo = try #require(CoordinateParser.parse("59°54'50.0\"N 10°45'7.9\"E"))
+        #expect(oslo.latitude > 59.9 && oslo.longitude > 10.7)
+        let lima = try #require(CoordinateParser.parse("12°2.6'S 77°1.7'W"))
+        #expect(lima.latitude < 0 && lima.longitude < 0)
+    }
+
+    @Test("Decimal-comma coordinates parse and a bare decimal comma is refused")
+    func decimalCommaCoordinates() throws {
+        let pair = try #require(CoordinateParser.parse("59,9139 10,7522"))
+        #expect(abs(pair.latitude - 59.9139) < 0.00001)
+        #expect(abs(pair.longitude - 10.7522) < 0.00001)
+        let semicolon = try #require(CoordinateParser.parse("59,9139; 10,7522"))
+        #expect(abs(semicolon.longitude - 10.7522) < 0.00001)
+        #expect(CoordinateParser.parse("59,91") == nil)
+        let noSpace = try #require(CoordinateParser.parse("59.91,10.75"))
+        #expect(noSpace.latitude == 59.91 && noSpace.longitude == 10.75)
+        let wholeDegrees = try #require(CoordinateParser.parse("59, 10"))
+        #expect(wholeDegrees.latitude == 59 && wholeDegrees.longitude == 10)
+    }
+
+    @Test("Seconds and minutes that round up carry instead of printing 60")
+    func roundingCarries() {
+        // 59° 54' 59.96" N rounds to 59° 55' 0.0".
+        let latitude = 59 + 54.0 / 60 + 59.96 / 3600
+        let dms = CoordinateParser.format(latitude: latitude, longitude: 10, format: .degreesMinutesSeconds)
+        #expect(dms.hasPrefix("59°55'0.0\"N"))
+        let ddm = CoordinateParser.format(latitude: 59.99999999, longitude: 10, format: .degreesDecimalMinutes)
+        #expect(ddm.hasPrefix("60°0.000'N"))
+    }
 }

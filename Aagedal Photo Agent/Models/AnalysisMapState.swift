@@ -64,6 +64,23 @@ nonisolated struct AnalysisMapViewport: Codable, Equatable, Sendable {
         self.pitch = pitch
     }
 
+    /// The smallest north-up viewport containing this one whose east-west to north-south ground
+    /// distance ratio equals `aspect`. Drawing it into a width/height = `aspect` figure keeps
+    /// bearings true (a 45° ray stays at 45°) instead of stretching one axis.
+    func fitted(toAspect aspect: Double) -> AnalysisMapViewport {
+        guard aspect.isFinite, aspect > 0, isValid else { return self }
+        let metersPerLongitudeUnit = max(0.01, cos(center.latitude * .pi / 180))
+        let groundAspect = longitudeDelta * metersPerLongitudeUnit / latitudeDelta
+        var fitted = self
+        if groundAspect < aspect {
+            fitted.longitudeDelta = min(360, latitudeDelta * aspect / metersPerLongitudeUnit)
+        } else {
+            fitted.latitudeDelta = min(180, longitudeDelta * metersPerLongitudeUnit / aspect)
+        }
+        fitted.heading = 0
+        return fitted
+    }
+
     var isValid: Bool {
         center.isValid
             && latitudeDelta.isFinite

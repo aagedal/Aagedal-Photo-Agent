@@ -1875,10 +1875,12 @@ private struct AnalysisSolarControls: View {
         self.onClear = onClear
         self.onPreview = onPreview
 
+        // A new overlay starts at this Mac's current offset rather than UTC, so a local time
+        // typed without touching the offset stepper is not hours off.
         let initialTimestamp = overlay?.timestamp ?? AnalysisTimestampValue(
             date: Date(),
             precision: .minute,
-            timeZone: Self.utc
+            timeZone: TimeZone(secondsFromGMT: TimeZone.current.secondsFromGMT()) ?? Self.utc
         )
         _civilDateTime = State(
             initialValue: initialTimestamp.wallClockSortDate ?? Date()

@@ -21,7 +21,12 @@ nonisolated struct AnalysisSolarPosition: Codable, Equatable, Sendable {
     let geometricElevationDegrees: Double
     let apparentElevationDegrees: Double
 
-    var isBelowHorizon: Bool { apparentElevationDegrees < 0 }
+    /// True once the Sun's upper limb is below the refracted horizon: the same -0.833°
+    /// geometric boundary sunrise and sunset use, so the Sun never reads "below the horizon"
+    /// between the listed sunrise and sunset.
+    var isBelowHorizon: Bool {
+        geometricElevationDegrees < 90 - AnalysisSolarPositionCalculator.apparentHorizonZenithDegrees
+    }
 
     var expectedShadowAzimuthDegrees: Double {
         AnalysisSolarPositionCalculator.normalizedDegrees(azimuthDegrees + 180)
@@ -93,7 +98,7 @@ nonisolated enum AnalysisSolarPositionCalculator {
 
     private static let secondsPerDay = 86_400.0
     private static let julianDayAtUnixEpoch = 2_440_587.5
-    private static let apparentHorizonZenithDegrees = 90.833
+    static let apparentHorizonZenithDegrees = 90.833
     private static let maximumIterations = 12
     private static let convergenceMinutes = 0.000_1
 
@@ -116,12 +121,14 @@ nonisolated enum AnalysisSolarPositionCalculator {
         try validateSupportedYear(of: civilDayStart, timeZone: timeZone)
 
         let position = positionUnchecked(at: input.instant, coordinate: input.coordinate)
-        let solarNoon = try event(
+        guard let solarNoon = try event(
             kind: .solarNoon,
             civilDayStart: civilDayStart,
             utcOffsetMinutes: civilDayOffsetMinutes,
             coordinate: input.coordinate
-        )
+        ) else {
+            throw AnalysisSolarCalculationError.nonConvergence(EventKind.solarNoon.rawValue)
+        }
 
         let noonParameters = parameters(at: solarNoon.instant)
         let polarCondition = polarCondition(
@@ -263,7 +270,7 @@ nonisolated enum AnalysisSolarPositionCalculator {
         civilDayStart: Date,
         utcOffsetMinutes: Int,
         coordinate: AnalysisGeoCoordinate
-    ) throws -> AnalysisSolarEvent {
+    ) throws -> AnalysisSolarEvent? {
         var localMinutes = normalizedLocalMinutes(
             720 - 4 * coordinate.longitude + Double(utcOffsetMinutes)
         )
@@ -277,11 +284,14 @@ nonisolated enum AnalysisSolarPositionCalculator {
             case .solarNoon:
                 hourAngle = 0
             case .sunrise, .sunset:
+                // Near the polar-day/night boundary the noon declination can allow an
+                // event while the declination at the candidate instant does not; the Sun
+                // then never crosses the horizon on that side of noon this civil day.
                 guard let magnitude = sunriseHourAngleDegrees(
                     latitudeDegrees: coordinate.latitude,
                     declinationDegrees: values.declinationDegrees
                 ) else {
-                    throw AnalysisSolarCalculationError.nonConvergence(kind.rawValue)
+                    return nil
                 }
                 hourAngle = kind == .sunrise ? magnitude : -magnitude
             }

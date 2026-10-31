@@ -94,7 +94,7 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
         "Schematic map generated from case coordinates. No Apple Maps tiles or imagery are embedded."
 
     let rendering: AnalysisReportMapRendering
-    let viewport: AnalysisMapViewport
+    private(set) var viewport: AnalysisMapViewport
     let liveMapStyle: AnalysisMapStyle
     let investigationLocation: AnalysisLocationEvidence?
     let visibleAnnotations: [AnalysisMapAnnotation]
@@ -103,6 +103,14 @@ nonisolated struct AnalysisReportMapEvidence: Codable, Equatable, Sendable {
     let coordinateSystem: String
     let disclosure: String
     let capturedAt: Date
+
+    /// The same evidence framed for a figure of the given width/height, north-up and without
+    /// stretching (see `AnalysisMapViewport.fitted(toAspect:)`).
+    func fitted(toAspect aspect: CGFloat) -> AnalysisReportMapEvidence {
+        var copy = self
+        copy.viewport = viewport.fitted(toAspect: Double(aspect))
+        return copy
+    }
 
     /// `folderMapAnnotations` are the folder-wide map document's annotations, which the live map
     /// draws alongside the case; visible ones are frozen with the case's own annotations.

@@ -312,6 +312,7 @@ struct AnalysisAnnotationToolbar: View {
             .buttonStyle(.borderless)
             .disabled(isReadOnly || !canEditLabel)
             .help(selectedHasLabel ? "Edit the selected annotation details" : "Add a label or note")
+            .accessibilityLabel(selectedHasLabel ? "Edit Details" : "Add Label or Note")
 
             Button(role: .destructive, action: onDelete) {
                 Label("Delete Annotation", systemImage: "trash")
@@ -322,7 +323,7 @@ struct AnalysisAnnotationToolbar: View {
             .help("Delete the selected annotation")
 
             if isReadOnly {
-                Label("Read-only: source changed", systemImage: "lock")
+                Label("Read-only: the file has changed", systemImage: "lock")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -372,7 +373,7 @@ struct AnalysisAnnotationToolbar: View {
                     .labelStyle(.iconOnly)
                     .tag(tool)
                     .help(
-                        shortcutKey.map { "\(tool.displayName) (\($0))" }
+                        shortcutKey.map { "\(tool.displayName) (\($0) while pointing at the photo)" }
                             ?? tool.displayName
                     )
             }
@@ -515,6 +516,12 @@ struct AnalysisAnnotationOverlay: View {
     let geometry: ImageInspectionGeometry
     let coordinateMapper: AnalysisAnnotationCoordinateMapper
     let measurementScale: AnalysisMeasurementScale?
+    /// The canvas sits inside the photo's `scaleEffect`, so every size measured in
+    /// view points is divided by the zoom to keep badges, strokes and labels at a
+    /// constant on-screen size.
+    var zoomScale: CGFloat = 1
+
+    private var unit: CGFloat { 1 / max(zoomScale, 1) }
 
     var body: some View {
         Canvas { context, _ in
@@ -567,13 +574,14 @@ struct AnalysisAnnotationOverlay: View {
         let path = AnalysisAnnotationViewGeometry.path(
             for: annotation,
             geometry: geometry,
-            coordinateMapper: coordinateMapper
+            coordinateMapper: coordinateMapper,
+            unit: unit
         )
         let color = annotation.style.color.swiftUIColor.opacity(isDraft ? 0.72 : 1)
         let contrast = annotation.style.color.contrastColor.opacity(isDraft ? 0.55 : 0.82)
         // A thick line-tool setting must not cover the number inside a counter badge.
         let width = CGFloat(annotation.kind == .counter
-            ? min(3, annotation.style.lineWidthPoints) : annotation.style.lineWidthPoints)
+            ? min(3, annotation.style.lineWidthPoints) : annotation.style.lineWidthPoints) * unit
 
         if annotation.kind == .counter {
             context.fill(path, with: .color(color))
@@ -590,7 +598,7 @@ struct AnalysisAnnotationOverlay: View {
             path,
             with: .color(contrast),
             style: StrokeStyle(
-                lineWidth: width + 2,
+                lineWidth: width + 2 * unit,
                 lineCap: .round,
                 lineJoin: .round
             )
@@ -602,18 +610,20 @@ struct AnalysisAnnotationOverlay: View {
             )
             let number = String(annotation.counterNumber ?? 1)
             let fontSize: CGFloat = number.count > 3 ? 8 : 11
-            context.draw(
+            drawText(
                 Text(number).font(.system(size: fontSize, weight: .bold, design: .rounded))
                     .foregroundColor(annotation.style.color.contrastColor),
                 at: center,
-                anchor: .center
+                anchor: .center,
+                context: context
             )
             if selected {
                 let ring = Path(ellipseIn: CGRect(
-                    x: center.x - 17, y: center.y - 17, width: 34, height: 34
+                    x: center.x - 17 * unit, y: center.y - 17 * unit,
+                    width: 34 * unit, height: 34 * unit
                 ))
-                context.stroke(ring, with: .color(.white), lineWidth: 4)
-                context.stroke(ring, with: .color(.accentColor), lineWidth: 2)
+                context.stroke(ring, with: .color(.white), lineWidth: 4 * unit)
+                context.stroke(ring, with: .color(.accentColor), lineWidth: 2 * unit)
             }
         }
         context.stroke(
@@ -631,18 +641,21 @@ struct AnalysisAnnotationOverlay: View {
             let placement = AnalysisAnnotationViewGeometry.annotationLabelPlacement(
                 for: annotation,
                 geometry: geometry,
-                coordinateMapper: coordinateMapper
+                coordinateMapper: coordinateMapper,
+                unit: unit
             )
             let label = Text(text).font(.caption.weight(.semibold))
-            context.draw(
+            drawText(
                 label.foregroundColor(contrast),
-                at: CGPoint(x: placement.point.x + 1, y: placement.point.y + 1),
-                anchor: placement.anchor
+                at: CGPoint(x: placement.point.x + unit, y: placement.point.y + unit),
+                anchor: placement.anchor,
+                context: context
             )
-            context.draw(
+            drawText(
                 label.foregroundColor(color),
                 at: placement.point,
-                anchor: placement.anchor
+                anchor: placement.anchor,
+                context: context
             )
         }
 
@@ -663,19 +676,22 @@ struct AnalysisAnnotationOverlay: View {
             let labelPoint = AnalysisAnnotationViewGeometry.measurementLabelPoint(
                 start: first,
                 end: last,
-                imageRect: geometry.imageRectInView
+                imageRect: geometry.imageRectInView,
+                unit: unit
             )
             let label = Text(measurement.formattedLength(calibratedBy: measurementScale))
                 .font(.caption2.monospacedDigit().weight(.semibold))
-            context.draw(
+            drawText(
                 label.foregroundColor(contrast),
-                at: CGPoint(x: labelPoint.x + 1, y: labelPoint.y + 1),
-                anchor: .center
+                at: CGPoint(x: labelPoint.x + unit, y: labelPoint.y + unit),
+                anchor: .center,
+                context: context
             )
-            context.draw(
+            drawText(
                 label.foregroundColor(color),
                 at: labelPoint,
-                anchor: .center
+                anchor: .center,
+                context: context
             )
         }
 
@@ -687,19 +703,19 @@ struct AnalysisAnnotationOverlay: View {
             )
             for (_, point) in vertices {
                 let halo = Path(ellipseIn: CGRect(
-                    x: point.x - 5,
-                    y: point.y - 5,
-                    width: 10,
-                    height: 10
+                    x: point.x - 5 * unit,
+                    y: point.y - 5 * unit,
+                    width: 10 * unit,
+                    height: 10 * unit
                 ))
                 let center = Path(ellipseIn: CGRect(
-                    x: point.x - 2.5,
-                    y: point.y - 2.5,
-                    width: 5,
-                    height: 5
+                    x: point.x - 2.5 * unit,
+                    y: point.y - 2.5 * unit,
+                    width: 5 * unit,
+                    height: 5 * unit
                 ))
                 context.fill(halo, with: .color(.white.opacity(0.95)))
-                context.stroke(halo, with: .color(color), lineWidth: 2)
+                context.stroke(halo, with: .color(color), lineWidth: 2 * unit)
                 context.fill(center, with: .color(color))
             }
         }
@@ -712,15 +728,29 @@ struct AnalysisAnnotationOverlay: View {
             )
             for (_, point) in handles {
                 let handle = Path(ellipseIn: CGRect(
-                    x: point.x - 4,
-                    y: point.y - 4,
-                    width: 8,
-                    height: 8
+                    x: point.x - 4 * unit,
+                    y: point.y - 4 * unit,
+                    width: 8 * unit,
+                    height: 8 * unit
                 ))
                 context.fill(handle, with: .color(.white))
-                context.stroke(handle, with: .color(.accentColor), lineWidth: 2)
+                context.stroke(handle, with: .color(.accentColor), lineWidth: 2 * unit)
             }
         }
+    }
+
+    /// Draws text at its normal on-screen size regardless of the zoom, by shrinking the
+    /// context around the anchor point instead of the font.
+    private func drawText(
+        _ text: Text,
+        at point: CGPoint,
+        anchor: UnitPoint,
+        context: GraphicsContext
+    ) {
+        var scaled = context
+        scaled.translateBy(x: point.x, y: point.y)
+        scaled.scaleBy(x: unit, y: unit)
+        scaled.draw(text, at: .zero, anchor: anchor)
     }
 }
 
@@ -739,8 +769,10 @@ enum AnalysisAnnotationHitTester {
         selectedAnnotationID: UUID?,
         annotations: [AnalysisAnnotation],
         geometry: ImageInspectionGeometry,
-        coordinateMapper: AnalysisAnnotationCoordinateMapper
+        coordinateMapper: AnalysisAnnotationCoordinateMapper,
+        zoomScale: CGFloat = 1
     ) -> AnalysisAnnotationEditTarget? {
+        let unit = 1 / max(zoomScale, 1)
         if let selectedAnnotationID,
            let selected = annotations.first(where: { $0.id == selectedAnnotationID }) {
             let handles = AnalysisAnnotationViewGeometry.controlPoints(
@@ -751,7 +783,7 @@ enum AnalysisAnnotationHitTester {
             if let handle = handles.min(by: {
                 hypot(point.x - $0.point.x, point.y - $0.point.y)
                     < hypot(point.x - $1.point.x, point.y - $1.point.y)
-            }), hypot(point.x - handle.point.x, point.y - handle.point.y) <= 10 {
+            }), hypot(point.x - handle.point.x, point.y - handle.point.y) <= 10 * unit {
                 if let controlPoint = handle.controlPoint {
                     return .resize(annotationID: selected.id, controlPoint: controlPoint)
                 }
@@ -764,7 +796,8 @@ enum AnalysisAnnotationHitTester {
                 point,
                 annotation: $0,
                 geometry: geometry,
-                coordinateMapper: coordinateMapper
+                coordinateMapper: coordinateMapper,
+                unit: unit
             )
         }) else { return nil }
         return .move(annotationID: annotation.id)
@@ -774,14 +807,16 @@ enum AnalysisAnnotationHitTester {
         at point: CGPoint,
         annotations: [AnalysisAnnotation],
         geometry: ImageInspectionGeometry,
-        coordinateMapper: AnalysisAnnotationCoordinateMapper
+        coordinateMapper: AnalysisAnnotationCoordinateMapper,
+        zoomScale: CGFloat = 1
     ) -> UUID? {
         annotations.reversed().first {
             contains(
                 point,
                 annotation: $0,
                 geometry: geometry,
-                coordinateMapper: coordinateMapper
+                coordinateMapper: coordinateMapper,
+                unit: 1 / max(zoomScale, 1)
             )
         }?.id
     }
@@ -790,9 +825,10 @@ enum AnalysisAnnotationHitTester {
         _ point: CGPoint,
         annotation: AnalysisAnnotation,
         geometry: ImageInspectionGeometry,
-        coordinateMapper: AnalysisAnnotationCoordinateMapper
+        coordinateMapper: AnalysisAnnotationCoordinateMapper,
+        unit: CGFloat
     ) -> Bool {
-        let tolerance = max(7, CGFloat(annotation.style.lineWidthPoints) + 4)
+        let tolerance = max(7, CGFloat(annotation.style.lineWidthPoints) + 4) * unit
         switch annotation.geometry {
         case .segment(let start, let end):
             let first = AnalysisAnnotationViewGeometry.viewPoint(
@@ -811,7 +847,8 @@ enum AnalysisAnnotationHitTester {
             let path = AnalysisAnnotationViewGeometry.path(
                 for: annotation,
                 geometry: geometry,
-                coordinateMapper: coordinateMapper
+                coordinateMapper: coordinateMapper,
+                unit: unit
             )
             if path.contains(point) { return true }
             let points = AnalysisAnnotationViewGeometry.outlinePoints(
@@ -827,7 +864,8 @@ enum AnalysisAnnotationHitTester {
             let path = AnalysisAnnotationViewGeometry.path(
                 for: annotation,
                 geometry: geometry,
-                coordinateMapper: coordinateMapper
+                coordinateMapper: coordinateMapper,
+                unit: unit
             )
             if path.contains(point) { return true }
             let points = AnalysisAnnotationViewGeometry.outlinePoints(
@@ -845,7 +883,7 @@ enum AnalysisAnnotationHitTester {
                 geometry: geometry,
                 coordinateMapper: coordinateMapper
             )
-            return hypot(point.x - location.x, point.y - location.y) <= 22
+            return hypot(point.x - location.x, point.y - location.y) <= 22 * unit
         }
     }
 }
@@ -865,18 +903,19 @@ private enum AnalysisAnnotationViewGeometry {
     static func annotationLabelPlacement(
         for annotation: AnalysisAnnotation,
         geometry: ImageInspectionGeometry,
-        coordinateMapper: AnalysisAnnotationCoordinateMapper
+        coordinateMapper: AnalysisAnnotationCoordinateMapper,
+        unit: CGFloat
     ) -> (point: CGPoint, anchor: UnitPoint) {
         switch annotation.geometry {
         case .anchor(let anchor):
             let point = viewPoint(anchor, geometry: geometry, coordinateMapper: coordinateMapper)
-            let offset: CGFloat = annotation.kind == .counter ? 16 : 7
+            let offset: CGFloat = (annotation.kind == .counter ? 16 : 7) * unit
             return (CGPoint(x: point.x + offset, y: point.y - offset), .bottomLeading)
         case .segment(let start, let end):
             let first = viewPoint(start, geometry: geometry, coordinateMapper: coordinateMapper)
             let last = viewPoint(end, geometry: geometry, coordinateMapper: coordinateMapper)
             return (
-                CGPoint(x: (first.x + last.x) / 2, y: min(first.y, last.y) - 7),
+                CGPoint(x: (first.x + last.x) / 2, y: min(first.y, last.y) - 7 * unit),
                 .bottom
             )
         case .bounds(let bounds):
@@ -885,18 +924,19 @@ private enum AnalysisAnnotationViewGeometry {
                 geometry: geometry,
                 coordinateMapper: coordinateMapper
             )
-            return (CGPoint(x: point.x + 4, y: point.y - 5), .bottomLeading)
+            return (CGPoint(x: point.x + 4 * unit, y: point.y - 5 * unit), .bottomLeading)
         case .polygon(let points):
             guard let first = points.first else { return (.zero, .center) }
             let point = viewPoint(first, geometry: geometry, coordinateMapper: coordinateMapper)
-            return (CGPoint(x: point.x + 4, y: point.y - 5), .bottomLeading)
+            return (CGPoint(x: point.x + 4 * unit, y: point.y - 5 * unit), .bottomLeading)
         }
     }
 
     static func path(
         for annotation: AnalysisAnnotation,
         geometry: ImageInspectionGeometry,
-        coordinateMapper: AnalysisAnnotationCoordinateMapper
+        coordinateMapper: AnalysisAnnotationCoordinateMapper,
+        unit: CGFloat
     ) -> Path {
         switch annotation.geometry {
         case .segment(let start, let end):
@@ -906,9 +946,9 @@ private enum AnalysisAnnotationViewGeometry {
             path.move(to: first)
             path.addLine(to: last)
             if annotation.kind == .arrow {
-                addArrowHead(to: &path, start: first, end: last)
+                addArrowHead(to: &path, start: first, end: last, unit: unit)
             } else if annotation.kind == .distance {
-                addDistanceCaps(to: &path, start: first, end: last)
+                addDistanceCaps(to: &path, start: first, end: last, unit: unit)
             }
             return path
 
@@ -929,7 +969,7 @@ private enum AnalysisAnnotationViewGeometry {
 
         case .anchor(let anchor):
             let point = viewPoint(anchor, geometry: geometry, coordinateMapper: coordinateMapper)
-            let radius: CGFloat = annotation.kind == .counter ? 12 : 3
+            let radius: CGFloat = (annotation.kind == .counter ? 12 : 3) * unit
             return Path(ellipseIn: CGRect(
                 x: point.x - radius, y: point.y - radius,
                 width: radius * 2, height: radius * 2
@@ -1060,25 +1100,28 @@ private enum AnalysisAnnotationViewGeometry {
     static func measurementLabelPoint(
         start: CGPoint,
         end: CGPoint,
-        imageRect: CGRect
+        imageRect: CGRect,
+        unit: CGFloat
     ) -> CGPoint {
         let midpoint = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
         let length = hypot(end.x - start.x, end.y - start.y)
         guard length > 0 else { return midpoint }
-        let offset: CGFloat = 13
+        let offset: CGFloat = 13 * unit
         let candidate = CGPoint(
             x: midpoint.x - (end.y - start.y) / length * offset,
             y: midpoint.y + (end.x - start.x) / length * offset
         )
         return CGPoint(
-            x: min(max(candidate.x, imageRect.minX + 28), imageRect.maxX - 28),
-            y: min(max(candidate.y, imageRect.minY + 9), imageRect.maxY - 9)
+            x: min(max(candidate.x, imageRect.minX + 28 * unit), imageRect.maxX - 28 * unit),
+            y: min(max(candidate.y, imageRect.minY + 9 * unit), imageRect.maxY - 9 * unit)
         )
     }
 
-    private static func addArrowHead(to path: inout Path, start: CGPoint, end: CGPoint) {
+    private static func addArrowHead(
+        to path: inout Path, start: CGPoint, end: CGPoint, unit: CGFloat
+    ) {
         let angle = atan2(end.y - start.y, end.x - start.x)
-        let length: CGFloat = 12
+        let length: CGFloat = 12 * unit
         for offset in [-CGFloat.pi / 6, CGFloat.pi / 6] {
             path.move(to: end)
             path.addLine(to: CGPoint(
@@ -1088,9 +1131,11 @@ private enum AnalysisAnnotationViewGeometry {
         }
     }
 
-    private static func addDistanceCaps(to path: inout Path, start: CGPoint, end: CGPoint) {
+    private static func addDistanceCaps(
+        to path: inout Path, start: CGPoint, end: CGPoint, unit: CGFloat
+    ) {
         let angle = atan2(end.y - start.y, end.x - start.x) + .pi / 2
-        let radius: CGFloat = 5
+        let radius: CGFloat = 5 * unit
         for point in [start, end] {
             path.move(to: CGPoint(
                 x: point.x - cos(angle) * radius,
