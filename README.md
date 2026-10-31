@@ -4,7 +4,7 @@ A native macOS desktop application for photo metadata management and face recogn
 
 **License:** GPL-3.0
 
-[**3.0.0 Beta 4**](https://github.com/aagedal/Aagedal-Photo-Agent/releases/tag/3.0.0-beta.4) is available as a public testing release. See the [3.0 feature guide](docs/feature-help-3.0.md),
+[**3.0.0 Beta 5**](https://github.com/aagedal/Aagedal-Photo-Agent/releases/tag/3.0.0-beta.5) is available as a public testing release. See the [3.0 feature guide](docs/feature-help-3.0.md),
 [known limitations](docs/limitations-3.0.md), and [privacy draft](PRIVACY.md) for the release-candidate
 behavior and boundaries.
 
