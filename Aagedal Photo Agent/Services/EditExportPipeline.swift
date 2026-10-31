@@ -507,6 +507,15 @@ enum ExportBatchScheduler {
         ProcessInfo.processInfo.physicalMemory >= 16 * 1_024 * 1_024 * 1_024 ? 2 : 1
     }
 
+    /// The width for a batch whose jobs write the given output names (folder + base name +
+    /// suffix, without extension). An output name is claimed only once its render finishes,
+    /// so two jobs sharing a name (a RAW+JPEG pair) must run in order, or the one that
+    /// finishes first takes the plain name and the numbering flips from run to run.
+    static func width(forOutputNames names: [String]) -> Int {
+        let keys = names.map { $0.lowercased() }
+        return Set(keys).count == keys.count ? defaultWidth : 1
+    }
+
     /// Runs `job` for each index in `0..<count`, at most `width` at once, starting them in
     /// index order. `onStart` and `onResult` run on the main actor; `onResult` sees results in
     /// completion order and returns false to stop starting jobs (a cancelled render). Jobs

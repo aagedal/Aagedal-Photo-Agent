@@ -7056,6 +7056,22 @@ struct ExportBatchSchedulerTests {
         #expect(probe.finished.sorted() == Array(0..<7))
     }
 
+    @Test("A Specific Folder moved to the Trash counts as unset")
+    func trashedSpecificFolderIsRejected() {
+        #expect(EditedImageRenderer.isInTrash(URL(fileURLWithPath: "/Users/me/.Trash/Exports")))
+        #expect(EditedImageRenderer.isInTrash(URL(fileURLWithPath: "/Volumes/Card/.Trashes/501/Exports")))
+        #expect(!EditedImageRenderer.isInTrash(URL(fileURLWithPath: "/Users/me/Pictures/Exports")))
+        #expect(!EditedImageRenderer.isInTrash(URL(fileURLWithPath: "/Users/me/Pictures/.TrashTalk")))
+    }
+
+    @Test("Shared output names (case-insensitive) force a sequential batch")
+    func sharedOutputNamesRunSequentially() {
+        #expect(ExportBatchScheduler.width(forOutputNames: ["/out/IMG_1", "/out/img_1"]) == 1)
+        #expect(ExportBatchScheduler.width(forOutputNames: ["/out/IMG_1 Secondary", "/out/IMG_1 Secondary"]) == 1)
+        #expect(ExportBatchScheduler.width(forOutputNames: ["/out/IMG_1", "/out/IMG_2", "/out/IMG_1 Secondary"])
+            == ExportBatchScheduler.defaultWidth)
+    }
+
     @Test("A stop result starts no further jobs but lets the running one finish")
     func stopsStartingAfterStop() async {
         let probe = Probe()
