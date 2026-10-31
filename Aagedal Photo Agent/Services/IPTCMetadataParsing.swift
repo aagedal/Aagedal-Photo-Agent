@@ -162,13 +162,21 @@ nonisolated func parseIntValue(_ value: Any?) -> Int? {
     return nil
 }
 
+/// Non-finite values (`nan`, `inf` in a corrupt or hostile XMP) read as absent: every consumer
+/// does arithmetic on the result, and one NaN poisons LUTs or traps a later `Int(_:)`.
 nonisolated func parseDoubleValue(_ value: Any?) -> Double? {
-    if let doubleValue = value as? Double { return doubleValue }
-    if let intValue = value as? Int { return Double(intValue) }
-    if let stringValue = value as? String {
-        return Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+    let parsed: Double?
+    if let doubleValue = value as? Double {
+        parsed = doubleValue
+    } else if let intValue = value as? Int {
+        parsed = Double(intValue)
+    } else if let stringValue = value as? String {
+        parsed = Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+    } else {
+        parsed = nil
     }
-    return nil
+    guard let parsed, parsed.isFinite else { return nil }
+    return parsed
 }
 
 // MARK: - Structured IPTC editorial values
@@ -690,7 +698,7 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
                                             geometry: EllipseMaskGeometry) -> MaskAdjustment {
     // ACR stores all local adjustments as fractions of their full range (-1..+1).
     // Exposure range is -4..+4 EV, so XMP value × 4 = EV stops.
-    let exposure = parseDoubleValue(crsMaskField(corr, "LocalExposure2012")).map { $0 * 4.0 }
+    let exposure = parseDoubleValue(crsMaskField(corr, "LocalExposure2012")).map { min(max($0 * 4.0, -10), 10) }
     let contrast = parsePercentInt(crsMaskField(corr, "LocalContrast2012"))
     let highlights = parsePercentInt(crsMaskField(corr, "LocalHighlights2012"))
     let shadows = parsePercentInt(crsMaskField(corr, "LocalShadows2012"))
@@ -1181,7 +1189,8 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         tint: parseIntValue(dict[MetadataDictKey.crsTint]),
         incrementalTemperature: parseIntValue(dict[MetadataDictKey.crsIncrementalTemperature]),
         incrementalTint: parseIntValue(dict[MetadataDictKey.crsIncrementalTint]),
-        exposure2012: parseDoubleValue(dict[MetadataDictKey.crsExposure2012]),
+        // ACR's range is ±5 EV; ±10 tolerates other writers while keeping 2^EV finite.
+        exposure2012: parseDoubleValue(dict[MetadataDictKey.crsExposure2012]).map { min(max($0, -10), 10) },
         contrast2012: parseIntValue(dict[MetadataDictKey.crsContrast2012]),
         highlights2012: parseIntValue(dict[MetadataDictKey.crsHighlights2012]),
         shadows2012: parseIntValue(dict[MetadataDictKey.crsShadows2012]),

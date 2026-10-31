@@ -6211,3 +6211,145 @@ struct WhatsNewPresentationTests {
         #expect(!PreferencesSyncService.syncedKeys.contains(WhatsNewPresentation.seenReleaseKey))
     }
 }
+
+@Suite("Hostile numeric develop values")
+struct HostileDevelopValueTests {
+    private static let globalAttributes = [
+        "Temperature", "Tint", "IncrementalTemperature", "IncrementalTint", "Exposure2012",
+        "Contrast2012", "Highlights2012", "Shadows2012", "Whites2012", "Blacks2012", "Saturation",
+        "Vibrance", "Sharpness", "Clarity2012", "Dehaze", "CropTop", "CropLeft", "CropBottom",
+        "CropRight", "CropAngle", "HDREditMode", "SDRBrightness", "SDRContrast", "SDRClarity",
+        "SDRHighlights", "SDRShadows", "SDRWhites", "SDRBlend", "HueAdjustmentRed",
+        "SaturationAdjustmentOrange", "LuminanceAdjustmentBlue",
+    ]
+    private static let appAttributes = [
+        "GlobalDensity", "FilmGrain", "FilmGrainCoarseness", "FilmHalation", "FilmBloom",
+        "FilmVignette", "FilmEdgeBlur", "GlobalLayerIndex",
+    ]
+    private static let localAttributes = [
+        "CorrectionAmount", "LocalExposure2012", "LocalContrast2012", "LocalHighlights2012",
+        "LocalShadows2012", "LocalWhites2012", "LocalBlacks2012", "LocalClarity2012",
+        "LocalDehaze", "LocalSaturation", "LocalTemperature", "LocalTint", "LocalTexture",
+        "LocalSharpness",
+    ]
+    private static let maskAttributes = ["Top", "Left", "Bottom", "Right", "Angle", "Feather", "MaskValue", "Midpoint", "Roundness"]
+
+    private func sidecar(_ value: String) -> Data {
+        let global = Self.globalAttributes.map { "crs:\($0)=\"\(value)\"" }.joined(separator: " ")
+        let app = Self.appAttributes.map { "aaphoto:\($0)=\"\(value)\"" }.joined(separator: " ")
+        let local = Self.localAttributes.map { "crs:\($0)=\"\(value)\"" }.joined(separator: " ")
+        let mask = Self.maskAttributes.map { "crs:\($0)=\"\(value)\"" }.joined(separator: " ")
+        let toneCurve = "<crs:ToneCurvePV2012><rdf:Seq><rdf:li>0, 0</rdf:li><rdf:li>\(value), \(value)</rdf:li><rdf:li>255, 255</rdf:li></rdf:Seq></crs:ToneCurvePV2012>"
+        return Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+            <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmlns:aaphoto="http://aagedal.me/ns/photo/1.0/" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:exif="http://ns.adobe.com/exif/1.0/" crs:ProcessVersion="15.4" crs:WhiteBalance="Custom" crs:HasCrop="True" crs:HasSettings="True" tiff:Orientation="\(value)" exif:PixelXDimension="\(value)" exif:PixelYDimension="\(value)" \(global) \(app)>
+                    \(toneCurve)
+                    <crs:MaskGroupBasedCorrections><rdf:Seq>
+                        <rdf:li><rdf:Description crs:What="Correction" crs:CorrectionActive="true" crs:CorrectionName="Radial" crs:CorrectionSyncID="ACF2BFE8FD5D46329471E2FA3B909912" \(local)>
+                            <crs:CorrectionMasks><rdf:Seq><rdf:li crs:What="Mask/CircularGradient" crs:Flipped="true" crs:MaskActive="true" crs:Version="2" \(mask)/></rdf:Seq></crs:CorrectionMasks>
+                        </rdf:Description></rdf:li>
+                        <rdf:li><rdf:Description crs:What="Correction" crs:CorrectionActive="true" crs:CorrectionName="Linear" crs:CorrectionSyncID="BCF2BFE8FD5D46329471E2FA3B909912" \(local)>
+                            <crs:CorrectionMasks><rdf:Seq><rdf:li crs:What="Mask/Gradient" crs:MaskActive="true" crs:ZeroX="\(value)" crs:ZeroY="\(value)" crs:FullX="\(value)" crs:FullY="\(value)" \(mask)/></rdf:Seq></crs:CorrectionMasks>
+                        </rdf:Description></rdf:li>
+                        <rdf:li><rdf:Description crs:What="Correction" crs:CorrectionActive="true" crs:CorrectionName="Brush" crs:CorrectionSyncID="CCF2BFE8FD5D46329471E2FA3B909912" \(local)>
+                            <crs:CorrectionMasks><rdf:Seq><rdf:li crs:What="Mask/Paint" crs:MaskActive="true" crs:Radius="\(value)" crs:Flow="\(value)" crs:CenterWeight="\(value)" crs:MaskValue="\(value)"><crs:Dabs><rdf:Seq><rdf:li>d \(value) \(value)</rdf:li><rdf:li>d 0.5 0.5</rdf:li></rdf:Seq></crs:Dabs></rdf:li></rdf:Seq></crs:CorrectionMasks>
+                        </rdf:Description></rdf:li>
+                        <rdf:li><rdf:Description crs:What="Correction" crs:CorrectionActive="true" crs:CorrectionName="Brush 2" crs:CorrectionSyncID="DCF2BFE8FD5D46329471E2FA3B909912" \(local)>
+                            <crs:CorrectionMasks><rdf:Seq><rdf:li crs:What="Mask/Paint" crs:MaskActive="true" crs:Radius="\(value)" crs:Flow="\(value)" crs:CenterWeight="\(value)" crs:MaskValue="\(value)"><crs:Dabs><rdf:Seq><rdf:li>d 0.25 0.25</rdf:li><rdf:li>d 0.5 0.5</rdf:li></rdf:Seq></crs:Dabs></rdf:li></rdf:Seq></crs:CorrectionMasks>
+                        </rdf:Description></rdf:li>
+                    </rdf:Seq></crs:MaskGroupBasedCorrections>
+                </rdf:Description>
+            </rdf:RDF>
+        </x:xmpmeta>
+        """.utf8)
+    }
+
+    @Test("A sidecar full of nan/inf/huge numbers loads, re-serializes and renders without trapping",
+          arguments: ["nan", "inf", "-inf", "1e308", "-1e308", "99999999999999999999", "9223372036854775807", "-9223372036854775808", "-0"])
+    func hostileSidecarRoundTrips(value: String) throws {
+        let record = XMPSidecarService().loadSidecar(fromData: sidecar(value), imageAspect: { 1.5 })
+        let settings = try #require(record?.cameraRaw)
+        #expect(settings.localAdjustments?.isEmpty == false || settings.unparsedMaskCorrections?.isEmpty == false)
+
+        var xmp = XMPData()
+        XMPDataBuilder.applyCameraRaw(settings, imageAspect: 1.5, into: &xmp)
+        let xml = XMPWriter.generateXML(xmp)
+        _ = XMPSidecarService().loadSidecar(fromData: Data(xml.utf8), imageAspect: { 1.5 })
+        _ = try JSONDecoder().decode(IPTCMetadata.self, from: JSONEncoder().encode(record))
+
+        let lut = ToneCurveGenerator.generatePerChannelLUT(settings: settings)
+        let lutIsFinite = lut.r.allSatisfy { $0.isFinite }
+        #expect(lutIsFinite, "a hostile value must not poison the tone LUT")
+
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        let source = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5))
+            .cropped(to: CGRect(x: 0, y: 0, width: 48, height: 32))
+        _ = MetalEditPipeline.renderOffscreen(source: source, settings: settings)
+        if let cropped = MetalEditPipeline.renderOffscreenCropped(source: source, settings: settings) {
+            _ = CIContext().createCGImage(cropped, from: cropped.extent.intersection(source.extent))
+        }
+        let approximated = CameraRawApproximation.applyWithCrop(to: source, settings: settings)
+        if !approximated.extent.isInfinite, !approximated.extent.isEmpty {
+            _ = CIContext().createCGImage(approximated, from: approximated.extent)
+        }
+    }
+}
+
+@Suite("Offscreen render engine state between renders", .serialized)
+struct OffscreenViewportResetTests {
+    private func pattern() -> CIImage {
+        let width = 64, height = 48
+        var pixels = [Float](repeating: 1, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                pixels[i] = Float(x) / Float(width)
+                pixels[i + 1] = Float(y) / Float(height)
+                pixels[i + 2] = 0.25
+            }
+        }
+        return CIImage(
+            bitmapData: Data(bytes: pixels, count: pixels.count * MemoryLayout<Float>.size),
+            bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+            size: CGSize(width: width, height: height),
+            format: .RGBAf,
+            colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
+        )
+    }
+
+    private func pixels(_ image: CIImage) -> [Float] {
+        let extent = image.extent.integral
+        var out = [Float](repeating: 0, count: Int(extent.width * extent.height) * 4)
+        CIContext().render(
+            image, toBitmap: &out, rowBytes: Int(extent.width) * 4 * MemoryLayout<Float>.size,
+            bounds: extent, format: .RGBAf,
+            colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
+        )
+        return out
+    }
+
+    @Test("A cropped render (straightened or zero-area) doesn't change the next uncropped render",
+          arguments: [
+            CameraRawCrop(top: 0.1, left: 0.15, bottom: 0.8, right: 0.85, angle: 12, hasCrop: true),
+            CameraRawCrop(top: 0.5, left: 0.5, bottom: 0.5, right: 0.5, angle: 0, hasCrop: true),
+          ])
+    func croppedRenderDoesNotLeak(crop: CameraRawCrop) throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        let source = pattern()
+        var plain = CameraRawSettings()
+        plain.vibrance = 10
+        let before = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: plain))
+        let expected = pixels(before)
+
+        var cropped = plain
+        cropped.crop = crop
+        _ = try #require(MetalEditPipeline.renderOffscreenCropped(source: source, settings: cropped))
+
+        let after = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: plain))
+        let actual = pixels(after)
+        #expect(actual.count == expected.count)
+        let maxDifference = zip(actual, expected).map { abs($0 - $1) }.max() ?? 1
+        #expect(maxDifference < 0.002, "the previous crop's viewport leaked into this render")
+    }
+}

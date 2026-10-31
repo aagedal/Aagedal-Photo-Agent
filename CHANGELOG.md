@@ -4,6 +4,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Export and Compare: after exporting a straightened, cropped photo with a watermark (or comparing one in Develop), later edited renders until you quit the app could come out rotated around that photo's crop centre. Each render now starts from a clean state.
+- Fixes a crash when opening or exporting a photo whose sidecar or embedded Develop settings contain an invalid number (such as `inf` or an out-of-range crop); such values are now ignored or limited to a usable range.
+
 ## 3.0.0-beta.5 — 2026-10-30
 
 This fifth public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.

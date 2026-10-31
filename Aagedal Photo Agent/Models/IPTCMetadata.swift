@@ -102,8 +102,22 @@ nonisolated extension CameraRawCrop {
     /// Convert Adobe-convention crs values (un-rotated-frame corners) to the
     /// app's upright-rect convention. `aspect` is the sensor-frame (un-oriented)
     /// imageWidth/imageHeight. Identity at angle 0 or when edges/aspect are missing.
+    ///
+    /// This is the read boundary for untrusted sidecar/embedded values, so the result is also
+    /// bounded: ACR's straighten range is ±45°, and edges stay within one image size of the
+    /// frame. A corrupt `1e308` edge would otherwise reach pixel-size math (`Int(_:)` traps).
     func decodedFromACR(aspect: Double?) -> CameraRawCrop {
-        rotatedDiagonal(aspect: aspect, theta: -(angle ?? 0) * .pi / 180, absolute: true)
+        var bounded = self
+        bounded.angle = angle.map { min(max($0, -45), 45) }
+        var decoded = bounded.rotatedDiagonal(
+            aspect: aspect, theta: -(bounded.angle ?? 0) * .pi / 180, absolute: true
+        )
+        func edge(_ value: Double?) -> Double? { value.map { min(max($0, -1), 2) } }
+        decoded.top = edge(decoded.top)
+        decoded.left = edge(decoded.left)
+        decoded.bottom = edge(decoded.bottom)
+        decoded.right = edge(decoded.right)
+        return decoded
     }
 
     /// Inverse of `decodedFromACR`: re-encode the app's upright rect into Adobe's
