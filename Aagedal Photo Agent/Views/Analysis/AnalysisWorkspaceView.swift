@@ -34,6 +34,8 @@ struct AnalysisWorkspaceView: View {
     let folderImages: [ImageFile]
     let thumbnailService: ThumbnailService
     let onSelectImage: (ImageFile) -> Void
+    /// The photo on screen changed (after any unsaved-changes prompt); the Browser follows it.
+    var onShownImageChanged: (URL) -> Void = { _ in }
     let onOpenImportedProject: (URL) -> Void
     let onClose: () -> Void
     @State private var metadataNoteRequest: AnalysisMetadataNoteRequest?
@@ -328,6 +330,7 @@ struct AnalysisWorkspaceView: View {
         .onChange(of: model.sourceURL) { oldURL, newURL in
             resetForSourceChange()
             prefetchNextPreview(leaving: oldURL, opening: newURL)
+            if let newURL { onShownImageChanged(newURL) }
         }
         .onChange(of: model.analysisCase?.id) {
             metadataNoteRequest = nil
@@ -1354,7 +1357,7 @@ struct AnalysisWorkspaceView: View {
                         cancelDraftRequestID: mapCancelDraftRequestID,
                         onDraftCountChanged: { mapDraftCoordinateCount = $0 }
                     )
-                    .frame(minWidth: 520, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
+                    .frame(minWidth: 520, maxWidth: .infinity, minHeight: 340, maxHeight: .infinity)
 
                     AnalysisMapLayersView(
                         globalAnnotations: model.globalMapAnnotations,
@@ -1377,7 +1380,7 @@ struct AnalysisWorkspaceView: View {
                     )
                     // Layer filters belong to the photo they were set on.
                     .id(model.sourceURL)
-                    .frame(minHeight: 220, idealHeight: 360, maxHeight: .infinity)
+                    .frame(minHeight: 160, idealHeight: 360, maxHeight: .infinity)
                 }
                 .frame(minWidth: 520, maxWidth: .infinity)
             } else {
@@ -3210,7 +3213,11 @@ private struct AnalysisTimestampEditor: View {
     @State private var title = "Observed time"
     @State private var selectedDate = Date()
     @State private var precision: AnalysisTimestampPrecision = .minute
-    @State private var timezoneKnown = false
+    /// The UTC offset the observed time was stated in; nil while it isn't established.
+    @State private var utcOffsetMinutes: Int?
+
+    private static let macOffsetMinutes = TimeZone.current.secondsFromGMT() / 60
+    private static let offsetChoices = Array(stride(from: -12 * 60, through: 14 * 60, by: 15))
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -3238,8 +3245,14 @@ private struct AnalysisTimestampEditor: View {
             }
             .pickerStyle(.segmented)
 
-            Toggle("The current Mac timezone applies", isOn: $timezoneKnown)
-                .help("Leave off when the timezone for this observation is not established")
+            Picker("Timezone", selection: $utcOffsetMinutes) {
+                Text("Not established").tag(Int?.none)
+                Divider()
+                ForEach(Self.offsetChoices, id: \.self) { offset in
+                    Text(Self.offsetLabel(offset)).tag(Int?.some(offset))
+                }
+            }
+            .help("The UTC offset the time above was stated in, for example a witness giving Kyiv time. Leave Not established when it is unknown.")
 
             HStack {
                 Spacer()
@@ -3273,9 +3286,8 @@ private struct AnalysisTimestampEditor: View {
             value.second = 0
             value.nanosecond = 0
         }
-        if !timezoneKnown {
-            value.utcOffsetMinutes = nil
-        }
+        // The picker shows wall-clock time; keep those digits and attach the chosen offset.
+        value.utcOffsetMinutes = utcOffsetMinutes
         return AnalysisTimestampEvidence(
             kind: .observation,
             title: title.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -3283,6 +3295,12 @@ private struct AnalysisTimestampEditor: View {
             source: .userEntered,
             sourceDetail: "Entered in this analysis case"
         )
+    }
+
+    private static func offsetLabel(_ minutes: Int) -> String {
+        let sign = minutes < 0 ? "−" : "+"
+        let label = String(format: "UTC%@%02d:%02d", sign, abs(minutes) / 60, abs(minutes) % 60)
+        return minutes == macOffsetMinutes ? "\(label) (this Mac)" : label
     }
 }
 
@@ -4474,6 +4492,24 @@ private struct AnalysisSourceThumbnail: View {
                 }
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            // Zoom has no other visible control; this is the way back from a deep zoom.
+            if zoomScale > 1 {
+                Button {
+                    resetZoom()
+                } label: {
+                    Label("\(Int((zoomScale * 100).rounded()))% · Fit", systemImage: "arrow.down.right.and.arrow.up.left")
+                        .font(.caption.monospacedDigit())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(10)
+                .help("Fit the photo in the view (⌘0)")
+                .accessibilityLabel("Zoom \(Int((zoomScale * 100).rounded())) percent. Fit the photo in the view")
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .background(WorkspaceEventWindowReader(reference: eventWindow))
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
@@ -5068,6 +5104,15 @@ private struct AnalysisSourceThumbnail: View {
 
         let responder = event.window?.firstResponder
         let textEditorOwnsInput = responder is NSText || responder is NSTextView
+
+        // ⌘0 fits the photo again, wherever the pointer is.
+        if isKeyDown, !textEditorOwnsInput, zoomScale > 1,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers == "0" {
+            resetZoom()
+            return nil
+        }
+
         guard pointer.location != nil, !textEditorOwnsInput else {
             return event
         }

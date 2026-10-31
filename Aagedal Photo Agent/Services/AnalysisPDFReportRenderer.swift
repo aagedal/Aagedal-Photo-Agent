@@ -776,6 +776,23 @@ private final class Renderer {
         if snapshot.timestampEvidence.isEmpty {
             drawEmptyState("No timestamp evidence was present in the snapshot.")
         } else {
+            // Derived from the frozen rows, so the report shows the same conflicts the
+            // workspace showed when it was created.
+            let conflicts = AnalysisTimelineResolver.conflicts(in: snapshot.timestampEvidence)
+            if !conflicts.isEmpty {
+                ensureSpace(30)
+                drawFlowingText(
+                    "\(conflicts.count) timestamp \(conflicts.count == 1 ? "conflict" : "conflicts")",
+                    font: .systemFont(ofSize: 10, weight: .semibold),
+                    color: caution,
+                    lineSpacing: 1
+                )
+                for conflict in conflicts {
+                    ensureSpace(24)
+                    drawFlowingText("•  \(conflict.explanation)", font: .systemFont(ofSize: 9), color: ink, lineSpacing: 2)
+                }
+                cursorY -= 8
+            }
             for evidence in snapshot.timestampEvidence {
                 ensureSpace(55)
                 drawFlowingText(evidence.title, font: .systemFont(ofSize: 11, weight: .semibold), color: ink, lineSpacing: 1)
