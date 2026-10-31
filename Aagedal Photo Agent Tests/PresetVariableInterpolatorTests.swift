@@ -304,4 +304,41 @@ struct PresetVariableInterpolatorTests {
         #expect(result.city == "")
         #expect(result.country == "")
     }
+
+    @Test("{seq:N} clamps an enormous width instead of formatting gigabytes or crashing")
+    func sequenceWidthIsClamped() {
+        let width = PresetVariableInterpolator.maximumSequenceWidth
+        let expected = String(repeating: "0", count: width - 1) + "7"
+        #expect(interpolator.resolve("{seq:3000000000}", sequenceIndex: 7) == expected)
+        #expect(interpolator.resolve("{seq:99999999999999999999999}", sequenceIndex: 7) == expected)
+        #expect(interpolator.resolve("{seq:3}", sequenceIndex: 7) == "007")
+    }
+
+    @Test("Fields that each reference the next one twice stop expanding instead of doubling forever")
+    func fieldFanOutIsBounded() {
+        let chain: [WritableKeyPath<IPTCMetadata, String?>] = [
+            \.title, \.description, \.extendedDescription, \.creatorJobTitle, \.descriptionWriter,
+            \.credit, \.copyright, \.rightsUsageTerms, \.webStatementOfRights, \.jobId,
+            \.city, \.sublocation, \.provinceState, \.country,
+        ]
+        let names = ["title", "description", "extendedDescription", "creatorJobTitle", "descriptionWriter",
+                     "credit", "copyright", "rightsUsageTerms", "webStatementOfRights", "jobId",
+                     "city", "sublocation", "provinceState", "country"]
+        var metadata = IPTCMetadata()
+        for index in 0..<(chain.count - 1) {
+            metadata[keyPath: chain[index]] = "{field:\(names[index + 1])}{field:\(names[index + 1])}"
+        }
+        metadata[keyPath: chain[chain.count - 1]] = String(repeating: "x", count: 200)
+
+        // A short chain still expands fully…
+        var short = IPTCMetadata()
+        short.city = "{field:country}{field:country}"
+        short.country = "x"
+        #expect(interpolator.resolve("{field:city}", existingMetadata: short) == "xx")
+
+        // …while 13 doublings of a 200-byte leaf (1.6 MB) stop at the output cap.
+        let result = interpolator.resolve("{field:title}", existingMetadata: metadata)
+        #expect(result.utf8.count <= PresetVariableInterpolator.maximumExpandedFieldBytes)
+        #expect(result.contains("{field:"))
+    }
 }

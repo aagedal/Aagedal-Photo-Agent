@@ -102,8 +102,12 @@ nonisolated struct BatchRenameRecipeRenderer: Sendable {
         case .originalExtension:
             return nonempty((context.originalFilename as NSString).pathExtension)
         case let .sequence(sequence):
-            let value = sequence.start + (context.sequenceIndex * sequence.step)
-            return padded(value, width: sequence.padding)
+            // Typed Start/Step values are unbounded; an overflowing number is a missing token.
+            let offset = context.sequenceIndex.multipliedReportingOverflow(by: sequence.step)
+            guard !offset.overflow else { return nil }
+            let value = sequence.start.addingReportingOverflow(offset.partialValue)
+            guard !value.overflow else { return nil }
+            return padded(value.partialValue, width: min(sequence.padding, BatchRenameSequence.maximumPadding))
         case let .date(token):
             guard let date = date(for: token.source, context: context) else { return nil }
             return format(date, pattern: token.format, recipe: recipe)
@@ -124,7 +128,8 @@ nonisolated struct BatchRenameRecipeRenderer: Sendable {
     private func padded(_ value: Int, width: Int) -> String {
         guard width > 0 else { return String(value) }
         if value < 0 {
-            return "-" + String(repeating: "0", count: max(0, width - String(-value).count)) + String(-value)
+            let digits = String(value.magnitude)
+            return "-" + String(repeating: "0", count: max(0, width - digits.count)) + digits
         }
         return String(repeating: "0", count: max(0, width - String(value).count)) + String(value)
     }

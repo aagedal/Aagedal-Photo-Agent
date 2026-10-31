@@ -46,7 +46,10 @@ nonisolated struct FaceDataStorageService: Sendable {
 
         do {
             let data = try Data(contentsOf: fileURL)
-            let faceData = try JSONDecoder().decode(FolderFaceData.self, from: data)
+            var faceData = try JSONDecoder().decode(FolderFaceData.self, from: data)
+            if faceData.removeDuplicateIdentities() {
+                faceDataLog.error("Dropped duplicate face or group IDs from \(fileURL.path, privacy: .private(mask: .hash))")
+            }
             return faceData
         } catch {
             faceDataLog.error("Failed to decode face data at \(fileURL.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")

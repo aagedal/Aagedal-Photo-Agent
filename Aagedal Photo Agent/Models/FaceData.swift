@@ -457,6 +457,30 @@ nonisolated struct FolderFaceData: Codable {
 
     var currentLens: FaceLens { activeLens ?? .face }
 
+    /// face_data.json travels with copied folders and can be hand-edited; the app indexes faces
+    /// and groups with `Dictionary(uniqueKeysWithValues:)`, which traps on a repeated ID. Keep the
+    /// first occurrence of each ID. Returns whether anything was dropped.
+    @discardableResult
+    mutating func removeDuplicateIdentities() -> Bool {
+        func firstOfEach<T>(_ items: [T], id: (T) -> UUID) -> [T] {
+            var seen = Set<UUID>()
+            return items.filter { seen.insert(id($0)).inserted }
+        }
+        let original = (faces.count, groups.count, numberDetections?.count,
+                        lensStates?.values.reduce(0) { $0 + $1.groups.count })
+        faces = firstOfEach(faces) { $0.id }
+        groups = firstOfEach(groups) { $0.id }
+        numberDetections = numberDetections.map { firstOfEach($0) { $0.id } }
+        lensStates = lensStates?.mapValues { state in
+            var state = state
+            state.groups = firstOfEach(state.groups) { $0.id }
+            return state
+        }
+        let deduped = (faces.count, groups.count, numberDetections?.count,
+                       lensStates?.values.reduce(0) { $0 + $1.groups.count })
+        return original != deduped
+    }
+
     func groups(for lens: FaceLens) -> [FaceGroup] {
         lens == .face ? groups : (lensStates?[lens.rawValue]?.groups ?? [])
     }

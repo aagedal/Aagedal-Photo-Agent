@@ -325,4 +325,41 @@ struct BatchRenameRecipeTests {
             try JSONDecoder().decode(BatchRenameRecipe.self, from: futureData)
         }
     }
+
+    @Test("Overflowing or extreme sequences render as a missing token instead of trapping")
+    func extremeSequencesDoNotTrap() {
+        let cases: [(BatchRenameSequence, Int)] = [
+            (BatchRenameSequence(start: .max, step: 1), 1),
+            (BatchRenameSequence(start: 1, step: .max), 2),
+            (BatchRenameSequence(start: .min, step: 0, padding: 3), 0),
+            (BatchRenameSequence(start: 1, step: 1, padding: 1_000_000_000_000), 0),
+        ]
+        for (sequence, index) in cases {
+            let recipe = BatchRenameRecipe(
+                name: "Extreme",
+                components: [.token(.sequence(sequence))],
+                sanitization: .disabled
+            )
+            let result = renderer.evaluate(
+                recipe,
+                context: BatchRenameContext(originalFilename: "a.jpg", sequenceIndex: index)
+            )
+            #expect((result.proposedFilename?.count ?? 0) <= 32)
+        }
+        #expect(BatchRenameSequence(start: .min, step: 0, padding: 3).isWithinBounds == false)
+        #expect(BatchRenameSequence(start: 1, step: 1, padding: 17).isWithinBounds == false)
+        #expect(BatchRenameSequence(start: -1_000_000_000, step: 5, padding: 16).isWithinBounds)
+    }
+
+    @Test("Imported presets with out-of-range sequences are rejected")
+    func outOfRangeSequenceRejected() {
+        let recipe = BatchRenameRecipe(
+            name: "Imported",
+            components: [.token(.sequence(BatchRenameSequence(start: .max, step: 1)))],
+            sanitization: .disabled
+        )
+        #expect(throws: BatchRenameRecipeValidationError.sequenceOutOfRange(componentIndex: 0)) {
+            try BatchRenameRecipePresetIO().validate(recipe)
+        }
+    }
 }

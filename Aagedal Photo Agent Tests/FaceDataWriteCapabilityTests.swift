@@ -457,4 +457,23 @@ struct FaceDataWriteCapabilityTests {
         #expect(try Data(contentsOf: original) == Data("preserve".utf8))
     }
 
+    @Test("Duplicate face group IDs from a copied face_data.json are dropped on load")
+    func duplicateGroupIDsAreDroppedOnLoad() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let storage = root.appendingPathComponent(FaceDataStorageService.faceDataDirectoryName)
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let groupID = UUID()
+        let first = FaceGroup(id: groupID, name: "First", representativeFaceID: UUID(), faceIDs: [])
+        let second = FaceGroup(id: groupID, name: "Second", representativeFaceID: UUID(), faceIDs: [])
+        var data = document(root)
+        data.groups = [first, second]
+        try JSONEncoder().encode(data).write(
+            to: storage.appendingPathComponent(FaceDataStorageService.dataFileName))
+
+        let loaded = try #require(FaceDataStorageService().loadFaceData(for: root))
+        #expect(loaded.groups.map(\.name) == ["First"])
+        // The lookups that used to trap on the repeated ID.
+        _ = Dictionary(uniqueKeysWithValues: loaded.groups.map { ($0.id, $0) })
+    }
 }

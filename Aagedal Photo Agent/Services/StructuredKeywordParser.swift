@@ -25,6 +25,7 @@ enum StructuredKeywordParserError: Error, LocalizedError {
 
 enum StructuredKeywordParser {
     static let maxFileSizeBytes: Int64 = 50 * 1024 * 1024
+    static let maximumDepth = 64
 
     static func parse(_ url: URL) throws -> [StructuredKeyword] {
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -60,7 +61,10 @@ enum StructuredKeywordParser {
         var stack: [Builder] = [root]
 
         cleaned.enumerateLines { rawLine, _ in
-            let (depth, payload) = splitIndent(rawLine)
+            let (indent, payload) = splitIndent(rawLine)
+            // Building, hashing and drawing the tree recurse once per level; an absurdly
+            // indented file would overflow a worker stack. Deeper lines become siblings.
+            let depth = min(indent, maximumDepth)
             let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
 
