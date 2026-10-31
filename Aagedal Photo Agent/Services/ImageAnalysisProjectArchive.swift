@@ -645,7 +645,11 @@ nonisolated enum ImageAnalysisProjectArchive {
             .appendingPathComponent("pint-import-\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
-            try runDitto(["-x", "-k", source.path, stagingRoot.path])
+            do {
+                try GuardedZipExtraction.extract(source, into: stagingRoot, limits: .analysisProject)
+            } catch GuardedZipExtraction.ExtractionError.commandFailed(let status) {
+                throw ArchiveError.archiveCommandFailed(status)
+            }
             let archiveRoot = try resolveArchiveRoot(in: stagingRoot)
             return (stagingRoot, archiveRoot)
         } catch {

@@ -1184,13 +1184,10 @@ enum KeywordListsArchive {
     }
 
     nonisolated fileprivate static func ditto(unzip source: URL, into destination: URL) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["-x", "-k", source.path, destination.path]
-        try process.run()
-        process.waitUntilExit()
-        if process.terminationStatus != 0 {
-            throw ArchiveError.dittoFailed(process.terminationStatus)
+        do {
+            try GuardedZipExtraction.extract(source, into: destination, limits: .keywordLists)
+        } catch GuardedZipExtraction.ExtractionError.commandFailed(let status) {
+            throw ArchiveError.dittoFailed(status)
         }
     }
 }
