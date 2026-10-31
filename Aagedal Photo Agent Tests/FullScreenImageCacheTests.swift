@@ -373,8 +373,13 @@ struct FullScreenImageCacheTests {
 
     @Test("Decoder pins match actual Apple RAW and DNG identifiers exactly")
     func pinnedRAWDecoderSelection() {
-        #expect(RAWDecoderVersionPreference.v8.selectedDecoder(in: [CIRAWDecoderVersion.version9.rawValue, CIRAWDecoderVersion.version8.rawValue]) == CIRAWDecoderVersion.version8.rawValue)
-        #expect(RAWDecoderVersionPreference.v9.selectedDecoder(in: [CIRAWDecoderVersion.version8DNG.rawValue, CIRAWDecoderVersion.version9DNG.rawValue]) == CIRAWDecoderVersion.version9DNG.rawValue)
+        // The macOS 27 SDK marks the version 9 constants macOS 27-only (deployment target is 26).
+        if #available(macOS 27.0, *) {
+            #expect(RAWDecoderVersionPreference.v8.selectedDecoder(in: [CIRAWDecoderVersion.version9.rawValue, CIRAWDecoderVersion.version8.rawValue]) == CIRAWDecoderVersion.version8.rawValue)
+            #expect(RAWDecoderVersionPreference.v9.selectedDecoder(in: [CIRAWDecoderVersion.version8DNG.rawValue, CIRAWDecoderVersion.version9DNG.rawValue]) == CIRAWDecoderVersion.version9DNG.rawValue)
+        }
+        #expect(RAWDecoderVersionPreference.v8.selectedDecoder(in: ["9", "8"]) == "8")
+        #expect(RAWDecoderVersionPreference.v9.selectedDecoder(in: ["8.dng", "9.dng"]) == "9.dng")
         #expect(RAWDecoderVersionPreference.v8.selectedDecoder(in: ["9.dng", "8.dng"]) == "8.dng")
         #expect(RAWDecoderVersionPreference.v7.selectedDecoder(in: ["8", "7"]) == "7")
         #expect(RAWDecoderVersionPreference.v6.selectedDecoder(in: ["8.dng", "6.dng"]) == "6.dng")
