@@ -75,6 +75,20 @@ struct BrushDabParams {
 
 /// One slice in the shared raster-alpha array. Brush strokes and AI-selected subject mattes use
 /// the same downstream sampling path; they differ only in how a slice is populated.
+/// Which offscreen engine serves a render. Export renders are full resolution and can
+/// queue back to back for a whole batch; on the shared FIFO queue every visible grid
+/// thumbnail, filmstrip render and full-screen prefetch waited behind them. Exports run on
+/// their own engine (queue, command queue, scratch textures) so interactive renders
+/// interleave on the GPU instead. Set with `OffscreenRenderLane.$current.withValue(.export)`.
+/// Top-level and nonisolated: a `@TaskLocal` static on the MainActor-default
+/// `MetalEditPipeline` gets a main-actor `$` accessor, which nonisolated code can't use.
+nonisolated enum OffscreenRenderLane: Sendable {
+    case interactive
+    case export
+
+    @TaskLocal static var current: OffscreenRenderLane = .interactive
+}
+
 nonisolated enum MaskAlphaSource: Sendable, Equatable {
     case brush(BrushMaskGeometry)
     case ai(AIMaskGeometry)
@@ -1619,25 +1633,13 @@ final class MetalEditPipeline: @unchecked Sendable {
         label: "com.aagedal.photo-agent.offscreen-render"
     )
 
-    /// Which offscreen engine serves a render. Export renders are full resolution and can
-    /// queue back to back for a whole batch; on the shared FIFO queue every visible grid
-    /// thumbnail, filmstrip render and full-screen prefetch waited behind them. Exports run on
-    /// their own engine (queue, command queue, scratch textures) so interactive renders
-    /// interleave on the GPU instead. Set with `$offscreenLane.withValue(.export)`.
-    nonisolated enum OffscreenLane: Sendable {
-        case interactive
-        case export
-    }
-
-    @TaskLocal nonisolated static var offscreenLane: OffscreenLane = .interactive
-
     /// Created on the first export, so a session that never exports pays nothing for it.
     nonisolated private static let exportOffscreenRenderer = OffscreenRendererExecutor(
         label: "com.aagedal.photo-agent.offscreen-render.export"
     )
 
     nonisolated private static var laneOffscreenRenderer: OffscreenRendererExecutor {
-        switch offscreenLane {
+        switch OffscreenRenderLane.current {
         case .interactive: offscreenRenderer
         case .export: exportOffscreenRenderer
         }
