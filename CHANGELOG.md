@@ -6,6 +6,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 - Export and Compare: after exporting a straightened, cropped photo with a watermark (or comparing one in Develop), later edited renders until you quit the app could come out rotated around that photo's crop centre. Each render now starts from a clean state.
 - Fixes a crash when opening or exporting a photo whose sidecar or embedded Develop settings contain an invalid number (such as `inf` or an out-of-range crop); such values are now ignored or limited to a usable range.
+- Importing a keyword-list (.klists), Known People or Image Analysis project archive now checks its contents first: a damaged or hostile archive that would unpack to far more data or files than it should (or more than the free disk space) is refused with an explanation instead of filling the disk, and cancelling an import stops the unpacking.
 
 ## 3.0.0-beta.5 — 2026-10-30
 

@@ -224,6 +224,19 @@ nonisolated struct KnownPeopleArchiveFileAccess: Sendable {
 nonisolated private enum KnownPeopleArchiveProcess {
     static func run(arguments: [String]) async throws {
         try Task.checkCancellation()
+        // Imports unzip a user-picked file: extract with zip-bomb limits; cancelling stops ditto.
+        if arguments.count == 4, arguments[0] == "-x", arguments[1] == "-k" {
+            do {
+                try await GuardedZipExtraction.extract(
+                    URL(fileURLWithPath: arguments[2]),
+                    into: URL(fileURLWithPath: arguments[3]),
+                    limits: .knownPeople
+                )
+                return
+            } catch GuardedZipExtraction.ExtractionError.commandFailed(let status) {
+                throw failure(status)
+            }
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = arguments
@@ -233,11 +246,7 @@ nonisolated private enum KnownPeopleArchiveProcess {
                 if process.terminationStatus == 0 {
                     continuation.resume()
                 } else {
-                    continuation.resume(throwing: NSError(
-                        domain: "KnownPeopleService",
-                        code: Int(process.terminationStatus),
-                        userInfo: [NSLocalizedDescriptionKey: "The Known People archive command failed."]
-                    ))
+                    continuation.resume(throwing: failure(process.terminationStatus))
                 }
             }
             do {
@@ -247,6 +256,14 @@ nonisolated private enum KnownPeopleArchiveProcess {
             }
         }
         try Task.checkCancellation()
+    }
+
+    private static func failure(_ status: Int32) -> NSError {
+        NSError(
+            domain: "KnownPeopleService",
+            code: Int(status),
+            userInfo: [NSLocalizedDescriptionKey: "The Known People archive command failed."]
+        )
     }
 }
 
