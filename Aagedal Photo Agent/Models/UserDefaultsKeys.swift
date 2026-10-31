@@ -146,6 +146,7 @@ nonisolated enum UserDefaultsKeys {
     // MARK: - Export Location
     static let exportLocationMode = "exportLocationMode"
     static let exportCustomSubfolderName = "exportCustomSubfolderName"
+    static let exportSpecificFolderBookmark = "exportSpecificFolderBookmark"
     static let rawArchiveLocationMode = "rawArchiveLocationMode"
     static let rawArchiveSourceRootBookmark = "rawArchiveSourceRootBookmark"
     static let rawArchiveRootBookmark = "rawArchiveRootBookmark"

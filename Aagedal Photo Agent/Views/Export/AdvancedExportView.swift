@@ -10,6 +10,7 @@ struct AdvancedExportView: View {
     @State private var selectedConfigurationIndex = 0
     @State private var previewService = AdvancedExportPreviewService()
     @State private var layout = AdvancedExportLayout(visibleSize: nil)
+    @State private var specificFolderPath = EditedImageRenderer.specificExportFolderURL?.path ?? ""
 
     init(
         session: AdvancedExportSession,
@@ -325,6 +326,26 @@ struct AdvancedExportView: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: .infinity)
+
+                if configuration.wrappedValue.locationMode == .specificFolder {
+                    HStack {
+                        Text(specificFolderPath.isEmpty ? "No folder selected" : specificFolderPath)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(specificFolderPath.isEmpty ? .red : .secondary)
+                            .help(specificFolderPath)
+                        Spacer(minLength: 4)
+                        Button("Choose…") {
+                            guard let url = ExportDestinationPrompt.chooseFolder(
+                                startingAt: EditedImageRenderer.specificExportFolderURL,
+                                message: "Choose the folder all exports are saved to."
+                            ) else { return }
+                            ExportDestinationPrompt.saveSpecificFolder(url)
+                            specificFolderPath = url.path
+                        }
+                    }
+                    .font(.caption)
+                }
 
                 if configuration.wrappedValue.locationMode == .customSubfolder {
                     TextField(

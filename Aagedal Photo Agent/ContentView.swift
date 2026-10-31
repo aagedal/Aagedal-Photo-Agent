@@ -3660,21 +3660,18 @@ struct ContentView: View {
         settingsViewModel.exportCustomSubfolderName = configuration.customSubfolderName
     }
 
-    /// Prompts the user to pick a destination folder for `.askOnSave` exports.
-    /// Returns nil if the user cancels.
+    /// Resolves the batch destination for `.askOnSave` / `.specificFolder` exports.
+    /// Returns `.cancelled` if the user dismisses a folder prompt.
     @MainActor
-    private func promptForExportDestination(
+    private func resolveExportDestination(
+        for locationMode: ExportLocationMode,
         message: String = "Choose a destination folder for exported files"
-    ) -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        panel.message = message
-        panel.directoryURL = browserViewModel.currentFolderURL
-        return panel.runModal() == .OK ? panel.url : nil
+    ) -> ExportDestinationPrompt.Outcome {
+        ExportDestinationPrompt.resolve(
+            for: locationMode,
+            startingAt: browserViewModel.currentFolderURL,
+            message: message
+        )
     }
 
     /// See `RedactionPrivacyPrompt.confirmPairedJPEGs`.
@@ -3729,11 +3726,7 @@ struct ContentView: View {
         let author = settingsViewModel.c2paDefaultAuthor.isEmpty ? nil : settingsViewModel.c2paDefaultAuthor
 
         let locationMode = EditedImageRenderer.currentLocationMode
-        var askedFolder: URL?
-        if locationMode == .askOnSave {
-            guard let chosen = promptForExportDestination() else { return }
-            askedFolder = chosen
-        }
+        guard case .folder(let askedFolder) = resolveExportDestination(for: locationMode) else { return }
 
         isRenderingEditedFolder = true
         renderExportCurrent = 0
@@ -4418,11 +4411,7 @@ struct ContentView: View {
         guard !urls.isEmpty else { return }
 
         let locationMode = EditedImageRenderer.currentLocationMode
-        var askedFolder: URL?
-        if locationMode == .askOnSave {
-            guard let chosen = promptForExportDestination() else { return }
-            askedFolder = chosen
-        }
+        guard case .folder(let askedFolder) = resolveExportDestination(for: locationMode) else { return }
 
         // Capture the pane and its folder now: `browserViewModel` follows the active
         // pane, so switching pane/folder mid-batch must not redirect the remaining
@@ -4611,7 +4600,8 @@ struct ContentView: View {
         let locationMode = RAWArchiveService.currentLocationMode
         var askedFolder: URL?
         if locationMode == .askEveryTime {
-            guard let chosen = promptForExportDestination(
+            guard let chosen = ExportDestinationPrompt.chooseFolder(
+                startingAt: browserViewModel.currentFolderURL,
                 message: "Choose a destination folder for this RAW archive batch"
             ) else { return }
             askedFolder = chosen
@@ -4917,10 +4907,10 @@ struct ContentView: View {
         }
 
         var askedFolders: [Int: URL] = [:]
-        for (index, configuration) in exportConfigurations.enumerated()
-        where (configuration?.locationMode ?? EditedImageRenderer.currentLocationMode) == .askOnSave {
+        for (index, configuration) in exportConfigurations.enumerated() {
             let exportName = index == 0 ? "primary" : "secondary"
-            guard let chosen = promptForExportDestination(
+            guard case .folder(let chosen) = resolveExportDestination(
+                for: configuration?.locationMode ?? EditedImageRenderer.currentLocationMode,
                 message: "Choose a destination folder for the \(exportName) export"
             ) else { return }
             askedFolders[index] = chosen

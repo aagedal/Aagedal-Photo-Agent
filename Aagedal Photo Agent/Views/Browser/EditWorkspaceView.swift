@@ -8377,17 +8377,12 @@ struct EditWorkspaceView: View {
     /// Honors the Export Location setting like the browser's Export/Save As/Sign paths.
     /// `cancelled` when the user dismisses the folder prompt; `url` is nil when none is configured.
     private func askForDevelopExportFolder(startingAt folderURL: URL, message: String) -> (cancelled: Bool, url: URL?) {
-        guard EditedImageRenderer.currentLocationMode == .askOnSave else { return (false, nil) }
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        panel.message = message
-        panel.directoryURL = folderURL
-        guard panel.runModal() == .OK, let chosen = panel.url else { return (true, nil) }
-        return (false, chosen)
+        switch ExportDestinationPrompt.resolve(
+            for: EditedImageRenderer.currentLocationMode, startingAt: folderURL, message: message
+        ) {
+        case .cancelled: return (true, nil)
+        case .folder(let url): return (false, url)
+        }
     }
 
     /// Renders the Main Edit and every named version of the open photo, one file each. The Main
