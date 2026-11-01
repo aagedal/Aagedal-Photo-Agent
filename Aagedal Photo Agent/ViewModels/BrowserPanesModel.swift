@@ -44,6 +44,15 @@ final class BrowserPanesModel {
         self.tree = BrowserPaneTree(single: primaryID)
         self.activePaneID = primaryID
         self.visiblePaneIDs = [primaryID]
+        primary.paneOwningImages = { [weak self] urls in self?.pane(owningImagesAt: urls) }
+    }
+
+    /// The pane listing the folder the photos were dragged from, preferring the active one when
+    /// several tabs show it. Nil for files from outside every pane (a Finder drag).
+    func pane(owningImagesAt urls: [URL]) -> BrowserViewModel? {
+        guard let folder = urls.first?.deletingLastPathComponent().standardizedFileURL else { return nil }
+        let owners = panes.filter { $0.currentFolderURL?.standardizedFileURL == folder }
+        return owners.first { $0 === active } ?? owners.first
     }
 
     /// Every `tree` change goes through here so the stored summaries stay in sync.

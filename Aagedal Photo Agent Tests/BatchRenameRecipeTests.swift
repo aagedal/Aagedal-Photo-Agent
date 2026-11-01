@@ -358,8 +358,15 @@ struct BatchRenameRecipeTests {
             components: [.token(.sequence(BatchRenameSequence(start: .max, step: 1)))],
             sanitization: .disabled
         )
+        let io = BatchRenameRecipePresetIO()
         #expect(throws: BatchRenameRecipeValidationError.sequenceOutOfRange(componentIndex: 0)) {
-            try BatchRenameRecipePresetIO().validate(recipe)
+            try io.validate(recipe, enforcingSequenceBounds: true)
         }
+        #expect(throws: BatchRenameRecipeValidationError.sequenceOutOfRange(componentIndex: 0)) {
+            try io.encode(BatchRenameRecipePreset(id: UUID(), recipe: recipe))
+        }
+        // Stored presets and sheet saves are not bounds-checked: a preset saved before the
+        // bounds existed must not make the whole preset store fail to load.
+        #expect(throws: Never.self) { try io.validate(recipe) }
     }
 }

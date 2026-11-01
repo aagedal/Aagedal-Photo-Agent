@@ -285,6 +285,9 @@ final class BrowserViewModel {
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "BrowserViewModel")
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
+    /// Set on the primary pane (which serves the sidebar): finds the pane showing dragged photos,
+    /// so a drop on a sidebar folder moves them through the pane that lists them.
+    @ObservationIgnored var paneOwningImages: (([URL]) -> BrowserViewModel?)?
     @ObservationIgnored private let imageTrashHandler: any ImageTrashHandling
 
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?

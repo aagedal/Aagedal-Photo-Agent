@@ -387,7 +387,10 @@ struct FolderDropDelegate: DropDelegate {
             }
 
             if !snapshot.regularFiles.isEmpty {
-                viewModel.moveImages(snapshot.regularFiles, into: target)
+                // The sidebar is bound to the primary pane; photos dragged from another pane's
+                // grid must leave that pane's list (and wait behind its own file operations).
+                let owner = viewModel.paneOwningImages?(snapshot.regularFiles) ?? viewModel
+                owner.moveImages(snapshot.regularFiles, into: target)
             }
         }
         return true

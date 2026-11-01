@@ -57,7 +57,9 @@ nonisolated struct WatermarkLibraryFileAccess: Sendable {
     static let system = WatermarkLibraryFileAccess(
         startAccessing: { $0.startAccessingSecurityScopedResource() },
         stopAccessing: { $0.stopAccessingSecurityScopedResource() },
-        readData: { try Data(contentsOf: $0) },
+        // Coordinated like the writes, so an iCloud placeholder downloads instead of reading
+        // as a missing asset.
+        readData: { try CloudCoordinatedIO.readData(at: $0) },
         writeData: { try CloudCoordinatedIO.writeData($0, to: $1) },
         removeItem: { try CloudCoordinatedIO.removeItem(at: $0) },
         ensureDirectory: { try CloudCoordinatedIO.ensureDirectory($0) },

@@ -32,6 +32,25 @@ struct BatchRenameRecipeRepositoryTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.exportURL.path))
     }
 
+    @Test("a stored preset with a sequence outside the import bounds still loads and updates")
+    func storedOutOfBoundsSequenceStillLoads() async throws {
+        let fixture = try RecipeRepositoryFixture()
+        defer { fixture.remove() }
+        let repository = BatchRenameRecipeRepository(documentURL: fixture.repositoryURL)
+        var dated = recipe(name: "Dated", literal: "a.jpg")
+        dated.components = [.token(.sequence(BatchRenameSequence(start: 2_026_110_100, step: 1, padding: 20)))]
+        _ = try await repository.create(recipe: dated, id: alphaID)
+        _ = try await repository.create(recipe: recipe(name: "Other", literal: "b.jpg"), id: zuluID)
+
+        let reopened = BatchRenameRecipeRepository(documentURL: fixture.repositoryURL)
+        let snapshot = try await reopened.snapshot()
+        #expect(snapshot.presets.map(\.id).contains(alphaID))
+        _ = try await reopened.rename(id: zuluID, to: "Renamed")
+        await #expect(throws: BatchRenameRecipeValidationError.sequenceOutOfRange(componentIndex: 0)) {
+            try await reopened.exportPreset(id: alphaID, to: fixture.exportURL)
+        }
+    }
+
     @Test("portable import preserves task context and stops before mutation when its read is cancelled")
     @MainActor
     func cancelledPortableRead() async throws {

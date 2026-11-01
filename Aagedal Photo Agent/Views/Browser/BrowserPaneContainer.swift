@@ -13,6 +13,9 @@ struct BrowserPaneContainer: View {
     /// Forwarded to each pane so its empty-state "Show Videos & Other Media" updates the
     /// app-wide setting instead of only that pane.
     var selectFileVisibility: ((BrowserFileVisibility) -> Void)? = nil
+    /// Closes a tab through the window's editor-commit gate, so closing the tab the metadata
+    /// editor is working on saves (or asks about) its unsaved edits first.
+    var closeTab: ((BrowserPaneID) -> Void)? = nil
 
     @State private var drag = BrowserPaneDragState()
 
@@ -22,7 +25,8 @@ struct BrowserPaneContainer: View {
             drag: drag,
             activeFaceCount: activeFaceCount,
             activeFaceGroupCount: activeFaceGroupCount,
-            selectFileVisibility: selectFileVisibility
+            selectFileVisibility: selectFileVisibility,
+            closeTab: closeTab
         )
         // Always the same view path, so adding the first tab or closing the last extra one
         // keeps the primary's grid (scroll position, snapshot) instead of rebuilding it.
@@ -41,6 +45,7 @@ struct BrowserPaneLayoutContext {
     let activeFaceCount: Int
     let activeFaceGroupCount: Int
     let selectFileVisibility: ((BrowserFileVisibility) -> Void)?
+    let closeTab: ((BrowserPaneID) -> Void)?
 }
 
 // MARK: - Drag state
@@ -386,7 +391,7 @@ private struct BrowserPaneTab: View {
             Spacer(minLength: 0)
             if canClose {
                 Button {
-                    context.panes.close(id)
+                    if let closeTab = context.closeTab { closeTab(id) } else { context.panes.close(id) }
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
