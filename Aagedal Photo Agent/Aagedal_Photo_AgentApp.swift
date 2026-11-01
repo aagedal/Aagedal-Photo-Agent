@@ -385,6 +385,29 @@ struct Aagedal_Photo_AgentApp: App {
                     }
                     .keyboardShortcut(keyboardProfile.menuShortcut(for: .selectNextImage))
 
+                    // ⌘W closes the active tab via MainWindowTabCloseKeyMonitor, ahead of the
+                    // window's own Close item, so this item carries no key equivalent.
+                    Section("Tabs") {
+                        Button("New Tab") {
+                            commandRouter.send(.browserTab(.newTab))
+                        }
+                        .keyboardShortcut(keyboardProfile.menuShortcut(for: .newBrowserTab))
+
+                        Button("Close Tab") {
+                            commandRouter.send(.browserTab(.closeTab))
+                        }
+
+                        Button("Show Next Tab") {
+                            commandRouter.send(.browserTab(.showNextTab))
+                        }
+                        .keyboardShortcut(keyboardProfile.menuShortcut(for: .showNextBrowserTab))
+
+                        Button("Show Previous Tab") {
+                            commandRouter.send(.browserTab(.showPreviousTab))
+                        }
+                        .keyboardShortcut(keyboardProfile.menuShortcut(for: .showPreviousBrowserTab))
+                    }
+
                     Divider()
 
                     Button("Toggle HDR") {

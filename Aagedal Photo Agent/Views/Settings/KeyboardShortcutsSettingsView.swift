@@ -15,6 +15,7 @@ struct KeyboardShortcutsSettingsView: View {
             ("Space / ⌘F", "Toggle Full Screen"),
             ("⌘A", "Select All"),
             ("⌥M", "Switch Embedded / XMP Reference"),
+            ("⌘W", "Close Tab (when the browser has tabs or splits)"),
         ]),
         ("Develop gestures", [
             ("Escape", "Exit Edit Workspace"),

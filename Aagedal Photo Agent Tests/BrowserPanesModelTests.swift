@@ -93,4 +93,78 @@ struct BrowserPanesModelTests {
         }
         #expect(resized.fractions == [0.4, 0.6])
     }
+
+    /// View ▸ Show Next/Previous Tab walk every tab of every group in reading order and wrap.
+    @Test func adjacentTabCyclingWalksReadingOrderAndWraps() throws {
+        let model = makeModel()
+        let primary = BrowserPaneID(model.primary)
+        model.activateAdjacentPane(offset: 1)
+        #expect(model.activePaneID == primary)
+
+        let tab = BrowserPaneID(try #require(model.addTab()))
+        let split = BrowserPaneID(try #require(model.splitActive(.trailing)))
+        #expect(model.tree.paneIDs == [primary, tab, split])
+
+        model.activateAdjacentPane(offset: 1)
+        #expect(model.activePaneID == primary)
+        model.activateAdjacentPane(offset: 1)
+        #expect(model.activePaneID == tab)
+        model.activateAdjacentPane(offset: -1)
+        #expect(model.activePaneID == primary)
+        model.activateAdjacentPane(offset: -1)
+        #expect(model.activePaneID == split)
+
+        // Cycling onto a background tab brings it to the front of its group.
+        model.activateAdjacentPane(offset: 1)
+        model.activateAdjacentPane(offset: 1)
+        #expect(model.tree.group(containing: tab)?.selectedPaneID == tab)
+    }
+
+    /// ⌘W closes the active tab only when it isn't the primary pane, which owns the sidebar.
+    @Test func onlyNonPrimaryActivePanesCanCloseFromTheKeyboard() throws {
+        let model = makeModel()
+        #expect(!model.canCloseActivePane)
+        let tab = try #require(model.addTab())
+        #expect(model.canCloseActivePane)
+        model.activate(BrowserPaneID(model.primary))
+        #expect(!model.canCloseActivePane)
+        model.activate(BrowserPaneID(tab))
+        model.close(model.activePaneID)
+        #expect(!model.hasMultiplePanes)
+        #expect(!model.canCloseActivePane)
+    }
+
+    /// Sidebar folder operations run on the primary pane (it owns the sidebar), which may be a
+    /// background tab; their failures must show in the pane the user is looking at.
+    @Test func sidebarFolderErrorsShowInTheActivePane() throws {
+        let model = makeModel()
+        let parent = URL(fileURLWithPath: "/tmp/panes-sidebar-parent", isDirectory: true)
+        let child = parent.appendingPathComponent("child", isDirectory: true)
+
+        model.primary.moveFolder(parent, into: child)
+        #expect(model.primary.errorMessage == "Cannot move a folder into its own subfolder.")
+        model.primary.errorMessage = nil
+
+        let tab = try #require(model.addTab())
+        model.primary.moveFolder(parent, into: child)
+        #expect(tab.errorMessage == "Cannot move a folder into its own subfolder.")
+        #expect(model.primary.errorMessage == nil)
+    }
+
+    /// Sidebar rows and Finder drags use directory URLs, whose `path(percentEncoded:)` ends in
+    /// "/"; the own-subfolder guard used to compare `path + "/"` and never matched them.
+    @Test func movingAFolderIntoItsOwnSubfolderIsRefusedForDirectoryAndPlainURLs() {
+        let model = makeModel()
+        let message = "Cannot move a folder into its own subfolder."
+        let pairs: [(URL, URL)] = [
+            (URL(fileURLWithPath: "/tmp/panes-move-a", isDirectory: true),
+             URL(fileURLWithPath: "/tmp/panes-move-a/b/c", isDirectory: true)),
+            (URL(fileURLWithPath: "/tmp/panes-move-a"), URL(fileURLWithPath: "/tmp/panes-move-a/b")),
+        ]
+        for (source, destination) in pairs {
+            model.primary.errorMessage = nil
+            model.primary.moveFolder(source, into: destination)
+            #expect(model.primary.errorMessage == message)
+        }
+    }
 }

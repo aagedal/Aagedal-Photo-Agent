@@ -45,6 +45,9 @@ final class BrowserPanesModel {
         self.activePaneID = primaryID
         self.visiblePaneIDs = [primaryID]
         primary.paneOwningImages = { [weak self] urls in self?.pane(owningImagesAt: urls) }
+        primary.folderOperationErrorReporter = { [weak self, weak primary] message in
+            (self?.active ?? primary)?.errorMessage = message
+        }
     }
 
     /// The pane listing the folder the photos were dragged from, preferring the active one when
@@ -103,6 +106,19 @@ final class BrowserPanesModel {
         if tree.group(containing: id)?.selectedPaneID != id { updateTree { $0.select(id) } }
         if activePaneID != id { activePaneID = id }
     }
+
+    /// Focus the next (`offset` 1) or previous (-1) pane in reading order — every tab of
+    /// every group, wrapping around. No-op with a single pane.
+    func activateAdjacentPane(offset: Int) {
+        let order = tree.paneIDs
+        guard order.count > 1, let index = order.firstIndex(of: activePaneID) else { return }
+        let next = ((index + offset) % order.count + order.count) % order.count
+        activate(order[next])
+    }
+
+    /// The active pane can be closed from the keyboard: there are other panes, and it isn't
+    /// the primary (which owns the sidebar state and has no close button either).
+    var canCloseActivePane: Bool { hasMultiplePanes && !isPrimary(activePaneID) }
 
     // MARK: Creating and closing panes
 

@@ -10,6 +10,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Known People with iCloud sync: a Mac setting up face recognition for the first time could reset the shared iCloud library (after backing it up locally), which removed everyone's people on every Mac. It now keeps the shared library. Clearing a library that was replaced earlier no longer stops sync on your other Macs.
 - With several browser tabs or split panes, dragging photos from a second pane onto a sidebar folder now removes them from that pane right away, and closing the tab you're editing a caption in saves or asks about the unsaved edit first.
 - Watermarks stored in iCloud Drive that haven't downloaded yet are now fetched instead of showing as missing.
+- Browser tabs from the keyboard: View ▸ Tabs adds New Tab (⌥⌘T), Show Next / Previous Tab (⌥⌘N / ⌥⌘B) and Close Tab, and ⌘W now closes the active tab instead of the whole window while the browser has more than one pane. The shortcuts can be changed in Settings → Shortcuts.
+- Dropping a folder from Finder onto a browser pane opens it in that pane (it used to open in whichever pane was active). Errors from sidebar folder actions (new, rename, move, trash) now show in the pane you're looking at instead of the first tab, and moving a folder into its own subfolder is refused with a clear message.
+- Unpacking a very large Image Analysis project no longer spends much of its time re-measuring the files it has already unpacked.
 
 ## 3.0.0-beta.5 — 2026-10-30
 
