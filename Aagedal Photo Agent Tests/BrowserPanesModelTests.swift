@@ -44,6 +44,28 @@ struct BrowserPanesModelTests {
         #expect(model.visiblePaneIDs == [primary])
     }
 
+    /// Photos dragged from a non-primary grid onto a sidebar folder (bound to the primary pane)
+    /// must move through the pane that lists them.
+    @Test func sidebarPhotoDropsResolveToTheListingPane() throws {
+        let model = makeModel()
+        let left = URL(fileURLWithPath: "/tmp/panes-left", isDirectory: true)
+        let right = URL(fileURLWithPath: "/tmp/panes-right", isDirectory: true)
+        model.primary.currentFolderURL = left
+        let split = try #require(model.splitActive(.trailing))
+        split.currentFolderURL = right
+        let photo = right.appendingPathComponent("a.jpg")
+
+        #expect(model.primary.paneOwningImages?([photo]) === split)
+        #expect(model.primary.paneOwningImages?([left.appendingPathComponent("b.jpg")]) === model.primary)
+        #expect(model.primary.paneOwningImages?([URL(fileURLWithPath: "/tmp/elsewhere/c.jpg")]) == nil)
+
+        // Two tabs on the same folder: the active one wins.
+        let twin = try #require(model.addTab())
+        twin.currentFolderURL = right
+        model.activate(BrowserPaneID(twin))
+        #expect(model.pane(owningImagesAt: [photo]) === twin)
+    }
+
     /// A divider drag replaces `tree` every frame; views outside the grid read only the
     /// summaries, which must not invalidate while the arrangement itself is unchanged.
     @Test func resizingSplitsDoesNotInvalidateLayoutSummaries() throws {

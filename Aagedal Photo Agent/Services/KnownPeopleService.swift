@@ -431,6 +431,11 @@ actor KnownPeopleArchiveService {
             markerRollbackFailed: markerRollbackFailed, removedThumbnailURLs: removedThumbnailURLs, completion: completion)
     }
 
+    /// Root entries that identify a managed (replaced) library; Clear keeps them.
+    private static let managedStateEntryNames: Set<String> = [
+        KnownPeopleManagedStoreState.fileName, ".admitted-package",
+    ]
+
     /// Finish an admitted reset even if cancellation arrives during recursive removal.
     /// Report partial removal/recreation so callers cannot publish a false empty snapshot.
     func clearDatabase(root: URL) async -> KnownPeopleDatabaseClearResult {
@@ -442,7 +447,23 @@ actor KnownPeopleArchiveService {
         let completion = Result { () throws -> Void in
             try Task.checkCancellation()
             removalAttempted = true
-            try access.removeCoordinatedItem(root)
+            let stateURL = root.appendingPathComponent(KnownPeopleManagedStoreState.fileName)
+            if access.itemExists(stateURL) {
+                // A managed (replaced) library: every Mac validates the iCloud generation
+                // pointer against this state and its admitted package. Removing the whole root
+                // would leave the pointer dangling and stop sync on all of them, so clear only
+                // the people content.
+                for entry in try access.contentsOfDirectory(root) {
+                    var name = entry.lastPathComponent
+                    if name.hasPrefix("."), name.hasSuffix(".icloud") {
+                        name = String(name.dropFirst().dropLast(".icloud".count))
+                    }
+                    if Self.managedStateEntryNames.contains(name) { continue }
+                    try access.removeCoordinatedItem(root.appendingPathComponent(name))
+                }
+            } else {
+                try access.removeCoordinatedItem(root)
+            }
             rootRemoved = true
             for name in ["people", "thumbnails", "embedding_thumbnails"] {
                 let url = root.appendingPathComponent(name, isDirectory: true)
@@ -903,6 +924,20 @@ final class KnownPeopleService {
     nonisolated static var localKnownPeopleDirectory: URL {
         AppPaths.applicationSupport.appendingPathComponent("KnownPeople", isDirectory: true)
     }
+
+    /// True when `root` is the shared iCloud library (legacy root or a generation), not the
+    /// local store or a test override. Mirrors `knownPeopleDirectory`'s resolution order.
+    static func isICloudKnownPeopleRoot(_ root: URL) -> Bool {
+        if let override = storageOverrideURL {
+            return isICloudKnownPeopleRootOverrideForTesting
+                && override.standardizedFileURL == root.standardizedFileURL
+        }
+        guard testProcessFallbackDirectory == nil else { return false }
+        return root.standardizedFileURL != localKnownPeopleDirectory.standardizedFileURL
+    }
+
+    /// Test-only: lets a test mark its `storageOverrideURL` as an iCloud root.
+    static var isICloudKnownPeopleRootOverrideForTesting = false
 
     /// Test-only seam: when set, overrides the resolved storage root so unit
     /// tests can point the singleton at a temp directory without touching the
@@ -2777,6 +2812,16 @@ final class KnownPeopleService {
         // An admitted managed replacement carries its model contract in the root itself.
         // Honor it only while the managed projection still matches the recorded digest.
         if KnownPeopleManagedStoreState.protectsCurrentEmbeddingStore(at: knownPeopleDirectory) {
+            AppDefaults.store.set(current, forKey: key)
+            Self.migrationRecoveryNotices.clear(.knownPeople)
+            return
+        }
+        // The stamp is per Mac, the iCloud library is shared. A Mac that has never stamped
+        // (new Mac, or never loaded while the model was ready) says nothing about the library's
+        // age, and every app since 2.0 writes the current space — resetting here would delete
+        // every other Mac's people through the coordinated remove.
+        if stored == nil, Self.isICloudKnownPeopleRoot(knownPeopleDirectory) {
+            knownPeopleLog.info("Known People: unstamped Mac on the shared iCloud library; keeping it")
             AppDefaults.store.set(current, forKey: key)
             Self.migrationRecoveryNotices.clear(.knownPeople)
             return

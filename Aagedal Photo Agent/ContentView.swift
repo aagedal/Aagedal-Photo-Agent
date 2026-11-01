@@ -2543,7 +2543,12 @@ struct ContentView: View {
                     panes: panes,
                     activeFaceCount: faceRecognitionViewModel.faceData?.faces.count ?? 0,
                     activeFaceGroupCount: faceRecognitionViewModel.faceData?.groups.count ?? 0,
-                    selectFileVisibility: { settingsViewModel.fileVisibility = $0 }
+                    selectFileVisibility: { settingsViewModel.fileVisibility = $0 },
+                    closeTab: { id in
+                        // The editor follows the active pane only; other tabs close directly.
+                        guard id == panes.activePaneID else { panes.close(id); return }
+                        performAfterBrowserEditorCommit { panes.close(id) }
+                    }
                 )
                 .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
                 .onKeyPress("m") {

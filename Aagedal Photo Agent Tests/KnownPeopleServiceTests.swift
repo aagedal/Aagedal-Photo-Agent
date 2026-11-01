@@ -737,6 +737,37 @@ struct KnownPeopleServiceTests {
         #expect(throws: CocoaError.self) { try result.completion.get() }
     }
 
+    @Test("Clearing a replaced library keeps its managed state so the iCloud generation stays valid")
+    func clearKeepsManagedGenerationState() async throws {
+        let directory = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fm = FileManager.default
+        let stateURL = directory.appendingPathComponent(KnownPeopleManagedStoreState.fileName)
+        let admitted = directory.appendingPathComponent(".admitted-package/editor", isDirectory: true)
+        let person = directory.appendingPathComponent("people/\(UUID().uuidString).json")
+        let thumbnail = directory.appendingPathComponent("thumbnails/a.jpg")
+        let legacy = directory.appendingPathComponent("database.json")
+        for dir in [admitted, person.deletingLastPathComponent(), thumbnail.deletingLastPathComponent()] {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try Data("{}".utf8).write(to: stateURL)
+        try Data([1]).write(to: admitted.appendingPathComponent("manifest.json"))
+        try Data("{}".utf8).write(to: person)
+        try Data([2]).write(to: thumbnail)
+        try Data("{}".utf8).write(to: legacy)
+
+        let result = await KnownPeopleArchiveService().clearDatabase(root: directory)
+
+        try result.completion.get()
+        #expect(result.rootRemoved)
+        #expect(fm.fileExists(atPath: stateURL.path))
+        #expect(fm.fileExists(atPath: admitted.appendingPathComponent("manifest.json").path))
+        #expect(!fm.fileExists(atPath: person.path))
+        #expect(!fm.fileExists(atPath: thumbnail.path))
+        #expect(!fm.fileExists(atPath: legacy.path))
+        #expect(try fm.contentsOfDirectory(atPath: directory.appendingPathComponent("people").path).isEmpty)
+    }
+
     @Test("Clear cancelled before admission leaves disk untouched and releases ownership")
     func cancelledDatabaseClearBeforeAdmission() async throws {
         let directory = makeTempDir()
@@ -1382,6 +1413,32 @@ struct KnownPeopleServiceTests {
             #expect(try Data(contentsOf: dir.appendingPathComponent("embedding_thumbnails/\(sample.id.uuidString).jpg")) == embeddingThumbnail)
             service.reloadAfterStorageChange()
             #expect(service.getAllPeople().map(\.id) == [added.id])
+        }
+    }
+
+    @Test("An unstamped Mac keeps the shared iCloud library instead of resetting it", arguments: [false, true])
+    func unstampedMacKeepsICloudLibrary(isICloudRoot: Bool) throws {
+        try withIsolatedEmbeddingMigration { dir in
+            KnownPeopleService.isICloudKnownPeopleRootOverrideForTesting = isICloudRoot
+            defer { KnownPeopleService.isICloudKnownPeopleRootOverrideForTesting = false }
+            let backup = FileManager.default.temporaryDirectory
+                .appendingPathComponent("KnownPeople-UnstampedBackup-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: backup) }
+            var io = KnownPeopleEmbeddingMigrationIO.live
+            io.backupURL = { _, _, _, _ in backup }
+            KnownPeopleService.embeddingMigrationIO = io
+            KnownPeopleService.embeddingMigrationModelReadiness = { true }
+            AppDefaults.store.removeObject(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+            let peer = KnownPerson(name: "Synced from another Mac", embeddings: [embedding(7)])
+            try writePersonFile(peer, into: dir)
+
+            let people = KnownPeopleService().getAllPeople()
+
+            // Local unstamped stores keep the old verified-backup/start-fresh behaviour.
+            #expect(people.map(\.id) == (isICloudRoot ? [peer.id] : []))
+            #expect(FileManager.default.fileExists(atPath: personFileURL(peer.id, in: dir).path) == isICloudRoot)
+            #expect(AppDefaults.store.object(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion) as? Int
+                == FaceRecognitionDefaults.embeddingVersion)
         }
     }
 

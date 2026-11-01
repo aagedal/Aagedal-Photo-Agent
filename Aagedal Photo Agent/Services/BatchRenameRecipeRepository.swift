@@ -107,7 +107,7 @@ nonisolated struct BatchRenameRecipePresetIO: Sendable {
     static let maximumFileSize = 1_048_576
 
     func encode(_ preset: BatchRenameRecipePreset) throws -> Data {
-        try validate(preset)
+        try validate(preset, enforcingSequenceBounds: true)
         let document = ExportDocument(preset: preset)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -134,7 +134,7 @@ nonisolated struct BatchRenameRecipePresetIO: Sendable {
             )
         }
         let preset = try JSONDecoder().decode(ExportDocument.self, from: data).preset
-        try validate(preset)
+        try validate(preset, enforcingSequenceBounds: true)
         return preset
     }
 
@@ -149,11 +149,17 @@ nonisolated struct BatchRenameRecipePresetIO: Sendable {
         return try decode(Data(contentsOf: source, options: .mappedIfSafe))
     }
 
-    func validate(_ preset: BatchRenameRecipePreset) throws {
-        try validate(preset.recipe)
+    /// Sequence bounds apply only at the portable import/export boundary. Stored presets and
+    /// sheet saves may predate the bounds (an unbounded Start/Padding field); the renderer clamps
+    /// them, and rejecting them here would make the whole preset store fail to load.
+    func validate(
+        _ preset: BatchRenameRecipePreset,
+        enforcingSequenceBounds: Bool = false
+    ) throws {
+        try validate(preset.recipe, enforcingSequenceBounds: enforcingSequenceBounds)
     }
 
-    func validate(_ recipe: BatchRenameRecipe) throws {
+    func validate(_ recipe: BatchRenameRecipe, enforcingSequenceBounds: Bool = false) throws {
         guard recipe.schemaVersion == BatchRenameRecipe.currentSchemaVersion else {
             throw BatchRenameRecipeValidationError.unsupportedRecipeSchema(
                 found: recipe.schemaVersion,
@@ -177,7 +183,7 @@ nonisolated struct BatchRenameRecipePresetIO: Sendable {
                 throw BatchRenameRecipeValidationError.negativeSequencePadding(
                     componentIndex: index
                 )
-            case let .sequence(sequence) where !sequence.isWithinBounds:
+            case let .sequence(sequence) where enforcingSequenceBounds && !sequence.isWithinBounds:
                 throw BatchRenameRecipeValidationError.sequenceOutOfRange(componentIndex: index)
             case let .date(date) where date.format.isEmpty:
                 throw BatchRenameRecipeValidationError.emptyDateFormat(componentIndex: index)
