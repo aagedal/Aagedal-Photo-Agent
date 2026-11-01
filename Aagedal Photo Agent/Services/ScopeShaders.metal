@@ -177,6 +177,34 @@ inline float linearToSRGB(float x) {
         return 1.055 * pow(x, 1.0 / 2.4) - 0.055;
 }
 
+// Vectorscope encoding that keeps what the extended-range preview actually shows. The working
+// space is extended linear sRGB: colors outside sRGB (saturated RAW reds, P3 greens) carry
+// negative channels, which a per-channel saturate() folds back onto the sRGB hexagon. In HDR
+// mode, super-whites above 1.0 are brightness, not chroma — dividing by the peak keeps the hue
+// and saturation the EDR display presents instead of clipping the hot channel toward white.
+inline float3 vectorscopeEncode(float3 rgb, bool hdrMode) {
+    if (hdrMode) {
+        float peak = max(max(rgb.r, rgb.g), rgb.b);
+        if (peak > 1.0) rgb /= peak;
+    } else {
+        rgb = min(rgb, 1.0);
+    }
+    // Sign-preserving sRGB transfer (extended sRGB) so out-of-gamut colors plot past the targets.
+    rgb = max(rgb, -1.0);
+    return sign(rgb) * float3(linearToSRGB(abs(rgb.r)),
+                              linearToSRGB(abs(rgb.g)),
+                              linearToSRGB(abs(rgb.b)));
+}
+
+// Mirror of EditAdjustments.metal's sdrOutputToneMap: rolls scene-referred super-whites into the
+// SDR range after the full layer chain when HDR edit mode is off.
+inline float scopeSDROutputToneMap(float x) {
+    if (x <= 0.7) return x;
+    float t = min((x - 0.7) / 0.9, 1.0);
+    float u = t - 1.0;
+    return 1.0 + 0.3 * u * u * u;
+}
+
 // ============================================================
 // Apply edit adjustments (same logic as editAdjustments kernel)
 // ============================================================
@@ -746,7 +774,7 @@ inline float3 applyScopeFilm(
     return max(rgb, 0.0);
 }
 
-inline float3 applyEdits(
+inline float3 applyEditLayers(
     float3 rgb,
     float2 uv,
     constant ScopeEditParams &params,
@@ -808,6 +836,31 @@ inline float3 applyEdits(
             if (weight < 0.001) continue;
             rgb = mix(rgb, applyScopeMaskColor(rgb, masks[entry]), weight);
         }
+    }
+    return rgb;
+}
+
+inline float3 applyEdits(
+    float3 rgb,
+    float2 uv,
+    constant ScopeEditParams &params,
+    texture2d<half, access::sample> source,
+    texture1d<float, access::sample> toneLUT,
+    texture2d_array<half, access::sample> colorLUTs,
+    constant MaskParams *masks,
+    constant HSLParams &hslParams,
+    constant uint *order)
+{
+    rgb = applyEditLayers(rgb, uv, params, source, toneLUT, colorLUTs, masks, hslParams, order);
+    // Final SDR output transform, as in the preview's presentation pass. Without it the scopes
+    // showed the un-rolled-off chain in SDR mode, so toggling HDR barely moved them while the
+    // preview visibly regained saturated highlights.
+    bool sourceHasHeadroom = (params.activeFlags & (1u << 7)) != 0;
+    bool hdrEditMode = (params.activeFlags & (1u << 4)) != 0;
+    if (sourceHasHeadroom && !hdrEditMode) {
+        rgb = float3(scopeSDROutputToneMap(rgb.r),
+                     scopeSDROutputToneMap(rgb.g),
+                     scopeSDROutputToneMap(rgb.b));
     }
     return rgb;
 }
@@ -1200,13 +1253,18 @@ kernel void vectorscopeAccumulate(
     float3 rgb = float3(color.rgb);
     rgb = applyEdits(rgb, uv, editParams, source, toneLUT, colorLUTs, masks, hslParams, order);
 
-    // Convert linear → sRGB before CbCr computation (matches CPU scope path)
-    float r = linearToSRGB(saturate(rgb.r));
-    float g = linearToSRGB(saturate(rgb.g));
-    float b = linearToSRGB(saturate(rgb.b));
+    // Convert linear → sRGB before CbCr computation (matches CPU scope path), keeping
+    // out-of-sRGB and HDR chroma that the extended-range preview displays.
+    bool hdrMode = (editParams.activeFlags & (1u << 4)) != 0;
+    float3 enc = vectorscopeEncode(rgb, hdrMode);
 
-    float cb = -0.1146 * r - 0.3854 * g + 0.5 * b;
-    float cr =  0.5 * r - 0.4542 * g - 0.0458 * b;
+    float cb = -0.1146 * enc.r - 0.3854 * enc.g + 0.5 * enc.b;
+    float cr =  0.5 * enc.r - 0.4542 * enc.g - 0.0458 * enc.b;
+
+    // Bin tint stays display-safe.
+    float r = saturate(enc.r);
+    float g = saturate(enc.g);
+    float b = saturate(enc.b);
 
     float outWf = float(scopeParams.outputWidth);
     float outHf = float(scopeParams.outputHeight);
@@ -1540,20 +1598,24 @@ kernel void chromaticityAccumulate(
     float3x3 xyzMat = sRGBtoXYZ;
 
     if (scopeParams.clipMode == 1) {
+        // Like the preview's soft proof: in HDR mode values above 1.0 are brightness, not
+        // out-of-gamut chroma, so only negatives clamp (clamping the top would desaturate them).
+        bool hdrMode = (editParams.activeFlags & (1u << 4)) != 0;
+        float gamutHi = hdrMode ? 65504.0 : 1.0;
         if (scopeParams.targetGamut == 0) {
             // sRGB: just clamp
-            linearRGB = clamp(linearRGB, 0.0, 1.0);
+            linearRGB = clamp(linearRGB, 0.0, gamutHi);
         } else if (scopeParams.targetGamut == 1) {
             // Display P3: convert, clamp, use P3 XYZ matrix
-            linearRGB = clamp(sRGBtoP3 * linearRGB, 0.0, 1.0);
+            linearRGB = clamp(sRGBtoP3 * linearRGB, 0.0, gamutHi);
             xyzMat = p3toXYZ;
         } else if (scopeParams.targetGamut == 2) {
             // Rec.2020: convert, clamp, use Rec.2020 XYZ matrix
-            linearRGB = clamp(sRGBtoRec2020 * linearRGB, 0.0, 1.0);
+            linearRGB = clamp(sRGBtoRec2020 * linearRGB, 0.0, gamutHi);
             xyzMat = rec2020toXYZ;
         } else {
             // Adobe RGB: convert, clamp, use Adobe RGB XYZ matrix
-            linearRGB = clamp(sRGBtoAdobeRGB * linearRGB, 0.0, 1.0);
+            linearRGB = clamp(sRGBtoAdobeRGB * linearRGB, 0.0, gamutHi);
             xyzMat = adobeRGBtoXYZ;
         }
     }
