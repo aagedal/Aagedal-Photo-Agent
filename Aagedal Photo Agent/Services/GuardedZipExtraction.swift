@@ -57,6 +57,10 @@ nonisolated enum GuardedZipExtraction {
     /// Space left free on the destination volume after extraction.
     static let reservedFreeBytes: Int64 = 512 * 1_048_576
     static let pollInterval: DispatchTimeInterval = .milliseconds(250)
+    /// Watchdog walks of the staging folder wait this many times their own duration...
+    static let measurementCostMultiplier: UInt64 = 4
+    /// ...but never more than this, so a runaway archive is still caught within seconds.
+    static let maximumMeasurementSpacingNanoseconds: UInt64 = 5_000_000_000
 
     /// Extracts `archive` into the existing `destination` directory. Throws `CancellationError`
     /// when `isCancelled` turns true; the caller owns (and removes) `destination` on failure.
@@ -257,11 +261,24 @@ nonisolated enum GuardedZipExtraction {
         try process.run()
 
         var stopReason: (any Error)?
+        // Cancellation is checked every poll; the tree walk, whose cost grows with the number
+        // of extracted files, waits at least `measurementCostMultiplier` times as long as the
+        // last walk took, so a huge archive spends at most ~1/(multiplier+1) of the time
+        // measuring. The final walk after `ditto` exits still enforces the caps exactly.
+        var nextMeasurement = DispatchTime.now()
         while exited.wait(timeout: .now() + pollInterval) == .timedOut {
             if isCancelled() {
                 stopReason = CancellationError()
-            } else if let violation = violation(in: destination, byteCap: byteCap, entryCap: entryCap) {
-                stopReason = violation
+            } else if DispatchTime.now() >= nextMeasurement {
+                let started = DispatchTime.now()
+                if let violation = violation(in: destination, byteCap: byteCap, entryCap: entryCap) {
+                    stopReason = violation
+                }
+                let elapsed = DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds
+                let (wait, overflow) = elapsed.multipliedReportingOverflow(by: measurementCostMultiplier)
+                nextMeasurement = DispatchTime(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+                    + min(overflow ? maximumMeasurementSpacingNanoseconds : wait,
+                          maximumMeasurementSpacingNanoseconds))
             }
             if stopReason != nil {
                 process.terminate()

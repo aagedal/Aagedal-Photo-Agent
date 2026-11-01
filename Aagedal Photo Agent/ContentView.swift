@@ -220,6 +220,54 @@ struct MainWindowCloseObserver: NSViewRepresentable {
     }
 }
 
+/// Offers ⌘W key-downs aimed at the hosting window to `shouldCloseTab` before the menu's
+/// Close item sees them; returning true consumes the key. A local monitor, because SwiftUI's
+/// `Window` scene owns the File ▸ Close item and the window delegate.
+struct MainWindowTabCloseKeyMonitor: NSViewRepresentable {
+    let shouldCloseTab: @MainActor () -> Bool
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.shouldCloseTab = shouldCloseTab
+        return view
+    }
+
+    func updateNSView(_ nsView: MonitorView, context: Context) {
+        nsView.shouldCloseTab = shouldCloseTab
+    }
+
+    nonisolated static func isCloseChord(_ event: NSEvent) -> Bool {
+        // Characters, not the key code: menu key equivalents follow the keyboard layout.
+        event.charactersIgnoringModifiers?.lowercased() == "w"
+            && event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                .subtracting([.capsLock, .numericPad, .function]) == .command
+    }
+
+    final class MonitorView: NSView {
+        var shouldCloseTab: (@MainActor () -> Bool)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard MainWindowTabCloseKeyMonitor.isCloseChord(event) else { return event }
+                let windowNumber = event.windowNumber
+                let consumed = MainActor.assumeIsolated { self?.consumeClose(inWindow: windowNumber) ?? false }
+                return consumed ? nil : event
+            }
+        }
+
+        private func consumeClose(inWindow windowNumber: Int) -> Bool {
+            guard let window, window.windowNumber == windowNumber else { return false }
+            return shouldCloseTab?() == true
+        }
+        // Leaving the window (window == nil above) removes the monitor, so no deinit is needed.
+    }
+}
+
 /// Browser editor quit stage failure: nothing durable holds the edit (the write and its pending
 /// draft fallback both failed). The message already names the photos and the reason.
 nonisolated struct BrowserEditorTerminationError: LocalizedError, Sendable {
@@ -324,7 +372,7 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                      .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-                     .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+                     .showKnownPeopleDatabase, .registerOpenFolderForSidebar, .browserTab,
                      .restoreCaptionEditorFocus:
                     break
                 }
@@ -1183,6 +1231,8 @@ struct ContentView: View {
                                 message: "Open a folder with photos to upload.", systemImage: "info.circle")
                         }
                     }
+                case .browserTab(let tabCommand):
+                    performBrowserTabCommand(tabCommand)
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,
                      .selectPreviousImage, .selectNextImage,
                      .rotateClockwise, .rotateCounterclockwise,
@@ -1381,6 +1431,19 @@ struct ContentView: View {
         }
         // Kept off the long `base`/`body` modifier chains (type-checker budget).
         .background(MainWindowCloseObserver(onWillClose: handleMainWindowWillClose))
+        .background(MainWindowTabCloseKeyMonitor(shouldCloseTab: closeBrowserTabForCommandW))
+    }
+
+    /// ⌘W with browser tabs closes the active tab instead of the window (Safari/Finder/Bridge).
+    /// With one pane, or outside the Browser, the window closes as before. The primary pane
+    /// can't close (it owns the sidebar), so ⌘W on it beeps instead of closing every tab with
+    /// the window.
+    private func closeBrowserTabForCommandW() -> Bool {
+        guard mainViewMode == .browser, !browserViewModel.isFullScreen, panes.hasMultiplePanes else {
+            return false
+        }
+        performBrowserTabCommand(.closeTab)
+        return true
     }
 
     @ViewBuilder
@@ -2544,11 +2607,8 @@ struct ContentView: View {
                     activeFaceCount: faceRecognitionViewModel.faceData?.faces.count ?? 0,
                     activeFaceGroupCount: faceRecognitionViewModel.faceData?.groups.count ?? 0,
                     selectFileVisibility: { settingsViewModel.fileVisibility = $0 },
-                    closeTab: { id in
-                        // The editor follows the active pane only; other tabs close directly.
-                        guard id == panes.activePaneID else { panes.close(id); return }
-                        performAfterBrowserEditorCommit { panes.close(id) }
-                    }
+                    closeTab: closeBrowserPane,
+                    openDroppedFolder: openDroppedFolder
                 )
                 .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
                 .onKeyPress("m") {
@@ -2772,6 +2832,57 @@ struct ContentView: View {
     private var paneLayoutIcon: String {
         if panes.groupCount > 1 { return "rectangle.split.2x1" }
         return panes.hasMultiplePanes ? "square.on.square" : "rectangle"
+    }
+
+    /// The editor follows the active pane only; other tabs close directly.
+    private func closeBrowserPane(_ id: BrowserPaneID) {
+        guard id == panes.activePaneID else { panes.close(id); return }
+        performAfterBrowserEditorCommit { panes.close(id) }
+    }
+
+    /// A folder dropped on a pane opens in that pane (the window-wide drop in
+    /// `ContentViewModifiers` covers the rest of the window and uses the active pane).
+    /// Files that aren't folders are ignored.
+    private func openDroppedFolder(into paneID: BrowserPaneID, providers: [NSItemProvider]) -> Bool {
+        for provider in providers {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in
+                    guard let snapshot = try? await browserViewModel.fileSystemService
+                        .dropSourceSnapshot(for: [url]),
+                          snapshot.directories.first == url,
+                          panes.pane(withID: paneID) != nil
+                    else { return }
+                    // The commit gate saves the departing pane's editor first; the sidebar,
+                    // metadata panel and faces then follow the pane that shows the folder.
+                    performAfterBrowserEditorCommit {
+                        guard let pane = panes.pane(withID: paneID) else { return }
+                        panes.activate(paneID)
+                        pane.loadFolder(url: url, addToOpenFolders: true)
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    /// View ▸ Tabs and ⌘W. Browser workspace only: Develop, Caption, Analysis and Compare
+    /// work on the active pane's photos, so changing the active pane under them would swap
+    /// their photo (the toolbar Layout menu is likewise Browser-only).
+    private func performBrowserTabCommand(_ command: BrowserTabCommand) {
+        guard mainViewMode == .browser, !browserViewModel.isFullScreen else { return }
+        switch command {
+        case .newTab:
+            guard panes.canAddPane else { NSSound.beep(); return }
+            panes.addTab()
+        case .closeTab:
+            guard panes.canCloseActivePane else { NSSound.beep(); return }
+            closeBrowserPane(panes.activePaneID)
+        case .showNextTab:
+            panes.activateAdjacentPane(offset: 1)
+        case .showPreviousTab:
+            panes.activateAdjacentPane(offset: -1)
+        }
     }
 
     /// Close every other pane but keep showing the active pane's folder. The primary pane
@@ -3463,7 +3574,7 @@ struct ContentView: View {
                          .writeAllPendingMetadata, .openCaptionWorkspace,
                          .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                          .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-                         .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+                         .showKnownPeopleDatabase, .registerOpenFolderForSidebar, .browserTab,
                          .restoreCaptionEditorFocus:
                         break
                     }
@@ -5233,7 +5344,7 @@ struct ContentViewModifiers: ViewModifier {
              .writeAllPendingMetadata, .openCaptionWorkspace,
              .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
              .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-             .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+             .showKnownPeopleDatabase, .registerOpenFolderForSidebar, .browserTab,
              .restoreCaptionEditorFocus:
             break
         }

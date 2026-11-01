@@ -141,6 +141,9 @@ nonisolated enum KeyboardShortcutCommand: String, CaseIterable, Codable, Sendabl
     case toggleCleanFeed
     case uploadSelected
     case uploadAll
+    case newBrowserTab
+    case showNextBrowserTab
+    case showPreviousBrowserTab
     case templateOne
     case templateTwo
     case templateThree
@@ -210,6 +213,9 @@ nonisolated enum KeyboardShortcutCommand: String, CaseIterable, Codable, Sendabl
         case .toggleCleanFeed: "Toggle Clean Feed"
         case .uploadSelected: "Upload Selected"
         case .uploadAll: "Upload All"
+        case .newBrowserTab: "New Tab"
+        case .showNextBrowserTab: "Show Next Tab"
+        case .showPreviousBrowserTab: "Show Previous Tab"
         case .templateOne: "Apply Template 1"
         case .templateTwo: "Apply Template 2"
         case .templateThree: "Apply Template 3"
@@ -289,6 +295,9 @@ nonisolated enum KeyboardShortcutCommand: String, CaseIterable, Codable, Sendabl
         case .toggleCleanFeed: "View"
         case .uploadSelected: "Upload"
         case .uploadAll: "Upload"
+        case .newBrowserTab: "Browser"
+        case .showNextBrowserTab: "Browser"
+        case .showPreviousBrowserTab: "Browser"
         case .templateOne: "Templates"
         case .templateTwo: "Templates"
         case .templateThree: "Templates"
@@ -337,6 +346,12 @@ nonisolated enum KeyboardShortcutCommand: String, CaseIterable, Codable, Sendabl
         case .toggleCleanFeed: .init(key: "f", modifiers: [.command, .shift])
         case .uploadSelected: .init(key: "u", modifiers: .command)
         case .uploadAll: .init(key: "u", modifiers: [.command, .shift])
+        // ⌘T is Apply Template. Tabs mirror Previous/Next Image (⌘B/⌘N) with ⌥: Safari's
+        // ⇧⌘[ / ⇧⌘] aren't used because menus match the shifted character ("}") and brackets
+        // need ⌥ on many layouts (Norwegian among them).
+        case .newBrowserTab: .init(key: "t", modifiers: [.command, .option])
+        case .showNextBrowserTab: .init(key: "n", modifiers: [.command, .option])
+        case .showPreviousBrowserTab: .init(key: "b", modifiers: [.command, .option])
         case .templateOne: .init(key: "1", modifiers: .control)
         case .templateTwo: .init(key: "2", modifiers: .control)
         case .templateThree: .init(key: "3", modifiers: .control)

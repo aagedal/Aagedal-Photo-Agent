@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Hosts the thumbnail grid in a Bridge-style layout: tab groups arranged in nested
 /// splits (`BrowserPanesModel.tree`). Drag a tab onto an edge of any pane to split it,
@@ -16,6 +17,8 @@ struct BrowserPaneContainer: View {
     /// Closes a tab through the window's editor-commit gate, so closing the tab the metadata
     /// editor is working on saves (or asks about) its unsaved edits first.
     var closeTab: ((BrowserPaneID) -> Void)? = nil
+    /// Opens a folder dropped from Finder (or the sidebar) in the pane under the cursor.
+    var openDroppedFolder: ((BrowserPaneID, [NSItemProvider]) -> Bool)? = nil
 
     @State private var drag = BrowserPaneDragState()
 
@@ -26,7 +29,8 @@ struct BrowserPaneContainer: View {
             activeFaceCount: activeFaceCount,
             activeFaceGroupCount: activeFaceGroupCount,
             selectFileVisibility: selectFileVisibility,
-            closeTab: closeTab
+            closeTab: closeTab,
+            openDroppedFolder: openDroppedFolder
         )
         // Always the same view path, so adding the first tab or closing the last extra one
         // keeps the primary's grid (scroll position, snapshot) instead of rebuilding it.
@@ -46,6 +50,7 @@ struct BrowserPaneLayoutContext {
     let activeFaceGroupCount: Int
     let selectFileVisibility: ((BrowserFileVisibility) -> Void)?
     let closeTab: ((BrowserPaneID) -> Void)?
+    let openDroppedFolder: ((BrowserPaneID, [NSItemProvider]) -> Bool)?
 }
 
 // MARK: - Drag state
@@ -479,6 +484,11 @@ private struct BrowserPaneSlot: View {
             .contentShape(Rectangle())
             .clipped()
             .simultaneousGesture(TapGesture().onEnded { panes.activate(paneID) })
+            // Attached in every layout (not only with several panes) so the first split
+            // doesn't change this view's structure and rebuild the grid.
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                context.openDroppedFolder?(paneID, providers) ?? false
+            }
             .overlay {
                 if showsActiveChrome && isActive {
                     Rectangle()

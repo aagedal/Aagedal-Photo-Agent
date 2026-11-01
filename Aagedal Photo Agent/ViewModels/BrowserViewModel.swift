@@ -136,6 +136,18 @@ final class BrowserViewModel {
 
     @ObservationIgnored var fullScreenFaceContext: FullScreenFaceContext?
     var errorMessage: String?
+    /// Where sidebar folder operations (new, rename, move, trash) report failures. The sidebar
+    /// is bound to the primary pane, which may be a background tab; `BrowserPanesModel` points
+    /// this at the active pane so the banner shows where the user is looking. Nil: this pane.
+    @ObservationIgnored var folderOperationErrorReporter: ((String) -> Void)?
+
+    private func reportFolderOperationError(_ message: String) {
+        if let folderOperationErrorReporter {
+            folderOperationErrorReporter(message)
+        } else {
+            errorMessage = message
+        }
+    }
     /// Immutable visible-order selection handed to the shared single/batch rename sheet.
     var batchRenameSheetRequest: BatchRenameSheetRequest?
     /// Reserved for failures that prevent the current folder from producing a usable
@@ -3701,7 +3713,7 @@ final class BrowserViewModel {
             } catch is CancellationError {
                 return
             } catch {
-                errorMessage = "Failed to trash folder: \(error.localizedDescription)"
+                reportFolderOperationError("Failed to trash folder: \(error.localizedDescription)")
                 return
             }
 
@@ -3770,7 +3782,7 @@ final class BrowserViewModel {
         do {
             trimmed = try SafePathComponent.validate(renameSubfolderNewName)
         } catch {
-            errorMessage = error.localizedDescription
+            reportFolderOperationError(error.localizedDescription)
             return
         }
         guard trimmed != oldURL.lastPathComponent else { return }
@@ -3793,7 +3805,7 @@ final class BrowserViewModel {
                       evidence.requestedCandidateCount == 1,
                       evidence.checkedCandidateCount == 1,
                       evidence.escapingCandidate == nil else {
-                    errorMessage = "Folder name resolves outside its current parent."
+                    reportFolderOperationError("Folder name resolves outside its current parent.")
                     return
                 }
             case .cancelled:
@@ -3805,10 +3817,10 @@ final class BrowserViewModel {
             } catch is CancellationError {
                 return
             } catch FileSystemService.Error.destinationAlreadyExists {
-                errorMessage = "A folder named \"\(trimmed)\" already exists."
+                reportFolderOperationError("A folder named \"\(trimmed)\" already exists.")
                 return
             } catch {
-                errorMessage = "Failed to rename folder: \(error.localizedDescription)"
+                reportFolderOperationError("Failed to rename folder: \(error.localizedDescription)")
                 return
             }
 
@@ -3873,7 +3885,7 @@ final class BrowserViewModel {
         do {
             trimmed = try SafePathComponent.validate(newSubfolderName, label: "Subfolder name")
         } catch {
-            errorMessage = error.localizedDescription
+            reportFolderOperationError(error.localizedDescription)
             return
         }
 
@@ -3886,10 +3898,10 @@ final class BrowserViewModel {
             } catch is CancellationError {
                 return
             } catch FileSystemService.Error.destinationAlreadyExists {
-                errorMessage = "A folder named \"\(trimmed)\" already exists."
+                reportFolderOperationError("A folder named \"\(trimmed)\" already exists.")
                 return
             } catch {
-                errorMessage = "Failed to create subfolder: \(error.localizedDescription)"
+                reportFolderOperationError("Failed to create subfolder: \(error.localizedDescription)")
                 return
             }
 
@@ -3918,17 +3930,20 @@ final class BrowserViewModel {
     func moveFolder(_ sourceURL: URL, into destinationURL: URL) {
         guard prepareMetadataReviewBeforeMutation({ self.moveFolder(sourceURL, into: destinationURL) }) else { return }
         let sourcePath = sourceURL.path(percentEncoded: false)
-        let destPath = destinationURL.path(percentEncoded: false)
 
+        // Compare standardized paths: directory URLs (sidebar rows, Finder drags) carry a
+        // trailing slash in `path(percentEncoded:)`, which made `sourcePath + "/"` never match.
+        let sourceKey = sourceURL.standardizedFileURL.path
+        let destinationKey = destinationURL.standardizedFileURL.path
         // Can't move into itself
-        guard sourceURL != destinationURL else { return }
+        guard sourceKey != destinationKey else { return }
         // Can't move into own descendant
-        guard !destPath.hasPrefix(sourcePath + "/") else {
-            errorMessage = "Cannot move a folder into its own subfolder."
+        guard !isFolder(destinationURL, atOrBelow: sourceURL) else {
+            reportFolderOperationError("Cannot move a folder into its own subfolder.")
             return
         }
         // Already in that parent — no-op
-        guard sourceURL.deletingLastPathComponent().path(percentEncoded: false) != destPath else { return }
+        guard sourceURL.standardizedFileURL.deletingLastPathComponent().path != destinationKey else { return }
 
         let newURL = destinationURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: true)
 
@@ -3940,10 +3955,10 @@ final class BrowserViewModel {
             } catch is CancellationError {
                 return
             } catch FileSystemService.Error.destinationAlreadyExists {
-                errorMessage = "A folder named \"\(sourceURL.lastPathComponent)\" already exists in \"\(destinationURL.lastPathComponent)\"."
+                reportFolderOperationError("A folder named \"\(sourceURL.lastPathComponent)\" already exists in \"\(destinationURL.lastPathComponent)\".")
                 return
             } catch {
-                errorMessage = "Failed to move folder: \(error.localizedDescription)"
+                reportFolderOperationError("Failed to move folder: \(error.localizedDescription)")
                 return
             }
 

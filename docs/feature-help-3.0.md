@@ -24,7 +24,12 @@ Use the **Workspace** menu in the toolbar to open one of these workspaces. The s
 into tabs, or returns to a Single Pane. Drag a pane's tab onto the edge of any pane to split it there,
 or onto another tab bar to move it in as a tab. Click a pane (or its tab), then a sidebar folder, to
 open that folder in it; the sidebar shows the active pane's folder with a solid highlight and the
-other panes' folders with a split icon. Returning to Browser preserves the layout. Metadata Review also has a **Back to Browser**
+other panes' folders with a split icon. Dropping a folder from Finder (or the sidebar) onto a pane
+opens it in that pane. View ▸ Tabs has the same commands from the keyboard: New Tab (⌥⌘T), Show
+Next / Previous Tab (⌥⌘N / ⌥⌘B, every tab of every pane in reading order) and Close Tab; ⌘W closes
+the active tab instead of the window while the browser has more than one pane (the first tab, which
+owns the sidebar, can't be closed). The New Tab and Next / Previous shortcuts can be changed in
+Settings → Shortcuts. Returning to Browser preserves the layout. Metadata Review also has a **Back to Browser**
 button for leaving the review table.
 
 - **Caption Workspace** works through the visible folder with a compact field navigator, validation,

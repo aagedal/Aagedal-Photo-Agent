@@ -56,6 +56,16 @@ enum AppCommand: Equatable, Sendable {
     case showKnownPeopleDatabase
     case registerOpenFolderForSidebar(URL)
     case restoreCaptionEditorFocus
+    case browserTab(BrowserTabCommand)
+}
+
+/// Browser pane tab commands (View menu). They only act in the Browser workspace: the
+/// editors follow the active pane, so switching it under them would change their photo.
+enum BrowserTabCommand: Equatable, Sendable {
+    case newTab
+    case closeTab
+    case showNextTab
+    case showPreviousTab
 }
 
 extension AppCommand {
