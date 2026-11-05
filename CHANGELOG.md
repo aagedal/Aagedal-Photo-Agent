@@ -17,6 +17,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Fixes a rare crash when a watched folder changed just as you left it.
 - Develop: painting a brush mask no longer stutters while the preview is busy.
 - Scopes on very tall panoramas no longer use hundreds of megabytes of memory on every update.
+- Browser tabs: closing a tab while its unsaved caption prompt was open, then opening a new tab, could close the new tab instead; a folder dropped on a tab that closed meanwhile could open in another tab. Both now act only on the original tab.
 
 ## 3.0.0-beta.5 — 2026-10-30
 

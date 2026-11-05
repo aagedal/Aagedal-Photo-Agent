@@ -136,6 +136,16 @@ struct BrowserPanesModelTests {
 
     /// Sidebar folder operations run on the primary pane (it owns the sidebar), which may be a
     /// background tab; their failures must show in the pane the user is looking at.
+    @Test func liveIDResolvesOnlyPanesThatAreStillOpen() throws {
+        let model = makeModel()
+        let tab = try #require(model.addTab())
+        #expect(model.liveID(of: tab) == BrowserPaneID(tab))
+        model.close(BrowserPaneID(tab))
+        #expect(model.liveID(of: tab) == nil)
+        #expect(model.liveID(of: nil) == nil)
+        #expect(model.liveID(of: BrowserViewModel()) == nil)
+    }
+
     @Test func sidebarFolderErrorsShowInTheActivePane() throws {
         let model = makeModel()
         let parent = URL(fileURLWithPath: "/tmp/panes-sidebar-parent", isDirectory: true)
