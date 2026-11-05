@@ -13,6 +13,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Browser tabs from the keyboard: View ▸ Tabs adds New Tab (⌥⌘T), Show Next / Previous Tab (⌥⌘N / ⌥⌘B) and Close Tab, and ⌘W now closes the active tab instead of the whole window while the browser has more than one pane. The shortcuts can be changed in Settings → Shortcuts.
 - Dropping a folder from Finder onto a browser pane opens it in that pane (it used to open in whichever pane was active). Errors from sidebar folder actions (new, rename, move, trash) now show in the pane you're looking at instead of the first tab, and moving a folder into its own subfolder is refused with a clear message.
 - Unpacking a very large Image Analysis project no longer spends much of its time re-measuring the files it has already unpacked.
+- Known People with iCloud sync: clearing a replaced library while iCloud had offloaded its sync state to the cloud could still remove the whole library and stop sync on your other Macs. It now keeps the shared library, and offloaded people are removed instead of coming back later.
+- Fixes a rare crash when a watched folder changed just as you left it.
+- Develop: painting a brush mask no longer stutters while the preview is busy.
+- Scopes on very tall panoramas no longer use hundreds of megabytes of memory on every update.
 
 ## 3.0.0-beta.5 — 2026-10-30
 

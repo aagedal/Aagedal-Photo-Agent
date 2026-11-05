@@ -2992,9 +2992,18 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setTexture(tex, index: 0)
         Self.encodeStroke(stroke, layer: layer, size: size, into: encoder)
         encoder.endEncoding()
+        // No wait: this runs on the main thread per drag event, and every reader/writer of the
+        // alpha texture (live frames, rebuilds) is GPU work on this same queue, so it's ordered.
+        commandBuffer.commit()
+        return true
+    }
+
+    /// Blocks until all work already committed to the command queue has finished, so a CPU
+    /// read (tests) sees the result of a non-blocking call like `stampBrushStroke`.
+    nonisolated func waitForCommittedGPUWork() {
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        return true
     }
 
     /// Frees the brush alpha texture (e.g. when the last brush mask is removed).
@@ -4673,6 +4682,7 @@ final class MetalLivePreviewPipeline {
     func stampBrushStroke(_ stroke: BrushStroke, layer: Int) -> Bool {
         engine.stampBrushStroke(stroke, layer: layer)
     }
+    func waitForCommittedGPUWork() { engine.waitForCommittedGPUWork() }
     func clearBrushAlpha() { engine.clearBrushAlpha() }
     func refreshMaskAlpha(_ sources: [MaskAlphaSource], size: MTLSize) {
         engine.refreshMaskAlpha(sources, size: size)

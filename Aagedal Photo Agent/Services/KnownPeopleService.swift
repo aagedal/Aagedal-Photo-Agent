@@ -448,7 +448,10 @@ actor KnownPeopleArchiveService {
             try Task.checkCancellation()
             removalAttempted = true
             let stateURL = root.appendingPathComponent(KnownPeopleManagedStoreState.fileName)
-            if access.itemExists(stateURL) {
+            // iCloud may have evicted the state file to a `.<name>.icloud` placeholder; it still
+            // marks a managed library, and missing it here would remove the whole root.
+            let evictedStateURL = root.appendingPathComponent(".\(KnownPeopleManagedStoreState.fileName).icloud")
+            if access.itemExists(stateURL) || access.itemExists(evictedStateURL) {
                 // A managed (replaced) library: every Mac validates the iCloud generation
                 // pointer against this state and its admitted package. Removing the whole root
                 // would leave the pointer dangling and stop sync on all of them, so clear only

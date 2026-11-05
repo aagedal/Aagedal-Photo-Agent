@@ -5840,6 +5840,7 @@ struct BrushRasterizationTests {
             layer: 0
         )
         #expect(stamped)
+        pipeline.waitForCommittedGPUWork()
         let px = readSlice(try #require(pipeline.brushAlphaTexture), slice: 0)
         func at(_ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
         #expect(at(16, 16) > 0.5)   // original dab survived

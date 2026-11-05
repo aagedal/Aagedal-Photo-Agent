@@ -160,6 +160,17 @@ nonisolated struct ScopeRenderService: Sendable {
     /// Reference size the fixed layout constants were designed for.
     private static let refSize: CGFloat = 720
 
+    /// Row cap for the downsampled scope source. Rows only add sample density, so a tall
+    /// panorama (10:1) would otherwise allocate hundreds of MB of floats per render.
+    private static let maxSampleRows = 2048
+
+    /// Downsample height that keeps the source aspect, capped at `maxSampleRows`.
+    private static func sampleRows(forWidth width: Int, aspect: CGFloat) -> Int {
+        let rows = CGFloat(width) * aspect
+        guard rows.isFinite else { return 1 }
+        return min(max(Int(rows), 1), maxSampleRows)
+    }
+
     /// Compute layout metrics scaled proportionally to the output width.
     private static func metrics(for width: Int) -> (labelMargin: Int, verticalMargin: Int) {
         let scale = CGFloat(width) / refSize
@@ -208,7 +219,7 @@ nonisolated struct ScopeRenderService: Sendable {
         guard dataW > 0 else { return nil }
 
         let srcAspect = CGFloat(cgImage.height) / CGFloat(cgImage.width)
-        let sampleH = max(Int(CGFloat(dataW) * srcAspect), 1)
+        let sampleH = Self.sampleRows(forWidth: dataW, aspect: srcAspect)
 
         let levels = outH
 
@@ -367,7 +378,7 @@ nonisolated struct ScopeRenderService: Sendable {
 
         let srcAspect = CGFloat(cgImage.height) / CGFloat(cgImage.width)
         let sampleW = channelW
-        let sampleH = max(Int(CGFloat(channelW) * srcAspect), 1)
+        let sampleH = Self.sampleRows(forWidth: channelW, aspect: srcAspect)
 
         let levels = outH
         let binCount = channelW * levels
@@ -507,7 +518,7 @@ nonisolated struct ScopeRenderService: Sendable {
         let workSize = min(size, 360)
         let srcAspect = CGFloat(cgImage.height) / CGFloat(cgImage.width)
         let sampleW = workSize
-        let sampleH = max(Int(CGFloat(workSize) * srcAspect), 1)
+        let sampleH = Self.sampleRows(forWidth: workSize, aspect: srcAspect)
         guard let pixelData = downsampledPixels(from: cgImage, width: sampleW, height: sampleH) else {
             return nil
         }
@@ -654,7 +665,7 @@ nonisolated struct ScopeRenderService: Sendable {
         let workSize = min(size, 360)
         let srcAspect = CGFloat(cgImage.height) / CGFloat(cgImage.width)
         let sampleW = workSize
-        let sampleH = max(Int(CGFloat(workSize) * srcAspect), 1)
+        let sampleH = Self.sampleRows(forWidth: workSize, aspect: srcAspect)
         guard let floatData = downsampledFloatPixels(from: cgImage, width: sampleW, height: sampleH) else {
             return nil
         }
