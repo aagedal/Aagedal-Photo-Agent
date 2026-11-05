@@ -68,8 +68,17 @@ nonisolated enum CloudCoordinatedIO {
     /// Coordinated delete. A missing item is treated as success.
     static func removeItem(at url: URL) throws {
         try coordinateWrite(url, options: .forDeleting) { dest in
-            if FileManager.default.fileExists(atPath: dest.path) {
-                try FileManager.default.removeItem(at: dest)
+            let fm = FileManager.default
+            if fm.fileExists(atPath: dest.path) {
+                try fm.removeItem(at: dest)
+            } else {
+                // A not-yet-downloaded item exists only as its hidden placeholder; deleting
+                // the stub deletes the item, otherwise it would survive and re-download later.
+                let placeholder = dest.deletingLastPathComponent()
+                    .appendingPathComponent(".\(dest.lastPathComponent).icloud")
+                if fm.fileExists(atPath: placeholder.path) {
+                    try fm.removeItem(at: placeholder)
+                }
             }
         }
     }

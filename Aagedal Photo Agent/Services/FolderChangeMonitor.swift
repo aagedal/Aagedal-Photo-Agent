@@ -179,16 +179,29 @@ nonisolated final class FolderChangeMonitor: @unchecked Sendable {
         )
         self.onChange = onChange
 
+        // The stream owns a retained weak box rather than an unretained `self`: a batch already
+        // queued on `callbackQueue` when the monitor is released would otherwise call `receive`
+        // on a freed object, since Stop/Invalidate don't wait for in-flight queue callbacks.
+        let box = Unmanaged.passRetained(WeakMonitorBox(self))
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
-            retain: nil,
-            release: nil,
+            info: box.toOpaque(),
+            retain: { info in
+                guard let info else { return nil }
+                _ = Unmanaged<WeakMonitorBox>.fromOpaque(info).retain()
+                return info
+            },
+            release: { info in
+                guard let info else { return }
+                Unmanaged<WeakMonitorBox>.fromOpaque(info).release()
+            },
             copyDescription: nil
         )
+        defer { box.release() }
         let callback: FSEventStreamCallback = { _, info, eventCount, eventPaths, eventFlags, _ in
-            guard eventCount > 0, let info else { return }
-            let monitor = Unmanaged<FolderChangeMonitor>.fromOpaque(info).takeUnretainedValue()
+            guard eventCount > 0, let info,
+                  let monitor = Unmanaged<WeakMonitorBox>.fromOpaque(info).takeUnretainedValue().monitor
+            else { return }
             monitor.receive(
                 eventCount: eventCount,
                 paths: eventPaths,
@@ -235,6 +248,11 @@ nonisolated final class FolderChangeMonitor: @unchecked Sendable {
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
+    }
+
+    nonisolated private final class WeakMonitorBox: @unchecked Sendable {
+        weak var monitor: FolderChangeMonitor?
+        init(_ monitor: FolderChangeMonitor) { self.monitor = monitor }
     }
 
     private func receive(

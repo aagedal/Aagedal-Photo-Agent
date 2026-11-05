@@ -83,6 +83,14 @@ final class BrowserPanesModel {
         panes.first { BrowserPaneID($0) == id }
     }
 
+    /// The ID of `pane` if it is still open. A `BrowserPaneID` is the pane's object address,
+    /// which a newly opened pane can reuse once a closed one is freed, so code that holds a
+    /// pane across an `await` keeps a weak reference and resolves its ID afterwards.
+    func liveID(of pane: BrowserViewModel?) -> BrowserPaneID? {
+        guard let pane, panes.contains(where: { $0 === pane }) else { return nil }
+        return BrowserPaneID(pane)
+    }
+
     func isPrimary(_ id: BrowserPaneID) -> Bool {
         id == BrowserPaneID(panes[0])
     }

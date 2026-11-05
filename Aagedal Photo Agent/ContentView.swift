@@ -2837,27 +2837,33 @@ struct ContentView: View {
     /// The editor follows the active pane only; other tabs close directly.
     private func closeBrowserPane(_ id: BrowserPaneID) {
         guard id == panes.activePaneID else { panes.close(id); return }
-        performAfterBrowserEditorCommit { panes.close(id) }
+        // The commit can await a save prompt; by then this pane may be gone and its ID reused.
+        let pane = panes.pane(withID: id)
+        performAfterBrowserEditorCommit { [weak pane] in
+            if let id = panes.liveID(of: pane) { panes.close(id) }
+        }
     }
 
     /// A folder dropped on a pane opens in that pane (the window-wide drop in
     /// `ContentViewModifiers` covers the rest of the window and uses the active pane).
     /// Files that aren't folders are ignored.
     private func openDroppedFolder(into paneID: BrowserPaneID, providers: [NSItemProvider]) -> Bool {
+        // Held weakly across the awaits below: a closed pane's ID can be reused by a new one.
+        let target = panes.pane(withID: paneID)
         for provider in providers {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            _ = provider.loadObject(ofClass: URL.self) { [weak target] url, _ in
                 guard let url else { return }
-                Task { @MainActor in
+                Task { @MainActor [weak target] in
                     guard let snapshot = try? await browserViewModel.fileSystemService
                         .dropSourceSnapshot(for: [url]),
                           snapshot.directories.first == url,
-                          panes.pane(withID: paneID) != nil
+                          panes.liveID(of: target) != nil
                     else { return }
                     // The commit gate saves the departing pane's editor first; the sidebar,
                     // metadata panel and faces then follow the pane that shows the folder.
                     performAfterBrowserEditorCommit {
-                        guard let pane = panes.pane(withID: paneID) else { return }
-                        panes.activate(paneID)
+                        guard let pane = target, let id = panes.liveID(of: pane) else { return }
+                        panes.activate(id)
                         pane.loadFolder(url: url, addToOpenFolders: true)
                     }
                 }

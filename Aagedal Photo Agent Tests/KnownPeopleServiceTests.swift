@@ -768,6 +768,27 @@ struct KnownPeopleServiceTests {
         #expect(try fm.contentsOfDirectory(atPath: directory.appendingPathComponent("people").path).isEmpty)
     }
 
+    @Test("Clearing a replaced library whose state iCloud evicted keeps the root and removes evicted people")
+    func clearKeepsEvictedManagedGenerationState() async throws {
+        let directory = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fm = FileManager.default
+        let evictedState = directory.appendingPathComponent(".\(KnownPeopleManagedStoreState.fileName).icloud")
+        let admitted = directory.appendingPathComponent(".admitted-package/editor", isDirectory: true)
+        let evictedLegacy = directory.appendingPathComponent(".database.json.icloud")
+        try fm.createDirectory(at: admitted, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: evictedState)
+        try Data([1]).write(to: admitted.appendingPathComponent("manifest.json"))
+        try Data("{}".utf8).write(to: evictedLegacy)
+
+        let result = await KnownPeopleArchiveService().clearDatabase(root: directory)
+
+        try result.completion.get()
+        #expect(fm.fileExists(atPath: evictedState.path))
+        #expect(fm.fileExists(atPath: admitted.appendingPathComponent("manifest.json").path))
+        #expect(!fm.fileExists(atPath: evictedLegacy.path))
+    }
+
     @Test("Clear cancelled before admission leaves disk untouched and releases ownership")
     func cancelledDatabaseClearBeforeAdmission() async throws {
         let directory = makeTempDir()
