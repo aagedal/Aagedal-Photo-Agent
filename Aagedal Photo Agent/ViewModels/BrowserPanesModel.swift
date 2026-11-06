@@ -44,18 +44,38 @@ final class BrowserPanesModel {
         self.tree = BrowserPaneTree(single: primaryID)
         self.activePaneID = primaryID
         self.visiblePaneIDs = [primaryID]
-        primary.paneOwningImages = { [weak self] urls in self?.pane(owningImagesAt: urls) }
+        primary.paneOwningImages = { [weak self] urls, dragSource in
+            self?.pane(owningImagesAt: urls, draggedFrom: dragSource)
+        }
+        primary.paneDraggingImages = { [weak self] in self?.paneDraggingImages }
         primary.folderOperationErrorReporter = { [weak self, weak primary] message in
             (self?.active ?? primary)?.errorMessage = message
         }
     }
 
-    /// The pane listing the folder the photos were dragged from, preferring the active one when
-    /// several tabs show it. Nil for files from outside every pane (a Finder drag).
-    func pane(owningImagesAt urls: [URL]) -> BrowserViewModel? {
+    /// The pane listing the folder the photos were dragged from. When several panes show that
+    /// folder, the grid the drag started in wins, then the active pane, then one on screen, so a
+    /// move never runs through a hidden tab. Nil for files from outside every pane (a Finder drag).
+    func pane(owningImagesAt urls: [URL], draggedFrom dragSource: BrowserViewModel? = nil) -> BrowserViewModel? {
         guard let folder = urls.first?.deletingLastPathComponent().standardizedFileURL else { return nil }
         let owners = panes.filter { $0.currentFolderURL?.standardizedFileURL == folder }
-        return owners.first { $0 === active } ?? owners.first
+        let visible = visiblePanes
+        return owners.first { $0 === dragSource }
+            ?? owners.first { $0 === active }
+            ?? owners.first { pane in visible.contains { $0 === pane } }
+            ?? owners.first
+    }
+
+    /// The pane whose grid has a photo drag in flight. Drop targets must read it synchronously:
+    /// the grid clears its dragged URLs when the session ends, before an async drop resolves.
+    var paneDraggingImages: BrowserViewModel? {
+        panes.first { !$0.draggedImageURLs.isEmpty }
+    }
+
+    /// Where a pane's file-operation banners go: the pane itself while it is on screen,
+    /// otherwise the active pane, so a move run through a background tab still reports.
+    private func paneShowingErrors(for pane: BrowserViewModel) -> BrowserViewModel {
+        visiblePanes.contains { $0 === pane } ? pane : active
     }
 
     /// Every `tree` change goes through here so the stored summaries stay in sync.
@@ -138,6 +158,10 @@ final class BrowserPanesModel {
             fullScreenImageCache: sharedFullScreenImageCache
         )
         configurePane?(pane)
+        pane.folderOperationErrorReporter = { [weak self, weak pane] message in
+            guard let pane else { return }
+            (self?.paneShowingErrors(for: pane) ?? pane).errorMessage = message
+        }
         panes.append(pane)
         return pane
     }

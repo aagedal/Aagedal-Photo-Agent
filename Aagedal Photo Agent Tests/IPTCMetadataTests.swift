@@ -5521,9 +5521,10 @@ struct BrushRasterizationTests {
         #expect(at(56, 32) < 0.1)
     }
 
-    /// Every committed brush stroke rebuilds the shared raster alpha. The AI mattes in it must
-    /// come from a texture cache keyed by PNG bytes + refinement, not be re-decoded each time.
-    @Test("AI matte textures are decoded once per matte and refinement across rebuilds")
+    /// Every committed brush stroke and every refine-slider tick rebuilds the shared raster
+    /// alpha. The AI mattes in it must come from a texture cache keyed by PNG bytes, not be
+    /// re-decoded each time.
+    @Test("AI matte textures are decoded once per matte across rebuilds and refinements")
     func aiMaskTextureCacheHit() throws {
         guard let pipeline = makePipeline() else { return }
         let png = try #require(grayscalePNG([255, 0, 255, 0], width: 2, height: 2))
@@ -5554,15 +5555,22 @@ struct BrushRasterizationTests {
         #expect(pipeline.aiMaskTextureDecodeCount == 1)
         #expect(second == first)
 
-        // A refinement change is a different texture and decodes once.
+        // Refinement is applied on the GPU from the cached matte: no further decodes.
         var refined = ai
         refined.blackPoint = 0.25
         _ = pipeline.rebuildMaskAlpha([.ai(refined), .brush(twoStrokes)], size: size)
-        #expect(pipeline.aiMaskTextureDecodeCount == 2)
+        refined.blurRadius = 0.01
         _ = pipeline.rebuildMaskAlpha([.ai(refined), .brush(oneStroke)], size: size)
-        #expect(pipeline.aiMaskTextureDecodeCount == 2)
+        #expect(pipeline.aiMaskTextureDecodeCount == 1)
+        #expect(pipeline.cachedAIMaskTextureCount == 1)
 
         // Mattes no longer referenced are pruned, so the original decodes again when it returns.
+        let otherPNG = try #require(grayscalePNG([0, 255, 0, 255], width: 2, height: 2))
+        _ = pipeline.rebuildMaskAlpha(
+            [.ai(AIMaskGeometry(width: 2, height: 2, pngData: otherPNG)), .brush(oneStroke)],
+            size: size
+        )
+        #expect(pipeline.aiMaskTextureDecodeCount == 2)
         let restored = readSlice(
             try #require(pipeline.rebuildMaskAlpha([.ai(ai), .brush(oneStroke)], size: size)),
             slice: 0
@@ -5606,6 +5614,120 @@ struct BrushRasterizationTests {
         #expect(pixels[2] > 0.48 && pixels[2] < 0.53)
         #expect(pixels[3] > 0.98)
         #expect(pixels[4] > 0.99)
+    }
+
+    /// Reference for the GPU refinement: the pre-GPU implementation, which decoded the PNG
+    /// with Core Image, applied the same levels + blur graph and read back R8 on the CPU.
+    private func cpuRefinedMatte(_ mask: AIMaskGeometry) throws -> [UInt8] {
+        var image = try #require(CIImage(data: mask.pngData, options: [.colorSpace: NSNull()]))
+        let extent = image.extent.integral
+        let black = mask.resolvedBlackPoint
+        let white = max(mask.resolvedWhitePoint, black + 0.01)
+        if black > 0.000001 || white < 0.999999 {
+            let scale = CGFloat(1 / (white - black))
+            let bias = CGFloat(-black) * scale
+            image = image.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: scale, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: scale, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: scale, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputBiasVector": CIVector(x: bias, y: bias, z: bias, w: 0),
+            ]).cropped(to: extent)
+        }
+        let blurPixels = CGFloat(mask.resolvedBlurRadius) * max(extent.width, extent.height)
+        if blurPixels > 0.01 {
+            image = image.applyingFilter("CIGaussianBlur", parameters: [
+                kCIInputRadiusKey: blurPixels,
+            ]).cropped(to: extent)
+        }
+        let width = Int(extent.width)
+        var bytes = [UInt8](repeating: 0, count: width * Int(extent.height))
+        let context = CIContext(options: [
+            .workingFormat: CIFormat.RGBAh,
+            .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+        ])
+        context.render(image, toBitmap: &bytes, rowBytes: width, bounds: extent, format: .R8, colorSpace: nil)
+        return bytes
+    }
+
+    /// An asymmetric matte (diagonal ramp plus a hard block in one corner) so a flip, a lost
+    /// level or a different blur kernel all show up.
+    private func asymmetricMattePNG(width: Int, height: Int) throws -> Data {
+        let bytes = (0..<(width * height)).map { index -> UInt8 in
+            let x = index % width, y = index / width
+            if x < width / 3 && y < height / 4 { return 255 }
+            return UInt8((x * 160 + y * 95) / (width + height))
+        }
+        return try #require(grayscalePNG(bytes, width: width, height: height))
+    }
+
+    @Test(
+        "GPU AI-matte refinement matches the CPU Core Image reference pixel for pixel",
+        arguments: [
+            (0.0, 1.0, 0.0),
+            (0.2, 0.8, 0.0),
+            (0.0, 1.0, 0.015),
+            (0.1, 0.6, 0.008),
+        ]
+    )
+    func aiMaskGPURefinementMatchesReference(black: Double, white: Double, blur: Double) throws {
+        guard let pipeline = makePipeline() else { return }
+        let width = 96, height = 64
+        let ai = AIMaskGeometry(
+            width: width,
+            height: height,
+            pngData: try asymmetricMattePNG(width: width, height: height),
+            blackPoint: black,
+            whitePoint: white,
+            blurRadius: blur
+        )
+        let expected = try cpuRefinedMatte(ai)
+        // Same size as the matte, so the scaling blit samples texel centres exactly.
+        let tex = try #require(pipeline.rebuildMaskAlpha(
+            [.ai(ai)],
+            size: MTLSize(width: width, height: height, depth: 1)
+        ))
+        let actual = readSlice(tex, slice: 0)
+        var worst: Float = 0
+        for index in expected.indices {
+            worst = max(worst, abs(actual[index] - Float(expected[index]) / 255))
+        }
+        // One R8 step covers GPU vs CPU rounding of the final 8-bit write.
+        #expect(worst <= 1.0 / 255 + 0.001, "max difference \(worst)")
+    }
+
+    /// The live refine-slider path re-blits only the AI slice into the existing alpha array; it
+    /// must land on exactly what a full rebuild produces, and leave the brush slice untouched.
+    @Test("a refine-only change updates the AI slice in place, matching a full rebuild")
+    func aiMaskRefineFastPathMatchesFullRebuild() throws {
+        guard let refreshing = makePipeline(), let rebuilding = makePipeline() else { return }
+        let width = 96, height = 64
+        let size = MTLSize(width: width, height: height, depth: 1)
+        var ai = AIMaskGeometry(
+            width: width,
+            height: height,
+            pngData: try asymmetricMattePNG(width: width, height: height)
+        )
+        let brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.6, y: 0.4, flow: 1.0, hardness: 0.5)],
+                        radius: 0.1, density: 1.0, erase: false)
+        ])
+        refreshing.refreshMaskAlpha([.ai(ai), .brush(brush)], size: size)
+        let initial = try #require(refreshing.brushAlphaTexture)
+        let brushBefore = readSlice(initial, slice: 1)
+
+        ai.blackPoint = 0.15
+        ai.whitePoint = 0.7
+        ai.blurRadius = 0.01
+        refreshing.refreshMaskAlpha([.ai(ai), .brush(brush)], size: size)
+        refreshing.waitForCommittedGPUWork()
+        let updated = try #require(refreshing.brushAlphaTexture)
+        #expect(updated === initial)
+
+        let reference = try #require(rebuilding.rebuildMaskAlpha([.ai(ai), .brush(brush)], size: size))
+        #expect(readSlice(updated, slice: 0) == readSlice(reference, slice: 0))
+        #expect(readSlice(updated, slice: 1) == brushBefore)
+        #expect(refreshing.aiMaskTextureDecodeCount == 1)
     }
 
     @Test("AI matte blur softens both sides of a hard contour")

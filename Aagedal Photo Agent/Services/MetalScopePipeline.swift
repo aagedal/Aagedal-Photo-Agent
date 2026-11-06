@@ -55,9 +55,7 @@ final class MetalScopePipeline: @unchecked Sendable {
 
     // Buffers
     nonisolated(unsafe) private let binBuffer: MTLBuffer
-    nonisolated(unsafe) private let scopeParamsBuffer: MTLBuffer
     nonisolated(unsafe) private let maxCountBuffer: MTLBuffer
-    nonisolated(unsafe) private let binCountBuffer: MTLBuffer
     /// Zero-filled HSL params buffer used when the edit pipeline has no HSL buffer.
     nonisolated(unsafe) private let emptyHSLBuffer: MTLBuffer
     /// Fallback layer-order buffer (all global-sentinel) bound when the edit pipeline passes
@@ -138,9 +136,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             )
         }
         guard let binBuf = device.makeBuffer(length: maxBinBytes, options: .storageModeShared),
-              let paramsBuf = device.makeBuffer(length: MemoryLayout<ScopeParams>.stride, options: .storageModeShared),
               let maxBuf = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared),
-              let binCountBuf = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared),
               let emptyHSL = device.makeBuffer(length: MemoryLayout<HSLParams>.stride, options: .storageModeShared),
               let emptyOrder = device.makeBuffer(length: MemoryLayout<UInt32>.size * 16, options: .storageModeShared),
               let boundaryBuffer
@@ -151,9 +147,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         memset(emptyHSL.contents(), 0, MemoryLayout<HSLParams>.stride)
         memset(emptyOrder.contents(), 0xFF, MemoryLayout<UInt32>.size * 16)  // all global-sentinel
         self.binBuffer = binBuf
-        self.scopeParamsBuffer = paramsBuf
         self.maxCountBuffer = maxBuf
-        self.binCountBuffer = binCountBuf
         self.emptyHSLBuffer = emptyHSL
         self.emptyOrderBuffer = emptyOrder
         self.spectralBoundaryBuffer = boundaryBuffer
@@ -295,9 +289,9 @@ final class MetalScopePipeline: @unchecked Sendable {
         let binCount = Int(params.dataWidth * params.levels)
         let binBufferSize = binCount * 4 * MemoryLayout<UInt32>.size  // counts + 3 color channels
 
-        // Write scope params
-        let paramsPtr = scopeParamsBuffer.contents().bindMemory(to: ScopeParams.self, capacity: 1)
-        paramsPtr.pointee = params
+        // Small per-frame constants go inline with the command (`setBytes`): the scope view draws at
+        // up to 120 Hz with frames in flight, so rewriting one shared buffer could race the GPU.
+        var scopeParams = params
 
         // Step 1: Clear bins + maxCount
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { return false }
@@ -313,7 +307,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         accum.setTexture(colorLUTTexture, index: 2)
         accum.setBuffer(binBuffer, offset: 0, index: 0)
         accum.setBuffer(editParamsBuffer, offset: 0, index: 1)
-        accum.setBuffer(scopeParamsBuffer, offset: 0, index: 2)
+        accum.setBytes(&scopeParams, length: MemoryLayout<ScopeParams>.stride, index: 2)
         if let maskBuf = maskBuffer {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
@@ -332,7 +326,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         render.setComputePipelineState(waveformRenderState)
         render.setTexture(outputTexture, index: 0)
         render.setBuffer(binBuffer, offset: 0, index: 0)
-        render.setBuffer(scopeParamsBuffer, offset: 0, index: 1)
+        render.setBytes(&scopeParams, length: MemoryLayout<ScopeParams>.stride, index: 1)
         render.setBuffer(maxCountBuffer, offset: 0, index: 2)
         let renderGrid = MTLSize(width: Int(params.outputWidth), height: Int(params.outputHeight), depth: 1)
         render.dispatchThreads(renderGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
@@ -360,8 +354,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         let channelBinCount = Int(params.channelWidth * params.levels)
         let binBufferSize = channelBinCount * 4 * MemoryLayout<UInt32>.size  // 4 channels
 
-        let paramsPtr = scopeParamsBuffer.contents().bindMemory(to: ScopeParams.self, capacity: 1)
-        paramsPtr.pointee = params
+        var scopeParams = params
 
         // Step 1: Clear
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { return false }
@@ -377,7 +370,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         accum.setTexture(colorLUTTexture, index: 2)
         accum.setBuffer(binBuffer, offset: 0, index: 0)
         accum.setBuffer(editParamsBuffer, offset: 0, index: 1)
-        accum.setBuffer(scopeParamsBuffer, offset: 0, index: 2)
+        accum.setBytes(&scopeParams, length: MemoryLayout<ScopeParams>.stride, index: 2)
         if let maskBuf = maskBuffer {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
@@ -395,7 +388,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         render.setComputePipelineState(paradeRenderState)
         render.setTexture(outputTexture, index: 0)
         render.setBuffer(binBuffer, offset: 0, index: 0)
-        render.setBuffer(scopeParamsBuffer, offset: 0, index: 1)
+        render.setBytes(&scopeParams, length: MemoryLayout<ScopeParams>.stride, index: 1)
         render.setBuffer(maxCountBuffer, offset: 0, index: 2)
         let renderGrid = MTLSize(width: Int(params.outputWidth), height: Int(params.outputHeight), depth: 1)
         render.dispatchThreads(renderGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
@@ -422,8 +415,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         let pixelCount = Int(params.outputWidth * params.outputHeight)
         let binBufferSize = pixelCount * 4 * MemoryLayout<UInt32>.size
 
-        let paramsPtr = scopeParamsBuffer.contents().bindMemory(to: ScopeParams.self, capacity: 1)
-        paramsPtr.pointee = params
+        var scopeParams = params
 
         // Step 1: Clear
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { return false }
@@ -439,7 +431,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         accum.setTexture(colorLUTTexture, index: 2)
         accum.setBuffer(binBuffer, offset: 0, index: 0)
         accum.setBuffer(editParamsBuffer, offset: 0, index: 1)
-        accum.setBuffer(scopeParamsBuffer, offset: 0, index: 2)
+        accum.setBytes(&scopeParams, length: MemoryLayout<ScopeParams>.stride, index: 2)
         if let maskBuf = maskBuffer {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
@@ -457,7 +449,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         render.setComputePipelineState(vectorscopeRenderState)
         render.setTexture(outputTexture, index: 0)
         render.setBuffer(binBuffer, offset: 0, index: 0)
-        render.setBuffer(scopeParamsBuffer, offset: 0, index: 1)
+        render.setBytes(&scopeParams, length: MemoryLayout<ScopeParams>.stride, index: 1)
         render.setBuffer(maxCountBuffer, offset: 0, index: 2)
         let renderGrid = MTLSize(width: Int(params.outputWidth), height: Int(params.outputHeight), depth: 1)
         render.dispatchThreads(renderGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
@@ -484,8 +476,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         let pixelCount = Int(params.outputWidth * params.outputHeight)
         let binBufferSize = pixelCount * 4 * MemoryLayout<UInt32>.size
 
-        let paramsPtr = scopeParamsBuffer.contents().bindMemory(to: ScopeParams.self, capacity: 1)
-        paramsPtr.pointee = params
+        var scopeParams = params
 
         // Step 1: Clear
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { return false }
@@ -501,7 +492,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         accum.setTexture(colorLUTTexture, index: 2)
         accum.setBuffer(binBuffer, offset: 0, index: 0)
         accum.setBuffer(editParamsBuffer, offset: 0, index: 1)
-        accum.setBuffer(scopeParamsBuffer, offset: 0, index: 2)
+        accum.setBytes(&scopeParams, length: MemoryLayout<ScopeParams>.stride, index: 2)
         if let maskBuf = maskBuffer {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
@@ -520,7 +511,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         render.setComputePipelineState(chromaticityRenderState)
         render.setTexture(outputTexture, index: 0)
         render.setBuffer(binBuffer, offset: 0, index: 0)
-        render.setBuffer(scopeParamsBuffer, offset: 0, index: 1)
+        render.setBytes(&scopeParams, length: MemoryLayout<ScopeParams>.stride, index: 1)
         render.setBuffer(maxCountBuffer, offset: 0, index: 2)
         let renderGrid = MTLSize(width: Int(params.outputWidth), height: Int(params.outputHeight), depth: 1)
         render.dispatchThreads(renderGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
@@ -532,14 +523,13 @@ final class MetalScopePipeline: @unchecked Sendable {
     // MARK: - Shared Encode Helpers
 
     private nonisolated func encodeFindMax(commandBuffer: MTLCommandBuffer, binCount: Int) {
-        let binCountPtr = binCountBuffer.contents().bindMemory(to: UInt32.self, capacity: 1)
-        binCountPtr.pointee = UInt32(binCount)
+        var totalCount = UInt32(binCount)
 
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         encoder.setComputePipelineState(findMaxCountState)
         encoder.setBuffer(binBuffer, offset: 0, index: 0)
         encoder.setBuffer(maxCountBuffer, offset: 0, index: 1)
-        encoder.setBuffer(binCountBuffer, offset: 0, index: 2)
+        encoder.setBytes(&totalCount, length: MemoryLayout<UInt32>.size, index: 2)
         let tgSize = MTLSize(width: 256, height: 1, depth: 1)
         let gridSize = MTLSize(width: ((binCount + 255) / 256) * 256, height: 1, depth: 1)
         encoder.dispatchThreads(gridSize, threadsPerThreadgroup: tgSize)

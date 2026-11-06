@@ -974,22 +974,14 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
-    /// Identity of a decoded AI-matte source texture: the persisted PNG plus the refinement
-    /// values `refinedAIMaskTexture` bakes into it. Orientation is applied by the blit, not the
-    /// texture, so it is deliberately not part of the key.
+    /// Identity of a decoded AI-matte source texture: the persisted PNG bytes only. Levels and
+    /// blur are applied per rebuild on the GPU (`encodeRefinedAIMask`) and orientation by the
+    /// blit, so neither is part of the key — dragging a refine slider never re-decodes the PNG.
     nonisolated private struct AIMaskTextureKey: Equatable {
         let pngData: Data
-        let hasRefinements: Bool
-        let blackPoint: Double
-        let whitePoint: Double
-        let blurRadius: Double
 
         init(_ mask: AIMaskGeometry) {
             pngData = mask.pngData
-            hasRefinements = mask.hasRefinements
-            blackPoint = mask.resolvedBlackPoint
-            whitePoint = mask.resolvedWhitePoint
-            blurRadius = mask.resolvedBlurRadius
         }
     }
 
@@ -1037,6 +1029,13 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
+    /// Source upload and adjacent-image precache each get their own queue: the first render of
+    /// a RAW runs Core Image's lazy demosaic, and on the live queue it would hold the first
+    /// slider frames after navigation behind a neighbour's decode. Both paths wait for their
+    /// command buffers (render, then mips) before publishing the texture, so readers on the
+    /// live queue never need cross-queue synchronization.
+    private let sourceUploadQueue: MTLCommandQueue
+    private let precacheQueue: MTLCommandQueue
     private let pipelineState: MTLComputePipelineState
     /// Redact Anonymizer layer passes (RedactAnonymizer.metal), in `RedactKernel` order. Empty
     /// when the shaders are missing; an anonymizer render then fails closed.
@@ -1708,6 +1707,8 @@ final class MetalEditPipeline: @unchecked Sendable {
     ) {
         self.device = device
         self.commandQueue = commandQueue
+        self.sourceUploadQueue = device.makeCommandQueue() ?? commandQueue
+        self.precacheQueue = device.makeCommandQueue() ?? commandQueue
         self.stateExecutor = stateExecutor
         self.imageMemoryCoordinator = imageMemoryCoordinator
 
@@ -1963,7 +1964,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         desc.storageMode = .private
 
         guard let texture = device.makeTexture(descriptor: desc),
-              let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+              let commandBuffer = sourceUploadQueue.makeCommandBuffer() else { return nil }
 
         let destination = CIRenderDestination(
             width: width,
@@ -1993,7 +1994,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        Self.generateMipmaps(for: texture, commandQueue: commandQueue)
+        Self.generateMipmaps(for: texture, commandQueue: sourceUploadQueue)
         return texture
     }
 
@@ -2664,15 +2665,21 @@ final class MetalEditPipeline: @unchecked Sendable {
         return Float(radius * longEdge)
     }
 
-    /// Builds the compact source texture for a refined AI matte. Levels are applied before blur:
-    /// the endpoints first clean/fill Vision confidence values, then Gaussian blur softens the
-    /// resulting contour. Processing remains at the stored mask's ≤1024 px resolution, so export
-    /// only pays the existing one-sample scaling blit rather than a full-resolution blur.
-    nonisolated private func refinedAIMaskTexture(_ mask: AIMaskGeometry) -> MTLTexture? {
-        guard mask.isValid,
-              var image = CIImage(data: mask.pngData, options: [.colorSpace: NSNull()])
-        else { return nil }
-
+    /// Encodes the compact source texture for a refined AI matte into `commandBuffer`. Levels are
+    /// applied before blur: the endpoints first clean/fill Vision confidence values, then Gaussian
+    /// blur softens the resulting contour. The Core Image graph reads the cached decoded matte and
+    /// renders into a GPU texture, so a refine-slider tick costs no PNG decode or CPU readback.
+    /// Processing remains at the stored mask's ≤1024 px resolution, so export only pays the
+    /// existing one-sample scaling blit rather than a full-resolution blur. The result is
+    /// written as R8, matching the quantization of the persisted matte.
+    nonisolated private func encodeRefinedAIMask(
+        _ mask: AIMaskGeometry,
+        matte: MTLTexture,
+        into commandBuffer: MTLCommandBuffer
+    ) -> MTLTexture? {
+        guard var image = CIImage(mtlTexture: matte, options: [.colorSpace: NSNull()]) else {
+            return nil
+        }
         let extent = image.extent.integral
         let width = Int(extent.width)
         let height = Int(extent.height)
@@ -2699,33 +2706,36 @@ final class MetalEditPipeline: @unchecked Sendable {
             ]).cropped(to: extent)
         }
 
-        var bytes = [UInt8](repeating: 0, count: width * height)
-        ciContext.render(
-            image,
-            toBitmap: &bytes,
-            rowBytes: width,
-            bounds: extent,
-            format: .R8,
-            colorSpace: nil
-        )
-
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .r8Unorm,
             width: width,
             height: height,
             mipmapped: false
         )
-        descriptor.usage = .shaderRead
-        descriptor.storageMode = .shared
+        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        descriptor.storageMode = .private
         guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
-        bytes.withUnsafeBytes { raw in
-            guard let baseAddress = raw.baseAddress else { return }
-            texture.replace(
-                region: MTLRegionMake2D(0, 0, width, height),
-                mipmapLevel: 0,
-                withBytes: baseAddress,
-                bytesPerRow: width
+
+        // `CIImage(mtlTexture:)` and an unflipped Metal destination share the texture's row
+        // order, so the matte keeps its orientation; no colour space means no colour matching,
+        // as with the persisted confidence values.
+        let destination = CIRenderDestination(
+            width: width,
+            height: height,
+            pixelFormat: .r8Unorm,
+            commandBuffer: commandBuffer,
+            mtlTextureProvider: { texture }
+        )
+        destination.colorSpace = nil
+        do {
+            try ciContext.startTask(
+                toRender: image,
+                from: extent,
+                to: destination,
+                at: .zero
             )
+        } catch {
+            return nil
         }
         return texture
     }
@@ -2733,10 +2743,24 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// (Re)builds the shared raster alpha texture from brush strokes and AI matte PNGs, one array
     /// slice per raster mask. Brush dabs are stamped at the target resolution; AI masks are
     /// linearly scaled on-GPU from their compact persisted resolution. Not per-frame: callers use
-    /// the cached wrapper below on geometry/resolution changes only.
+    /// the cached wrapper below on geometry/resolution changes only. Waits for the GPU, so the
+    /// returned texture can be read back directly.
     @discardableResult
     nonisolated func rebuildMaskAlpha(_ sources: [MaskAlphaSource], size: MTLSize) -> MTLTexture? {
         preconditionOnStateExecutor()
+        return encodeMaskAlpha(sources, size: size, onlyAILayers: nil)
+    }
+
+    /// Shared body of the full rebuild and the AI-refinement fast path. With `onlyAILayers`, the
+    /// existing alpha array is kept and only those AI slices are re-blitted (the blit writes every
+    /// pixel of its slice, so no clear is needed); brush slices are not re-stamped. That path
+    /// does not wait: every reader of the alpha array is later GPU work on this same queue.
+    /// Returns nil from the fast path when it cannot apply, so the caller rebuilds in full.
+    nonisolated private func encodeMaskAlpha(
+        _ sources: [MaskAlphaSource],
+        size: MTLSize,
+        onlyAILayers: Set<Int>?
+    ) -> MTLTexture? {
         guard let stampState = stampBrushPipelineState,
               let clearState = clearBrushAlphaPipelineState,
               let clearRegionState = clearBrushRegionPipelineState,
@@ -2754,6 +2778,28 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         let layers = min(sources.count, Self.maxMasks)
         let rasterState = brushRasterStateSnapshot()
+
+        if let onlyAILayers {
+            guard let existing = rasterState.alphaTexture,
+                  existing.width == size.width, existing.height == size.height,
+                  existing.arrayLength == layers,
+                  let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+            var layerSources: [(layer: Int, texture: MTLTexture)] = []
+            for layer in onlyAILayers.sorted() where layer < layers {
+                guard case .ai(let mask) = sources[layer],
+                      let texture = preparedAIMaskTexture(mask, into: commandBuffer) else { return nil }
+                layerSources.append((layer, texture))
+            }
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return nil }
+            for (layer, texture) in layerSources {
+                guard case .ai(let mask) = sources[layer] else { continue }
+                encodeAIMaskBlit(mask, source: texture, target: existing, layer: layer, state: blitState, into: encoder)
+            }
+            encoder.endEncoding()
+            commandBuffer.commit()
+            pruneAIMaskTextures(keepingMattesOf: sources.prefix(layers))
+            return existing
+        }
 
         // Lazily (re)allocate only when the slice count or resolution changes; otherwise reuse
         // the existing texture and just re-clear + re-stamp into it.
@@ -2796,10 +2842,16 @@ final class MetalEditPipeline: @unchecked Sendable {
             scratch = newScratch
         }
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            return nil
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
+        // Refined mattes are Core Image renders into the same command buffer, so they must be
+        // encoded before the compute encoder opens; command-buffer order then sequences them
+        // ahead of the blits that sample them.
+        var aiLayerTextures: [Int: MTLTexture] = [:]
+        for (layer, source) in sources.prefix(layers).enumerated() {
+            guard case .ai(let mask) = source else { continue }
+            aiLayerTextures[layer] = preparedAIMaskTexture(mask, into: commandBuffer)
         }
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return nil }
 
         // Clear every slice first. The default serial-dispatch encoder inserts a barrier between
         // dispatches, so the clear completes before the first stamp reads the alpha.
@@ -2815,33 +2867,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         // mask's slice — so separate strokes ACCUMULATE (clicking the same spot builds up) rather
         // than clamping at one stroke's flow. Bounded to each stroke's bbox to keep cost local.
         let stampTG = MTLSize(width: 16, height: 16, depth: 1)
-        // The command encoder retains every source texture through completion. Keeping this
-        // array alive until the synchronous wait also makes that lifetime explicit.
-        var rasterSourceTextures: [MTLTexture] = []
-        var usedAIMaskKeys: [AIMaskTextureKey] = []
         for (layer, source) in sources.prefix(layers).enumerated() {
             switch source {
             case .ai(let mask):
-                guard mask.isValid else { continue }
-                let key = AIMaskTextureKey(mask)
-                usedAIMaskKeys.append(key)
-                guard let sourceTexture = aiMaskSourceTexture(mask, key: key) else { continue }
-                rasterSourceTextures.append(sourceTexture)
-                encoder.setComputePipelineState(blitState)
-                encoder.setTexture(sourceTexture, index: 0)
-                encoder.setTexture(tex, index: 1)
-                var params = RasterMaskBlitParams(
-                    layer: UInt32(layer),
-                    rotationSteps: UInt32(ImageFile.rotationDelta(
-                        from: mask.sourceOrientation,
-                        to: mask.displayOrientation
-                    ))
-                )
-                encoder.setBytes(&params, length: MemoryLayout<RasterMaskBlitParams>.stride, index: 0)
-                encoder.dispatchThreads(
-                    MTLSize(width: size.width, height: size.height, depth: 1),
-                    threadsPerThreadgroup: stampTG
-                )
+                // The command buffer retains each source texture through completion.
+                guard let sourceTexture = aiLayerTextures[layer] else { continue }
+                encodeAIMaskBlit(mask, source: sourceTexture, target: tex, layer: layer, state: blitState, into: encoder)
 
             case .brush(let mask):
               for stroke in mask.strokes {
@@ -2880,24 +2911,70 @@ final class MetalEditPipeline: @unchecked Sendable {
             $0.alphaTexture = tex
             $0.envelopeScratch = scratch
         }
-        // Keep only the mattes this rebuild used, so deleted/replaced AI masks don't linger.
-        updateRenderScratchState { state in
-            state.aiMaskTextures.removeAll { entry in !usedAIMaskKeys.contains(entry.key) }
-        }
+        pruneAIMaskTextures(keepingMattesOf: sources.prefix(layers))
         return tex
     }
 
-    /// Returns the decoded (and refined) source texture for an AI matte, decoding its PNG only
-    /// when this exact matte + refinement has not been decoded before. Brush strokes rebuild the
-    /// shared raster alpha on every commit; without this each stroke re-decoded every AI PNG.
+    /// The texture a raster AI slice is blitted from: the cached decoded matte, or, when the
+    /// mask has levels/blur, a refined copy encoded into `commandBuffer` from that matte.
+    nonisolated private func preparedAIMaskTexture(
+        _ mask: AIMaskGeometry,
+        into commandBuffer: MTLCommandBuffer
+    ) -> MTLTexture? {
+        guard mask.isValid, let matte = aiMaskSourceTexture(mask, key: AIMaskTextureKey(mask)) else {
+            return nil
+        }
+        guard mask.hasRefinements else { return matte }
+        return encodeRefinedAIMask(mask, matte: matte, into: commandBuffer)
+    }
+
+    nonisolated private func encodeAIMaskBlit(
+        _ mask: AIMaskGeometry,
+        source: MTLTexture,
+        target: MTLTexture,
+        layer: Int,
+        state: MTLComputePipelineState,
+        into encoder: MTLComputeCommandEncoder
+    ) {
+        encoder.setComputePipelineState(state)
+        encoder.setTexture(source, index: 0)
+        encoder.setTexture(target, index: 1)
+        var params = RasterMaskBlitParams(
+            layer: UInt32(layer),
+            rotationSteps: UInt32(ImageFile.rotationDelta(
+                from: mask.sourceOrientation,
+                to: mask.displayOrientation
+            ))
+        )
+        encoder.setBytes(&params, length: MemoryLayout<RasterMaskBlitParams>.stride, index: 0)
+        encoder.dispatchThreads(
+            MTLSize(width: target.width, height: target.height, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1)
+        )
+    }
+
+    /// Keeps only the mattes still referenced by a raster slice, so deleted/replaced AI masks
+    /// don't linger.
+    nonisolated private func pruneAIMaskTextures(keepingMattesOf sources: ArraySlice<MaskAlphaSource>) {
+        let usedKeys = sources.compactMap { source -> AIMaskTextureKey? in
+            guard case .ai(let mask) = source, mask.isValid else { return nil }
+            return AIMaskTextureKey(mask)
+        }
+        updateRenderScratchState { state in
+            state.aiMaskTextures.removeAll { entry in !usedKeys.contains(entry.key) }
+        }
+    }
+
+    /// Returns the decoded source texture for an AI matte, decoding its PNG only when this matte
+    /// has not been decoded before. Brush strokes rebuild the shared raster alpha on every commit
+    /// and refine sliders re-render it per tick; without this each one re-decoded every AI PNG.
     /// Cached textures are read-only after creation, so reuse across command buffers is safe.
     nonisolated private func aiMaskSourceTexture(_ mask: AIMaskGeometry, key: AIMaskTextureKey) -> MTLTexture? {
         if let cached = executorOwnedRenderScratchStateSnapshot().aiMaskTextures
             .first(where: { $0.key == key })?.texture {
             return cached
         }
-        let refined = mask.hasRefinements ? refinedAIMaskTexture(mask) : nil
-        guard let texture = refined ?? (try? MTKTextureLoader(device: device).newTexture(
+        guard let texture = (try? MTKTextureLoader(device: device).newTexture(
             data: mask.pngData,
             options: [
                 .SRGB: false,
@@ -3027,16 +3104,37 @@ final class MetalEditPipeline: @unchecked Sendable {
             return
         }
         if rasterState.alphaTexture != nil,
-           sources == rasterState.lastBuiltSources,
+           sources.count == rasterState.lastBuiltSources.count,
            size.width == rasterState.lastBuiltSize.width,
-           size.height == rasterState.lastBuiltSize.height {
-            return
+           size.height == rasterState.lastBuiltSize.height,
+           let changedAILayers = Self.changedAIMaskLayers(sources, from: rasterState.lastBuiltSources) {
+            if changedAILayers.isEmpty { return }
+            // A refine-slider tick (or a re-run matte) changes only AI slices: re-blit those
+            // without re-stamping every brush stroke or blocking on the GPU.
+            if encodeMaskAlpha(sources, size: size, onlyAILayers: changedAILayers) != nil {
+                updateBrushRasterState { $0.lastBuiltSources = sources }
+                return
+            }
         }
         rebuildMaskAlpha(sources, size: size)
         updateBrushRasterState {
             $0.lastBuiltSources = sources
             $0.lastBuiltSize = size
         }
+    }
+
+    /// Layers whose AI matte changed between two same-length source lists, or nil when any brush
+    /// slice changed or a slice switched kind (those need the full rebuild).
+    nonisolated private static func changedAIMaskLayers(
+        _ sources: [MaskAlphaSource],
+        from previous: [MaskAlphaSource]
+    ) -> Set<Int>? {
+        var changed = Set<Int>()
+        for (layer, (source, old)) in zip(sources, previous).enumerated() where source != old {
+            guard case .ai = source, case .ai = old else { return nil }
+            changed.insert(layer)
+        }
+        return changed
     }
 
     /// Brush-only compatibility wrapper retained for focused rasterization tests and live-paint
@@ -4159,7 +4257,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         desc.storageMode = .private
 
         guard let texture = device.makeTexture(descriptor: desc),
-              let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+              let commandBuffer = precacheQueue.makeCommandBuffer() else { return }
 
         let destination = CIRenderDestination(
             width: width, height: height, pixelFormat: .rgba16Float,
@@ -4187,7 +4285,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         // Pre-cached textures get promoted to sourceTexture on navigation (applyCachedTexture),
         // so they need mips too — the Anonymizer effect can't tell a promoted texture apart
         // from a freshly-uploaded one.
-        Self.generateMipmaps(for: texture, commandQueue: commandQueue)
+        Self.generateMipmaps(for: texture, commandQueue: precacheQueue)
         let levelZeroCost = width.multipliedReportingOverflow(by: height).partialValue
             .multipliedReportingOverflow(by: 8).partialValue
         let textureCost = levelZeroCost.multipliedReportingOverflow(by: 4).partialValue / 3

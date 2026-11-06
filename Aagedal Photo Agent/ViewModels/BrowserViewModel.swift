@@ -136,9 +136,11 @@ final class BrowserViewModel {
 
     @ObservationIgnored var fullScreenFaceContext: FullScreenFaceContext?
     var errorMessage: String?
-    /// Where sidebar folder operations (new, rename, move, trash) report failures. The sidebar
-    /// is bound to the primary pane, which may be a background tab; `BrowserPanesModel` points
-    /// this at the active pane so the banner shows where the user is looking. Nil: this pane.
+    /// Where sidebar folder operations (new, rename, move, trash) and photo-move cancellations
+    /// report failures. The sidebar is bound to the primary pane, which may be a background tab;
+    /// `BrowserPanesModel` points the primary's at the active pane, and every other pane's at
+    /// itself while on screen (else the active pane), so the banner shows where the user is
+    /// looking. Nil: this pane.
     @ObservationIgnored var folderOperationErrorReporter: ((String) -> Void)?
 
     private func reportFolderOperationError(_ message: String) {
@@ -298,8 +300,11 @@ final class BrowserViewModel {
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
     /// Set on the primary pane (which serves the sidebar): finds the pane showing dragged photos,
-    /// so a drop on a sidebar folder moves them through the pane that lists them.
-    @ObservationIgnored var paneOwningImages: (([URL]) -> BrowserViewModel?)?
+    /// so a drop on a sidebar folder moves them through the pane that lists them, preferring the
+    /// pane the drag started in (the second argument).
+    @ObservationIgnored var paneOwningImages: (([URL], BrowserViewModel?) -> BrowserViewModel?)?
+    /// Set on the primary pane: the pane whose grid has a photo drag in flight, if any.
+    @ObservationIgnored var paneDraggingImages: (() -> BrowserViewModel?)?
     @ObservationIgnored private let imageTrashHandler: any ImageTrashHandling
 
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
@@ -4946,7 +4951,7 @@ final class BrowserViewModel {
     // MARK: - Metadata helpers
 
     private func reportMoveCancellation(moved: Int, requested: Int) {
-        errorMessage = "Move cancelled: \(moved) of \(requested) photo(s) moved; the rest stayed in place."
+        reportFolderOperationError("Move cancelled: \(moved) of \(requested) photo(s) moved; the rest stayed in place.")
     }
 
     private func presentMoveIssues(_ result: FileSystemService.ImageMoveResult) {
