@@ -55,15 +55,60 @@ struct BrowserPanesModelTests {
         split.currentFolderURL = right
         let photo = right.appendingPathComponent("a.jpg")
 
-        #expect(model.primary.paneOwningImages?([photo]) === split)
-        #expect(model.primary.paneOwningImages?([left.appendingPathComponent("b.jpg")]) === model.primary)
-        #expect(model.primary.paneOwningImages?([URL(fileURLWithPath: "/tmp/elsewhere/c.jpg")]) == nil)
+        #expect(model.primary.paneOwningImages?([photo], nil) === split)
+        #expect(model.primary.paneOwningImages?([left.appendingPathComponent("b.jpg")], nil) === model.primary)
+        #expect(model.primary.paneOwningImages?([URL(fileURLWithPath: "/tmp/elsewhere/c.jpg")], nil) == nil)
 
         // Two tabs on the same folder: the active one wins.
         let twin = try #require(model.addTab())
         twin.currentFolderURL = right
         model.activate(BrowserPaneID(twin))
         #expect(model.pane(owningImagesAt: [photo]) === twin)
+    }
+
+    /// Two inactive panes on the same folder, one hidden behind a tab: a drag from the visible
+    /// one must move through it, and with no known source a visible owner beats a hidden one.
+    @Test func sidebarPhotoDropsPreferTheDragSourceThenVisiblePanes() throws {
+        let model = makeModel()
+        let left = URL(fileURLWithPath: "/tmp/panes-left", isDirectory: true)
+        let shared = URL(fileURLWithPath: "/tmp/panes-shared", isDirectory: true)
+        model.primary.currentFolderURL = left
+        // `hidden` is created first so a first-match fallback would pick it.
+        let hidden = try #require(model.addTab())
+        hidden.currentFolderURL = shared
+        model.activate(BrowserPaneID(model.primary))
+        let visible = try #require(model.splitActive(.trailing))
+        visible.currentFolderURL = shared
+        model.activate(BrowserPaneID(model.primary))
+        #expect(!model.visiblePanes.contains { $0 === hidden })
+        #expect(model.visiblePanes.contains { $0 === visible })
+        let photo = shared.appendingPathComponent("a.jpg")
+
+        #expect(model.pane(owningImagesAt: [photo]) === visible)
+
+        visible.draggedImageURLs = [photo]
+        let source = try #require(model.primary.paneDraggingImages?())
+        #expect(source === visible)
+        #expect(model.primary.paneOwningImages?([photo], source) === visible)
+        visible.draggedImageURLs = []
+        #expect(model.primary.paneDraggingImages?() == nil)
+    }
+
+    /// Banners from a pane's file operations show where the user is looking: in the pane while
+    /// it's on screen, otherwise in the active pane.
+    @Test func fileOperationErrorsFromHiddenPanesReachTheActivePane() throws {
+        let model = makeModel()
+        let hidden = try #require(model.addTab())
+        model.activate(BrowserPaneID(model.primary))
+        let visible = try #require(model.splitActive(.trailing))
+        model.activate(BrowserPaneID(model.primary))
+
+        visible.folderOperationErrorReporter?("on screen")
+        #expect(visible.errorMessage == "on screen")
+
+        hidden.folderOperationErrorReporter?("behind a tab")
+        #expect(hidden.errorMessage == nil)
+        #expect(model.active.errorMessage == "behind a tab")
     }
 
     /// A divider drag replaces `tree` every frame; views outside the grid read only the

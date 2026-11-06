@@ -18,6 +18,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Develop: painting a brush mask no longer stutters while the preview is busy.
 - Scopes on very tall panoramas no longer use hundreds of megabytes of memory on every update.
 - Browser tabs: closing a tab while its unsaved caption prompt was open, then opening a new tab, could close the new tab instead; a folder dropped on a tab that closed meanwhile could open in another tab. Both now act only on the original tab.
+- Develop: dragging an AI mask's black point, white point or blur sliders is smooth again; the refinement now runs on the GPU instead of re-reading the mask on every step. The result looks the same.
+- Develop: the first slider moves after switching to the next photo no longer wait for the neighbouring RAW files to finish loading in the background.
+- With two tabs on the same folder, dragging photos from the visible one onto a sidebar folder now moves them through the tab you dragged from, and a cancelled move reports in the pane you're looking at.
+- Scopes: each scope frame now carries its own settings, so a fast redraw can no longer pick up the next frame's while the GPU is still drawing.
 
 ## 3.0.0-beta.5 — 2026-10-30
 

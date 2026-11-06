@@ -361,6 +361,9 @@ struct FolderDropDelegate: DropDelegate {
         let target = targetURL
         let dropSection = section
         let viewModel = viewModel
+        // Read now: the source grid clears its drag state when the session ends, which happens
+        // before the item providers below finish loading.
+        let dragSourcePane = viewModel.paneDraggingImages?()
 
         Task { @MainActor in
             // Grid drags also carry each photo's `.xmp`; moving the photo brings it along.
@@ -389,7 +392,8 @@ struct FolderDropDelegate: DropDelegate {
             if !snapshot.regularFiles.isEmpty {
                 // The sidebar is bound to the primary pane; photos dragged from another pane's
                 // grid must leave that pane's list (and wait behind its own file operations).
-                let owner = viewModel.paneOwningImages?(snapshot.regularFiles) ?? viewModel
+                // The pane the drag came from wins over a hidden tab on the same folder.
+                let owner = viewModel.paneOwningImages?(snapshot.regularFiles, dragSourcePane) ?? viewModel
                 owner.moveImages(snapshot.regularFiles, into: target)
             }
         }
