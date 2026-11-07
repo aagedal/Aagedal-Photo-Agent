@@ -27,12 +27,14 @@ final class AIMaskSelectionCoordinator {
     @ObservationIgnored private let generator: Generator
 
     init(generator: @escaping Generator = { image, point, orientation, target in
-        try await Task.detached(priority: .userInitiated) {
+        let engine = AIMaskEngine.current
+        return try await Task.detached(priority: .userInitiated) {
             try AIMaskGenerator.generate(
                 from: image,
                 displayPoint: point,
                 sourceOrientation: orientation,
-                target: target
+                target: target,
+                engine: engine
             )
         }.value
     }) {

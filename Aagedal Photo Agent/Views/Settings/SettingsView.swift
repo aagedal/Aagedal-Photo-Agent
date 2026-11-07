@@ -16,6 +16,8 @@ struct SettingsView: View {
     @AppStorage(UserDefaultsKeys.creatorInitials) private var creatorInitials = ""
     @State private var ftpViewModel = FTPViewModel()
     @AppStorage(UserDefaultsKeys.ftpAlwaysRenderRAW) private var ftpAlwaysRenderRAW = true
+    @AppStorage(UserDefaultsKeys.aiMaskEngine) private var aiMaskEngine: AIMaskEngine = .vision
+    @State private var samModels = SAM2ModelManager.shared
     @AppStorage(UserDefaultsKeys.knownPeopleRetainUpgradeSources) private var retainKnownPeopleUpgradeSources = false
     @State private var templateViewModel: TemplateViewModel
     @State private var developTemplateViewModel: DevelopTemplateViewModel
@@ -199,7 +201,7 @@ struct SettingsView: View {
             case .transcription: ["Transcription provider", "Voice memo", "Whisper model", "Download models", "Remove Downloaded Model", "Custom FFmpeg Whisper", "Transcription language", "Translate speech into English", "Request GPU acceleration"]
             case .descriptionAssistant: ["AI caption", "Local language model", "Description generation", "Description Model", "Provider", "Installed model", "Description Presets", "Preset name", "Model setup", "GPU acceleration"]
             case .descriptionModels: ["Download models", "Local language model", "GGUF", "MLX folder", "Models Already on This Mac", "Remove Downloaded Model"] + DescriptionAssistantDownloadModel.allCases.map(\.title)
-            case .developControls: ["Develop Controls", "Exposure", "White balance", "Crop", "Show All", "Reset Order"] + DevelopPanelSection.allCases.map(\.title) + DevelopSlider.allCases.map(\.displayName)
+            case .developControls: ["Develop Controls", "AI Mask Engine", "SAM 2.1", "Segment Anything", "Exposure", "White balance", "Crop", "Show All", "Reset Order"] + DevelopPanelSection.allCases.map(\.title) + DevelopSlider.allCases.map(\.displayName)
             case .metadata: ["Multi-Select Behavior", "Visible and required fields", "Write Behavior", "Simple", "Professional", "Custom", "Standard Images", "RAW Images", "XMP sidecars", "C2PA-Protected Images", "Variable Processing", "Initials", "Reverse Geocoding", "Place-name language", "Work offline", "Metadata Fields", "Headline minimum length", "Description minimum length", "Reset Layout to Defaults"] + MetadataFieldID.userSelectable.map(\.displayName)
             case .keywordLists: ["Approved Keywords", "Structured Keyword Lists", "IPTC Media Topics", "Automatically update IPTC Media Topics", "IPTC language", "My Keywords", "When typing a non-approved keyword", "Import / Export", "Restore from Backup", "Backup"]
             case .quickLists: ["Quick Lists", "Metadata autocomplete", "Import / Export"]
@@ -595,9 +597,69 @@ struct SettingsView: View {
                     )
                 }
             }
+
+            if AIMaskEngine.samExperimentEnabled {
+                aiMaskEngineSection
+            }
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    private var aiMaskEngineSection: some View {
+        Section("AI Mask Engine (Experimental)") {
+            Text("Compare Apple Vision with Meta's Segment Anything 2.1 for click-to-select AI masks. SAM can select any object under the click, including background objects. Saved masks are stored the same way whichever engine made them.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("Engine", selection: $aiMaskEngine) {
+                ForEach(AIMaskEngine.allCases, id: \.self) { engine in
+                    Text(engine.title).tag(engine)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            switch samModels.state {
+            case .notInstalled:
+                LabeledContent("SAM 2.1 Small") {
+                    Button("Download (\(samModels.downloadSizeText))") { samModels.download() }
+                }
+            case .downloading(let fraction):
+                LabeledContent("SAM 2.1 Small") {
+                    HStack {
+                        ProgressView(value: fraction).frame(width: 140)
+                        Button("Cancel") { samModels.cancel() }
+                    }
+                }
+            case .installed:
+                LabeledContent("SAM 2.1 Small") {
+                    HStack {
+                        Label("Installed", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                        Button("Remove") {
+                            samModels.remove()
+                            aiMaskEngine = .vision
+                        }
+                    }
+                }
+            case .failed(let message):
+                LabeledContent("SAM 2.1 Small") {
+                    Button("Try Again") { samModels.download() }
+                }
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            if aiMaskEngine == .sam21, !samModels.isInstalled {
+                Text("SAM 2.1 is selected but not downloaded, so AI mask selection will show an error until the download finishes.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Text("Apple's Core ML conversion of SAM 2.1 Small (Apache-2.0), downloaded from Hugging Face and verified against pinned checksums. The first selection after launch loads the models and can take a few seconds.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder

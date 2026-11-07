@@ -306,6 +306,8 @@ struct EditWorkspaceView: View {
     /// Event interpretation remains at the view boundary.
     @State private var workspaceInput = DevelopWorkspaceInputCoordinator()
     @State private var filmstripActions = EditFilmstripActions()
+    /// Experimental Vision-vs-SAM comparison; the picker appears once the SAM models are installed.
+    @AppStorage(UserDefaultsKeys.aiMaskEngine) private var aiMaskEngine: AIMaskEngine = .vision
     @State private var keyboardWindow = DevelopKeyboardWindowReference()
     /// Owns workspace-wide named-version flush registration and replaceable transient notices.
     @State private var workspaceSession = DevelopWorkspaceSessionCoordinator()
@@ -6044,6 +6046,18 @@ struct EditWorkspaceView: View {
             }
             .pickerStyle(.segmented)
             .disabled(isGeneratingAIMask)
+
+            if AIMaskEngine.samExperimentEnabled,
+               SAM2ModelManager.shared.isInstalled || aiMaskEngine == .sam21 {
+                Picker("Engine", selection: $aiMaskEngine) {
+                    ForEach(AIMaskEngine.allCases, id: \.self) { engine in
+                        Text(engine.title).tag(engine)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(isGeneratingAIMask)
+                .help("Experimental: compare Apple Vision with SAM 2.1. Use Select Again to regenerate this mask with the other engine.")
+            }
 
             if let id,
                let index = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?

@@ -86,6 +86,10 @@ nonisolated enum UserDefaultsKeys {
     /// when the "skip automatic rendering of edited files" toggle is on in the upload dialog.
     static let ftpAlwaysRenderRAW = "ftpAlwaysRenderRAW"
 
+    // MARK: - AI Masks
+    /// Raw value of `AIMaskEngine`: which model click-to-select AI masks use (developer comparison).
+    static let aiMaskEngine = "develop.aiMaskEngine"
+
     // MARK: - Required Metadata
     /// Legacy: JSON-encoded `[MetadataFieldID]` the user considered mandatory. Superseded by
     /// `metadataRequirementLevels`; still read once to migrate those fields to `.require`.
