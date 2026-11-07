@@ -1178,8 +1178,8 @@ struct ImportEjectSourceRow: View {
 
     var body: some View {
         switch viewModel.sourceVolumeEjectState {
-        case .ejected(let name):
-            Label("\(name) was ejected. You can remove it now.", systemImage: "checkmark.circle")
+        case .ejected(let message):
+            Label(message, systemImage: "checkmark.circle")
                 .foregroundStyle(.secondary)
         case .failed(let message):
             VStack(spacing: 6) {
@@ -1187,7 +1187,7 @@ struct ImportEjectSourceRow: View {
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                 if let volume = viewModel.ejectableSourceVolume {
-                    Button("Try Ejecting \(volume.name) Again", systemImage: "eject") {
+                    Button("Try Ejecting \(volume.displayName) Again", systemImage: "eject") {
                         viewModel.ejectSourceVolume()
                     }
                 }
@@ -1195,11 +1195,13 @@ struct ImportEjectSourceRow: View {
             .padding(.horizontal)
         case .idle, .ejecting:
             if let volume = viewModel.ejectableSourceVolume {
-                Button("Eject \(volume.name)", systemImage: "eject") {
+                Button("Eject \(volume.displayName)", systemImage: "eject") {
                     viewModel.ejectSourceVolume()
                 }
                 .disabled(viewModel.sourceVolumeEjectState == .ejecting)
-                .help("Safely eject the card or disk you imported from")
+                .help(volume.companions.isEmpty
+                      ? "Safely eject the card or disk you imported from"
+                      : "Safely eject \(ListFormatter.localizedString(byJoining: volume.allVolumes.map(\.name)))")
             }
         }
     }

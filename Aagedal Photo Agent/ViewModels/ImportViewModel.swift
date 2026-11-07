@@ -1,5 +1,7 @@
 import AppKit
+import DiskArbitration
 import Foundation
+import IOKit
 import SwiftMediaMetadata
 import os
 
@@ -560,6 +562,7 @@ nonisolated enum ImportTimeEstimate {
 enum SourceVolumeEjectState: Equatable {
     case idle
     case ejecting
+    /// The message to show, e.g. "Untitled was ejected. You can remove it now."
     case ejected(String)
     case failed(String)
 }
@@ -568,6 +571,20 @@ enum SourceVolumeEjectState: Equatable {
 nonisolated struct EjectableVolume: Equatable, Sendable {
     let url: URL
     let name: String
+    /// Other volumes ejected along with this one: the rest of the same physical device (a camera
+    /// mounts each card slot, and Sony's PM HOME, as its own disk) and the second import source.
+    var companions: [EjectableVolume] = []
+
+    var allVolumes: [EjectableVolume] { [self] + companions }
+
+    /// "Untitled" or "Untitled and 2 others", for the Eject button and its result.
+    var displayName: String {
+        switch companions.count {
+        case 0: name
+        case 1: "\(name) and \(companions[0].name)"
+        default: "\(name) and \(companions.count) others"
+        }
+    }
 
     init?(containing url: URL) {
         let keys: Set<URLResourceKey> = [.volumeURLKey, .volumeIsEjectableKey, .volumeIsRemovableKey,
@@ -585,6 +602,63 @@ nonisolated struct EjectableVolume: Equatable, Sendable {
 
     static func volumeURL(containing url: URL) -> URL? {
         try? url.resourceValues(forKeys: [.volumeURLKey]).volume
+    }
+
+    /// The ejectable volumes holding `sources`, plus every other mounted volume on the same
+    /// physical device, the way Finder ejects a whole camera at once. A device that also holds
+    /// one of `excluding` (the import destination or backup) is left alone. Blocks on IOKit.
+    static func resolve(sources: [URL], excluding: [URL]) -> EjectableVolume? {
+        let excludedVolumes = Set(excluding.compactMap { volumeURL(containing: $0)?.standardizedFileURL })
+        let session = DASessionCreate(kCFAllocatorDefault)
+        let deviceID = { (volume: URL) in session.flatMap { physicalDeviceID(ofVolume: volume, session: $0) } }
+
+        var primaries: [EjectableVolume] = []
+        for source in sources {
+            guard let volume = EjectableVolume(containing: source),
+                  !excludedVolumes.contains(volume.url.standardizedFileURL),
+                  !primaries.contains(where: { $0.url == volume.url }) else { continue }
+            primaries.append(volume)
+        }
+        guard var primary = primaries.first else { return nil }
+
+        let mounted = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: []) ?? []
+        var volumesByDevice: [UInt64: [URL]] = [:]
+        for volume in mounted {
+            if let id = deviceID(volume) { volumesByDevice[id, default: []].append(volume) }
+        }
+
+        var companions = Array(primaries.dropFirst())
+        for source in primaries {
+            guard let id = deviceID(source.url), let siblings = volumesByDevice[id],
+                  !siblings.contains(where: { excludedVolumes.contains($0.standardizedFileURL) }) else { continue }
+            for sibling in siblings {
+                guard let volume = EjectableVolume(containing: sibling),
+                      !([primary] + companions).contains(where: { $0.url == volume.url }) else { continue }
+                companions.append(volume)
+            }
+        }
+        primary.companions = companions
+        return primary
+    }
+
+    /// The registry ID of the USB device a volume lives on, or nil for internal, Thunderbolt and
+    /// network storage. Card slots on one camera or reader are separate disks under one USB device.
+    private static func physicalDeviceID(ofVolume volume: URL, session: DASession) -> UInt64? {
+        guard let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, volume as CFURL) else { return nil }
+        var entry = DADiskCopyIOMedia(disk)
+        while entry != IO_OBJECT_NULL {
+            if IOObjectConformsTo(entry, "IOUSBHostDevice") != 0 || IOObjectConformsTo(entry, "IOUSBDevice") != 0 {
+                var id: UInt64 = 0
+                let result = IORegistryEntryGetRegistryEntryID(entry, &id)
+                IOObjectRelease(entry)
+                return result == KERN_SUCCESS ? id : nil
+            }
+            var parent: io_registry_entry_t = IO_OBJECT_NULL
+            let result = IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent)
+            IOObjectRelease(entry)
+            entry = result == KERN_SUCCESS ? parent : IO_OBJECT_NULL
+        }
+        return nil
     }
 }
 
@@ -3292,10 +3366,11 @@ final class ImportViewModel {
         case .complete, .cancelled, .failed:
             guard ejectableSourceVolume == nil, sourceVolumeEjectState == .idle,
                   let source = configuration.sourceURL else { return }
+            let sources = [source, configuration.voiceMemoSourceURL].compactMap { $0 }
             let excluded = [configuration.destinationBaseURL, configuration.backupDestination?.url].compactMap { $0 }
             let generation = ejectGeneration
             Task {
-                let volume = await Self.resolveEjectableVolume(source: source, excluding: excluded)
+                let volume = await Self.resolveEjectableVolume(sources: sources, excluding: excluded)
                 guard generation == ejectGeneration else { return }
                 ejectableSourceVolume = volume
             }
@@ -3304,11 +3379,9 @@ final class ImportViewModel {
         }
     }
 
-    @concurrent nonisolated private static func resolveEjectableVolume(source: URL, excluding: [URL]) async -> EjectableVolume? {
-        guard let volume = EjectableVolume(containing: source) else { return nil }
-        // Never eject the disk the photos were just copied to, or backed up to.
-        let sameDisk = excluding.contains { EjectableVolume.volumeURL(containing: $0) == volume.url }
-        return sameDisk ? nil : volume
+    /// Never ejects the disk the photos were just copied to, or backed up to.
+    @concurrent nonisolated private static func resolveEjectableVolume(sources: [URL], excluding: [URL]) async -> EjectableVolume? {
+        EjectableVolume.resolve(sources: sources, excluding: excluding)
     }
 
     /// Unmounting blocks, so it runs off the main actor. A result that arrives after the user
@@ -3318,27 +3391,35 @@ final class ImportViewModel {
         sourceVolumeEjectState = .ejecting
         let generation = ejectGeneration
         Task {
-            let failure = await Self.eject(volume.url, name: volume.name)
+            let failure = await Self.eject(volume)
             guard generation == ejectGeneration else { return }
             if let failure {
                 sourceVolumeEjectState = .failed(failure)
             } else {
-                sourceVolumeEjectState = .ejected(volume.name)
+                sourceVolumeEjectState = .ejected(volume.companions.isEmpty
+                    ? "\(volume.name) was ejected. You can remove it now."
+                    : "\(volume.displayName) were ejected. You can remove them now.")
                 ejectableSourceVolume = nil
             }
         }
     }
 
-    @concurrent nonisolated private static func eject(_ volumeURL: URL, name: String) async -> String? {
-        guard FileManager.default.fileExists(atPath: volumeURL.path) else {
-            return "\(name) is no longer connected."
+    /// Ejects every volume of the source, skipping any already gone, so a retry after a partial
+    /// failure only has the remaining ones left to do.
+    @concurrent nonisolated private static func eject(_ volume: EjectableVolume) async -> String? {
+        let present = volume.allVolumes.filter { FileManager.default.fileExists(atPath: $0.url.path) }
+        guard !present.isEmpty else {
+            return "\(volume.displayName) \(volume.companions.isEmpty ? "is" : "are") no longer connected."
         }
-        do {
-            try NSWorkspace.shared.unmountAndEjectDevice(at: volumeURL)
-            return nil
-        } catch {
-            return "\(name) couldn't be ejected, usually because something is still using it. Close any folders on it in Photo Agent, Finder or other apps, then try again."
+        // Ejecting one slot can take the whole camera offline, so a volume gone by its turn is done.
+        let failed = present.filter {
+            FileManager.default.fileExists(atPath: $0.url.path)
+                && (try? NSWorkspace.shared.unmountAndEjectDevice(at: $0.url)) == nil
+                && FileManager.default.fileExists(atPath: $0.url.path)
         }
+        guard !failed.isEmpty else { return nil }
+        let names = ListFormatter.localizedString(byJoining: failed.map(\.name))
+        return "\(names) couldn't be ejected, usually because something is still using it. Close any folders on it in Photo Agent, Finder or other apps, then try again."
     }
 
     private func resetSourceVolumeEject() {

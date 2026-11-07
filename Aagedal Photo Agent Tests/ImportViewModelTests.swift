@@ -3818,6 +3818,12 @@ struct EjectableVolumeTests {
         #expect(EjectableVolume(containing: URL(fileURLWithPath: NSHomeDirectory())) == nil)
     }
 
+    @Test("Sources on the startup disk resolve to nothing to eject, even with a second source")
+    func internalSourcesResolveToNothing() {
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        #expect(EjectableVolume.resolve(sources: [FileManager.default.temporaryDirectory, home], excluding: []) == nil)
+    }
+
     @Test("A finished import from the internal disk offers no Eject and ignores eject requests")
     @MainActor func internalSourceOffersNoEject() {
         let model = ImportViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
