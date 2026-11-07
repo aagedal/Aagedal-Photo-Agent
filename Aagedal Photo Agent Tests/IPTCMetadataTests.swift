@@ -5880,6 +5880,61 @@ struct BrushRasterizationTests {
             atDisplayPoint: CGPoint(x: 0.25, y: 0.75),
             in: buffer
         ) == 0)
+        #expect(AIMaskGenerator.normalizedBounds(of: buffer) == CGRect(x: 0, y: 0, width: 0.5, height: 0.5))
+    }
+
+    @Test("SAM logits upsample to a top-left, aspect-correct, anti-aliased matte")
+    func samMatteUpsampling() {
+        // 4×4 logit grid: positive in the top-left quadrant only. ±1.5 keeps the interpolated
+        // boundary inside the [-1, 1] anti-aliasing band.
+        let side = 4
+        var logits = [Float](repeating: -1.5, count: side * side)
+        for y in 0..<2 { for x in 0..<2 { logits[y * side + x] = 1.5 } }
+
+        // Non-square output: the grid spans the whole stretched image on both axes.
+        let width = 16, height = 8
+        let bytes = AIMaskGenerator.upsampledSAMMatte(logits: logits, side: side, width: width, height: height)
+        #expect(bytes.count == width * height)
+        #expect(bytes[0] == 255)                                  // top-left corner selected
+        #expect(bytes[(height - 1) * width + width - 1] == 0)     // bottom-right not
+        #expect(bytes[(height - 1) * width] == 0)                 // bottom-left not
+        #expect(bytes[width - 1] == 0)                            // top-right not
+        // The boundary sits halfway across each axis and is soft, not a hard step.
+        let middleRow = Array(bytes[(1 * width)..<(2 * width)])
+        #expect(middleRow[7] > 0 && middleRow[7] < 255 || middleRow[8] > 0 && middleRow[8] < 255)
+        #expect(AIMaskGenerator.upsampledSAMMatte(logits: [], side: side, width: 4, height: 4).isEmpty)
+    }
+
+    @Test("SAM person box prompts are padded and clamped to the image")
+    func samPromptBoxPadding() {
+        let padded = AIMaskGenerator.paddedPromptBox(CGRect(x: 0.5, y: 0.2, width: 0.5, height: 0.8))
+        #expect(padded.minX < 0.5)
+        #expect(padded.minY < 0.2)
+        #expect(padded.maxX <= 1)
+        #expect(padded.maxY <= 1)
+    }
+
+    @Test("SAM 2.1 download pins pass the verified downloader's validation")
+    func samModelPins() {
+        #expect(SAM2ModelStore.files.count == 9)
+        let ids = SAM2ModelStore.files.map(\.artifact.id)
+        #expect(Set(ids).count == ids.count)
+        for file in SAM2ModelStore.files {
+            let artifact = file.artifact
+            #expect(artifact.id.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) || $0 == 45 })
+            #expect(artifact.sha256.count == 64)
+            #expect(artifact.url.scheme == "https")
+            #expect(artifact.url.absoluteString.contains("/resolve/\(SAM2ModelStore.revision)/"))
+            #expect(artifact.url.absoluteString.hasSuffix(file.packagePath))
+        }
+        for component in SAM2ModelStore.Component.allCases {
+            let paths = Set(SAM2ModelStore.files.filter { $0.component == component }.map(\.packagePath))
+            #expect(paths == [
+                "Manifest.json",
+                "Data/com.apple.CoreML/model.mlmodel",
+                "Data/com.apple.CoreML/weights/weight.bin",
+            ])
+        }
     }
 
     @Test("an erase stroke subtracts a prior additive stroke's coverage")

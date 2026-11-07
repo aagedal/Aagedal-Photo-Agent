@@ -4,6 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Develop (experimental): AI masks can now use Meta's Segment Anything 2.1 instead of Apple Vision, to compare the two. Download the model (about 94 MB) in Settings → Develop Sliders → AI Mask Engine; the AI mask panel then shows a Vision / SAM 2.1 switch, and Select Again regenerates a mask with the other engine. SAM can select any object you click, including background objects Vision skips, such as a parked car or a sign.
 - Export and Compare: after exporting a straightened, cropped photo with a watermark (or comparing one in Develop), later edited renders until you quit the app could come out rotated around that photo's crop centre. Each render now starts from a clean state.
 - Fixes a crash when opening or exporting a photo whose sidecar or embedded Develop settings contain an invalid number (such as `inf` or an out-of-range crop); such values are now ignored or limited to a usable range.
 - Importing a keyword-list (.klists), Known People or Image Analysis project archive now checks its contents first: a damaged or hostile archive that would unpack to far more data or files than it should (or more than the free disk space) is refused with an explanation instead of filling the disk, and cancelling an import stops the unpacking.
