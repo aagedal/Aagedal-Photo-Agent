@@ -159,6 +159,13 @@ private extension FullScreenImagePresentationFactsAccess.Snapshot {
     )
 }
 
+/// Prefetch tests need their own budget: the shared coordinator splits its allowance across every
+/// live cache in the test process and cancels prefetch on system memory pressure, so on a small CI
+/// runner a full suite run can leave these caches an item limit of zero.
+private nonisolated func isolatedPrefetchCoordinator() -> ImageMemoryCoordinator {
+    ImageMemoryCoordinator(availableMemory: { 8 * 1_024 * 1_024 * 1_024 }, observesSystemPressure: false)
+}
+
 private nonisolated final class PrefetchPreparationProbe: @unchecked Sendable {
     let entered = AsyncStream<Void>.makeStream()
     let release = DispatchSemaphore(value: 0)
@@ -218,7 +225,7 @@ struct FullScreenImageCacheTests {
         let probe = PrefetchPreparationProbe(blockedURL: url)
         defer { probe.release.signal() }
         let service = FullScreenPrefetchPreparationService(read: probe.read)
-        let cache = FullScreenImageCache(previewDecoder: { url, _, _, _ in
+        let cache = FullScreenImageCache(memoryCoordinator: isolatedPrefetchCoordinator(), previewDecoder: { url, _, _, _ in
             probe.recordDecode(url)
             return pixels
         }, prefetchPreparationService: service)
@@ -252,7 +259,7 @@ struct FullScreenImageCacheTests {
         let probe = PrefetchPreparationProbe(blockedURL: oldURL)
         defer { probe.release.signal() }
         let service = FullScreenPrefetchPreparationService(read: probe.read)
-        let cache = FullScreenImageCache(previewDecoder: { url, _, _, _ in
+        let cache = FullScreenImageCache(memoryCoordinator: isolatedPrefetchCoordinator(), previewDecoder: { url, _, _, _ in
             probe.recordDecode(url)
             return pixels
         }, prefetchPreparationService: service)
@@ -275,7 +282,7 @@ struct FullScreenImageCacheTests {
         let entered = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
         let readerStarted = AsyncStream<Void>.makeStream()
-        let cache = FullScreenImageCache(previewDecoder: { url, _, _, _ in
+        let cache = FullScreenImageCache(memoryCoordinator: isolatedPrefetchCoordinator(), previewDecoder: { url, _, _, _ in
             probe.recordDecode(url)
             entered.continuation.yield(())
             for await _ in release.stream { break }
@@ -689,7 +696,7 @@ struct FullScreenImageCacheTests {
         let pixels = try #require(FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 256))
         let entered = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
-        let cache = FullScreenImageCache(previewDecoder: { _, _, _, _ in
+        let cache = FullScreenImageCache(memoryCoordinator: isolatedPrefetchCoordinator(), previewDecoder: { _, _, _, _ in
             entered.continuation.yield(())
             // Model a non-preemptible decode that finishes after navigation.
             for await _ in release.stream { break }

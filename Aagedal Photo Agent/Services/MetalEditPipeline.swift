@@ -2684,6 +2684,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         let width = Int(extent.width)
         let height = Int(extent.height)
         guard width > 0, height > 0 else { return nil }
+        // `CIImage(mtlTexture:)` reads row 0 as the bottom of the image, but the Metal destination
+        // below writes it as the top; flip once up front or the refined matte lands upside down.
+        // Levels and the Gaussian blur are symmetric, so where the flip happens is immaterial.
+        image = image.transformed(by: CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: extent.minY + extent.maxY))
 
         let black = mask.resolvedBlackPoint
         let white = max(mask.resolvedWhitePoint, black + 0.01)
@@ -2716,9 +2720,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         descriptor.storageMode = .private
         guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
 
-        // `CIImage(mtlTexture:)` and an unflipped Metal destination share the texture's row
-        // order, so the matte keeps its orientation; no colour space means no colour matching,
-        // as with the persisted confidence values.
+        // No colour space means no colour matching, as with the persisted confidence values.
         let destination = CIRenderDestination(
             width: width,
             height: height,
