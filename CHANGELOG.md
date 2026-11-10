@@ -4,14 +4,13 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
-- Sidebar: the Open Folders list is replaced by a Locations folder browser, like Bridge's Folders panel: your home folder and every mounted volume (internal, external, memory cards, network), updated as volumes come and go. Opening a folder from anywhere (the Open dialog, Open Recent, a drop, an import) expands the tree to it and scrolls it into view. Removable and network volumes have an Eject button, and any folder can be added to Favorites from its right-click menu. Favorites are unchanged.
-
 ## 3.0.0-beta.6 — 2026-11-10
 
 This sixth public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.
 
 ### Highlights
 
+- The sidebar's Open Folders list is replaced by a Bridge-style Locations browser: your home folder and every mounted volume, with eject buttons.
 - Known People with iCloud sync: a Mac setting up face recognition, or clearing a replaced library, no longer resets the shared library on your other Macs, and a replaced library is picked up right away.
 - Templates deleted on one Mac no longer come back when another Mac turns iCloud sync on again.
 - Browser tabs from the keyboard (⌥⌘T, ⌥⌘N / ⌥⌘B, ⌘W closes the active tab), and the grid keeps its scroll position when panes split or merge.
@@ -21,6 +20,7 @@ This sixth public beta continues 3.0 testing. See [known limitations](docs/limit
 
 ### Changes since 3.0.0-beta.5
 
+- Sidebar: the Open Folders list is replaced by a Locations folder browser, like Bridge's Folders panel: your home folder and every mounted volume (internal, external, memory cards, network), updated as volumes come and go. Opening a folder from anywhere (the Open dialog, Open Recent, a drop, an import) expands the tree to it and scrolls it into view. Removable and network volumes have an Eject button, and any folder can be added to Favorites from its right-click menu. Favorites are unchanged.
 - Known People with iCloud sync: when another Mac replaces the shared library, this Mac now switches to it right away instead of after a relaunch. Editing a person (name, samples, merge, thumbnail) now starts from the stored record, so face samples that just arrived from another Mac are kept.
 - Templates with iCloud sync: a template deleted on one Mac no longer comes back when another Mac turns sync on again, and one deleted while sync was off is removed from iCloud too. A template restored from the Trash still shows.
 - The thumbnail grid keeps its scroll position when it is rebuilt: splitting into panes, closing the last extra pane, moving tabs or leaving Develop.
