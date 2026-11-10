@@ -117,6 +117,9 @@ final class BrowserViewModel {
         didSet { syncFullScreenImage() }
     }
     var shouldRestoreGridFocus = false
+    /// Where this pane's grid was scrolled when SwiftUI last removed it (a split, a collapse,
+    /// a tab move, leaving Develop). The next grid built for this pane scrolls back there.
+    @ObservationIgnored var gridScrollAnchor: GridScrollAnchor?
     var iCloudDownloadNotice: String?
     /// Non-blocking second phase after the file grid appears. Exposed so the browser can
     /// explain why rating/label/metadata-dependent filters are still settling.

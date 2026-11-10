@@ -4,6 +4,24 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+## 3.0.0-beta.6 — 2026-11-10
+
+This sixth public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.
+
+### Highlights
+
+- Known People with iCloud sync: a Mac setting up face recognition, or clearing a replaced library, no longer resets the shared library on your other Macs, and a replaced library is picked up right away.
+- Templates deleted on one Mac no longer come back when another Mac turns iCloud sync on again.
+- Browser tabs from the keyboard (⌥⌘T, ⌥⌘N / ⌥⌘B, ⌘W closes the active tab), and the grid keeps its scroll position when panes split or merge.
+- Develop (experimental): AI masks can use Segment Anything 2.1 instead of Apple Vision; AI mask sliders and brush painting are smooth again.
+- Damaged or hostile archives are refused before they can fill the disk.
+- Fixes for edited renders coming out rotated after a straightened watermarked export, and crashes on invalid Develop values or a folder changing as you leave it.
+
+### Changes since 3.0.0-beta.5
+
+- Known People with iCloud sync: when another Mac replaces the shared library, this Mac now switches to it right away instead of after a relaunch. Editing a person (name, samples, merge, thumbnail) now starts from the stored record, so face samples that just arrived from another Mac are kept.
+- Templates with iCloud sync: a template deleted on one Mac no longer comes back when another Mac turns sync on again, and one deleted while sync was off is removed from iCloud too. A template restored from the Trash still shows.
+- The thumbnail grid keeps its scroll position when it is rebuilt: splitting into panes, closing the last extra pane, moving tabs or leaving Develop.
 - Develop (experimental): AI masks can now use Meta's Segment Anything 2.1 instead of Apple Vision, to compare the two. Download the model (about 94 MB) in Settings → Develop Sliders → AI Mask Engine; the AI mask panel then shows a Vision / SAM 2.1 switch, and Select Again regenerates a mask with the other engine. SAM can select any object you click, including background objects Vision skips, such as a parked car or a sign.
 - Export and Compare: after exporting a straightened, cropped photo with a watermark (or comparing one in Develop), later edited renders until you quit the app could come out rotated around that photo's crop centre. Each render now starts from a clean state.
 - Fixes a crash when opening or exporting a photo whose sidecar or embedded Develop settings contain an invalid number (such as `inf` or an out-of-range crop); such values are now ignored or limited to a usable range.

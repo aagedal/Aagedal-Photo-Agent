@@ -113,6 +113,77 @@ struct TemplateDeletionConflictTests {
     }
 }
 
+@Suite("Template deletion markers")
+struct TemplateTombstoneTests {
+    /// A deletion later than the file hides it; saving the template again clears the marker.
+    @Test("A deletion marker hides an older metadata template copy until it is saved again")
+    func metadataTombstone() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = TemplateStorageService(directoryURL: root, trashAccess: DeletionTrashProbe().access)
+        let deleted = MetadataTemplate(name: "Deleted on another Mac")
+        let kept = MetadataTemplate(name: "Kept")
+        try storage.save(deleted)
+        try storage.save(kept)
+
+        try storage.delete(deleted)
+        #expect(FileManager.default.fileExists(atPath: TemplateTombstone.url(for: deleted.id, in: root).path))
+        // A copy older than the deletion (the marker is dated after the file was written).
+        try storage.save(deleted)
+        try TemplateTombstone.write(for: deleted.id, in: root, at: Date().addingTimeInterval(60))
+
+        #expect(try storage.loadAll().map(\.id) == [kept.id])
+        let inventory = try TemplateFileInventory<MetadataTemplate>.read(at: root) { $0 }
+        #expect(inventory.templates.map(\.id) == [kept.id])
+        #expect(inventory.occupiedFileIDs.contains(deleted.id))
+
+        try storage.save(deleted)
+        #expect(!FileManager.default.fileExists(atPath: TemplateTombstone.url(for: deleted.id, in: root).path))
+        #expect(Set(try storage.loadAll().map(\.id)) == [deleted.id, kept.id])
+    }
+
+    @Test("A deletion marker hides an older Develop template copy")
+    func developTombstone() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = DevelopTemplateStorageService(directoryURL: root, trashAccess: DeletionTrashProbe().access)
+        let deleted = DevelopTemplate(name: "Deleted")
+        try storage.save(deleted)
+        try TemplateTombstone.write(for: deleted.id, in: root, at: Date().addingTimeInterval(60))
+        #expect(try storage.loadAll().isEmpty)
+        try storage.save(deleted)
+        #expect(try storage.loadAll().map(\.id) == [deleted.id])
+    }
+
+    /// Re-enabling sync merges this Mac's folder into iCloud (and the reverse on disable).
+    @Test("The sync merge neither resurrects a deleted template nor keeps one deleted elsewhere")
+    func mergeHonorsDeletions() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let local = root.appendingPathComponent("local", isDirectory: true)
+        let cloud = root.appendingPathComponent("cloud", isDirectory: true)
+        let localStorage = TemplateStorageService(directoryURL: local, trashAccess: DeletionTrashProbe().access)
+        let cloudStorage = TemplateStorageService(directoryURL: cloud, trashAccess: DeletionTrashProbe().access)
+        let deletedInCloud = MetadataTemplate(name: "Deleted on another Mac")
+        let deletedHere = MetadataTemplate(name: "Deleted while sync was off")
+        let kept = MetadataTemplate(name: "Kept")
+        try localStorage.save(deletedInCloud)
+        try localStorage.save(kept)
+        try cloudStorage.save(deletedHere)
+        let later = Date().addingTimeInterval(60)
+        try TemplateTombstone.write(for: deletedInCloud.id, in: cloud, at: later)
+        try TemplateTombstone.write(for: deletedHere.id, in: local, at: later)
+
+        try TemplateTombstone.mergeCopyHonoringDeletions(from: local, to: cloud)
+
+        #expect(try cloudStorage.loadAll().map(\.id) == [kept.id])
+        let file = { (id: UUID) in cloud.appendingPathComponent("\(id.uuidString).json").path }
+        #expect(!FileManager.default.fileExists(atPath: file(deletedInCloud.id)))
+        #expect(!FileManager.default.fileExists(atPath: file(deletedHere.id)))
+        #expect(FileManager.default.fileExists(atPath: TemplateTombstone.url(for: deletedHere.id, in: cloud).path))
+    }
+}
+
 nonisolated private final class DeletionTrashProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0
