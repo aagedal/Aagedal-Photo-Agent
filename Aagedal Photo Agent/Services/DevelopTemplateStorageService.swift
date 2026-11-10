@@ -26,11 +26,13 @@ nonisolated struct DevelopTemplateStorageService: Sendable {
         defer { release() }
         let files = try CloudCoordinatedIO.contentsOfDirectory(at: directory)
             .filter { $0.pathExtension == "json" }
+        let deleted = TemplateTombstone.hiddenIDs(in: directory)
 
         return files.compactMap { url in
             do {
                 let data = try CloudCoordinatedIO.readData(at: url)
-                return try JSONDecoder().decode(DevelopTemplate.self, from: data)
+                let template = try JSONDecoder().decode(DevelopTemplate.self, from: data)
+                return deleted.contains(template.id) ? nil : template
             } catch {
                 developTemplateStorageLog.warning(
                     "Skipping develop template at \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
@@ -60,6 +62,7 @@ nonisolated struct DevelopTemplateStorageService: Sendable {
             )
         }
         try CloudCoordinatedIO.writeData(data, to: url)
+        try TemplateTombstone.clear(for: template.id, in: directory)
     }
 
     func delete(_ template: DevelopTemplate) throws {
@@ -67,6 +70,12 @@ nonisolated struct DevelopTemplateStorageService: Sendable {
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
         try trashAccess.moveToTrash(at: url)
+        // The template is already gone; a missing marker only risks a stale copy returning.
+        do {
+            try TemplateTombstone.write(for: template.id, in: directory)
+        } catch {
+            developTemplateStorageLog.error("Could not record template deletion: \(error.localizedDescription, privacy: .private)")
+        }
     }
 
     func resolvedForTransaction() -> TemplateStorageScope<Self> {

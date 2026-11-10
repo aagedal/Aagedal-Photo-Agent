@@ -1,6 +1,13 @@
 import AppKit
 import Observation
 
+/// The photo at the top of a grid's visible area and how far it was scrolled past, so a
+/// rebuilt grid (with possibly a different column count) can return to the same place.
+nonisolated struct GridScrollAnchor: Equatable, Sendable {
+    let url: URL
+    let offset: CGFloat
+}
+
 /// NSViewController managing the NSCollectionView with a diffable data source.
 final class CollectionViewGridController: NSViewController, NSCollectionViewDelegateFlowLayout, NSCollectionViewPrefetching {
 
@@ -38,6 +45,9 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     /// only reports future changes. Keep this pending until the first laid-out snapshot can
     /// scroll that already-selected image back into view.
     private var needsInitialSelectionRestore = true
+    /// Pending until the first laid-out snapshot can restore `viewModel.gridScrollAnchor`.
+    /// Selection restore waits for it, so it only scrolls when the photo is still off screen.
+    private var needsScrollAnchorRestore = true
     /// In-flight speculative prefetch tasks, keyed by URL so `cancelPrefetchingForItemsAt` can
     /// actually stop work for items the user scrolled past before their decode started.
     private var prefetchTasks: [URL: Task<Void, Never>] = [:]
@@ -87,6 +97,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     /// loads swap it for a progress view, workspace switches remove it).
     func tearDown() {
         guard !isTornDown else { return }
+        saveScrollAnchor()
         isTornDown = true
         for task in observationTasks {
             task.cancel()
@@ -145,6 +156,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         if viewModel.shouldRestoreGridFocus {
             viewModel.shouldRestoreGridFocus = false
         }
+        restoreScrollAnchorIfPossible()
         restoreInitialSelectionIfPossible()
         for item in collectionView.visibleItems() {
             (item as? ThumbnailCollectionViewItem)?.refreshVoiceMemoStatus()
@@ -370,6 +382,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
                     activeURL: self.viewModel.lastClickedImageURL
                 )
                 if showOriginalsChanged { self.reconfigureVisibleItems() }
+                self.restoreScrollAnchorIfPossible()
                 self.restoreInitialSelectionIfPossible()
                 if keepsActiveInView { self.scrollActiveItemIntoView() }
             }
@@ -438,8 +451,53 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
 
     // MARK: - Selection Updates
 
+    private func saveScrollAnchor() {
+        guard hasAppliedSnapshot, let collectionView, let dataSource,
+              let visible = collectionView.enclosingScrollView?.documentVisibleRect,
+              visible.size != .zero else { return }
+        let layout = collectionView.collectionViewLayout
+        let top = collectionView.indexPathsForVisibleItems()
+            .compactMap { path in layout?.layoutAttributesForItem(at: path).map { (path, $0.frame) } }
+            .filter { $0.1.maxY > visible.minY }
+            .min { ($0.1.minY, $0.0.item) < ($1.1.minY, $1.0.item) }
+        guard let (indexPath, frame) = top, let url = dataSource.itemIdentifier(for: indexPath) else {
+            viewModel.gridScrollAnchor = nil
+            return
+        }
+        viewModel.gridScrollAnchor = GridScrollAnchor(url: url, offset: visible.minY - frame.minY)
+    }
+
+    private func restoreScrollAnchorIfPossible() {
+        guard needsScrollAnchorRestore else { return }
+        guard let anchor = viewModel.gridScrollAnchor else {
+            needsScrollAnchorRestore = false
+            return
+        }
+        guard hasAppliedSnapshot, view.window != nil,
+              let scrollView = collectionView.enclosingScrollView,
+              scrollView.contentView.bounds.size != .zero else { return }
+        // A different folder (or a filter that hides the photo): nothing to return to.
+        guard let indexPath = dataSource.indexPath(for: anchor.url) else {
+            needsScrollAnchorRestore = false
+            viewModel.gridScrollAnchor = nil
+            return
+        }
+        guard let frame = collectionView.collectionViewLayout?.layoutAttributesForItem(at: indexPath)?.frame else {
+            return
+        }
+        needsScrollAnchorRestore = false
+        viewModel.gridScrollAnchor = nil
+        let clip = scrollView.contentView
+        let contentHeight = collectionView.collectionViewLayout?.collectionViewContentSize.height
+            ?? collectionView.frame.height
+        let maxY = max(contentHeight - clip.bounds.height, 0)
+        let y = min(max(frame.minY + anchor.offset, 0), maxY)
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+        scrollView.reflectScrolledClipView(clip)
+    }
+
     private func restoreInitialSelectionIfPossible() {
-        guard needsInitialSelectionRestore,
+        guard needsInitialSelectionRestore, !needsScrollAnchorRestore,
               view.window != nil,
               let scrollView = collectionView.enclosingScrollView,
               scrollView.contentView.bounds.size != .zero,

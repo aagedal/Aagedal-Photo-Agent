@@ -447,6 +447,44 @@ struct KnownPeopleServiceTests {
         ])
     }
 
+    @Test("Edits re-read the stored record so a peer's just-synced samples survive")
+    func editsRebaseOnDurableRecord() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let service = KnownPeopleService()
+        let original = try service.addPerson(name: "Original", embeddings: [embedding(61)])
+        #expect(service.person(byID: original.id)?.embeddings.count == 1)
+        let recordURL = directory.appendingPathComponent("people/\(original.id.uuidString).json")
+
+        // A peer's sample lands on disk before the watcher's debounce refreshes the cache.
+        func peerAdds(_ sample: PersonEmbedding) throws {
+            var peer = try JSONDecoder().decode(KnownPerson.self, from: Data(contentsOf: recordURL))
+            peer.embeddings.append(sample)
+            peer.updatedAt = Date().addingTimeInterval(1)
+            try encode(peer).write(to: recordURL)
+        }
+        func stored() throws -> KnownPerson {
+            try JSONDecoder().decode(KnownPerson.self, from: Data(contentsOf: recordURL))
+        }
+
+        let peerSample = embedding(62)
+        try peerAdds(peerSample)
+        var edited = original
+        edited.name = "Renamed"
+        try await service.updatePersonDetailsInBackground(edited)
+        #expect(try stored().name == "Renamed")
+        #expect(try stored().embeddings.map(\.id) == [original.embeddings[0].id, peerSample.id])
+
+        let secondPeerSample = embedding(63)
+        try peerAdds(secondPeerSample)
+        let local = embedding(64)
+        try service.addEmbedding(local, toPersonID: original.id)
+        #expect(try stored().embeddings.map(\.id)
+            == [original.embeddings[0].id, peerSample.id, secondPeerSample.id, local.id])
+        #expect(service.person(byID: original.id)?.embeddings.count == 4)
+    }
+
     @Test("Detail editing cancellation and missing samples leave records intact and release admission")
     func personDetailEditRejectedBeforeWrite() async throws {
         let directory = makeTempDir()

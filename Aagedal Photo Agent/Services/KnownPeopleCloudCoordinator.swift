@@ -15,6 +15,11 @@ private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "Kno
 /// in-memory database. The service filters out echoes of this device's own
 /// writes via its self-write registry, so a local save no longer triggers a
 /// reload.
+///
+/// It also watches the cloud root's `current-generation.json`. When another Mac
+/// replaces the library it publishes a new generation and moves that pointer; the
+/// watcher re-resolves it and switches the service and query to the new
+/// generation, the same way a relaunch would.
 @MainActor
 final class KnownPeopleCloudCoordinator {
     static let shared = KnownPeopleCloudCoordinator()
@@ -34,23 +39,48 @@ final class KnownPeopleCloudCoordinator {
     /// Changed person-file URLs accumulated across query updates within one
     /// debounce window, keyed by path so repeated notifications coalesce.
     private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
+    /// Content change date of the generation pointer last handed to a re-check (or seen at
+    /// start). A query update reports every result, so only a new date triggers a re-check.
+    private var seenPointerChangeDate: Date?
+    private var pendingGenerationCheck: Task<Void, Never>?
+
+    /// Retry delays for a pointer that names a generation whose files haven't synced yet.
+    /// A later pointer update starts a fresh check.
+    static let generationRetryDelays: [Duration] = [.seconds(5), .seconds(15), .seconds(60), .seconds(300)]
 
     private let makeMetadataQuery: () -> NSMetadataQuery
     private let isEnabled: () -> Bool
     private let startMetadataQuery: (NSMetadataQuery) -> Void
     private let stopMetadataQuery: (NSMetadataQuery) -> Void
+    private let resolveGeneration: (URL) async throws -> URL?
+    private let activateLibrary: (URL) -> Void
+    private let retryDelays: [Duration]
 
     init(
         isEnabled: @escaping () -> Bool = { AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled) },
         makeMetadataQuery: @escaping () -> NSMetadataQuery = { NSMetadataQuery() },
         startMetadataQuery: @escaping (NSMetadataQuery) -> Void = { $0.start() },
-        stopMetadataQuery: @escaping (NSMetadataQuery) -> Void = { $0.stop() }
+        stopMetadataQuery: @escaping (NSMetadataQuery) -> Void = { $0.stop() },
+        resolveGeneration: ((URL) async throws -> URL?)? = nil,
+        activateLibrary: @escaping (URL) -> Void = { resolved in
+            ICloudSyncCoordinator.cacheKnownPeopleCloudGeneration(from: resolved)
+            KnownPeopleService.shared.reloadAfterStorageChange(resolvedStorageURL: resolved)
+        },
+        retryDelays: [Duration] = KnownPeopleCloudCoordinator.generationRetryDelays
     ) {
         self.makeMetadataQuery = makeMetadataQuery
         self.isEnabled = isEnabled
         self.startMetadataQuery = startMetadataQuery
         self.stopMetadataQuery = stopMetadataQuery
+        self.resolveGeneration = resolveGeneration ?? {
+            try await KnownPeopleCloudGenerationPublisher.shared.resolveActiveGeneration(in: $0)
+        }
+        self.activateLibrary = activateLibrary
+        self.retryDelays = retryDelays
     }
+
+    /// The library root the watcher is following (tests/diagnostics).
+    var activeRoot: URL? { resolvedRoot }
 
     /// Idempotent. Call after app launch and whenever the iCloud toggle changes.
     func refresh() {
@@ -91,10 +121,9 @@ final class KnownPeopleCloudCoordinator {
                 ensuringDirectory: true
             )
             let resolved: URL?
-            if let cloudRoot {
+            if let cloudRoot, let self {
                 do {
-                    resolved = try await KnownPeopleCloudGenerationPublisher.shared
-                        .resolveActiveGeneration(in: cloudRoot) ?? cloudRoot
+                    resolved = try await self.resolveGeneration(cloudRoot) ?? cloudRoot
                 } catch {
                     // A present but invalid pointer must not silently reactivate legacy root
                     // records. Keep monitoring stopped until a later refresh can validate it.
@@ -107,8 +136,7 @@ final class KnownPeopleCloudCoordinator {
             self.pendingStart = nil
             let stillEnabled = self.isEnabled()
             guard stillEnabled, let resolved else { return }
-            ICloudSyncCoordinator.cacheKnownPeopleCloudGeneration(from: resolved)
-            KnownPeopleService.shared.reloadAfterStorageChange(resolvedStorageURL: resolved)
+            self.activateLibrary(resolved)
             self.resolvedRoot = resolved
             self.startQueryIfNeeded(root: resolved)
             // The query's gathering callback delivers the synced person files
@@ -165,6 +193,9 @@ final class KnownPeopleCloudCoordinator {
         pendingRefresh = nil
         pendingChanges.removeAll()
         resolvedRoot = nil
+        pendingGenerationCheck?.cancel()
+        pendingGenerationCheck = nil
+        seenPointerChangeDate = nil
         guard let q = query else { return }
         stopMetadataQuery(q)
         for observer in observers {
@@ -185,6 +216,17 @@ final class KnownPeopleCloudCoordinator {
         for case let item as NSMetadataItem in query.results {
             guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
                   let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL else { continue }
+            if Self.isGenerationPointer(url, root: root) {
+                let status = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingStatusKey) as? String
+                if let status, status != NSMetadataUbiquitousItemDownloadingStatusCurrent {
+                    // Re-check once the new pointer bytes are local; the download posts an update.
+                    downloadURLs.append(url)
+                } else {
+                    let changeDate = item.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date
+                    pointerObserved(changeDate: changeDate, root: root)
+                }
+                continue
+            }
             // Thumbnail updates invalidate decoded caches and superseded reads too.
             guard Self.acceptsChange(at: url, root: root) else { continue }
 
@@ -220,6 +262,84 @@ final class KnownPeopleCloudCoordinator {
         default:
             return false
         }
+    }
+
+    /// The cloud root that holds `current-generation.json` for a library root: the root itself
+    /// for a legacy (pointer-less) library, or the parent of `generations/<uuid>`.
+    nonisolated static func cloudRoot(forLibraryRoot root: URL) -> URL {
+        let root = URL(fileURLWithPath: root.standardizedFileURL.path, isDirectory: true)
+        let parent = root.deletingLastPathComponent()
+        guard parent.lastPathComponent == KnownPeopleCloudGenerationPointer.generationsDirectory,
+              UUID(uuidString: root.lastPathComponent) != nil else { return root }
+        return parent.deletingLastPathComponent()
+    }
+
+    nonisolated static func isGenerationPointer(_ url: URL, root: URL) -> Bool {
+        guard url.isFileURL, url.lastPathComponent == KnownPeopleCloudGenerationPointer.fileName else {
+            return false
+        }
+        return url.standardizedFileURL.deletingLastPathComponent().path
+            == cloudRoot(forLibraryRoot: root).path
+    }
+
+    /// The first sighting on a generation root only records the date: that root was resolved
+    /// from this pointer moments ago. On a legacy root any pointer is new (another Mac
+    /// published the first generation), as is any later change of date.
+    private func pointerObserved(changeDate: Date?, root: URL) {
+        let isFirstSighting = seenPointerChangeDate == nil
+        guard isFirstSighting || (changeDate != nil && changeDate != seenPointerChangeDate) else { return }
+        seenPointerChangeDate = changeDate ?? .distantPast
+        if isFirstSighting, Self.cloudRoot(forLibraryRoot: root).path != root.standardizedFileURL.path {
+            return
+        }
+        recheckActiveGeneration()
+    }
+
+    /// Re-resolves the generation pointer and, when it names a different library than the one
+    /// being watched, switches the service and the query to it. A pointer whose generation
+    /// doesn't validate yet (its files still syncing) is retried with backoff; the current
+    /// library stays active meanwhile.
+    func recheckActiveGeneration() {
+        guard let root = resolvedRoot else { return }
+        let cloudRoot = Self.cloudRoot(forLibraryRoot: root)
+        pendingGenerationCheck?.cancel()
+        pendingGenerationCheck = Task { [weak self, retryDelays] in
+            var delays = retryDelays[...]
+            while true {
+                guard let self, !Task.isCancelled else { return }
+                let resolved: URL?
+                do {
+                    resolved = try await self.resolveGeneration(cloudRoot) ?? cloudRoot
+                } catch is CancellationError {
+                    return
+                } catch {
+                    resolved = nil
+                }
+                guard !Task.isCancelled, self.resolvedRoot == root, self.isEnabled() else { return }
+                if let resolved {
+                    self.pendingGenerationCheck = nil
+                    self.switchLibrary(to: resolved)
+                    return
+                }
+                guard let delay = delays.popFirst() else {
+                    logger.error("Known People iCloud generation pointer did not validate; keeping the current library")
+                    self.pendingGenerationCheck = nil
+                    return
+                }
+                try? await Task.sleep(for: delay)
+            }
+        }
+    }
+
+    private func switchLibrary(to resolved: URL) {
+        guard resolved.standardizedFileURL.path != resolvedRoot?.standardizedFileURL.path else { return }
+        logger.info("Known People iCloud library moved to a new generation; switching")
+        let seenDate = seenPointerChangeDate
+        stopQuery()
+        activateLibrary(resolved)
+        resolvedRoot = resolved
+        seenPointerChangeDate = seenDate
+        startQueryIfNeeded(root: resolved)
     }
 
     private func requestDownloads(for urls: [URL]) {
