@@ -115,6 +115,63 @@ struct ICloudSyncCoordinatorTests {
         #expect(stopped.count == 2)
     }
 
+    @Test("Known People watcher follows a generation pointer moved by another Mac")
+    @MainActor
+    func knownPeopleGenerationPointerSwitch() async throws {
+        let cloud = URL(fileURLWithPath: "/virtual/KnownPeople")
+        let generations = cloud.appendingPathComponent("generations", isDirectory: true)
+        let first = generations.appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        let second = generations.appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        #expect(KnownPeopleCloudCoordinator.cloudRoot(forLibraryRoot: first).path == cloud.path)
+        #expect(KnownPeopleCloudCoordinator.cloudRoot(forLibraryRoot: cloud).path == cloud.path)
+        let pointer = cloud.appendingPathComponent(KnownPeopleCloudGenerationPointer.fileName)
+        #expect(KnownPeopleCloudCoordinator.isGenerationPointer(pointer, root: first))
+        #expect(KnownPeopleCloudCoordinator.isGenerationPointer(pointer, root: cloud))
+        #expect(!KnownPeopleCloudCoordinator.isGenerationPointer(
+            first.appendingPathComponent(KnownPeopleCloudGenerationPointer.fileName), root: first))
+
+        // The pointer names the new generation before its files have synced: the first
+        // resolution fails and the watcher keeps the current library, then retries.
+        var resolutions: [Result<URL?, Error>] = [.failure(CocoaError(.fileReadCorruptFile)), .success(second)]
+        var resolvedRoots: [URL] = []
+        var activated: [URL] = []
+        var started: [NSMetadataQuery] = []
+        var stopped: [NSMetadataQuery] = []
+        let coordinator = KnownPeopleCloudCoordinator(
+            isEnabled: { true },
+            makeMetadataQuery: { CloudCallbackCountingQuery() },
+            startMetadataQuery: { started.append($0) },
+            stopMetadataQuery: { stopped.append($0) },
+            resolveGeneration: { root in
+                resolvedRoots.append(root)
+                return try resolutions.removeFirst().get()
+            },
+            activateLibrary: { activated.append($0) },
+            retryDelays: [.milliseconds(1)]
+        )
+        coordinator.refresh(resolvedRoot: first)
+        #expect(started.count == 1)
+        coordinator.recheckActiveGeneration()
+        for _ in 0..<500 where coordinator.activeRoot != second {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(resolvedRoots.map(\.path) == [cloud.path, cloud.path])
+        #expect(coordinator.activeRoot == second)
+        #expect(activated == [second])
+        #expect(started.count == 2)
+        #expect(stopped.count == 1)
+
+        // Re-resolving to the library already followed changes nothing.
+        resolutions = [.success(second)]
+        coordinator.recheckActiveGeneration()
+        for _ in 0..<500 where !resolutions.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        await Task { @MainActor in }.value
+        #expect(activated == [second])
+        #expect(started.count == 2)
+    }
+
     @Test("keyword-list monitoring resolves and creates its root off MainActor")
     @MainActor
     func keywordMonitoringRootPreparation() async throws {

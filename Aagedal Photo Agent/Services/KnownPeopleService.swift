@@ -1571,8 +1571,8 @@ final class KnownPeopleService {
     @discardableResult
     private func mutatePerson(id personID: UUID, _ transform: (inout KnownPerson) throws -> Bool) throws -> Bool {
         try requireLocalWriteAdmission(to: personFileURL(for: personID))
-        _ = loadDatabase()
-        guard let index = peopleIndex[personID],
+        guard durablePerson(byID: personID) != nil,
+              let index = peopleIndex[personID],
               var db = database,
               db.people.indices.contains(index) else {
             return false
@@ -2206,7 +2206,7 @@ final class KnownPeopleService {
         try Task.checkCancellation()
         guard revision == storageRevision else { throw CancellationError() }
         try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: revision)
-        guard var current = person(byID: id) else {
+        guard var current = durablePerson(byID: id) else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                 userInfo: [NSLocalizedDescriptionKey: "Person no longer exists."])
         }
@@ -2331,7 +2331,7 @@ final class KnownPeopleService {
 
     func addEmbedding(_ embedding: PersonEmbedding, toPersonID personID: UUID, thumbnailData: Data? = nil) throws {
         try requireLocalWriteAdmission(to: personFileURL(for: personID))
-        guard peopleIndex[personID] != nil else {
+        guard person(byID: personID) != nil else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
@@ -2442,7 +2442,7 @@ final class KnownPeopleService {
             }
         case .nameMatch(let existing), .faceMatch(let existing, _), .bothMatch(let existing, _):
             // Admission may suspend behind another edit. Merge into the latest durable cache.
-            guard let current = self.person(byID: existing.id) else {
+            guard let current = self.durablePerson(byID: existing.id) else {
                 throw NSError(domain: "KnownPeopleService", code: 10,
                     userInfo: [NSLocalizedDescriptionKey: "Person no longer exists."])
             }
@@ -2504,7 +2504,7 @@ final class KnownPeopleService {
 
     /// Add embeddings to a person, skipping any that are duplicates (same featurePrintData).
     func addEmbeddingsDeduped(_ embeddings: [PersonEmbedding], toPersonID personID: UUID, embeddingThumbnails: [UUID: Data] = [:]) throws {
-        guard peopleIndex[personID] != nil else {
+        guard person(byID: personID) != nil else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
@@ -2582,7 +2582,7 @@ final class KnownPeopleService {
         guard revision == storageRevision else { throw CancellationError() }
         try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: revision)
         // Admission may wait behind another mutation. Resolve both people from current storage.
-        guard let source = person(byID: sourceID), var target = person(byID: intoTargetID) else { return }
+        guard let source = durablePerson(byID: sourceID), var target = durablePerson(byID: intoTargetID) else { return }
         let existingData = Set(target.embeddings.map(\.featurePrintData))
         let newEmbeddings = source.embeddings.filter { !existingData.contains($0.featurePrintData) }
         if !newEmbeddings.isEmpty {
@@ -2656,7 +2656,7 @@ final class KnownPeopleService {
         try Task.checkCancellation()
         guard revision == storageRevision else { throw CancellationError() }
         try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: revision)
-        var person = person(byID: personID)
+        var person = durablePerson(byID: personID)
         person?.updatedAt = Date()
         let root = knownPeopleDirectory
         let thumbnailURL = thumbnailURL(for: personID)
@@ -2729,7 +2729,7 @@ final class KnownPeopleService {
         try await prepareLegacyDatabaseForBackgroundMutation(expectedStorageRevision: expectedStorageRevision)
         // Reload after admission: a peer or a preceding async mutation may have edited
         // this person while either thumbnail preparation or transaction admission suspended.
-        guard var person = person(byID: personID) else { return }
+        guard var person = durablePerson(byID: personID) else { return }
         let root = knownPeopleDirectory
         let recordURL = personFileURL(for: personID)
         let embeddingURL = embeddingThumbnailURL(for: embeddingID)
@@ -2791,6 +2791,27 @@ final class KnownPeopleService {
         guard let index = peopleIndex[personID],
               db.people.indices.contains(index) else { return nil }
         return db.people[index]
+    }
+
+    /// The person as currently stored on disk, for read-modify-write edits. The cached record
+    /// can lag a peer's synced write by the watcher's debounce; editing it would overwrite the
+    /// peer's new face samples. A newer durable record replaces the cached one first. When the
+    /// file can't be read (absent, corrupt, mid-sync) the cached record stands, and remote
+    /// change handling deals with deletions.
+    func durablePerson(byID personID: UUID) -> KnownPerson? {
+        guard let cached = person(byID: personID) else { return nil }
+        let url = personFileURL(for: personID)
+        guard CloudCoordinatedIO.itemExists(at: url),
+              let stored = loadPersonFile(at: url), stored.id == personID else { return cached }
+        guard stored.updatedAt != cached.updatedAt
+                || stored.embeddings.map(\.id) != cached.embeddings.map(\.id) else { return cached }
+        guard var db = database, let index = peopleIndex[personID],
+              db.people.indices.contains(index) else { return cached }
+        db.people[index] = stored
+        db.lastModified = db.people.map(\.updatedAt).max() ?? stored.updatedAt
+        database = db
+        featurePrintCache.removeAllObjects()
+        return stored
     }
 
     /// Preserve ArcFace-era Known People examples across future model upgrades. The v2 -> v3

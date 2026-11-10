@@ -208,7 +208,7 @@ nonisolated struct TemplateICloudRoutingFileAccess: Sendable {
             return TemplateICloudLocalRoot(url: resolved.url, release: resolved.release)
         },
         cloudRootURL: { AppPaths.iCloudTemplatesURL },
-        merge: CloudCoordinatedIO.mergeCopyPreservingNewer
+        merge: TemplateTombstone.mergeCopyHonoringDeletions
     )
 }
 

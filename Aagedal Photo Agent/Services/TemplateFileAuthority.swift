@@ -39,6 +39,7 @@ nonisolated extension TemplateFileInventory where Value: Decodable & Identifiabl
         var authorities: [UUID: TemplateFileAuthority] = [:]
         var seen: Set<UUID> = []
         var occupiedFileIDs: Set<UUID> = []
+        let deleted = TemplateTombstone.hiddenIDs(in: directory)
         for file in files {
             // Physical occupancy protects unreadable or mismatched documents too.
             // On case-insensitive filesystems, UUID spelling must not bypass it.
@@ -47,6 +48,8 @@ nonisolated extension TemplateFileInventory where Value: Decodable & Identifiabl
             }
             guard let bytes = try? CloudCoordinatedIO.readData(at: file),
                   let value = try? JSONDecoder().decode(Value.self, from: bytes) else { continue }
+            // A deletion marker hides a copy that sync brought back (see TemplateTombstone).
+            guard !deleted.contains(value.id) else { continue }
             templates.append(value)
             // Mutators address UUID.json. Noncanonical and duplicate records remain
             // visible but cannot confer permission to mutate a different file.

@@ -111,11 +111,13 @@ nonisolated struct TemplateStorageService: Sendable {
         defer { release() }
         let files = try CloudCoordinatedIO.contentsOfDirectory(at: directory)
             .filter { $0.pathExtension == "json" }
+        let deleted = TemplateTombstone.hiddenIDs(in: directory)
 
         return files.compactMap { url in
             do {
                 let data = try CloudCoordinatedIO.readData(at: url)
-                return try JSONDecoder().decode(MetadataTemplate.self, from: data)
+                let template = try JSONDecoder().decode(MetadataTemplate.self, from: data)
+                return deleted.contains(template.id) ? nil : template
             } catch {
                 templateStorageLog.warning("Skipping template at \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 return nil
@@ -148,6 +150,7 @@ nonisolated struct TemplateStorageService: Sendable {
             data = try TemplateJSONPreservation.metadata(replacement: data, existing: existingData)
         }
         try CloudCoordinatedIO.writeData(data, to: url)
+        try TemplateTombstone.clear(for: template.id, in: directory)
         return data
     }
 
@@ -156,6 +159,12 @@ nonisolated struct TemplateStorageService: Sendable {
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
         try trashAccess.moveToTrash(at: url)
+        // The template is already gone; a missing marker only risks a stale copy returning.
+        do {
+            try TemplateTombstone.write(for: template.id, in: directory)
+        } catch {
+            templateStorageLog.error("Could not record template deletion: \(error.localizedDescription, privacy: .private)")
+        }
     }
 
     // MARK: - Export / Import
