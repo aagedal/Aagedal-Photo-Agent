@@ -4,8 +4,8 @@ import UniformTypeIdentifiers
 enum SidebarFolderSection {
     case favoriteRoot
     case favoriteChild
-    case openRoot
-    case openChild
+    case locationRoot
+    case locationChild
 }
 
 /// Stable SwiftUI identity for a folder row within one rendered sidebar tree.
@@ -37,23 +37,32 @@ struct FolderTreeRow: View {
     /// Several panes are open, so "which folder is the active pane" needs a stronger cue
     /// than the single-browser tint: a solid selection fill.
     var emphasizesCurrent: Bool = false
-    /// Opens a folder into the active pane (and registers it in the shared sidebar).
-    /// Bool = whether to add it to the Open Folders section.
-    let openFolder: (URL, Bool) -> Void
-    let closeFolder: (URL) -> Void
+    /// Opens a folder into the active pane (and reveals it in the shared sidebar).
+    let openFolder: (URL) -> Void
     let revealInFinder: (URL) -> Void
+    /// Locations roots: the home folder or volume this row stands for (name, icon, eject).
+    var location: SidebarLocation? = nil
+    var ejectLocation: ((SidebarLocation) -> Void)? = nil
 
     @State private var isDropHighlighted = false
     @State private var isHovered = false
     /// AppKit drag source: SwiftUI's `.onDrag` can't refuse drops on other apps (privacy).
     @State private var dragSource = FolderRowDragSource()
 
+    /// Compared by path: a folder opened from the Open panel or Open Recent has no trailing
+    /// slash, while the tree's directory listings do.
+    private var path: String { url.standardizedFileURL.path }
+
     private var isCurrent: Bool {
-        url == currentFolderURL
+        currentFolderURL?.standardizedFileURL.path == path
     }
 
     private var isInOtherPane: Bool {
-        !isCurrent && otherPaneFolderURLs.contains(url)
+        !isCurrent && otherPaneFolderURLs.contains { $0.standardizedFileURL.path == path }
+    }
+
+    private var displayName: String {
+        location?.name ?? url.lastPathComponent
     }
 
     /// Solid accent selection (active pane's folder in split view).
@@ -85,7 +94,7 @@ struct FolderTreeRow: View {
     private var childSection: SidebarFolderSection {
         switch section {
         case .favoriteRoot, .favoriteChild: .favoriteChild
-        case .openRoot, .openChild: .openChild
+        case .locationRoot, .locationChild: .locationChild
         }
     }
 
@@ -94,6 +103,8 @@ struct FolderTreeRow: View {
             .padding(.leading, 8 + CGFloat(depth) * 16)
             .padding(.trailing, 8)
             .contextMenu { contextMenuItems }
+            // Scroll target for `BrowserViewModel.sidebarRevealRequest`.
+            .id(SidebarFolderRowIdentity(tree: tree, url: url))
 
         if isExpanded {
             if let children = viewModel.subfoldersByOpenFolder[url], !children.isEmpty {
@@ -112,7 +123,6 @@ struct FolderTreeRow: View {
                         otherPaneFolderURLs: otherPaneFolderURLs,
                         emphasizesCurrent: emphasizesCurrent,
                         openFolder: openFolder,
-                        closeFolder: closeFolder,
                         revealInFinder: revealInFinder
                     )
                 }
@@ -146,27 +156,29 @@ struct FolderTreeRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(isExpanded ? "Collapse \(url.lastPathComponent)" : "Expand \(url.lastPathComponent)")
+                .accessibilityLabel(isExpanded ? "Collapse \(displayName)" : "Expand \(displayName)")
                 .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-                .help(isExpanded ? "Collapse \(url.lastPathComponent)" : "Expand \(url.lastPathComponent)")
+                .help(isExpanded ? "Collapse \(displayName)" : "Expand \(displayName)")
             } else {
                 Spacer()
                     .frame(width: 20)
             }
 
-            Image(systemName: isCurrent || isInOtherPane || isRootOfSection ? "folder.fill" : "folder")
+            Image(systemName: location?.systemImage
+                  ?? (isCurrent || isInOtherPane || isRootOfSection ? "folder.fill" : "folder"))
                 .foregroundStyle(isStrongCurrent ? Color.white : isCurrent ? Color.accentColor : Color.secondary)
+                .frame(width: 16)
                 .accessibilityHidden(true)
-            Text(url.lastPathComponent)
+            Text(displayName)
                 .font(.callout)
                 .fontWeight(isStrongCurrent ? .semibold : nil)
                 .foregroundStyle(isStrongCurrent ? Color.white : isCurrent ? Color.accentColor : Color.primary)
                 // The row's tap gesture opens the folder; VoiceOver needs the same action here,
                 // separate from the expand and close buttons in the row.
-                .accessibilityLabel("Folder \(url.lastPathComponent)")
+                .accessibilityLabel(location == nil ? "Folder \(displayName)" : displayName)
                 .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
                 .accessibilityValue(isStrongCurrent ? "Shown in active pane" : isInOtherPane ? "Shown in another pane" : "")
-                .accessibilityAction { openFolder(url, section == .openRoot) }
+                .accessibilityAction { openFolder(url) }
             Spacer()
 
             if isInOtherPane {
@@ -177,17 +189,18 @@ struct FolderTreeRow: View {
                     .accessibilityHidden(true)
             }
 
-            if isRootOfSection && section == .openRoot && isHovered {
+            if let location, location.isEjectable, let ejectLocation {
                 Button {
-                    closeFolder(url)
+                    ejectLocation(location)
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Image(systemName: "eject.fill")
                         .font(.caption)
                 }
                 .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .help("Close Folder")
-                .accessibilityLabel("Close folder \(url.lastPathComponent)")
+                .foregroundStyle(isStrongCurrent ? Color.white.opacity(0.85) : Color.secondary)
+                .opacity(isHovered || isCurrent ? 1 : 0.6)
+                .help("Eject \(location.name)")
+                .accessibilityLabel("Eject \(location.name)")
             }
         }
         .padding(.vertical, 3)
@@ -209,9 +222,7 @@ struct FolderTreeRow: View {
         // double-tap gesture would also delay every single click by the
         // double-click timeout, making the sidebar feel sluggish.
         .onTapGesture {
-            // Favorites open in place — they already have a sidebar home, so
-            // they must not get duplicated into the Open Folders section.
-            openFolder(url, section == .openRoot)
+            openFolder(url)
         }
         // An AppKit drag session, started from this gesture, instead of `.onDrag`: in-app folder
         // moves still drop a file URL on `FolderDropDelegate`, but drops on other apps are
@@ -231,21 +242,21 @@ struct FolderTreeRow: View {
 
     @ViewBuilder
     private var contextMenuItems: some View {
+        Button("Open") {
+            openFolder(url)
+        }
+        Button("Reveal in Finder") {
+            revealInFinder(url)
+        }
+        Button("New Subfolder...") {
+            viewModel.promptNewSubfolder(url)
+        }
+        Button("Refresh") {
+            viewModel.refreshSubfolders(for: url)
+        }
+        Divider()
         switch section {
         case .favoriteRoot:
-            Button("Open") {
-                openFolder(url, false)
-            }
-            Button("Reveal in Finder") {
-                revealInFinder(url)
-            }
-            Button("New Subfolder...") {
-                viewModel.promptNewSubfolder(url)
-            }
-            Button("Refresh") {
-                viewModel.refreshSubfolders(for: url)
-            }
-            Divider()
             Button("Back Up Edited Files...") {
                 commandRouter.send(.backupEditedFilesForFolder(url))
             }
@@ -256,69 +267,23 @@ struct FolderTreeRow: View {
                 }
             }
 
-        case .favoriteChild:
-            Button("Open") {
-                openFolder(url, false)
-            }
-            Button("Reveal in Finder") {
-                revealInFinder(url)
-            }
-            Button("New Subfolder...") {
-                viewModel.promptNewSubfolder(url)
-            }
-            Button("Refresh") {
-                viewModel.refreshSubfolders(for: url)
-            }
-            Divider()
-            Button("Rename...") {
-                viewModel.promptRenameSubfolder(url)
-            }
-            Button("Move to Trash", role: .destructive) {
-                viewModel.confirmTrashSubfolder(url)
-            }
-
-        case .openRoot:
-            Button("Reveal in Finder") {
-                revealInFinder(url)
-            }
-            Button("New Subfolder...") {
-                viewModel.promptNewSubfolder(url)
-            }
-            Button("Refresh") {
-                viewModel.refreshSubfolders(for: url)
-            }
-            Divider()
+        case .locationRoot:
             Button("Back Up Edited Files...") {
                 commandRouter.send(.backupEditedFilesForFolder(url))
             }
-            Divider()
-            Button {
-                Task {
-                    await viewModel.addFolderToFavorites(url)
+            addToFavoritesButton
+            if let location, location.isEjectable, let ejectLocation {
+                Divider()
+                Button("Eject \(location.name)") {
+                    ejectLocation(location)
                 }
-            } label: {
-                Label("Add to Favorites", systemImage: "star")
-            }
-            .disabled(viewModel.favoriteFolders.contains { $0.url == url })
-            Divider()
-            Button("Close", role: .destructive) {
-                closeFolder(url)
             }
 
-        case .openChild:
-            Button("Open as Folder") {
-                openFolder(url, true)
+        case .favoriteChild, .locationChild:
+            if section == .locationChild {
+                addToFavoritesButton
+                Divider()
             }
-            Button("Reveal in Finder") {
-                revealInFinder(url)
-            }
-            Button("New Subfolder...") {
-                viewModel.promptNewSubfolder(url)
-            }
-            Button("Refresh") {
-                viewModel.refreshSubfolders(for: url)
-            }
-            Divider()
             Button("Rename...") {
                 viewModel.promptRenameSubfolder(url)
             }
@@ -326,6 +291,17 @@ struct FolderTreeRow: View {
                 viewModel.confirmTrashSubfolder(url)
             }
         }
+    }
+
+    private var addToFavoritesButton: some View {
+        Button {
+            Task {
+                await viewModel.addFolderToFavorites(url)
+            }
+        } label: {
+            Label("Add to Favorites", systemImage: "star")
+        }
+        .disabled(viewModel.favoriteFolders.contains { $0.url.standardizedFileURL.path == path })
     }
 }
 

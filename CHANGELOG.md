@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Sidebar: the Open Folders list is replaced by a Locations folder browser, like Bridge's Folders panel: your home folder and every mounted volume (internal, external, memory cards, network), updated as volumes come and go. Opening a folder from anywhere (the Open dialog, Open Recent, a drop, an import) expands the tree to it and scrolls it into view. Removable and network volumes have an Eject button, and any folder can be added to Favorites from its right-click menu. Favorites are unchanged.
+
 ## 3.0.0-beta.6 — 2026-11-10
 
 This sixth public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.

@@ -1156,7 +1156,7 @@ struct EditWorkspaceView: View {
                  .writeAllPendingMetadata, .openCaptionWorkspace,
                  .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                  .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-                 .showKnownPeopleDatabase, .registerOpenFolderForSidebar, .browserTab,
+                 .showKnownPeopleDatabase, .revealFolderInSidebar, .browserTab,
                  .restoreCaptionEditorFocus:
                 break
             }

@@ -655,21 +655,19 @@ struct FileSystemExecutorTests {
         #expect(viewModel.currentFolderURL?.standardizedFileURL.path == root.standardizedFileURL.path)
     }
 
-    @Test("Trashing the only open root while it scans returns to the no-folder state")
+    @Test("Trashing the open folder itself navigates to its parent")
     @MainActor
-    func trashingOnlyRootWhileLoadingClearsLoading() {
-        let root = URL(fileURLWithPath: "/virtual/only-open-root", isDirectory: true)
+    func trashingOpenFolderNavigatesToItsParent() throws {
+        let root = try trashTestRoot().resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Folder", isDirectory: true)
         let viewModel = BrowserViewModel(fileSystemService: FileSystemService())
-        viewModel.openFolders = [root]
-        viewModel.currentFolderURL = root
-        viewModel.currentFolderName = root.lastPathComponent
-        viewModel.isLoading = true
+        viewModel.currentFolderURL = folder
+        viewModel.currentFolderName = folder.lastPathComponent
 
-        viewModel.followRelocatedFolder(from: root, to: nil)
+        viewModel.followRelocatedFolder(from: folder, to: nil)
 
-        #expect(viewModel.currentFolderURL == nil)
-        #expect(viewModel.currentFolderName == nil)
-        #expect(!viewModel.isLoading)
+        #expect(viewModel.currentFolderURL?.standardizedFileURL.path == root.standardizedFileURL.path)
     }
 
     @Test("Moving a RAW+JPEG pair moves both and keeps one shared .xmp at the destination")

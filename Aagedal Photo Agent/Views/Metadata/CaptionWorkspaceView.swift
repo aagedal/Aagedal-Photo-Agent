@@ -387,7 +387,7 @@ struct CaptionWorkspaceView: View {
                  .writeAllPendingMetadata, .openCaptionWorkspace,
                  .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                  .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-                 .showKnownPeopleDatabase, .registerOpenFolderForSidebar, .browserTab:
+                 .showKnownPeopleDatabase, .revealFolderInSidebar, .browserTab:
                 break
             }
         }

@@ -385,51 +385,6 @@ struct DevelopInteractionBehaviorTests {
         }
     }
 
-    @Test("Closing the current folder while it loads returns to an idle no-folder state")
-    @MainActor
-    func closingLoadingFolderResetsState() throws {
-        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
-        let viewModel = BrowserViewModel(favoritesDefaults: defaults)
-        let folder = URL(fileURLWithPath: "/virtual/closing-folder")
-        let image = ImageFile(url: folder.appendingPathComponent("a.jpg"))
-        viewModel.openFolders = [folder]
-        viewModel.currentFolderURL = folder
-        viewModel.isLoading = true
-        viewModel.iCloudDownloadNotice = "Downloading"
-        viewModel.images = [image]
-        viewModel.applySelection(ids: [image.url], active: image.url)
-        viewModel.searchText = "harbour"
-        viewModel.minimumStarRating = .three
-
-        viewModel.closeOpenFolder(folder)
-
-        #expect(viewModel.currentFolderURL == nil)
-        #expect(!viewModel.isLoading)
-        #expect(viewModel.iCloudDownloadNotice == nil)
-        #expect(viewModel.images.isEmpty)
-        #expect(viewModel.selectedImageIDs.isEmpty)
-        #expect(viewModel.lastClickedImageURL == nil)
-        #expect(viewModel.searchText.isEmpty)
-        #expect(viewModel.minimumStarRating == .none)
-    }
-
-    @Test("A split-view pane showing a subfolder of a closed root is released too")
-    @MainActor
-    func secondaryPaneReleasesClosedFolder() throws {
-        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
-        let pane = BrowserViewModel(favoritesDefaults: defaults)
-        let root = URL(fileURLWithPath: "/virtual/closing-root")
-        pane.currentFolderURL = root.appendingPathComponent("Sub")
-        pane.isLoading = true
-
-        pane.releaseClosedFolder(URL(fileURLWithPath: "/virtual/closing-root-other"))
-        #expect(pane.currentFolderURL != nil)
-
-        pane.releaseClosedFolder(root)
-        #expect(pane.currentFolderURL == nil)
-        #expect(!pane.isLoading)
-    }
-
     @Test("Moves and duplicates during a suppressed metadata load keep the image index and selection consistent")
     @MainActor
     func inventoryChangeDuringSuppressedMetadataLoadReindexes() async throws {

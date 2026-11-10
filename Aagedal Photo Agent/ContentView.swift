@@ -372,7 +372,7 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                      .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-                     .showKnownPeopleDatabase, .registerOpenFolderForSidebar, .browserTab,
+                     .showKnownPeopleDatabase, .revealFolderInSidebar, .browserTab,
                      .restoreCaptionEditorFocus:
                     break
                 }
@@ -399,29 +399,27 @@ struct ContentView: View {
     /// The pane every single consumer follows — sidebar folder loads, metadata panel,
     /// face bar, and edit view all bind to this (the focused pane in split view).
     private var browserViewModel: BrowserViewModel { panes.active }
-    /// Canonical owner of the sidebar's folder-tree state (favorites, open folders,
-    /// expansion, subfolders). Always the primary pane, so the sidebar stays stable no
+    /// Canonical owner of the sidebar's folder-tree state (favorites, Locations expansion,
+    /// subfolders). Always the primary pane, so the sidebar stays stable no
     /// matter which pane is focused — only folder *opening* follows the active pane.
     private var sidebarViewModel: BrowserViewModel { panes.panes[0] }
 
     /// Open a folder into the active pane. The shared sidebar (primary pane) picks it up
     /// through the scene command router, so it shows even when a non-primary pane opened it.
-    private func openFolderInActivePane(_ url: URL, addToOpenFolders: Bool) {
+    private func openFolderInActivePane(_ url: URL, revealInSidebar: Bool) {
         let targetPane = panes.active
         performAfterBrowserEditorCommit {
-            targetPane.loadFolder(url: url, addToOpenFolders: addToOpenFolders)
+            targetPane.loadFolder(url: url, revealInSidebar: revealInSidebar)
         }
     }
 
-    /// Close a sidebar root in the sidebar's pane and in any other pane showing it.
-    private func closeFolderInAllPanes(_ url: URL) {
-        performAfterBrowserEditorCommit {
-            sidebarViewModel.closeOpenFolder(url)
-            for pane in panes.panes.dropFirst() {
-                pane.releaseClosedFolder(url)
-            }
-        }
+    /// A sidebar row click: open into the active pane and keep the Locations tree on it.
+    private func openSidebarFolder(_ url: URL) {
+        openFolderInActivePane(url, revealInSidebar: true)
     }
+
+    /// The sidebar's Locations roots (home folder and mounted volumes).
+    @State private var sidebarLocations = SidebarLocations.shared
     @State private var metadataViewModel: MetadataViewModel
     /// A Browser-editor save admitted ahead of a folder or workspace change is still running.
     @State private var isCommittingBrowserEditor = false
@@ -534,8 +532,8 @@ struct ContentView: View {
         // Wire face deletion onto every pane (primary now, the split pane when created).
         let configurePane: (BrowserViewModel) -> Void = { [weak faceRecognition, weak commandRouter] vm in
             vm.onImagesDeleted = { urls in faceRecognition?.deleteFaces(forImageURLs: urls) }
-            vm.onDidOpenRootFolder = { [weak commandRouter] url in
-                commandRouter?.send(.registerOpenFolderForSidebar(url))
+            vm.onRevealFolderInSidebar = { [weak commandRouter] url in
+                commandRouter?.send(.revealFolderInSidebar(url))
             }
         }
         let panesModel = BrowserPanesModel(
@@ -948,7 +946,7 @@ struct ContentView: View {
                             == request.folderURL.standardizedFileURL {
                             browserViewModel.loadFolder(
                                 url: request.folderURL,
-                                addToOpenFolders: false
+                                revealInSidebar: false
                             )
                         }
                     },
@@ -1246,7 +1244,7 @@ struct ContentView: View {
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                      .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-                     .showKnownPeopleDatabase, .registerOpenFolderForSidebar,
+                     .showKnownPeopleDatabase, .revealFolderInSidebar,
                      .restoreCaptionEditorFocus:
                     break
                 }
@@ -1355,8 +1353,8 @@ struct ContentView: View {
                     // Settings → Known People can fire this from Caption, Analysis or Develop; leave them
                     // through their flush barriers like the toolbar toggle does.
                     leaveEditWorkspaceIfNeeded { openPeopleDatabase() }
-                case .registerOpenFolderForSidebar(let url):
-                    panes.panes[0].registerOpenFolderForSidebar(url)
+                case .revealFolderInSidebar(let url):
+                    panes.panes[0].revealFolderInSidebar(url, locations: sidebarLocations)
                 default:
                     break
                 }
@@ -1514,7 +1512,7 @@ struct ContentView: View {
                         // Close through the unsaved-changes gate, like the Close button: a failed
                         // Analysis save raises Retry Save / Discard / Cancel before leaving.
                         performAfterAnalysisClose {
-                            openFolderInActivePane(folderURL, addToOpenFolders: true)
+                            openFolderInActivePane(folderURL, revealInSidebar: true)
                             mainViewMode = .browser
                         }
                     },
@@ -2180,7 +2178,7 @@ struct ContentView: View {
             )
             _ = await templateViewModel.saveTemplate(template)
         }
-        openFolderInActivePane(folderURL, addToOpenFolders: false)
+        openFolderInActivePane(folderURL, revealInSidebar: false)
 
         for _ in 0..<200 where browserViewModel.isLoading {
             try? await Task.sleep(for: .milliseconds(50))
@@ -2864,7 +2862,7 @@ struct ContentView: View {
                     performAfterBrowserEditorCommit {
                         guard let pane = target, let id = panes.liveID(of: pane) else { return }
                         panes.activate(id)
-                        pane.loadFolder(url: url, addToOpenFolders: true)
+                        pane.loadFolder(url: url, revealInSidebar: true)
                     }
                 }
             }
@@ -2899,7 +2897,7 @@ struct ContentView: View {
         performAfterBrowserEditorCommit {
             panes.closeAllButPrimary()
             if let folder, primary.currentFolderURL != folder {
-                primary.loadFolder(url: folder, addToOpenFolders: false)
+                primary.loadFolder(url: folder, revealInSidebar: false)
             }
         }
     }
@@ -3280,7 +3278,7 @@ struct ContentView: View {
     private func handleImportStarted(_ notification: NotificationCenter.Publisher.Output) {
         isShowingImport = false
         if let folderURL = notification.object as? URL {
-            openFolderInActivePane(folderURL, addToOpenFolders: true)
+            openFolderInActivePane(folderURL, revealInSidebar: true)
         }
     }
 
@@ -3337,56 +3335,65 @@ struct ContentView: View {
             // behind a sidebar list imposes its own row height and inter-row
             // spacing, so compact rows are impossible there — only the
             // highlight shrinks, not the row pitch.
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    if !sidebarViewModel.favoriteFolders.isEmpty {
-                        sidebarSectionHeader("Favorites")
-                        ForEach(sidebarViewModel.favoriteFolders) { favorite in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if !sidebarViewModel.favoriteFolders.isEmpty {
+                            sidebarSectionHeader("Favorites")
+                            ForEach(sidebarViewModel.favoriteFolders) { favorite in
+                                FolderTreeRow(
+                                    url: favorite.url,
+                                    depth: 0,
+                                    section: .favoriteRoot,
+                                    tree: .favorites(rootID: favorite.id),
+                                    isRootOfSection: true,
+                                    viewModel: sidebarViewModel,
+                                    currentFolderURL: browserViewModel.currentFolderURL,
+                                    otherPaneFolderURLs: panes.otherVisibleFolderURLs,
+                                    emphasizesCurrent: panes.hasMultiplePanes,
+                                    openFolder: openSidebarFolder,
+                                    revealInFinder: revealInFinder
+                                )
+                            }
+                            Rectangle()
+                                .fill(Color(nsColor: .separatorColor))
+                                .frame(height: 1)
+                                .padding(.vertical, 6)
+                        }
+
+                        sidebarSectionHeader("Locations")
+                        ForEach(sidebarLocations.roots) { location in
                             FolderTreeRow(
-                                url: favorite.url,
+                                url: location.url,
                                 depth: 0,
-                                section: .favoriteRoot,
-                                tree: .favorites(rootID: favorite.id),
+                                section: .locationRoot,
+                                tree: .locations,
                                 isRootOfSection: true,
                                 viewModel: sidebarViewModel,
                                 currentFolderURL: browserViewModel.currentFolderURL,
                                 otherPaneFolderURLs: panes.otherVisibleFolderURLs,
                                 emphasizesCurrent: panes.hasMultiplePanes,
-                                openFolder: openFolderInActivePane,
-                                closeFolder: closeFolderInAllPanes,
-                                revealInFinder: revealInFinder
+                                openFolder: openSidebarFolder,
+                                revealInFinder: revealInFinder,
+                                location: location,
+                                ejectLocation: { sidebarViewModel.ejectLocation($0, locations: sidebarLocations) }
                             )
                         }
                     }
-
-                    if !sidebarViewModel.favoriteFolders.isEmpty && !sidebarViewModel.openFolders.isEmpty {
-                        Rectangle()
-                            .fill(Color(nsColor: .separatorColor))
-                            .frame(height: 1)
-                            .padding(.vertical, 6)
-                    }
-
-                    if !sidebarViewModel.openFolders.isEmpty {
-                        sidebarSectionHeader("Open Folders")
-                        ForEach(sidebarViewModel.openFolders, id: \.self) { folderURL in
-                            FolderTreeRow(
-                                url: folderURL,
-                                depth: 0,
-                                section: .openRoot,
-                                tree: .open,
-                                isRootOfSection: true,
-                                viewModel: sidebarViewModel,
-                                currentFolderURL: browserViewModel.currentFolderURL,
-                                otherPaneFolderURLs: panes.otherVisibleFolderURLs,
-                                emphasizesCurrent: panes.hasMultiplePanes,
-                                openFolder: openFolderInActivePane,
-                                closeFolder: closeFolderInAllPanes,
-                                revealInFinder: revealInFinder
-                            )
+                    .padding(.vertical, 8)
+                }
+                .task(id: sidebarLocations.roots) {
+                    sidebarViewModel.loadLocationRootSubfolders(sidebarLocations.roots.map(\.url))
+                }
+                .onChange(of: sidebarViewModel.sidebarRevealRequest) { _, request in
+                    guard let request else { return }
+                    // The row appears once its parent's expansion renders; scroll on the next turn.
+                    Task { @MainActor in
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            proxy.scrollTo(SidebarFolderRowIdentity(tree: .locations, url: request.url))
                         }
                     }
                 }
-                .padding(.vertical, 8)
             }
             .frame(maxHeight: .infinity)
 
@@ -3580,7 +3587,7 @@ struct ContentView: View {
                          .writeAllPendingMetadata, .openCaptionWorkspace,
                          .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
                          .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-                         .showKnownPeopleDatabase, .registerOpenFolderForSidebar, .browserTab,
+                         .showKnownPeopleDatabase, .revealFolderInSidebar, .browserTab,
                          .restoreCaptionEditorFocus:
                         break
                     }
@@ -5277,7 +5284,7 @@ struct ContentViewModifiers: ViewModifier {
             performAfterMetadataFlush { browserViewModel.openFolder() }
         case .openRecentFolder(let url):
             let targetPane = panes.active
-            performAfterMetadataFlush { targetPane.loadFolder(url: url, addToOpenFolders: true) }
+            performAfterMetadataFlush { targetPane.loadFolder(url: url, revealInSidebar: true) }
         // Full screen shows one photo of a possibly larger selection; menu key
         // equivalents reach here instead of the full-screen window's key handler.
         // Compare likewise rates only its focused photo, which can have left the filter.
@@ -5350,7 +5357,7 @@ struct ContentViewModifiers: ViewModifier {
              .writeAllPendingMetadata, .openCaptionWorkspace,
              .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
              .showVariableReference, .showRawMetadata, .showStructuredKeywords,
-             .showKnownPeopleDatabase, .registerOpenFolderForSidebar, .browserTab,
+             .showKnownPeopleDatabase, .revealFolderInSidebar, .browserTab,
              .restoreCaptionEditorFocus:
             break
         }
@@ -5551,7 +5558,7 @@ struct ContentViewModifiers: ViewModifier {
                           snapshot.directories.first == url
                     else { return }
                     let targetPane = panes.active
-                    performAfterMetadataFlush { targetPane.loadFolder(url: url, addToOpenFolders: true) }
+                    performAfterMetadataFlush { targetPane.loadFolder(url: url, revealInSidebar: true) }
                 }
             }
         }
