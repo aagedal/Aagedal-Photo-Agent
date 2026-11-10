@@ -195,7 +195,7 @@ struct AppCommandRouterTests {
         let folder = URL(fileURLWithPath: "/tmp/secondary-pane-folder", isDirectory: true)
         let commands: [AppCommand] = [
             .showKnownPeopleDatabase,
-            .registerOpenFolderForSidebar(folder),
+            .revealFolderInSidebar(folder),
             .restoreCaptionEditorFocus,
         ]
 

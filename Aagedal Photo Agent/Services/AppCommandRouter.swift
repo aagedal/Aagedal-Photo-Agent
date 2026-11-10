@@ -54,7 +54,7 @@ enum AppCommand: Equatable, Sendable {
     case showRawMetadata
     case showStructuredKeywords
     case showKnownPeopleDatabase
-    case registerOpenFolderForSidebar(URL)
+    case revealFolderInSidebar(URL)
     case restoreCaptionEditorFocus
     case browserTab(BrowserTabCommand)
 }

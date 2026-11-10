@@ -763,7 +763,7 @@ struct FieldMutationCallerTests {
         try Data(xml.utf8).write(to: photo.deletingPathExtension().appendingPathExtension("xmp"))
         for _ in 0..<2 {
             let model = BrowserViewModel()
-            model.loadFolder(url: folder, addToOpenFolders: false)
+            model.loadFolder(url: folder, revealInSidebar: false)
             await model.waitForFolderLoad()
             #expect(model.folderLoadErrorMessage == nil)
             #expect(model.images.count == 1)
@@ -964,7 +964,7 @@ struct FieldMutationCallerTests {
             pendingChanges: true, metadata: IPTCMetadata(title: "Unwritten caption G"), imageMetadataSnapshot: nil),
             for: photo, in: folder)
         let model = BrowserViewModel(fieldMutationModeResolver: { _, _ in .historyOnly })
-        model.loadFolder(url: folder, addToOpenFolders: false)
+        model.loadFolder(url: folder, revealInSidebar: false)
         await model.waitForFolderLoad()
         let loadedPhoto = try #require(model.images.first?.url)
         #expect(loadedPhoto.resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path)
@@ -984,7 +984,7 @@ struct FieldMutationCallerTests {
         #expect(try Data(contentsOf: photo) == sourceBytes)
 
         let reloaded = BrowserViewModel(fieldMutationModeResolver: { _, _ in .writeToFileAndXMPSidecar })
-        reloaded.loadFolder(url: folder, addToOpenFolders: false)
+        reloaded.loadFolder(url: folder, revealInSidebar: false)
         await reloaded.waitForFolderLoad()
         let reloadedPhoto = try #require(reloaded.images.first?.url)
         #expect(reloadedPhoto.resolvingSymlinksInPath().path == photo.resolvingSymlinksInPath().path)

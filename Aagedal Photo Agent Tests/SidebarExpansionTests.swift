@@ -97,7 +97,7 @@ struct SidebarExpansionTests {
         viewModel.subfoldersByOpenFolder[child] = [grandchild, empty]
         #expect(viewModel.subfoldersByOpenFolder[grandchild] == nil)
 
-        viewModel.toggleFolderExpansion(child, in: .open)
+        viewModel.toggleFolderExpansion(child, in: .locations)
         for _ in 0..<200 {
             if viewModel.subfoldersByOpenFolder[grandchild] != nil,
                viewModel.subfoldersByOpenFolder[empty] != nil { break }
@@ -107,8 +107,8 @@ struct SidebarExpansionTests {
             == [descendant.resolvingSymlinksInPath()])
         #expect(viewModel.subfoldersByOpenFolder[empty] == [])
         #expect(viewModel.currentFolderURL == nil)
-        #expect(viewModel.isExpanded(child, in: .open))
-        #expect(!viewModel.isExpanded(grandchild, in: .open))
+        #expect(viewModel.isExpanded(child, in: .locations))
+        #expect(!viewModel.isExpanded(grandchild, in: .locations))
     }
 
     @Test("A nested favorite expands independently from the same folder's favorite root")
@@ -166,6 +166,81 @@ struct SidebarExpansionTests {
         ]
 
         #expect(Set(rowIDs).count == 2)
+    }
+
+    @Test("A folder is revealed under the deepest Locations root that contains it")
+    func locationRootContainment() {
+        let home = SidebarLocation(url: URL(fileURLWithPath: "/Users/me", isDirectory: true),
+                                   name: "me", kind: .home, isEjectable: false)
+        let startup = SidebarLocation(url: URL(fileURLWithPath: "/", isDirectory: true),
+                                      name: "Macintosh HD", kind: .startupVolume, isEjectable: false)
+        let card = SidebarLocation(url: URL(fileURLWithPath: "/Volumes/CARD", isDirectory: true),
+                                   name: "CARD", kind: .removableVolume, isEjectable: true)
+        let roots = [home, startup, card]
+        let root = { SidebarLocations.root(containing: URL(fileURLWithPath: $0), in: roots)?.url }
+        #expect(root("/Users/me/Pictures/2026") == home.url)
+        #expect(root("/Users/me") == home.url)
+        #expect(root("/Users/meg/Pictures") == startup.url)
+        #expect(root("/Volumes/CARD/DCIM") == card.url)
+        #expect(root("/Volumes/CARD2/DCIM") == startup.url)
+    }
+
+    @Test("Revealing a folder expands every Locations level down to it, matching listed URLs")
+    func revealExpandsLocationsTree() async throws {
+        let home = URL(fileURLWithPath: "/virtual/home", isDirectory: true)
+        let pictures = home.appendingPathComponent("Pictures", isDirectory: true)
+        let year = pictures.appendingPathComponent("2026", isDirectory: true)
+        let listing: [String: [URL]] = [home.path: [pictures], pictures.path: [year], year.path: []]
+        let viewModel = BrowserViewModel(subfolderLoader: { listing[$0.standardizedFileURL.path] ?? [] })
+        let locations = SidebarLocations(observesWorkspace: false, listRoots: {
+            [SidebarLocation(url: home, name: "home", kind: .home, isEjectable: false)]
+        })
+        locations.refresh()
+        await locations.waitForRefresh()
+
+        // Opened from the Open panel: no trailing slash, unlike the listed directory URLs.
+        viewModel.revealFolderInSidebar(URL(fileURLWithPath: "/virtual/home/Pictures/2026"), locations: locations)
+        for _ in 0..<200 where viewModel.sidebarRevealRequest == nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(viewModel.sidebarRevealRequest?.url == year)
+        #expect(viewModel.isExpanded(home, in: .locations))
+        #expect(viewModel.isExpanded(pictures, in: .locations))
+
+        // A level the tree doesn't list (hidden, or gone) stops at the deepest visible folder.
+        let first = viewModel.sidebarRevealRequest?.id
+        viewModel.revealFolderInSidebar(year.appendingPathComponent(".hidden/inner"), locations: locations)
+        for _ in 0..<200 where viewModel.sidebarRevealRequest?.id == first {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(viewModel.sidebarRevealRequest?.id != first)
+        #expect(viewModel.sidebarRevealRequest?.url == year)
+        #expect(!viewModel.isExpanded(year, in: .locations))
+    }
+
+    @Test("Opening a favorite or its subfolder doesn't move the Locations tree; other folders do")
+    func favoritesAreNotRevealedInLocations() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SidebarReveal-\(UUID().uuidString)", isDirectory: true)
+        let favorite = root.appendingPathComponent("Favorite", isDirectory: true)
+        let inside = favorite.appendingPathComponent("Inside", isDirectory: true)
+        let elsewhere = root.appendingPathComponent("Elsewhere", isDirectory: true)
+        for folder in [inside, elsewhere] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let viewModel = BrowserViewModel(favoritesDefaults: defaults)
+        viewModel.favoriteFolders = [FavoriteFolder(url: favorite)]
+        var revealed: [URL] = []
+        viewModel.onRevealFolderInSidebar = { revealed.append($0) }
+
+        viewModel.loadFolder(url: favorite)
+        viewModel.loadFolder(url: inside)
+        viewModel.loadFolder(url: elsewhere)
+        viewModel.loadFolder(url: elsewhere, revealInSidebar: false)
+
+        #expect(revealed == [elsewhere])
     }
 }
 

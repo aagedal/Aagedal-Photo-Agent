@@ -737,7 +737,7 @@ struct SerializedFileSystemServiceTests {
             subfolderLoader: { _ in [] },
             refreshSidecarLoader: { _ in [:] }
         )
-        model.loadFolder(url: folder, addToOpenFolders: false)
+        model.loadFolder(url: folder, revealInSidebar: false)
         let didBlock = await embedded.waitUntilBlocked()
         #expect(didBlock, "The eager orientation read did not start within 30 seconds")
         guard didBlock else { return }

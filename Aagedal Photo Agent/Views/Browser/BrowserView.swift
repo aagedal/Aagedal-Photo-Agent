@@ -126,7 +126,7 @@ struct BrowserView: View {
                                 // Rescan in place once it's back; rows and editor state stay.
                                 Task { await viewModel.retryUnavailableFolder() }
                             } else {
-                                viewModel.loadFolder(url: folderURL, addToOpenFolders: false)
+                                viewModel.loadFolder(url: folderURL, revealInSidebar: false)
                             }
                         }
                     }

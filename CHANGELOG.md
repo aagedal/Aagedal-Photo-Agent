@@ -4,6 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Sidebar: the Open Folders list is replaced by a Locations folder browser, like Bridge's Folders panel: your home folder and every mounted volume (internal, external, memory cards, network), updated as volumes come and go. Opening a folder from anywhere (the Open dialog, Open Recent, a drop, an import) expands the tree to it and scrolls it into view. Removable and network volumes have an Eject button, and any folder can be added to Favorites from its right-click menu. Favorites are unchanged.
 - Develop (experimental): AI masks can now use Meta's Segment Anything 2.1 instead of Apple Vision, to compare the two. Download the model (about 94 MB) in Settings → Develop Sliders → AI Mask Engine; the AI mask panel then shows a Vision / SAM 2.1 switch, and Select Again regenerates a mask with the other engine. SAM can select any object you click, including background objects Vision skips, such as a parked car or a sign.
 - Export and Compare: after exporting a straightened, cropped photo with a watermark (or comparing one in Develop), later edited renders until you quit the app could come out rotated around that photo's crop centre. Each render now starts from a clean state.
 - Fixes a crash when opening or exporting a photo whose sidecar or embedded Develop settings contain an invalid number (such as `inf` or an out-of-range crop); such values are now ignored or limited to a usable range.

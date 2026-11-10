@@ -34,7 +34,15 @@ struct MetadataReviewEditorState {
 
 enum SidebarTree: Hashable {
     case favorites(rootID: UUID)
-    case open
+    /// The Locations tree: the home folder and mounted volumes (`SidebarLocations`).
+    case locations
+}
+
+/// Asks the sidebar to scroll a revealed Locations row into view. A new value per request,
+/// so revealing the same folder twice scrolls twice.
+struct SidebarRevealRequest: Equatable {
+    let id = UUID()
+    let url: URL
 }
 
 struct FavoriteFolderExpansion: Hashable {
@@ -185,10 +193,12 @@ final class BrowserViewModel {
     @ObservationIgnored private var similarityOrder: [URL] = []
     @ObservationIgnored private var similarityRequestID = UUID()
     var favoriteFolders: [FavoriteFolder] = []
-    var openFolders: [URL] = []
     var subfoldersByOpenFolder: [URL: [URL]] = [:]
     var expandedFavoriteFolders: Set<FavoriteFolderExpansion> = []
-    var expandedOpenFolders: Set<URL> = []
+    var expandedLocationFolders: Set<URL> = []
+    /// Latest folder the Locations tree expanded to; the sidebar scrolls it into view.
+    var sidebarRevealRequest: SidebarRevealRequest?
+    @ObservationIgnored private var sidebarRevealTask: Task<Void, Never>?
     var manualOrder: [URL] = [] {
         didSet {
             guard !isBatchUpdating else { return }
@@ -423,7 +433,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var urlToSelectedIndex: [URL: Int] = [:]
     /// Scene-owned handoff used when this pane adds a root that the primary pane's
     /// shared sidebar must also register.
-    @ObservationIgnored var onDidOpenRootFolder: ((URL) -> Void)?
+    @ObservationIgnored var onRevealFolderInSidebar: ((URL) -> Void)?
 
     init(thumbnailService: ThumbnailService = ThumbnailService(),
          fullScreenImageCache: FullScreenImageCache = FullScreenImageCache(),
@@ -1151,7 +1161,7 @@ final class BrowserViewModel {
         suppressImagesCascade = false
     }
 
-    /// Clears the per-folder display state shared by a folder switch and closing the folder.
+    /// Clears the per-folder display state on a folder switch.
     private func clearCurrentFolderState() {
         errorMessage = nil
         folderLoadErrorMessage = nil
@@ -1168,18 +1178,7 @@ final class BrowserViewModel {
         manualOrder.removeAll()
     }
 
-    /// Returns the browser to the "no folder" state. Closing the folder mid-load must not
-    /// leave "Loading images…" (or an old iCloud notice/filter) behind.
-    private func resetToNoFolder() {
-        cancelCurrentFolderWork()
-        currentFolderURL = nil
-        currentFolderName = nil
-        isLoading = false
-        clearCurrentFolderState()
-        clearFilters()
-    }
-
-    func loadFolder(url: URL, addToOpenFolders: Bool = true) {
+    func loadFolder(url: URL, revealInSidebar: Bool = true) {
         AppStartupSignposts.shared.firstFolderLoadStarted()
         cancelCurrentFolderWork()
 
@@ -1193,19 +1192,12 @@ final class BrowserViewModel {
 
         restoreFilterState(for: url)
 
-        // Add to open folders if not already there, unless it's a subfolder of
-        // an existing open folder, or a favorite (root or descendant) — favorites
-        // already have a home in the Favorites section and must not duplicate
-        // into Open Folders, no matter which entry point opened them (tap,
-        // Open Recent, drag-and-drop, import).
-        let isFavoriteRoot = favoriteFolders.contains { $0.url == url }
-        if addToOpenFolders && !isFavoriteRoot && !isSubfolderOfOpenFolder(url) {
-            if !openFolders.contains(url) {
-                openFolders.append(url)
-            }
-            // Hand off to the owning scene so the shared sidebar (primary pane) lists
-            // this root even when a non-primary split-view pane opened it.
-            onDidOpenRootFolder?(url)
+        // Expand the Locations tree down to the folder, whichever entry point opened it (tap,
+        // Open Recent, drag-and-drop, import). Favorites (roots and their descendants) already
+        // have a sidebar home. The scene routes this to the primary pane, which owns the
+        // sidebar, even when another split-view pane opened the folder.
+        if revealInSidebar && !isAtOrBelowFavorite(url) {
+            onRevealFolderInSidebar?(url)
         }
 
         // Interrupted embedded writes can leave hidden staging folders behind; clean old ones.
@@ -1250,7 +1242,7 @@ final class BrowserViewModel {
                 if let discoveredSubfolders {
                     self.subfoldersByOpenFolder[url] = discoveredSubfolders
                     if !discoveredSubfolders.isEmpty {
-                        self.expandedOpenFolders.insert(url)
+                        self.expandedLocationFolders.insert(url)
                     }
                     self.prefetchGrandchildren(of: url)
                 }
@@ -2952,7 +2944,7 @@ final class BrowserViewModel {
             // A pre-cancelled operation made no filesystem change and needs no reload. Any moved
             // or failed bundle preserves the previous behavior of reconciling from disk.
             guard !result.movedFiles.isEmpty || !result.failedFiles.isEmpty else { return }
-            loadFolder(url: folderURL, addToOpenFolders: false)
+            loadFolder(url: folderURL, revealInSidebar: false)
         }
     }
 
@@ -3451,7 +3443,7 @@ final class BrowserViewModel {
                 if let discovered, self.subfoldersByOpenFolder[request.url] == nil {
                     self.subfoldersByOpenFolder[request.url] = discovered
                 }
-                if request.prefetchChildren || self.expandedOpenFolders.contains(request.url)
+                if request.prefetchChildren || self.expandedLocationFolders.contains(request.url)
                     || self.expandedFavoriteFolders.contains(where: { $0.url == request.url }) {
                     self.prefetchGrandchildren(of: request.url)
                 }
@@ -3485,7 +3477,7 @@ final class BrowserViewModel {
             return expandedFavoriteFolders.contains(
                 FavoriteFolderExpansion(rootID: rootID, url: url)
             )
-        case .open: return expandedOpenFolders.contains(url)
+        case .locations: return expandedLocationFolders.contains(url)
         }
     }
 
@@ -3500,11 +3492,11 @@ final class BrowserViewModel {
                 expandedFavoriteFolders.insert(expansion)
                 ensureSubfoldersLoaded(for: url)
             }
-        case .open:
-            if expandedOpenFolders.contains(url) {
-                expandedOpenFolders.remove(url)
+        case .locations:
+            if expandedLocationFolders.contains(url) {
+                expandedLocationFolders.remove(url)
             } else {
-                expandedOpenFolders.insert(url)
+                expandedLocationFolders.insert(url)
                 ensureSubfoldersLoaded(for: url)
             }
         }
@@ -3527,7 +3519,7 @@ final class BrowserViewModel {
 
     private func expandFolderInAllSidebarTrees(_ url: URL) {
         expandFavoriteOccurrences(of: url)
-        expandedOpenFolders.insert(url)
+        expandedLocationFolders.insert(url)
     }
 
     /// After an export writes files into a sub-folder, re-scan that sub-folder's
@@ -3553,7 +3545,7 @@ final class BrowserViewModel {
     /// Re-scans the given folders' direct subfolders off MainActor and writes the
     /// result back, the shared worker behind both the periodic and manual refresh.
     /// Selection (`currentFolderURL`) and expansion (`expandedFavoriteFolders` /
-    /// `expandedOpenFolders`) are keyed independently of the child cache, so
+    /// `expandedLocationFolders`) are keyed independently of the child cache, so
     /// replacing a child array never disturbs what's selected or open.
     ///
     /// A failed scan returns nil (distinct from a genuinely empty folder) and is
@@ -3590,11 +3582,12 @@ final class BrowserViewModel {
     /// Periodic (~10s) sweep that keeps every visible folder's child list in sync
     /// with disk, so subfolders created/renamed/removed externally show up without a
     /// manual reopen. Only scans folders whose children are actually on screen:
-    /// favorite roots (always shown) and any expanded folder already in the cache.
-    func refreshExpandedSubfolders() {
+    /// favorite and Locations roots (always shown) and any expanded folder already in the cache.
+    func refreshExpandedSubfolders(locations: SidebarLocations = .shared) {
         var toScan: Set<URL> = Set(favoriteFolders.map(\.url))
+        toScan.formUnion(locations.roots.map(\.url))
         toScan.formUnion(expandedFavoriteFolders.map(\.url))
-        toScan.formUnion(expandedOpenFolders)
+        toScan.formUnion(expandedLocationFolders)
         let urls = toScan.filter { subfoldersByOpenFolder[$0] != nil }
         rescanSubfolders(Set(urls), force: false)
     }
@@ -3608,7 +3601,7 @@ final class BrowserViewModel {
             guard let children = subfoldersByOpenFolder[parent] else { return }
             for child in children
             where expandedFavoriteFolders.contains(where: { $0.url == child })
-                || expandedOpenFolders.contains(child) {
+                || expandedLocationFolders.contains(child) {
                 toScan.insert(child)
                 collectExpanded(child)
             }
@@ -3627,7 +3620,7 @@ final class BrowserViewModel {
         expandedFavoriteFolders = Set(
             expandedFavoriteFolders.filter { $0.url != url }
         )
-        expandedOpenFolders.remove(url)
+        expandedLocationFolders.remove(url)
         for child in children {
             removeSubfolderCacheRecursively(for: child)
         }
@@ -3657,10 +3650,9 @@ final class BrowserViewModel {
             expandedFavoriteFolders.filter { $0.rootID != favorite.id }
         )
         saveFavorites()
-        let url = favorite.url
-        if !openFolders.contains(url) {
-            removeSubfolderCacheRecursively(for: url)
-        }
+        // Rejects in-flight discovery for the removed tree; the Locations tree reloads the
+        // folder's children if it shows it too.
+        removeSubfolderCacheRecursively(for: favorite.url)
     }
 
     var isCurrentFolderFavorited: Bool {
@@ -3670,29 +3662,48 @@ final class BrowserViewModel {
 
     // MARK: - Subfolder Actions
 
-    func openSubfolderAsRoot(_ url: URL) {
-        if !openFolders.contains(url) {
-            openFolders.append(url)
+    /// Expands the Locations tree down to `url`, loading each level's subfolders, then asks
+    /// the sidebar to scroll it into view. Hidden or vanished levels stop the walk at the
+    /// deepest visible ancestor. Called on the primary pane, which owns the sidebar.
+    func revealFolderInSidebar(_ url: URL, locations: SidebarLocations = .shared) {
+        sidebarRevealTask?.cancel()
+        sidebarRevealTask = Task { [weak self] in
+            // At launch the first folder can open before the volume list has loaded.
+            if locations.roots.isEmpty { await locations.waitForRefresh() }
+            guard let self, !Task.isCancelled,
+                  let root = locations.root(containing: url) else { return }
+            let rootComponents = root.url.standardizedFileURL.pathComponents
+            var parent = root.url
+            for component in url.standardizedFileURL.pathComponents.dropFirst(rootComponents.count) {
+                if self.subfoldersByOpenFolder[parent] == nil {
+                    guard let listed = try? await self.subfolderLoader(parent), !Task.isCancelled else { return }
+                    if self.subfoldersByOpenFolder[parent] == nil {
+                        self.subfoldersByOpenFolder[parent] = listed
+                    }
+                }
+                guard let child = self.subfoldersByOpenFolder[parent]?
+                    .first(where: { $0.lastPathComponent == component }) else { break }
+                self.expandedLocationFolders.insert(parent)
+                self.prefetchGrandchildren(of: parent)
+                parent = child
+            }
+            guard !Task.isCancelled else { return }
+            self.sidebarRevealRequest = SidebarRevealRequest(url: parent)
+            self.sidebarRevealTask = nil
         }
-        loadFolder(url: url)
     }
 
-    /// Add a folder to this view model's Open Folders list (and discover its
-    /// subfolders for the tree) WITHOUT loading its images. Used so a folder opened
-    /// into another split-view pane still appears in the single, shared sidebar,
-    /// which is always backed by the primary pane.
-    func registerOpenFolderForSidebar(_ url: URL) {
-        guard !favoriteFolders.contains(where: { $0.url == url }),
-              !openFolders.contains(url),
-              !isSubfolderOfOpenFolder(url) else { return }
-        openFolders.append(url)
-        guard subfoldersByOpenFolder[url] == nil else { return }
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let subs = (try? await self.fileSystemService.listSubfolders(at: url)) ?? []
-            self.subfoldersByOpenFolder[url] = subs
-            self.prefetchGrandchildren(of: url)
+    /// Ejects a Locations volume; a failure (usually a busy volume) shows in the banner.
+    func ejectLocation(_ location: SidebarLocation, locations: SidebarLocations = .shared) {
+        Task { [weak self] in
+            guard let message = await locations.eject(location) else { return }
+            self?.reportFolderOperationError(message)
         }
+    }
+
+    /// Loads the Locations roots' subfolders so their rows know whether to show a chevron.
+    func loadLocationRootSubfolders(_ roots: [URL]) {
+        enqueueSubfolderLoads(roots, prefetchChildren: false)
     }
 
     var showTrashSubfolderConfirmation = false
@@ -3746,7 +3757,7 @@ final class BrowserViewModel {
 
     /// Keeps this pane on a real path after a folder at or above its current folder was
     /// renamed or moved (follow it to `newURL`) or trashed (`nil`: go to the trashed folder's
-    /// parent, or the first remaining open folder when a root itself was trashed).
+    /// parent).
     func followRelocatedFolder(from oldURL: URL, to newURL: URL?) {
         guard let current = currentFolderURL, isShowingFolder(atOrBelow: oldURL) else { return }
         if let newURL {
@@ -3757,16 +3768,7 @@ final class BrowserViewModel {
                 : URL(fileURLWithPath: newURL.standardizedFileURL.path + relativeSuffix, isDirectory: true))
             return
         }
-        let roots = openFolders + favoriteFolders.map(\.url)
-        let trashedRoot = roots.contains { $0.standardizedFileURL == oldURL.standardizedFileURL }
-        if !trashedRoot {
-            loadFolder(url: oldURL.deletingLastPathComponent(), addToOpenFolders: false)
-        } else if let firstOpen = openFolders.first(where: { !isFolder($0, atOrBelow: oldURL) }) {
-            loadFolder(url: firstOpen)
-        } else {
-            // The full reset also cancels an in-flight scan and clears "Loading images…".
-            resetToNoFolder()
-        }
+        loadFolder(url: oldURL.deletingLastPathComponent())
     }
 
     var showRenameSubfolderAlert = false
@@ -3842,7 +3844,7 @@ final class BrowserViewModel {
             let favoriteExpansionRoots = expandedFavoriteFolders.compactMap {
                 $0.url == oldURL ? $0.rootID : nil
             }
-            let wasExpandedInOpenFolders = expandedOpenFolders.contains(oldURL)
+            let wasExpandedInLocations = expandedLocationFolders.contains(oldURL)
 
             // Remove all cached descendants of the old path (they have stale URLs)
             removeSubfolderCacheRecursively(for: oldURL)
@@ -3853,16 +3855,12 @@ final class BrowserViewModel {
                     FavoriteFolderExpansion(rootID: rootID, url: newURL)
                 )
             }
-            if wasExpandedInOpenFolders {
-                expandedOpenFolders.insert(newURL)
+            if wasExpandedInLocations {
+                expandedLocationFolders.insert(newURL)
             }
-            let migrated = !favoriteExpansionRoots.isEmpty || wasExpandedInOpenFolders
+            let migrated = !favoriteExpansionRoots.isEmpty || wasExpandedInLocations
             if migrated {
                 ensureSubfoldersLoaded(for: newURL)
-            }
-
-            if let openIndex = openFolders.firstIndex(of: oldURL) {
-                openFolders[openIndex] = newURL
             }
 
             // If the renamed folder is (or contains) the current folder, follow it to its new path.
@@ -4026,11 +4024,6 @@ final class BrowserViewModel {
             saveFavorites()
         }
 
-        // Update openFolders if the moved folder was an open root
-        if let openIndex = openFolders.firstIndex(of: sourceURL) {
-            openFolders[openIndex] = newURL
-        }
-
         // Current folder (or a descendant of it) moved — follow it to the new path.
         followRelocatedFolder(from: sourceURL, to: newURL)
         onFolderRelocated?(sourceURL, newURL)
@@ -4047,42 +4040,6 @@ final class BrowserViewModel {
         saveFavorites()
     }
 
-    func closeOpenFolder(_ url: URL) {
-        let isAlsoFavorite = favoriteFolders.contains { $0.url == url }
-        if !isAlsoFavorite {
-            removeSubfolderCacheRecursively(for: url)
-        }
-        openFolders.removeAll { $0 == url }
-        // If we closed the current folder (or it was browsing a subfolder of it),
-        // switch to another open folder or clear
-        if isShowingFolder(atOrBelow: url) {
-            if let nextFolder = openFolders.first {
-                loadFolder(url: nextFolder)
-            } else {
-                resetToNoFolder()
-                // Only clear subfolder data for non-favorite entries
-                let favoriteURLs = Set(favoriteFolders.map(\.url))
-                for key in subfoldersByOpenFolder.keys {
-                    if !favoriteURLs.contains(key) {
-                        subfoldersByOpenFolder.removeValue(forKey: key)
-                    }
-                }
-            }
-        }
-        // After the switch: loadFolder saves the outgoing folder's filters.
-        folderFilterStates.removeValue(forKey: url)
-    }
-
-    /// Split view: the shared sidebar (primary pane) closed `url`. Another pane still
-    /// showing that folder, or one of its subfolders, returns to the no-folder state.
-    func releaseClosedFolder(_ url: URL) {
-        openFolders.removeAll { $0 == url }
-        if isShowingFolder(atOrBelow: url) {
-            resetToNoFolder()
-        }
-        folderFilterStates.removeValue(forKey: url)
-    }
-
     private func isShowingFolder(atOrBelow url: URL) -> Bool {
         guard let currentFolderURL else { return false }
         return isFolder(currentFolderURL, atOrBelow: url)
@@ -4095,17 +4052,8 @@ final class BrowserViewModel {
             || candidatePath.hasPrefix(ancestorPath.hasSuffix("/") ? ancestorPath : ancestorPath + "/")
     }
 
-    private func isSubfolderOfOpenFolder(_ url: URL) -> Bool {
-        let path = url.path(percentEncoded: false)
-        for parentURL in openFolders {
-            let parentPath = parentURL.path(percentEncoded: false)
-            if path.hasPrefix(parentPath + "/") { return true }
-        }
-        for favorite in favoriteFolders {
-            let favPath = favorite.url.path(percentEncoded: false)
-            if path.hasPrefix(favPath + "/") { return true }
-        }
-        return false
+    private func isAtOrBelowFavorite(_ url: URL) -> Bool {
+        favoriteFolders.contains { isFolder(url, atOrBelow: $0.url) }
     }
 
 
@@ -5117,7 +5065,7 @@ final class BrowserViewModel {
             Task { await C2PASigningService.invalidateValidationCache(for: url) }
         }
         guard currentFolderURL?.standardizedFileURL == request.folderURL.standardizedFileURL else { return }
-        loadFolder(url: request.folderURL, addToOpenFolders: false)
+        loadFolder(url: request.folderURL, revealInSidebar: false)
     }
 
     private static func renameMetadata(for image: ImageFile) -> [BatchRenameMetadataField: String] {
