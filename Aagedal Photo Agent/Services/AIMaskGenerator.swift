@@ -602,10 +602,10 @@ nonisolated protocol VNInstanceMaskProducing: AnyObject {
     var instanceMaskObservation: VNInstanceMaskObservation? { get }
 }
 
-extension VNGeneratePersonInstanceMaskRequest: VNInstanceMaskProducing {
-    nonisolated var instanceMaskObservation: VNInstanceMaskObservation? { results?.first }
+nonisolated extension VNGeneratePersonInstanceMaskRequest: VNInstanceMaskProducing {
+    var instanceMaskObservation: VNInstanceMaskObservation? { results?.first }
 }
 
-extension VNGenerateForegroundInstanceMaskRequest: VNInstanceMaskProducing {
-    nonisolated var instanceMaskObservation: VNInstanceMaskObservation? { results?.first }
+nonisolated extension VNGenerateForegroundInstanceMaskRequest: VNInstanceMaskProducing {
+    var instanceMaskObservation: VNInstanceMaskObservation? { results?.first }
 }
