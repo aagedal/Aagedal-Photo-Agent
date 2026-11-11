@@ -1688,7 +1688,10 @@ struct MetadataPanel: View {
             editableAdditionalMetadataField(field)
         }
 
-        if viewModel.isBatchEdit {
+        let structuredSections = settingsViewModel.visibleStructuredEditorialSections
+        if structuredSections.isEmpty {
+            EmptyView()
+        } else if viewModel.isBatchEdit {
             Text("Creator contact and structured locations can be edited one image at a time.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1698,6 +1701,7 @@ struct MetadataPanel: View {
                 creatorContactInfo: $viewModel.editingMetadata.creatorContactInfo,
                 locationsCreated: $viewModel.editingMetadata.locationsCreated,
                 locationsShown: $viewModel.editingMetadata.locationsShown,
+                visibleSections: structuredSections,
                 onChange: { viewModel.markChanged() },
                 onCommit: { commitEdits() }
             )

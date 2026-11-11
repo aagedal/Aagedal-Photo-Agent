@@ -61,6 +61,7 @@ final class PreferencesSyncService {
         UserDefaultsKeys.addJobIdToKeywords,
         UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords,
         UserDefaultsKeys.hiddenIPTCMetadataFields,
+        UserDefaultsKeys.hiddenStructuredEditorialSections,
         UserDefaultsKeys.iptcMetadataFieldOrder,
         UserDefaultsKeys.metadataRequirementLevels,
         UserDefaultsKeys.metadataMinimumLengths,

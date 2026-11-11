@@ -1030,6 +1030,25 @@ extension IPTCMetadata {
     }
 }
 
+/// The structured IPTC groups the metadata panel edits after the flat fields. They are not
+/// `MetadataFieldID`s (no single value, requirement level or position in the field order), but
+/// they can be hidden from the panel like any optional field.
+nonisolated enum StructuredEditorialSection: String, CaseIterable, Sendable {
+    case creatorContactInfo, locationsCreated, locationsShown
+
+    var displayName: String {
+        switch self {
+        case .creatorContactInfo: return "Creator Contact Information"
+        case .locationsCreated: return "Location Created"
+        case .locationsShown: return "Location Shown"
+        }
+    }
+
+    static func decodeHidden(_ rawValues: [String]) -> Set<Self> {
+        Set(rawValues.compactMap(Self.init(rawValue:)))
+    }
+}
+
 extension IPTCMetadata {
     /// Source-compatible spelling retained for code and Codable values shipped before Phase 1.
     typealias FieldKey = MetadataFieldID

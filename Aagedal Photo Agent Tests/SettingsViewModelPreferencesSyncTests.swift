@@ -99,6 +99,37 @@ struct SettingsViewModelPreferencesSyncTests {
 
         #expect(store.stringArray(forKey: key) == [DevelopSlider.clarity.rawValue, DevelopSlider.contrast.rawValue])
     }
+
+    @Test("Structured metadata groups can be hidden, persist, sync, and reset to visible")
+    func structuredEditorialSectionVisibility() {
+        let store = AppDefaults.store
+        let key = UserDefaultsKeys.hiddenStructuredEditorialSections
+        let fieldsKey = UserDefaultsKeys.hiddenIPTCMetadataFields
+        let saved = store.object(forKey: key)
+        let savedFields = store.object(forKey: fieldsKey)
+        defer {
+            store.set(saved, forKey: key)
+            store.set(savedFields, forKey: fieldsKey)
+        }
+        store.removeObject(forKey: key)
+
+        let viewModel = SettingsViewModel()
+        #expect(viewModel.visibleStructuredEditorialSections == Set(StructuredEditorialSection.allCases))
+        #expect(PreferencesSyncService.syncedKeys.contains(key))
+
+        viewModel.setStructuredEditorialSection(.locationsShown, visible: false)
+        viewModel.setStructuredEditorialSection(.creatorContactInfo, visible: false)
+        #expect(viewModel.visibleStructuredEditorialSections == [.locationsCreated])
+        #expect(store.stringArray(forKey: key) == ["creatorContactInfo", "locationsShown"])
+
+        store.set(["locationsCreated", "unknown"], forKey: key)
+        viewModel.applyStoredValues()
+        #expect(viewModel.hiddenStructuredEditorialSections == [.locationsCreated])
+
+        viewModel.resetIPTCMetadataFieldVisibility()
+        #expect(viewModel.hiddenStructuredEditorialSections.isEmpty)
+        #expect(store.stringArray(forKey: key) == [])
+    }
 }
 
 /// In-memory stand-in for `NSUbiquitousKeyValueStore`; tests never touch real iCloud.
