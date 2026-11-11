@@ -9,6 +9,7 @@ nonisolated enum AIMaskGeneratorError: LocalizedError {
     case noFaces
     case noFaceAtPoint
     case selectionCoversEntireImage
+    case selectionWouldBeEmpty
     case couldNotGenerateMask
     case couldNotEncodeMask
     case samModelUnavailable
@@ -25,6 +26,8 @@ nonisolated enum AIMaskGeneratorError: LocalizedError {
             return "No face was found where you clicked."
         case .selectionCoversEntireImage:
             return "Photo Agent could not separate that person or object from the rest of the image. Try clicking a more distinct subject."
+        case .selectionWouldBeEmpty:
+            return "Subtracting there would leave the mask empty."
         case .couldNotGenerateMask:
             return "Photo Agent could not generate a mask for that selection."
         case .couldNotEncodeMask:
@@ -46,6 +49,52 @@ nonisolated struct GeneratedAIMask: Sendable {
 nonisolated enum AIMaskGenerator {
     private static let maximumMaskDimension = 1024
     nonisolated static let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// Regenerates a matte from an ordered list of clicks in the image's (display) frame. The first
+    /// point must be positive. One point is ordinary click-to-select; SAM takes every point in one
+    /// prompt, while Vision and Face combine the region under each point in click order (add =
+    /// union, subtract = removal), since their models cannot be steered by extra points.
+    static func generate(
+        from image: CIImage,
+        points: [AIMaskPromptPoint],
+        sourceOrientation: Int,
+        target: AIMaskTarget = .automatic,
+        engine: AIMaskEngine = .vision
+    ) throws -> GeneratedAIMask {
+        let points = points.prefix(AIMaskPromptPoint.maximumCount).map {
+            AIMaskPromptPoint(x: min(max($0.x, 0), 1), y: min(max($0.y, 0), 1), isPositive: $0.isPositive)
+        }
+        guard let first = points.first, first.isPositive else {
+            throw AIMaskGeneratorError.couldNotGenerateMask
+        }
+
+        var generated: GeneratedAIMask
+        if engine == .sam21, target != .face {
+            generated = try generateWithSAM(
+                from: image,
+                points: points,
+                sourceOrientation: sourceOrientation,
+                target: target
+            )
+        } else if points.count == 1 {
+            generated = try generate(
+                from: image,
+                displayPoint: CGPoint(x: first.x, y: first.y),
+                sourceOrientation: sourceOrientation,
+                target: target,
+                engine: .vision
+            )
+        } else {
+            generated = try generateCombined(
+                from: image,
+                points: points,
+                sourceOrientation: sourceOrientation,
+                target: target
+            )
+        }
+        generated.raster.promptPoints = points
+        return generated
+    }
 
     static func generate(
         from image: CIImage,
@@ -73,7 +122,7 @@ nonisolated enum AIMaskGenerator {
         if engine == .sam21 {
             return try generateWithSAM(
                 from: image,
-                at: point,
+                points: [AIMaskPromptPoint(x: point.x, y: point.y, isPositive: true)],
                 sourceOrientation: sourceOrientation,
                 target: target
             )
@@ -140,7 +189,7 @@ nonisolated enum AIMaskGenerator {
     /// the whole subject with its own edges. Anything Vision does not see uses the bare point.
     private static func generateWithSAM(
         from image: CIImage,
-        at point: CGPoint,
+        points: [AIMaskPromptPoint],
         sourceOrientation: Int,
         target: AIMaskTarget
     ) throws -> GeneratedAIMask {
@@ -155,31 +204,40 @@ nonisolated enum AIMaskGenerator {
             ? image.transformed(by: CGAffineTransform(scaleX: visionScale, y: visionScale))
             : image
 
-        var promptBox: CGRect?
+        // One box per positive click (exclusions never widen it). The prompt box is their union,
+        // so added clicks on other parts of the subject — or on another subject — are not cut
+        // off by the first click's box. A click Vision does not see drops the box entirely.
+        let positives = points.filter(\.isPositive).map { CGPoint(x: $0.x, y: $0.y) }
+        var boxes = [CGRect?](repeating: nil, count: positives.count)
         if target != .object {
             do {
-                promptBox = try visionPromptBox(
+                boxes = try visionPromptBoxes(
                     for: VNGeneratePersonInstanceMaskRequest(),
                     in: visionImage,
-                    at: point
+                    at: positives
                 )
             } catch {
                 if target == .person { throw error }
             }
-            if target == .person, promptBox == nil {
+            if target == .person, boxes.contains(where: { $0 == nil }) {
                 throw AIMaskGeneratorError.noInstanceAtPoint
             }
         }
-        if target != .person, promptBox == nil {
-            // Best effort only: a failed or full-frame foreground pass just means a bare point.
-            promptBox = try? visionPromptBox(
+        if target != .person, boxes.contains(where: { $0 == nil }) {
+            // Best effort only: a failed or full-frame foreground pass just means bare points.
+            if let foreground = try? visionPromptBoxes(
                 for: VNGenerateForegroundInstanceMaskRequest(),
                 in: visionImage,
-                at: point
-            )
+                at: positives
+            ) {
+                for index in boxes.indices where boxes[index] == nil {
+                    boxes[index] = foreground[index]
+                }
+            }
         }
+        let promptBox = Self.unionPromptBox(boxes)
 
-        let lowResolution = try SAM2Segmenter.shared.segment(image: image, point: point, box: promptBox)
+        let lowResolution = try SAM2Segmenter.shared.segment(image: image, points: points, box: promptBox)
 
         let scale = min(1, CGFloat(maximumMaskDimension) / max(extent.width, extent.height))
         let width = max(1, Int((extent.width * scale).rounded()))
@@ -211,23 +269,190 @@ nonisolated enum AIMaskGenerator {
         ))
     }
 
-    /// Bounds of the Vision instance containing the click, padded for use as a SAM box prompt.
-    /// Nil when no instance contains the click, or when the instance is (nearly) the whole frame,
-    /// which would constrain nothing and is the foreground model's known misfire.
-    private static func visionPromptBox(
+    /// Vision and Face cannot be steered by extra points, so each click selects its own region (the
+    /// clicked instance, or the clicked face's oval) and the regions are combined in click order.
+    private static func generateCombined(
+        from image: CIImage,
+        points: [AIMaskPromptPoint],
+        sourceOrientation: Int,
+        target: AIMaskTarget
+    ) throws -> GeneratedAIMask {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0 else {
+            throw AIMaskGeneratorError.couldNotGenerateMask
+        }
+        let scale = min(1, CGFloat(maximumMaskDimension) / max(extent.width, extent.height))
+        let width = max(1, Int((extent.width * scale).rounded()))
+        let height = max(1, Int((extent.height * scale).rounded()))
+        let clicks = points.map { CGPoint(x: $0.x, y: $0.y) }
+
+        let regions = target == .face
+            ? try faceRegions(in: image, at: clicks, width: width, height: height)
+            : try instanceRegions(in: image, at: clicks, target: target, width: width, height: height)
+        let bytes = combineMattes(zip(regions, points).map { ($0, $1.isPositive) })
+        guard bytes.contains(where: { $0 >= 128 }) else {
+            throw AIMaskGeneratorError.selectionWouldBeEmpty
+        }
+        if isEffectivelyFullFrameMask(bytes) {
+            throw AIMaskGeneratorError.selectionCoversEntireImage
+        }
+        guard let pngData = encodeGrayscalePNG(bytes: bytes, width: width, height: height),
+              pngData.count <= 2_000_000
+        else { throw AIMaskGeneratorError.couldNotEncodeMask }
+
+        let orientation = min(max(sourceOrientation, 1), 8)
+        return GeneratedAIMask(raster: AIMaskGeometry(
+            width: width,
+            height: height,
+            pngData: pngData,
+            sourceOrientation: orientation,
+            displayOrientation: orientation,
+            target: target
+        ))
+    }
+
+    /// Combines per-click mattes in order: a positive region is unioned in, a negative one is
+    /// removed (its coverage scales down what is already selected). Regions of a different size
+    /// than the first are ignored. Internal for focused tests.
+    static func combineMattes(_ regions: [(bytes: [UInt8], isPositive: Bool)]) -> [UInt8] {
+        guard let count = regions.first?.bytes.count else { return [] }
+        var result = [UInt8](repeating: 0, count: count)
+        for region in regions where region.bytes.count == count {
+            for index in 0..<count {
+                result[index] = region.isPositive
+                    ? max(result[index], region.bytes[index])
+                    : min(result[index], 255 - region.bytes[index])
+            }
+        }
+        return result
+    }
+
+    /// The Vision instance under each click at the mask raster size, person model first (as for a
+    /// single click), with the foreground model run at most once for clicks it must cover.
+    private static func instanceRegions(
+        in image: CIImage,
+        at points: [CGPoint],
+        target: AIMaskTarget,
+        width: Int,
+        height: Int
+    ) throws -> [[UInt8]] {
+        let handler = VNImageRequestHandler(ciImage: image, orientation: .up)
+        var person: VNInstanceMaskObservation?
+        if target != .object {
+            let request = VNGeneratePersonInstanceMaskRequest()
+            do {
+                try handler.perform([request])
+                person = request.results?.first
+            } catch {
+                if target == .person { throw error }
+            }
+        }
+        var foreground: VNInstanceMaskObservation?
+        var ranForeground = false
+
+        func region(_ point: CGPoint, in observation: VNInstanceMaskObservation?) throws -> [UInt8]? {
+            guard let observation, !observation.allInstances.isEmpty,
+                  let mask = try scaledMask(selecting: point, observation: observation, handler: handler),
+                  let bytes = rasterBytes(of: mask, width: width, height: height),
+                  !isEffectivelyFullFrameMask(bytes)
+            else { return nil }
+            return bytes
+        }
+
+        return try points.map { point in
+            if let bytes = try region(point, in: person) { return bytes }
+            if target != .person {
+                if !ranForeground {
+                    ranForeground = true
+                    let request = VNGenerateForegroundInstanceMaskRequest()
+                    try handler.perform([request])
+                    foreground = request.results?.first
+                }
+                if let bytes = try region(point, in: foreground) { return bytes }
+            }
+            throw AIMaskGeneratorError.noInstanceAtPoint
+        }
+    }
+
+    /// The face oval under each click (the smallest containing face, as for a single click).
+    private static func faceRegions(
+        in image: CIImage,
+        at points: [CGPoint],
+        width: Int,
+        height: Int
+    ) throws -> [[UInt8]] {
+        let handler = VNImageRequestHandler(ciImage: image, orientation: .up)
+        let request = VNDetectFaceRectanglesRequest()
+        try handler.perform([request])
+        guard let observations = request.results, !observations.isEmpty else {
+            throw AIMaskGeneratorError.noFaces
+        }
+        return try points.map { point in
+            let visionPoint = CGPoint(x: point.x, y: 1 - point.y)
+            guard let face = observations
+                .filter({ $0.boundingBox.contains(visionPoint) })
+                .min(by: {
+                    $0.boundingBox.width * $0.boundingBox.height
+                        < $1.boundingBox.width * $1.boundingBox.height
+                })
+            else { throw AIMaskGeneratorError.noFaceAtPoint }
+            return renderFaceMaskBytes(boundingBox: face.boundingBox, width: width, height: height)
+        }
+    }
+
+    /// Renders a source-resolution Vision matte at the mask raster size in persisted row order.
+    private static func rasterBytes(of mask: CVPixelBuffer, width: Int, height: Int) -> [UInt8]? {
+        let maskImage = CIImage(cvPixelBuffer: mask)
+        guard maskImage.extent.width > 0, maskImage.extent.height > 0 else { return nil }
+        let scaled = maskImage
+            .transformed(by: CGAffineTransform(
+                translationX: -maskImage.extent.minX,
+                y: -maskImage.extent.minY
+            ))
+            .transformed(by: CGAffineTransform(
+                scaleX: CGFloat(width) / maskImage.extent.width,
+                y: CGFloat(height) / maskImage.extent.height
+            ))
+        return renderGrayscaleBytes(
+            from: scaled,
+            width: width,
+            height: height,
+            bounds: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+    }
+
+    /// Bounds of the Vision instance containing each click, padded for use as a SAM box prompt.
+    /// An entry is nil when no instance contains that click, or when the instance is (nearly) the
+    /// whole frame, which would constrain nothing and is the foreground model's known misfire.
+    /// Vision runs once for all clicks.
+    private static func visionPromptBoxes(
         for request: VNImageBasedRequest & VNInstanceMaskProducing,
         in image: CIImage,
-        at point: CGPoint
-    ) throws -> CGRect? {
+        at points: [CGPoint]
+    ) throws -> [CGRect?] {
         let handler = VNImageRequestHandler(ciImage: image, orientation: .up)
         try handler.perform([request])
         guard let observation = request.instanceMaskObservation,
-              !observation.allInstances.isEmpty,
-              let mask = try scaledMask(selecting: point, observation: observation, handler: handler),
-              let bounds = normalizedBounds(of: mask),
-              bounds.width * bounds.height < 0.9
-        else { return nil }
-        return paddedPromptBox(bounds)
+              !observation.allInstances.isEmpty
+        else { return points.map { _ in nil } }
+        return try points.map { point in
+            guard let mask = try scaledMask(selecting: point, observation: observation, handler: handler),
+                  let bounds = normalizedBounds(of: mask),
+                  bounds.width * bounds.height < 0.9
+            else { return nil }
+            return paddedPromptBox(bounds)
+        }
+    }
+
+    /// The SAM box for a set of per-click boxes: their union, or nil when any click has none
+    /// (a box around only some clicks would cut the others off) or there are no clicks.
+    static func unionPromptBox(_ boxes: [CGRect?]) -> CGRect? {
+        guard let first = boxes.first, var union = first else { return nil }
+        for box in boxes.dropFirst() {
+            guard let box else { return nil }
+            union = union.union(box)
+        }
+        return union
     }
 
     /// Bilinearly resamples SAM's square logit grid (which spans the whole, stretched image) to the

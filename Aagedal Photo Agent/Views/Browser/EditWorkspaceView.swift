@@ -1948,7 +1948,7 @@ struct EditWorkspaceView: View {
                         maskSelectorBar
 
                         if isSelectingAIMask {
-                            aiMaskToolbar(id: replacingAIMaskID)
+                            aiMaskToolbar(id: replacingAIMaskID ?? aiMaskSelection.refiningMaskID)
                         } else if isBrushPainting || selectedMaskIsBrush {
                             brushToolbar
                         } else if selectedMaskIsAI, let id = selectedMaskID {
@@ -6028,7 +6028,7 @@ struct EditWorkspaceView: View {
                 }
                 Text("AI Mask").font(.system(size: 11, weight: .semibold))
                 Spacer()
-                Button(isSelectingAIMask ? "Cancel" : "Select Again") {
+                Button(aiMaskSelection.isRefining ? "Done" : isSelectingAIMask ? "Cancel" : "Select Again") {
                     if isSelectingAIMask {
                         cancelAIMaskSelection()
                     } else {
@@ -6037,6 +6037,10 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+            }
+
+            if let id, !isSelectingAIMask || aiMaskSelection.isRefining {
+                aiMaskPointModeButtons(id: id)
             }
 
             Picker("Target", selection: aiMaskTargetBinding(replacing: id)) {
@@ -6119,6 +6123,47 @@ struct EditWorkspaceView: View {
         }
         .padding(8)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Add/Subtract extend an AI mask with more clicks. Masks made before clicks were recorded
+    /// have no recipe to replay, so they must be reselected first.
+    private func aiMaskPointModeButtons(id: UUID) -> some View {
+        let canRefine = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .first(where: { $0.id == id })?.aiMask?.canRefineWithPoints == true
+        let activeMode = aiMaskSelection.refiningMaskID == id ? aiMaskSelection.pointMode : nil
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+            ForEach([AIMaskPointMode.add, .subtract], id: \.self) { mode in
+                Button {
+                    if activeMode == mode {
+                        cancelAIMaskSelection()
+                    } else {
+                        startAIMaskRefinement(of: id, mode: mode)
+                    }
+                } label: {
+                    Label(
+                        mode == .add ? "Add" : "Subtract",
+                        systemImage: mode == .add ? "plus.circle" : "minus.circle"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(activeMode == mode ? .accentColor : nil)
+                .controlSize(.small)
+                .help(mode == .add
+                      ? "Click more of the subject, or another subject, to add it to this mask. Option-click subtracts."
+                      : "Click a region to remove it from this mask. Shift-click adds.")
+                .accessibilityIdentifier(mode == .add ? "aiMask.points.add" : "aiMask.points.subtract")
+            }
+            }
+            .disabled(!canRefine || isGeneratingAIMask)
+
+            if !canRefine {
+                Text("Use Select Again to enable Add and Subtract on this mask.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     /// Changing the target on an existing matte immediately enters Select Again mode, because
@@ -7774,9 +7819,27 @@ struct EditWorkspaceView: View {
         syncMaskOverlayTarget()
     }
 
+    private func startAIMaskRefinement(of maskID: UUID, mode: AIMaskPointMode) {
+        guard canEditSingleImage, sourceCIImage != nil, !isGeneratingAIMask else { return }
+        clearMaskMattePreview()
+        maskInteraction.beginExclusiveSelection()
+        whiteBalanceSession.deactivatePicker()
+        guard aiMaskSelection.beginRefinement(of: maskID, mode: mode) else { return }
+        syncMaskOverlayTarget()
+    }
+
     private func cancelAIMaskSelection() {
         aiMaskSelection.cancelSelection()
         NSCursor.arrow.set()
+    }
+
+    /// The direction of a refinement click: the active mode, overridden by Option (subtract) or
+    /// Shift (add) as in Photoshop and Lightroom.
+    private func aiMaskClickIsPositive() -> Bool {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.option) { return false }
+        if flags.contains(.shift) { return true }
+        return aiMaskSelection.pointMode == .add
     }
 
     private func performAIMaskPick(
@@ -7799,6 +7862,36 @@ struct EditWorkspaceView: View {
             fromDisplayedUV: displayedUV,
             projection: layerGeometryProjection
         )
+
+        if let refiningID = aiMaskSelection.refiningMaskID {
+            guard let existing = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+                .first(where: { $0.id == refiningID })?.aiMask,
+                  existing.canRefineWithPoints else {
+                cancelAIMaskSelection()
+                return
+            }
+            let isPositive = aiMaskClickIsPositive()
+            let points = existing.promptPoints(inDisplayOrientation: selectedImageOrientation)
+                + [AIMaskPromptPoint(x: sourcePoint.x, y: sourcePoint.y, isPositive: isPositive)]
+            guard points.count <= AIMaskPromptPoint.maximumCount else {
+                aiMaskError = "This mask has reached the limit of \(AIMaskPromptPoint.maximumCount) points."
+                return
+            }
+            aiMaskSelection.generate(
+                from: source,
+                points: points,
+                sourceOrientation: selectedImageOrientation,
+                imageURL: imageURL
+            ) { generated, replacementID in
+                installGeneratedAIMask(
+                    generated,
+                    replacing: replacementID,
+                    actionName: isPositive ? "Add to AI Mask" : "Subtract from AI Mask"
+                )
+            }
+            return
+        }
+
         aiMaskSelection.generate(
             from: source,
             sourcePoint: sourcePoint,
@@ -7811,13 +7904,14 @@ struct EditWorkspaceView: View {
 
     private func installGeneratedAIMask(
         _ generated: GeneratedAIMask,
-        replacing replacementID: UUID?
+        replacing replacementID: UUID?,
+        actionName: String = "Add AI Mask"
     ) {
         let targetID: UUID
         if let replacementID,
            metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
             .contains(where: { $0.id == replacementID }) == true {
-            updateCameraRaw(actionName: "Add AI Mask") { cameraRaw in
+            updateCameraRaw(actionName: actionName) { cameraRaw in
                 guard let index = cameraRaw.localAdjustments?
                     .firstIndex(where: { $0.id == replacementID }) else { return }
                 let previousRefinements = cameraRaw.localAdjustments?[index].aiMask
@@ -8126,9 +8220,17 @@ struct EditWorkspaceView: View {
                 )
             }
             .frame(width: viewSize.width, height: viewSize.height)
+            .overlay {
+                aiMaskPointMarkers(
+                    viewportOrigin: viewportOrigin,
+                    viewportSize: viewportSize,
+                    viewSize: viewSize
+                )
+                .allowsHitTesting(false)
+            }
             .overlay(alignment: .top) {
                 Label(
-                    isGeneratingAIMask ? "Finding selection…" : "Click a face, person, or object",
+                    isGeneratingAIMask ? "Finding selection…" : aiMaskSelectionPrompt,
                     systemImage: isGeneratingAIMask ? "sparkles" : "viewfinder"
                 )
                 .font(.system(size: 11, weight: .medium))
@@ -8138,6 +8240,43 @@ struct EditWorkspaceView: View {
                 .padding(.top, 12)
                 .allowsHitTesting(false)
             }
+        }
+    }
+
+    private var aiMaskSelectionPrompt: String {
+        guard aiMaskSelection.isRefining else { return "Click a face, person, or object" }
+        return aiMaskSelection.pointMode == .add
+            ? "Click to add to the mask · Option-click to subtract"
+            : "Click to subtract from the mask · Shift-click to add"
+    }
+
+    /// Green + / red − markers at the recorded clicks of the mask being refined.
+    @ViewBuilder
+    private func aiMaskPointMarkers(
+        viewportOrigin: SIMD2<Float>, viewportSize: SIMD2<Float>, viewSize: CGSize
+    ) -> some View {
+        if let id = aiMaskSelection.refiningMaskID,
+           viewportSize.x > 0, viewportSize.y > 0,
+           let aiMask = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .first(where: { $0.id == id })?.aiMask {
+            let points = aiMask.promptPoints(inDisplayOrientation: selectedImageOrientation)
+            ZStack {
+                ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                    let uv = layerGeometryInteraction.displayedUVForAIMask(
+                        fromSourcePoint: CGPoint(x: point.x, y: point.y),
+                        projection: layerGeometryProjection
+                    )
+                    Image(systemName: point.isPositive ? "plus.circle.fill" : "minus.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white, point.isPositive ? Color.green : Color.red)
+                        .shadow(radius: 1.5)
+                        .position(
+                            x: (uv.x - CGFloat(viewportOrigin.x)) / CGFloat(viewportSize.x) * viewSize.width,
+                            y: (uv.y - CGFloat(viewportOrigin.y)) / CGFloat(viewportSize.y) * viewSize.height
+                        )
+                }
+            }
+            .frame(width: viewSize.width, height: viewSize.height)
         }
     }
 

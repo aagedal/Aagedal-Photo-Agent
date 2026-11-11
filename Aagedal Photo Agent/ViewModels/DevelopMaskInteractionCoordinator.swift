@@ -301,6 +301,23 @@ final class DevelopLayerGeometryInteractionCoordinator {
         )
     }
 
+    /// Inverse of `sourcePointForAIMask`: where a recorded AI-mask click sits in the displayed,
+    /// straightened frame, for drawing its marker.
+    func displayedUVForAIMask(
+        fromSourcePoint point: CGPoint,
+        projection: DevelopLayerGeometryProjection
+    ) -> CGPoint {
+        var marker = WatermarkGeometry()
+        marker.centerX = Double(point.x)
+        marker.centerY = Double(point.y)
+        marker = marker.rotatedInDisplay(
+            byDegrees: -projection.straightenAngle,
+            aspect: projection.displayAspect,
+            around: projection.straightenPivot
+        )
+        return CGPoint(x: marker.centerX, y: marker.centerY)
+    }
+
     func watermarkCropImageSize(
         projection: DevelopLayerGeometryProjection
     ) -> CGSize {

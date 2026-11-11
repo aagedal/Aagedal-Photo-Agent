@@ -4265,7 +4265,11 @@ struct AIMaskExtensionTests {
             target: .object,
             blackPoint: 0.2,
             whitePoint: 0.8,
-            blurRadius: 0.005
+            blurRadius: 0.005,
+            promptPoints: [
+                AIMaskPromptPoint(x: 0.25, y: 0.5, isPositive: true),
+                AIMaskPromptPoint(x: 0.125, y: 0.75, isPositive: false),
+            ]
         )
         var settings = CameraRawSettings()
         settings.localAdjustments = [MaskAdjustment(name: "Object", aiMask: ai, exposure: 0.75)]
@@ -4286,9 +4290,80 @@ struct AIMaskExtensionTests {
         #expect(abs(reloadedAI.resolvedBlackPoint - 0.2) < 1e-9)
         #expect(abs(reloadedAI.resolvedWhitePoint - 0.8) < 1e-9)
         #expect(abs(reloadedAI.resolvedBlurRadius - 0.005) < 1e-9)
+        #expect(reloadedAI.promptPoints == ai.promptPoints)
+        #expect(reloadedAI.canRefineWithPoints)
         #expect(reloadedAI.pngData == png)
         #expect(reloaded.inverted == false)
         #expect(reloaded.exposure.map { abs($0 - 0.75) < 1e-6 } == true)
+    }
+}
+
+@Suite("AI mask prompt points")
+struct AIMaskPromptPointTests {
+    @Test("points encode compactly and decode leniently")
+    func encodeDecode() {
+        let points = [
+            AIMaskPromptPoint(x: 0.5, y: 0.25, isPositive: true),
+            AIMaskPromptPoint(x: 1, y: 0, isPositive: false),
+        ]
+        let encoded = AIMaskPromptPoint.encode(points)
+        #expect(encoded == "+0.500000,0.250000;-1.000000,0.000000")
+        #expect(AIMaskPromptPoint.decode(encoded) == points)
+
+        // Malformed entries are dropped and coordinates clamped; nothing valid means no recipe.
+        #expect(AIMaskPromptPoint.decode("+0.5,0.5;junk;*0.1,0.1;-2,-1") == [
+            AIMaskPromptPoint(x: 0.5, y: 0.5, isPositive: true),
+            AIMaskPromptPoint(x: 1, y: 0, isPositive: false),
+        ])
+        #expect(AIMaskPromptPoint.decode("") == nil)
+        #expect(AIMaskPromptPoint.decode("+nan,0.5") == nil)
+    }
+
+    @Test("points follow the photo through a later rotation")
+    func orientationMapping() {
+        let point = AIMaskPromptPoint(x: 0.2, y: 0.1, isPositive: true)
+        // Authored upright; the photo is later rotated 90° CW (orientation 6): (1 - y, x).
+        let rotated = point.mapped(fromOrientation: 1, toOrientation: 6)
+        #expect(abs(rotated.x - 0.9) < 1e-12 && abs(rotated.y - 0.2) < 1e-12)
+        for orientation in 1...8 {
+            for other in 1...8 {
+                let back = point
+                    .mapped(fromOrientation: orientation, toOrientation: other)
+                    .mapped(fromOrientation: other, toOrientation: orientation)
+                #expect(abs(back.x - point.x) < 1e-12 && abs(back.y - point.y) < 1e-12)
+            }
+        }
+
+        let mask = AIMaskGeometry(
+            width: 1, height: 1, pngData: Data([1]), sourceOrientation: 8,
+            promptPoints: [point]
+        )
+        #expect(mask.promptPoints(inDisplayOrientation: 8) == [point])
+        #expect(mask.canRefineWithPoints)
+        #expect(!AIMaskGeometry(width: 1, height: 1, pngData: Data([1])).canRefineWithPoints)
+    }
+
+    @Test("Vision regions combine in click order: add unions, subtract removes")
+    func combineMattes() {
+        let person: [UInt8] = [255, 255, 0, 0]
+        let bag: [UInt8] = [0, 255, 255, 0]
+        let added = AIMaskGenerator.combineMattes([(person, true), (bag, true)])
+        #expect(added == [255, 255, 255, 0])
+        let subtracted = AIMaskGenerator.combineMattes([(person, true), (bag, true), ([0, 128, 0, 0], false)])
+        #expect(subtracted == [255, 127, 255, 0])
+        #expect(AIMaskGenerator.combineMattes([(person, true), (person, false)]) == [0, 0, 0, 0])
+        #expect(AIMaskGenerator.combineMattes([]).isEmpty)
+    }
+
+    @Test("SAM's prompt box covers every positive click, or none when one is unboxed")
+    func unionPromptBox() {
+        let left = CGRect(x: 0.1, y: 0.2, width: 0.2, height: 0.3)
+        let right = CGRect(x: 0.6, y: 0.1, width: 0.2, height: 0.2)
+        #expect(AIMaskGenerator.unionPromptBox([left]) == left)
+        #expect(AIMaskGenerator.unionPromptBox([left, right]) == left.union(right))
+        #expect(AIMaskGenerator.unionPromptBox([left, nil]) == nil)
+        #expect(AIMaskGenerator.unionPromptBox([nil]) == nil)
+        #expect(AIMaskGenerator.unionPromptBox([]) == nil)
     }
 }
 

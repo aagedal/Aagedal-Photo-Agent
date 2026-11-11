@@ -2,6 +2,11 @@ import CoreImage
 import Foundation
 import Observation
 
+/// Whether a refinement click includes or excludes the region under it.
+enum AIMaskPointMode: Sendable {
+    case add, subtract
+}
+
 /// Owns the transient lifecycle of click-to-select AI mask generation for one source image.
 /// The editor remains responsible for applying a generated raster to its layer model; this owner
 /// guarantees that cancellation, image changes, and late generator results cannot mutate it.
@@ -10,7 +15,7 @@ import Observation
 final class AIMaskSelectionCoordinator {
     typealias Generator = @Sendable (
         CIImage,
-        CGPoint,
+        [AIMaskPromptPoint],
         Int,
         AIMaskTarget
     ) async throws -> GeneratedAIMask
@@ -18,6 +23,11 @@ final class AIMaskSelectionCoordinator {
     var isSelecting = false
     var isGenerating = false
     var replacingMaskID: UUID?
+    /// The AI mask that Add/Subtract clicks extend. Unlike a new selection or Select Again,
+    /// refinement stays active after each click until the user finishes or changes layers.
+    var refiningMaskID: UUID?
+    var pointMode: AIMaskPointMode = .add
+    var isRefining: Bool { refiningMaskID != nil }
     var target: AIMaskTarget = .automatic
     var errorMessage: String?
 
@@ -26,12 +36,12 @@ final class AIMaskSelectionCoordinator {
     @ObservationIgnored private var generationTask: Task<Void, Never>?
     @ObservationIgnored private let generator: Generator
 
-    init(generator: @escaping Generator = { image, point, orientation, target in
+    init(generator: @escaping Generator = { image, points, orientation, target in
         let engine = AIMaskEngine.current
         return try await Task.detached(priority: .userInitiated) {
             try AIMaskGenerator.generate(
                 from: image,
-                displayPoint: point,
+                points: points,
                 sourceOrientation: orientation,
                 target: target,
                 engine: engine
@@ -48,6 +58,7 @@ final class AIMaskSelectionCoordinator {
         isSelecting = false
         isGenerating = false
         replacingMaskID = nil
+        refiningMaskID = nil
         errorMessage = nil
     }
 
@@ -56,6 +67,20 @@ final class AIMaskSelectionCoordinator {
         guard activeImageURL != nil, !isGenerating else { return false }
         if resetsTarget { target = .automatic }
         replacingMaskID = maskID
+        refiningMaskID = nil
+        isSelecting = true
+        return true
+    }
+
+    /// Enters Add/Subtract mode for an existing AI mask. Each click regenerates the mask from its
+    /// recorded points plus the new one; the mode stays active between clicks.
+    @discardableResult
+    func beginRefinement(of maskID: UUID, mode: AIMaskPointMode) -> Bool {
+        guard activeImageURL != nil, !isGenerating else { return false }
+        replacingMaskID = nil
+        refiningMaskID = maskID
+        pointMode = mode
+        errorMessage = nil
         isSelecting = true
         return true
     }
@@ -65,6 +90,7 @@ final class AIMaskSelectionCoordinator {
         isSelecting = false
         isGenerating = false
         replacingMaskID = nil
+        refiningMaskID = nil
     }
 
     /// Layer selection changes dismiss an idle pick overlay, but must not invalidate a generation
@@ -73,6 +99,7 @@ final class AIMaskSelectionCoordinator {
         guard !isGenerating else { return }
         isSelecting = false
         replacingMaskID = nil
+        refiningMaskID = nil
     }
 
     func adoptTarget(_ target: AIMaskTarget) {
@@ -87,9 +114,29 @@ final class AIMaskSelectionCoordinator {
         imageURL: URL,
         onGenerated: @escaping @MainActor (GeneratedAIMask, UUID?) -> Void
     ) -> Bool {
+        generate(
+            from: source,
+            points: [AIMaskPromptPoint(x: sourcePoint.x, y: sourcePoint.y, isPositive: true)],
+            sourceOrientation: sourceOrientation,
+            imageURL: imageURL,
+            onGenerated: onGenerated
+        )
+    }
+
+    /// Generates from an ordered point list (the first must be positive). `onGenerated` receives
+    /// the mask to replace: the Select Again or refined mask, or nil for a new layer.
+    @discardableResult
+    func generate(
+        from source: CIImage,
+        points: [AIMaskPromptPoint],
+        sourceOrientation: Int,
+        imageURL: URL,
+        onGenerated: @escaping @MainActor (GeneratedAIMask, UUID?) -> Void
+    ) -> Bool {
         guard isSelecting, !isGenerating, activeImageURL == imageURL else { return false }
 
-        let replacementID = replacingMaskID
+        let replacementID = refiningMaskID ?? replacingMaskID
+        let staysSelecting = refiningMaskID != nil
         let requestedTarget = target
         let newRequestID = UUID()
         requestID = newRequestID
@@ -100,7 +147,7 @@ final class AIMaskSelectionCoordinator {
             do {
                 let generated = try await generator(
                     source,
-                    sourcePoint,
+                    points,
                     sourceOrientation,
                     requestedTarget
                 )
@@ -109,8 +156,11 @@ final class AIMaskSelectionCoordinator {
                       activeImageURL == imageURL else { return }
 
                 isGenerating = false
-                isSelecting = false
-                replacingMaskID = nil
+                errorMessage = nil
+                if !staysSelecting {
+                    isSelecting = false
+                    replacingMaskID = nil
+                }
                 generationTask = nil
                 onGenerated(generated, replacementID)
             } catch is CancellationError {

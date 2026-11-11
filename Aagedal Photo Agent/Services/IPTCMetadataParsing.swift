@@ -766,6 +766,8 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
             .flatMap { $0.isFinite ? min(max($0, 0.01), 1) : nil }
         let blurRadius = parseDoubleValue(aaphotoMaskField(corr, "AIMaskBlurRadius"))
             .flatMap { $0.isFinite ? min(max($0, 0), 0.02) : nil }
+        let promptPoints = (aaphotoMaskField(corr, "AIMaskPrompts") as? String)
+            .flatMap(AIMaskPromptPoint.decode)
         return AIMaskGeometry(
             width: width,
             height: height,
@@ -775,7 +777,8 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
             target: target,
             blackPoint: blackPoint,
             whitePoint: whitePoint,
-            blurRadius: blurRadius
+            blurRadius: blurRadius,
+            promptPoints: promptPoints
         )
     }()
 
@@ -1085,6 +1088,9 @@ nonisolated private func encodeMaskAppPrivateFields(_ mask: MaskAdjustment) -> [
         }
         if aiMask.resolvedBlurRadius > 0.000001 {
             appPrivateFields.append(("AIMaskBlurRadius", acrNum(aiMask.resolvedBlurRadius)))
+        }
+        if let points = aiMask.promptPoints, !points.isEmpty {
+            appPrivateFields.append(("AIMaskPrompts", AIMaskPromptPoint.encode(points)))
         }
         appPrivateFields.append(("AIMaskPNG", aiMask.pngData.base64EncodedString()))
     }

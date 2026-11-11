@@ -392,7 +392,7 @@ nonisolated struct BrushMaskGeometry: Codable, Sendable, Equatable {
     /// UV point mapping for each EXIF orientation, identical to the center mapping in
     /// `EllipseMaskGeometry.transformedForDisplay`. Normalized UV, so the 90°-family swap is a
     /// direct x/y exchange (no aspect term).
-    private static func mapPoint(x: Double, y: Double, orientation: Int) -> (x: Double, y: Double) {
+    static func mapPoint(x: Double, y: Double, orientation: Int) -> (x: Double, y: Double) {
         switch orientation {
         case 2: return (1 - x, y)          // flip horizontal
         case 3: return (1 - x, 1 - y)      // rotate 180°
@@ -428,6 +428,55 @@ nonisolated enum AIMaskTarget: String, Codable, CaseIterable, Sendable, Equatabl
     static var selectableCases: [AIMaskTarget] { [.automatic, .person, .object] }
 }
 
+/// One click that shaped an AI mask: top-left normalized, in the frame of the mask's PNG
+/// (`AIMaskGeometry.sourceOrientation`). Positive points add to the selection, negative ones
+/// exclude. Masks are regenerated from the full ordered list, so the list is the mask's recipe.
+nonisolated struct AIMaskPromptPoint: Codable, Sendable, Equatable {
+    var x: Double
+    var y: Double
+    var isPositive: Bool
+
+    /// Upper bound for persisted and replayed points; a hand-edited sidecar cannot balloon it.
+    static let maximumCount = 64
+
+    /// Re-expresses the point in another display orientation of the same photo, via the sensor
+    /// frame (display = map(sensor, orientation), and only 6/8 are not self-inverse).
+    func mapped(fromOrientation source: Int, toOrientation target: Int) -> AIMaskPromptPoint {
+        guard source != target else { return self }
+        let inverse = source == 6 ? 8 : source == 8 ? 6 : source
+        let sensor = BrushMaskGeometry.mapPoint(x: x, y: y, orientation: inverse)
+        let display = BrushMaskGeometry.mapPoint(x: sensor.x, y: sensor.y, orientation: target)
+        return AIMaskPromptPoint(x: display.x, y: display.y, isPositive: isPositive)
+    }
+
+    /// Compact XMP form: `+x,y;-x,y` with six decimals, in click order.
+    static func encode(_ points: [AIMaskPromptPoint]) -> String {
+        points.prefix(maximumCount).map { point in
+            (point.isPositive ? "+" : "-") + String(format: "%.6f,%.6f", point.x, point.y)
+        }.joined(separator: ";")
+    }
+
+    /// Lenient inverse of `encode`: malformed entries are dropped, coordinates are clamped to the
+    /// unit square, and an empty or all-invalid value yields nil (the mask has no recipe).
+    static func decode(_ value: String) -> [AIMaskPromptPoint]? {
+        var points: [AIMaskPromptPoint] = []
+        for entry in value.split(separator: ";").prefix(maximumCount) {
+            let trimmed = entry.trimmingCharacters(in: .whitespaces)
+            guard let sign = trimmed.first, sign == "+" || sign == "-" else { continue }
+            let parts = trimmed.dropFirst().split(separator: ",")
+            guard parts.count == 2,
+                  let x = Double(parts[0]), let y = Double(parts[1]),
+                  x.isFinite, y.isFinite else { continue }
+            points.append(AIMaskPromptPoint(
+                x: min(max(x, 0), 1),
+                y: min(max(y, 0), 1),
+                isPositive: sign == "+"
+            ))
+        }
+        return points.isEmpty ? nil : points
+    }
+}
+
 /// Photo Agent's persisted result from Vision instance selection. The mask PNG is a compact,
 /// resolution-independent alpha source: the render pipeline scales it to the current
 /// preview/export resolution. It is intentionally Photo Agent-only; ACR has no fallback mask for
@@ -452,8 +501,22 @@ nonisolated struct AIMaskGeometry: Codable, Sendable, Equatable {
     /// Gaussian radius as a fraction of the mask's long edge. This makes the apparent softness
     /// stable between the compact stored PNG, the editor preview, and a full-resolution export.
     var blurRadius: Double? = nil
+    /// The clicks that produced the matte, in the PNG's frame. Nil for masks made before points
+    /// were recorded; those can be reselected but not extended.
+    var promptPoints: [AIMaskPromptPoint]? = nil
 
     var resolvedTarget: AIMaskTarget { target ?? .automatic }
+
+    /// Whether Add/Subtract can replay this mask's recipe with another point.
+    var canRefineWithPoints: Bool { promptPoints?.first?.isPositive == true }
+
+    /// The recorded points re-expressed in the photo's current display orientation, which is the
+    /// frame a new click and a regenerated matte use.
+    func promptPoints(inDisplayOrientation orientation: Int) -> [AIMaskPromptPoint] {
+        (promptPoints ?? []).map {
+            $0.mapped(fromOrientation: sourceOrientation, toOrientation: orientation)
+        }
+    }
     var resolvedBlackPoint: Double {
         guard let blackPoint, blackPoint.isFinite else { return 0 }
         return min(max(blackPoint, 0), 0.99)
