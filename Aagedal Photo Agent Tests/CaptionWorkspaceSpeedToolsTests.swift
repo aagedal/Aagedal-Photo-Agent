@@ -2097,7 +2097,7 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(caption.contains(".frame(height: 92)"))
 
         let panel = try source("Aagedal Photo Agent/Views/Metadata/MetadataPanel.swift")
-        #expect(panel.contains("let proseFields: Set<MetadataFieldID> = [.headline, .description, .extendedDescription]"))
+        #expect(panel.contains("let proseFields: Set<MetadataFieldID> = [.headline, .description, .extendedDescription, .rightsUsageTerms]"))
         #expect(panel.contains("editor.isContinuousSpellCheckingEnabled = enabled"))
         #expect(panel.contains("editor.isGrammarCheckingEnabled = enabled"))
         #expect(panel.contains("restoreCaptionAutocompleteFocus()"))

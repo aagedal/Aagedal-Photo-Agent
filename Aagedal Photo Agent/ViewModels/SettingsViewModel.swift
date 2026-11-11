@@ -515,7 +515,7 @@ final class SettingsViewModel {
 
     func resetIPTCMetadataFieldVisibility() {
         hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(storedRawValues: nil)
-        hiddenStructuredEditorialSections = []
+        hiddenStructuredEditorialSections = StructuredEditorialSection.defaultHidden
     }
 
     var visibleStructuredEditorialSections: Set<StructuredEditorialSection> {
@@ -1573,7 +1573,7 @@ private struct SyncedPreferences {
         )
         hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(in: store)
         hiddenStructuredEditorialSections = StructuredEditorialSection.decodeHidden(
-            store.stringArray(forKey: UserDefaultsKeys.hiddenStructuredEditorialSections) ?? []
+            store.stringArray(forKey: UserDefaultsKeys.hiddenStructuredEditorialSections)
         )
         orderedIPTCMetadataFields = MetadataFieldID.loadEditorFieldOrder(from: AppDefaults.store)
 

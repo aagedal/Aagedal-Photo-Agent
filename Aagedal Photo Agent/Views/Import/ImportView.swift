@@ -870,13 +870,18 @@ struct ImportView: View {
                 )
             )
 
-            EditableTextField(
-                label: "Rights Usage Terms",
-                text: Binding(
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Rights Usage Terms")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: Binding(
                     get: { viewModel.configuration.metadata.rightsUsageTerms ?? "" },
                     set: { viewModel.configuration.metadata.rightsUsageTerms = $0.isEmpty ? nil : $0 }
-                )
-            )
+                ))
+                .font(.body)
+                .frame(height: 56)
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
+            }
 
             EditableTextField(
                 label: "Web Statement of Rights",

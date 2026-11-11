@@ -1044,8 +1044,15 @@ nonisolated enum StructuredEditorialSection: String, CaseIterable, Sendable {
         }
     }
 
-    static func decodeHidden(_ rawValues: [String]) -> Set<Self> {
-        Set(rawValues.compactMap(Self.init(rawValue:)))
+    /// Hidden until the user opts in: most workflows never fill these groups, and they take a
+    /// lot of panel space.
+    static let defaultHidden = Set(allCases)
+
+    /// An absent preference means the default; a stored array (including `[]` after Show All)
+    /// is the user's explicit choice.
+    static func decodeHidden(_ rawValues: [String]?) -> Set<Self> {
+        guard let rawValues else { return defaultHidden }
+        return Set(rawValues.compactMap(Self.init(rawValue:)))
     }
 }
 
