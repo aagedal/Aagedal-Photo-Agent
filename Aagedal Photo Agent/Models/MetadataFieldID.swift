@@ -1038,9 +1038,9 @@ nonisolated enum StructuredEditorialSection: String, CaseIterable, Sendable {
 
     var displayName: String {
         switch self {
-        case .creatorContactInfo: return "Creator Contact Information"
-        case .locationsCreated: return "Location Created"
-        case .locationsShown: return "Location Shown"
+        case .creatorContactInfo: "Creator Contact Information"
+        case .locationsCreated: "Location Created"
+        case .locationsShown: "Location Shown"
         }
     }
 
