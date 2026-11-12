@@ -10,7 +10,7 @@ struct AIMaskSelectionCoordinatorTests {
         let firstURL = URL(fileURLWithPath: "/tmp/ai-mask-first.raw")
         let secondURL = URL(fileURLWithPath: "/tmp/ai-mask-second.raw")
         let output = generatedMask(target: .person)
-        let coordinator = AIMaskSelectionCoordinator { _, _, _, _ in
+        let coordinator = AIMaskSelectionCoordinator { _, _, _, _, _ in
             // Ignore cancellation deliberately: request identity must still reject this result.
             try? await Task.sleep(for: .milliseconds(80))
             return output
@@ -43,8 +43,8 @@ struct AIMaskSelectionCoordinatorTests {
         let imageURL = URL(fileURLWithPath: "/tmp/ai-mask-success.raw")
         let replacementID = UUID()
         let recorder = AIMaskGeneratorRecorder(output: generatedMask(target: .face))
-        let coordinator = AIMaskSelectionCoordinator { image, points, orientation, target in
-            await recorder.generate(image, points, orientation, target)
+        let coordinator = AIMaskSelectionCoordinator { image, points, orientation, target, size in
+            await recorder.generate(image, points, orientation, target, size)
         }
         coordinator.beginImageSession(imageURL)
         coordinator.adoptTarget(.face)
@@ -77,8 +77,8 @@ struct AIMaskSelectionCoordinatorTests {
         let imageURL = URL(fileURLWithPath: "/tmp/ai-mask-refine.raw")
         let maskID = UUID()
         let recorder = AIMaskGeneratorRecorder(output: generatedMask(target: .person))
-        let coordinator = AIMaskSelectionCoordinator { image, points, orientation, target in
-            await recorder.generate(image, points, orientation, target)
+        let coordinator = AIMaskSelectionCoordinator { image, points, orientation, target, size in
+            await recorder.generate(image, points, orientation, target, size)
         }
         coordinator.beginImageSession(imageURL)
         #expect(coordinator.beginRefinement(of: maskID, mode: .subtract))
@@ -113,7 +113,7 @@ struct AIMaskSelectionCoordinatorTests {
     func failureKeepsSelectionActive() async throws {
         let imageURL = URL(fileURLWithPath: "/tmp/ai-mask-failure.raw")
         let replacementID = UUID()
-        let coordinator = AIMaskSelectionCoordinator { _, _, _, _ in
+        let coordinator = AIMaskSelectionCoordinator { _, _, _, _, _ in
             throw TestGenerationError.failed
         }
         coordinator.beginImageSession(imageURL)
@@ -133,6 +133,92 @@ struct AIMaskSelectionCoordinatorTests {
         #expect(coordinator.isSelecting)
         #expect(!coordinator.isGenerating)
         #expect(coordinator.replacingMaskID == replacementID)
+    }
+
+    @Test("a drag preview skips superseded positions and shows the latest")
+    func previewRunsOnlyTheLatestPendingRequest() async throws {
+        let imageURL = URL(fileURLWithPath: "/tmp/ai-mask-preview.raw")
+        let previews = AIMaskPreviewRecorder(image: try previewImage(), delay: .milliseconds(60))
+        let coordinator = AIMaskSelectionCoordinator(
+            generator: { _, _, _, _, _ in throw TestGenerationError.failed },
+            previewer: { _, points, _, size in await previews.preview(points, size) },
+            prewarmer: { _, _ in }
+        )
+        coordinator.beginImageSession(imageURL)
+        coordinator.adoptSelectionSize(.large)
+        #expect(coordinator.beginSelection(replacing: nil, resetsTarget: false))
+
+        let positions = [0.1, 0.2, 0.3].map { [AIMaskPromptPoint(x: $0, y: 0.5, isPositive: true)] }
+        for points in positions {
+            coordinator.updatePreview(from: sourceImage, points: points, imageURL: imageURL)
+        }
+
+        try await eventually { coordinator.preview?.points == positions[2] }
+        #expect(await previews.requests.map(\.points) == [positions[0], positions[2]])
+        #expect(await previews.requests.allSatisfy { $0.size == .large })
+    }
+
+    @Test("releasing replaces the preview with the generated mask, and stale previews never land")
+    func generationSupersedesPreview() async throws {
+        let imageURL = URL(fileURLWithPath: "/tmp/ai-mask-preview-release.raw")
+        let previews = AIMaskPreviewRecorder(image: try previewImage(), delay: .milliseconds(80))
+        let coordinator = AIMaskSelectionCoordinator(
+            generator: { [output = generatedMask(target: .object)] _, _, _, _, _ in output },
+            previewer: { _, points, _, size in await previews.preview(points, size) },
+            prewarmer: { _, _ in }
+        )
+        coordinator.beginImageSession(imageURL)
+        #expect(coordinator.beginSelection(replacing: nil, resetsTarget: true))
+        let points = [AIMaskPromptPoint(x: 0.4, y: 0.4, isPositive: true)]
+        coordinator.updatePreview(from: sourceImage, points: points, imageURL: imageURL)
+        var generated = false
+
+        #expect(coordinator.generate(
+            from: sourceImage,
+            points: points,
+            sourceOrientation: 1,
+            imageURL: imageURL
+        ) { _, _ in generated = true })
+
+        try await eventually { generated }
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(coordinator.preview == nil)
+        #expect(!coordinator.isSelecting)
+    }
+
+    @Test("a size change regenerates the mask in place without entering selection")
+    func regenerateUsesSelectionSize() async throws {
+        let imageURL = URL(fileURLWithPath: "/tmp/ai-mask-resize.raw")
+        let maskID = UUID()
+        let recorder = AIMaskGeneratorRecorder(output: generatedMask(target: .object))
+        let coordinator = AIMaskSelectionCoordinator { image, points, orientation, target, size in
+            await recorder.generate(image, points, orientation, target, size)
+        }
+        coordinator.beginImageSession(imageURL)
+        coordinator.adoptSelectionSize(.small)
+        let points = [AIMaskPromptPoint(x: 0.5, y: 0.5, isPositive: true)]
+        var installedID: UUID?
+
+        #expect(coordinator.regenerate(
+            replacing: maskID,
+            from: sourceImage,
+            points: points,
+            sourceOrientation: 1,
+            imageURL: imageURL
+        ) { _, id in installedID = id })
+
+        try await eventually { installedID != nil }
+        #expect(installedID == maskID)
+        #expect(await recorder.lastRequest?.size == .small)
+        #expect(!coordinator.isSelecting)
+
+        // A new selection starts from Auto again.
+        #expect(coordinator.beginSelection(replacing: nil, resetsTarget: true))
+        #expect(coordinator.selectionSize == .automatic)
+    }
+
+    private func previewImage() throws -> CGImage {
+        try #require(AIMaskPreview.tintedImage(coverage: [255], width: 1, height: 1))
     }
 
     private var sourceImage: CIImage {
@@ -169,6 +255,7 @@ private actor AIMaskGeneratorRecorder {
         let points: [AIMaskPromptPoint]
         let orientation: Int
         let target: AIMaskTarget
+        let size: AIMaskSelectionSize
     }
 
     private let output: GeneratedAIMask
@@ -182,10 +269,33 @@ private actor AIMaskGeneratorRecorder {
         _ image: CIImage,
         _ points: [AIMaskPromptPoint],
         _ orientation: Int,
-        _ target: AIMaskTarget
+        _ target: AIMaskTarget,
+        _ size: AIMaskSelectionSize
     ) -> GeneratedAIMask {
-        lastRequest = Request(points: points, orientation: orientation, target: target)
+        lastRequest = Request(points: points, orientation: orientation, target: target, size: size)
         return output
+    }
+}
+
+private actor AIMaskPreviewRecorder {
+    struct Request: Sendable {
+        let points: [AIMaskPromptPoint]
+        let size: AIMaskSelectionSize
+    }
+
+    private let image: CGImage
+    private let delay: Duration
+    private(set) var requests: [Request] = []
+
+    init(image: CGImage, delay: Duration) {
+        self.image = image
+        self.delay = delay
+    }
+
+    func preview(_ points: [AIMaskPromptPoint], _ size: AIMaskSelectionSize) async -> AIMaskPreview {
+        requests.append(Request(points: points, size: size))
+        try? await Task.sleep(for: delay)
+        return AIMaskPreview(image: image, points: points)
     }
 }
 

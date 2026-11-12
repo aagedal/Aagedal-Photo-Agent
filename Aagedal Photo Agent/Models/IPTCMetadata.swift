@@ -428,10 +428,39 @@ nonisolated enum AIMaskTarget: String, Codable, CaseIterable, Sendable, Equatabl
     static var selectableCases: [AIMaskTarget] { [.automatic, .person, .object] }
 }
 
+/// Which of SAM 2.1's three nested proposals an AI mask uses. SAM answers each prompt with a
+/// part, a larger part and the whole; Auto keeps the one the model scores highest, which for a
+/// lone click is often a part. Small/Medium/Large pick by area. Vision ignores it.
+nonisolated enum AIMaskSelectionSize: String, Codable, CaseIterable, Sendable, Equatable {
+    case automatic = "auto"
+    case small
+    case medium
+    case large
+
+    var title: String {
+        switch self {
+        case .automatic: return "Auto"
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    /// Index into SAM's candidates sorted by area, or nil for the best-scoring one.
+    var candidateRank: Int? {
+        switch self {
+        case .automatic: return nil
+        case .small: return 0
+        case .medium: return 1
+        case .large: return 2
+        }
+    }
+}
+
 /// One click that shaped an AI mask: top-left normalized, in the frame of the mask's PNG
 /// (`AIMaskGeometry.sourceOrientation`). Positive points add to the selection, negative ones
 /// exclude. Masks are regenerated from the full ordered list, so the list is the mask's recipe.
-nonisolated struct AIMaskPromptPoint: Codable, Sendable, Equatable {
+nonisolated struct AIMaskPromptPoint: Codable, Sendable, Hashable {
     var x: Double
     var y: Double
     var isPositive: Bool
@@ -504,8 +533,11 @@ nonisolated struct AIMaskGeometry: Codable, Sendable, Equatable {
     /// The clicks that produced the matte, in the PNG's frame. Nil for masks made before points
     /// were recorded; those can be reselected but not extended.
     var promptPoints: [AIMaskPromptPoint]? = nil
+    /// The SAM proposal the matte was built from; absence means Auto.
+    var selectionSize: AIMaskSelectionSize? = nil
 
     var resolvedTarget: AIMaskTarget { target ?? .automatic }
+    var resolvedSelectionSize: AIMaskSelectionSize { selectionSize ?? .automatic }
 
     /// Whether Add/Subtract can replay this mask's recipe with another point.
     var canRefineWithPoints: Bool { promptPoints?.first?.isPositive == true }

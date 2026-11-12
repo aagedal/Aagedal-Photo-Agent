@@ -9,6 +9,33 @@ nonisolated struct SAM2LowResolutionMask: Sendable {
     static let side = 256
     var logits: [Float]
     var score: Float
+    /// Logit cells inside the mask (logit > 0); orders the nested candidates part → whole.
+    var area: Int { logits.reduce(0) { $1 > 0 ? $0 + 1 : $0 } }
+}
+
+/// Every candidate SAM 2.1 returns for one prompt, smallest first, with the one it scores highest.
+nonisolated struct SAM2Prediction: Sendable {
+    var candidates: [SAM2LowResolutionMask]
+    var bestIndex: Int
+
+    /// A candidate scoring under this fraction of the best is one SAM itself does not believe in:
+    /// typically a frame-wide, low-confidence blob whose logits hover around zero and threshold
+    /// into blotches. Size choices skip those rather than offer them as "Large".
+    static let plausibleScoreFraction: Float = 0.5
+
+    /// The candidate for `size`: the best-scoring one for Auto, otherwise by area rank among the
+    /// plausible candidates (the best always counts, so there is at least one).
+    func candidate(for size: AIMaskSelectionSize) -> SAM2LowResolutionMask {
+        guard let rank = size.candidateRank else { return candidates[bestIndex] }
+        let threshold = candidates[bestIndex].score * Self.plausibleScoreFraction
+        let plausible = candidates.indices.filter { $0 == bestIndex || candidates[$0].score >= threshold }
+        let index: Int = switch rank {
+        case 0: plausible[0]
+        case 1: plausible[plausible.count / 2]
+        default: plausible[plausible.count - 1]
+        }
+        return candidates[index]
+    }
 }
 
 /// Runs the downloaded SAM 2.1 Small models. The image encoder is the expensive stage, so its
@@ -49,9 +76,17 @@ nonisolated final class SAM2Segmenter: @unchecked Sendable {
         }
     }
 
+    /// Loads the models and encodes `image` ahead of the first click, so the first prompt (and a
+    /// live drag preview) only pays for the fast decoder.
+    func prewarm(image: CIImage) throws {
+        try lock.withLock {
+            _ = try imageEncoding(for: image, encoder: loadedModels().encoder)
+        }
+    }
+
     /// Segments `image` from top-left normalized click points (positive = include, negative =
     /// exclude), optionally constrained by a top-left normalized `box` around the intended subject.
-    func segment(image: CIImage, points clicks: [AIMaskPromptPoint], box: CGRect?) throws -> SAM2LowResolutionMask {
+    func segment(image: CIImage, points clicks: [AIMaskPromptPoint], box: CGRect?) throws -> SAM2Prediction {
         try lock.withLock {
             let models = try loadedModels()
             let encoding = try imageEncoding(for: image, encoder: models.encoder)
@@ -97,21 +132,33 @@ nonisolated final class SAM2Segmenter: @unchecked Sendable {
             else { throw AIMaskGeneratorError.couldNotGenerateMask }
 
             // SAM returns three nested candidates (part → whole) with predicted IoU scores. With a
-            // box prompt the whole subject reliably scores highest; a lone point stays ambiguous
-            // and the highest score is the model's own best guess.
-            let candidateCount = masks.shape[1].intValue
-            let candidateScores = (0..<min(candidateCount, scores.count)).map { scores[$0].floatValue }
-            guard let best = candidateScores.indices.max(by: { candidateScores[$0] < candidateScores[$1] })
-            else { throw AIMaskGeneratorError.couldNotGenerateMask }
-
+            // box prompt the whole subject reliably scores highest; a lone point stays ambiguous,
+            // so callers can override the model's own pick by size.
+            let candidateCount = min(masks.shape[1].intValue, scores.count)
             let plane = SAM2LowResolutionMask.side * SAM2LowResolutionMask.side
             let all = MLShapedArray<Float>(converting: masks).scalars
-            guard all.count >= (best + 1) * plane else { throw AIMaskGeneratorError.couldNotGenerateMask }
-            return SAM2LowResolutionMask(
-                logits: Array(all[(best * plane)..<((best + 1) * plane)]),
-                score: candidateScores[best]
-            )
+            guard candidateCount > 0, all.count >= candidateCount * plane else {
+                throw AIMaskGeneratorError.couldNotGenerateMask
+            }
+            let unsorted = (0..<candidateCount).map { index in
+                SAM2LowResolutionMask(
+                    logits: Array(all[(index * plane)..<((index + 1) * plane)]),
+                    score: scores[index].floatValue
+                )
+            }
+            return Self.prediction(from: unsorted)
         }
+    }
+
+    /// Sorts candidates by area and keeps track of the best-scoring one. Internal for tests.
+    static func prediction(from unsorted: [SAM2LowResolutionMask]) -> SAM2Prediction {
+        let best = unsorted.indices.max { unsorted[$0].score < unsorted[$1].score } ?? 0
+        let areas = unsorted.map(\.area)
+        let order = unsorted.indices.sorted { areas[$0] < areas[$1] }
+        return SAM2Prediction(
+            candidates: order.map { unsorted[$0] },
+            bestIndex: order.firstIndex(of: best) ?? 0
+        )
     }
 
     private func loadedModels() throws -> Models {

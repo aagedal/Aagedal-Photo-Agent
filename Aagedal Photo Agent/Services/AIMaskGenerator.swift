@@ -59,7 +59,8 @@ nonisolated enum AIMaskGenerator {
         points: [AIMaskPromptPoint],
         sourceOrientation: Int,
         target: AIMaskTarget = .automatic,
-        engine: AIMaskEngine = .vision
+        engine: AIMaskEngine = .vision,
+        size: AIMaskSelectionSize = .automatic
     ) throws -> GeneratedAIMask {
         let points = points.prefix(AIMaskPromptPoint.maximumCount).map {
             AIMaskPromptPoint(x: min(max($0.x, 0), 1), y: min(max($0.y, 0), 1), isPositive: $0.isPositive)
@@ -74,7 +75,8 @@ nonisolated enum AIMaskGenerator {
                 from: image,
                 points: points,
                 sourceOrientation: sourceOrientation,
-                target: target
+                target: target,
+                size: size
             )
         } else if points.count == 1 {
             generated = try generate(
@@ -124,7 +126,8 @@ nonisolated enum AIMaskGenerator {
                 from: image,
                 points: [AIMaskPromptPoint(x: point.x, y: point.y, isPositive: true)],
                 sourceOrientation: sourceOrientation,
-                target: target
+                target: target,
+                size: .automatic
             )
         }
 
@@ -191,59 +194,20 @@ nonisolated enum AIMaskGenerator {
         from image: CIImage,
         points: [AIMaskPromptPoint],
         sourceOrientation: Int,
-        target: AIMaskTarget
+        target: AIMaskTarget,
+        size: AIMaskSelectionSize
     ) throws -> GeneratedAIMask {
         let extent = image.extent
         guard extent.width > 0, extent.height > 0 else {
             throw AIMaskGeneratorError.couldNotGenerateMask
         }
-
-        // The box only needs coarse bounds; Vision on a full-resolution source costs seconds.
-        let visionScale = min(1, 1536 / max(extent.width, extent.height))
-        let visionImage = visionScale < 1
-            ? image.transformed(by: CGAffineTransform(scaleX: visionScale, y: visionScale))
-            : image
-
-        // One box per positive click (exclusions never widen it). The prompt box is their union,
-        // so added clicks on other parts of the subject — or on another subject — are not cut
-        // off by the first click's box. A click Vision does not see drops the box entirely.
-        let positives = points.filter(\.isPositive).map { CGPoint(x: $0.x, y: $0.y) }
-        var boxes = [CGRect?](repeating: nil, count: positives.count)
-        if target != .object {
-            do {
-                boxes = try visionPromptBoxes(
-                    for: VNGeneratePersonInstanceMaskRequest(),
-                    in: visionImage,
-                    at: positives
-                )
-            } catch {
-                if target == .person { throw error }
-            }
-            if target == .person, boxes.contains(where: { $0 == nil }) {
-                throw AIMaskGeneratorError.noInstanceAtPoint
-            }
-        }
-        if target != .person, boxes.contains(where: { $0 == nil }) {
-            // Best effort only: a failed or full-frame foreground pass just means bare points.
-            if let foreground = try? visionPromptBoxes(
-                for: VNGenerateForegroundInstanceMaskRequest(),
-                in: visionImage,
-                at: positives
-            ) {
-                for index in boxes.indices where boxes[index] == nil {
-                    boxes[index] = foreground[index]
-                }
-            }
-        }
-        let promptBox = Self.unionPromptBox(boxes)
-
-        let lowResolution = try SAM2Segmenter.shared.segment(image: image, points: points, box: promptBox)
+        let logits = try accumulatedSAMLogits(for: image, points: points, target: target, size: size)
 
         let scale = min(1, CGFloat(maximumMaskDimension) / max(extent.width, extent.height))
         let width = max(1, Int((extent.width * scale).rounded()))
         let height = max(1, Int((extent.height * scale).rounded()))
         let bytes = upsampledSAMMatte(
-            logits: lowResolution.logits,
+            logits: logits,
             side: SAM2LowResolutionMask.side,
             width: width,
             height: height
@@ -265,8 +229,126 @@ nonisolated enum AIMaskGenerator {
             pngData: pngData,
             sourceOrientation: orientation,
             displayOrientation: orientation,
-            target: target
+            target: target,
+            selectionSize: size == .automatic ? nil : size
         ))
+    }
+
+    /// The box prompt that steers SAM toward whole subjects: one box per positive click (exclusions
+    /// never widen it) from the Vision instance under it, person first, then generic foreground.
+    /// The prompt box is their union, so added clicks on other parts of the subject — or on
+    /// another subject — are not cut off by the first click's box. A click Vision does not see
+    /// drops the box entirely. Vision runs once per image and model (`VisionInstanceIndexCache`).
+    private static func samPromptBox(
+        for image: CIImage,
+        points: [AIMaskPromptPoint],
+        target: AIMaskTarget
+    ) throws -> CGRect? {
+        let positives = points.filter(\.isPositive).map { CGPoint(x: $0.x, y: $0.y) }
+        var boxes = [CGRect?](repeating: nil, count: positives.count)
+        if target != .object {
+            do {
+                let people = try VisionInstanceIndexCache.shared.index(for: image, model: .person)
+                boxes = positives.map(people.promptBox(at:))
+            } catch {
+                if target == .person { throw error }
+            }
+            if target == .person, boxes.contains(where: { $0 == nil }) {
+                throw AIMaskGeneratorError.noInstanceAtPoint
+            }
+        }
+        if target != .person, boxes.contains(where: { $0 == nil }),
+           // Best effort only: a failed or full-frame foreground pass just means bare points.
+           let foreground = try? VisionInstanceIndexCache.shared.index(for: image, model: .foreground) {
+            for index in boxes.indices where boxes[index] == nil {
+                boxes[index] = foreground.promptBox(at: positives[index])
+            }
+        }
+        return unionPromptBox(boxes)
+    }
+
+    /// SAM's answer to a growing point list is not monotonic: re-predicting from all points can
+    /// drop areas an earlier click had. Like Photoshop's add/subtract selection, each click is
+    /// therefore combined with the result before it: SAM's (cleaned) answer for the points so far
+    /// is unioned in for an Add click and intersected for a Subtract click, so adding never
+    /// shrinks the selection and subtracting never grows it. Results per prefix are cached, so a
+    /// new click or a drag update costs one decoder run.
+    private static func accumulatedSAMLogits(
+        for image: CIImage,
+        points: [AIMaskPromptPoint],
+        target: AIMaskTarget,
+        size: AIMaskSelectionSize
+    ) throws -> [Float] {
+        var accumulated: [Float]?
+        for count in 1...points.count {
+            let prefix = Array(points.prefix(count))
+            if let cached = SAMAccumulationCache.shared.logits(for: image, points: prefix, target: target, size: size) {
+                accumulated = cached
+                continue
+            }
+            let promptBox = try samPromptBox(for: image, points: prefix, target: target)
+            let step = SAM2MatteCleanup.cleaned(
+                try SAM2Segmenter.shared
+                    .segment(image: image, points: prefix, box: promptBox)
+                    .candidate(for: size)
+                    .logits,
+                points: prefix
+            )
+            let combined = accumulated.map { combineSAMStep($0, step, isPositive: prefix[count - 1].isPositive) } ?? step
+            SAMAccumulationCache.shared.store(combined, for: image, points: prefix, target: target, size: size)
+            accumulated = combined
+        }
+        guard let accumulated else { throw AIMaskGeneratorError.couldNotGenerateMask }
+        return accumulated
+    }
+
+    /// Union (max) of logits for an Add click, intersection (min) for a Subtract click.
+    static func combineSAMStep(_ previous: [Float], _ step: [Float], isPositive: Bool) -> [Float] {
+        guard previous.count == step.count else { return step }
+        return isPositive ? zip(previous, step).map(max) : zip(previous, step).map(min)
+    }
+
+    /// Loads SAM and analyses `image` (encoder plus the Vision passes that steer it) in advance, so
+    /// the first click and a live drag preview only pay for SAM's fast decoder. Errors are left
+    /// for the real generation to report.
+    static func prewarmSAM(for image: CIImage, target: AIMaskTarget) {
+        guard target != .face else { return }
+        try? SAM2Segmenter.shared.prewarm(image: image)
+        if target != .object {
+            _ = try? VisionInstanceIndexCache.shared.index(for: image, model: .person)
+        }
+        if target != .person {
+            _ = try? VisionInstanceIndexCache.shared.index(for: image, model: .foreground)
+        }
+    }
+
+    /// A translucent overlay of the mask SAM would produce for `points`, for live feedback while
+    /// the user drags a click around. It skips the full-resolution raster and PNG encode, and
+    /// assumes `prewarmSAM` (or an earlier click) already paid for the encoder and Vision.
+    static func previewWithSAM(
+        from image: CIImage,
+        points: [AIMaskPromptPoint],
+        target: AIMaskTarget,
+        size: AIMaskSelectionSize
+    ) throws -> AIMaskPreview {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0, points.first?.isPositive == true else {
+            throw AIMaskGeneratorError.couldNotGenerateMask
+        }
+        let logits = try accumulatedSAMLogits(for: image, points: points, target: target, size: size)
+        let scale = CGFloat(AIMaskPreview.longEdge) / max(extent.width, extent.height)
+        let width = max(1, Int((extent.width * scale).rounded()))
+        let height = max(1, Int((extent.height * scale).rounded()))
+        let coverage = upsampledSAMMatte(
+            logits: logits,
+            side: SAM2LowResolutionMask.side,
+            width: width,
+            height: height
+        )
+        guard let overlay = AIMaskPreview.tintedImage(coverage: coverage, width: width, height: height) else {
+            throw AIMaskGeneratorError.couldNotGenerateMask
+        }
+        return AIMaskPreview(image: overlay, points: points)
     }
 
     /// Vision and Face cannot be steered by extra points, so each click selects its own region (the
@@ -419,29 +501,6 @@ nonisolated enum AIMaskGenerator {
             height: height,
             bounds: CGRect(x: 0, y: 0, width: width, height: height)
         )
-    }
-
-    /// Bounds of the Vision instance containing each click, padded for use as a SAM box prompt.
-    /// An entry is nil when no instance contains that click, or when the instance is (nearly) the
-    /// whole frame, which would constrain nothing and is the foreground model's known misfire.
-    /// Vision runs once for all clicks.
-    private static func visionPromptBoxes(
-        for request: VNImageBasedRequest & VNInstanceMaskProducing,
-        in image: CIImage,
-        at points: [CGPoint]
-    ) throws -> [CGRect?] {
-        let handler = VNImageRequestHandler(ciImage: image, orientation: .up)
-        try handler.perform([request])
-        guard let observation = request.instanceMaskObservation,
-              !observation.allInstances.isEmpty
-        else { return points.map { _ in nil } }
-        return try points.map { point in
-            guard let mask = try scaledMask(selecting: point, observation: observation, handler: handler),
-                  let bounds = normalizedBounds(of: mask),
-                  bounds.width * bounds.height < 0.9
-            else { return nil }
-            return paddedPromptBox(bounds)
-        }
     }
 
     /// The SAM box for a set of per-click boxes: their union, or nil when any click has none
