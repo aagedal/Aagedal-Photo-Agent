@@ -3824,7 +3824,7 @@ private struct BufferedTextEditor: View {
                 .padding(.vertical, 8)
         }
             .font(.body)
-            .frame(height: 120)
+            .userResizableHeight(key: "metadata.\(focusKey)", defaultHeight: 120)
             .background(.background, in: RoundedRectangle(cornerRadius: 5))
             .overlay {
                 RoundedRectangle(cornerRadius: 5)

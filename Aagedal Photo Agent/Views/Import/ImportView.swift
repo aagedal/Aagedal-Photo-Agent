@@ -793,7 +793,7 @@ struct ImportView: View {
                 .font(.body)
                 .padding(.horizontal, 3)
                 .padding(.vertical, 6)
-                .frame(height: 68)
+                .userResizableHeight(key: "import.description", defaultHeight: 68)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
             }
 
@@ -808,7 +808,7 @@ struct ImportView: View {
                 .font(.body)
                 .padding(.horizontal, 3)
                 .padding(.vertical, 6)
-                .frame(height: 68)
+                .userResizableHeight(key: "import.extendedDescription", defaultHeight: 68)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
             }
 
@@ -885,7 +885,7 @@ struct ImportView: View {
                 .font(.body)
                 .padding(.horizontal, 3)
                 .padding(.vertical, 6)
-                .frame(height: 68)
+                .userResizableHeight(key: "import.rightsUsageTerms", defaultHeight: 68)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
             }
 
