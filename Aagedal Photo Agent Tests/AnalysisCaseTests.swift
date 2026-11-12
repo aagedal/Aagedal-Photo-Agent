@@ -1400,6 +1400,8 @@ struct AnalysisCaseTests {
         #expect(model.analysisCase != nil)
         #expect(model.caseStorage == .applicationSupport)
         #expect(model.storagePortabilityWarning?.contains("Application Support") == true)
+        // Ready is published as the fast analyzers are started; each runs in its own task.
+        try await waitForAnalysisState { counter.count == 1 }
         #expect(counter.count == 1)
     }
 
