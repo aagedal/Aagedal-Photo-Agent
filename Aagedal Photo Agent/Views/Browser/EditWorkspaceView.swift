@@ -1079,9 +1079,10 @@ struct EditWorkspaceView: View {
             maskInteraction.selectedLayerDidChange(isBrush: selectedMaskIsBrush)
             aiMaskSelection.cancelSelectionIfIdle()
             if let id = selectedMaskID,
-               let target = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
-                .first(where: { $0.id == id })?.aiMask?.resolvedTarget {
-                aiMaskSelection.adoptTarget(target)
+               let aiMask = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+                .first(where: { $0.id == id })?.aiMask {
+                aiMaskSelection.adoptTarget(aiMask.resolvedTarget)
+                aiMaskSelection.adoptSelectionSize(aiMask.resolvedSelectionSize)
             }
             syncMaskOverlayTarget()
             metalSession.requestRedraw()
@@ -6063,6 +6064,20 @@ struct EditWorkspaceView: View {
                 .help("Experimental: compare Apple Vision with SAM 2.1. Use Select Again to regenerate this mask with the other engine.")
             }
 
+            if aiMaskEngine == .sam21, aiMaskTarget != .face {
+                Picker("Size", selection: Binding(
+                    get: { aiMaskSelection.selectionSize },
+                    set: { applyAIMaskSelectionSize($0, to: id) }
+                )) {
+                    ForEach(AIMaskSelectionSize.allCases, id: \.self) { size in
+                        Text(size.title).tag(size)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(isGeneratingAIMask)
+                .help("SAM proposes a part, a larger part and the whole of what you click. Auto keeps its best guess; Small, Medium and Large pick by area.")
+            }
+
             if let id,
                let index = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
                 .firstIndex(where: { $0.id == id }),
@@ -7816,6 +7831,7 @@ struct EditWorkspaceView: View {
             replacing: maskID,
             resetsTarget: maskID == nil
         ) else { return }
+        prewarmAIMaskSelection()
         syncMaskOverlayTarget()
     }
 
@@ -7825,7 +7841,13 @@ struct EditWorkspaceView: View {
         maskInteraction.beginExclusiveSelection()
         whiteBalanceSession.deactivatePicker()
         guard aiMaskSelection.beginRefinement(of: maskID, mode: mode) else { return }
+        prewarmAIMaskSelection()
         syncMaskOverlayTarget()
+    }
+
+    private func prewarmAIMaskSelection() {
+        guard let source = sourceCIImage, let imageURL = selectedImageURL else { return }
+        aiMaskSelection.prewarm(source, imageURL: imageURL)
     }
 
     private func cancelAIMaskSelection() {
@@ -7842,7 +7864,38 @@ struct EditWorkspaceView: View {
         return aiMaskSelection.pointMode == .add
     }
 
-    private func performAIMaskPick(
+    /// The prompt a pick at `panePoint` would send: a new selection's single click, or a refined
+    /// mask's recorded points plus this one. Nil when the point is off the image or the mask has
+    /// no recipe to extend.
+    private func aiMaskPrompt(
+        panePoint: CGPoint,
+        paneSize: CGSize,
+        viewportOrigin: SIMD2<Float>,
+        viewportSize: SIMD2<Float>
+    ) -> (points: [AIMaskPromptPoint], isPositive: Bool)? {
+        guard let displayedUV = layerGeometryInteraction.displayUV(
+            forPanePoint: panePoint,
+            paneSize: paneSize,
+            viewport: DevelopPreviewViewport(origin: viewportOrigin, size: viewportSize)
+        ) else { return nil }
+        let sourcePoint = layerGeometryInteraction.sourcePointForAIMask(
+            fromDisplayedUV: displayedUV,
+            projection: layerGeometryProjection
+        )
+        guard let refiningID = aiMaskSelection.refiningMaskID else {
+            return ([AIMaskPromptPoint(x: sourcePoint.x, y: sourcePoint.y, isPositive: true)], true)
+        }
+        guard let existing = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .first(where: { $0.id == refiningID })?.aiMask,
+              existing.canRefineWithPoints else { return nil }
+        let isPositive = aiMaskClickIsPositive()
+        let points = existing.promptPoints(inDisplayOrientation: selectedImageOrientation)
+            + [AIMaskPromptPoint(x: sourcePoint.x, y: sourcePoint.y, isPositive: isPositive)]
+        return (points, isPositive)
+    }
+
+    /// While the pointer is down, shows the selection the release would make (SAM only).
+    private func previewAIMaskPick(
         panePoint: CGPoint,
         paneSize: CGSize,
         viewportOrigin: SIMD2<Float>,
@@ -7851,54 +7904,87 @@ struct EditWorkspaceView: View {
         guard isSelectingAIMask, !isGeneratingAIMask,
               let source = sourceCIImage,
               let imageURL = selectedImageURL,
-              let displayedUV = layerGeometryInteraction.displayUV(
-                  forPanePoint: panePoint,
+              let prompt = aiMaskPrompt(
+                  panePoint: panePoint,
                   paneSize: paneSize,
-                  viewport: DevelopPreviewViewport(origin: viewportOrigin, size: viewportSize)
-              )
+                  viewportOrigin: viewportOrigin,
+                  viewportSize: viewportSize
+              ),
+              prompt.points.count <= AIMaskPromptPoint.maximumCount
+        else {
+            aiMaskSelection.clearPreview()
+            return
+        }
+        aiMaskSelection.updatePreview(from: source, points: prompt.points, imageURL: imageURL)
+    }
+
+    private func performAIMaskPick(
+        panePoint: CGPoint,
+        paneSize: CGSize,
+        viewportOrigin: SIMD2<Float>,
+        viewportSize: SIMD2<Float>
+    ) {
+        guard isSelectingAIMask, !isGeneratingAIMask,
+              let source = sourceCIImage,
+              let imageURL = selectedImageURL
         else { return }
+        guard let prompt = aiMaskPrompt(
+            panePoint: panePoint,
+            paneSize: paneSize,
+            viewportOrigin: viewportOrigin,
+            viewportSize: viewportSize
+        ) else {
+            aiMaskSelection.clearPreview()
+            // A refined mask without a recipe cannot be extended; off-image releases do nothing.
+            if aiMaskSelection.isRefining { cancelAIMaskSelection() }
+            return
+        }
+        guard prompt.points.count <= AIMaskPromptPoint.maximumCount else {
+            aiMaskSelection.clearPreview()
+            aiMaskError = "This mask has reached the limit of \(AIMaskPromptPoint.maximumCount) points."
+            return
+        }
 
-        let sourcePoint = layerGeometryInteraction.sourcePointForAIMask(
-            fromDisplayedUV: displayedUV,
-            projection: layerGeometryProjection
-        )
-
-        if let refiningID = aiMaskSelection.refiningMaskID {
-            guard let existing = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
-                .first(where: { $0.id == refiningID })?.aiMask,
-                  existing.canRefineWithPoints else {
-                cancelAIMaskSelection()
-                return
-            }
-            let isPositive = aiMaskClickIsPositive()
-            let points = existing.promptPoints(inDisplayOrientation: selectedImageOrientation)
-                + [AIMaskPromptPoint(x: sourcePoint.x, y: sourcePoint.y, isPositive: isPositive)]
-            guard points.count <= AIMaskPromptPoint.maximumCount else {
-                aiMaskError = "This mask has reached the limit of \(AIMaskPromptPoint.maximumCount) points."
-                return
-            }
-            aiMaskSelection.generate(
-                from: source,
-                points: points,
-                sourceOrientation: selectedImageOrientation,
-                imageURL: imageURL
-            ) { generated, replacementID in
+        let isRefining = aiMaskSelection.isRefining
+        let isPositive = prompt.isPositive
+        aiMaskSelection.generate(
+            from: source,
+            points: prompt.points,
+            sourceOrientation: selectedImageOrientation,
+            imageURL: imageURL
+        ) { generated, replacementID in
+            if isRefining {
                 installGeneratedAIMask(
                     generated,
                     replacing: replacementID,
                     actionName: isPositive ? "Add to AI Mask" : "Subtract from AI Mask"
                 )
+            } else {
+                installGeneratedAIMask(generated, replacing: replacementID)
             }
-            return
         }
+    }
 
-        aiMaskSelection.generate(
+    /// Size changes rebuild the selected mask from its recorded points; a mask without points
+    /// keeps the choice for its next Select Again.
+    private func applyAIMaskSelectionSize(_ size: AIMaskSelectionSize, to maskID: UUID?) {
+        aiMaskSelection.adoptSelectionSize(size)
+        guard let maskID,
+              let source = sourceCIImage,
+              let imageURL = selectedImageURL,
+              let existing = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+                .first(where: { $0.id == maskID })?.aiMask,
+              existing.canRefineWithPoints,
+              existing.resolvedSelectionSize != size
+        else { return }
+        aiMaskSelection.regenerate(
+            replacing: maskID,
             from: source,
-            sourcePoint: sourcePoint,
+            points: existing.promptPoints(inDisplayOrientation: selectedImageOrientation),
             sourceOrientation: selectedImageOrientation,
             imageURL: imageURL
         ) { generated, replacementID in
-            installGeneratedAIMask(generated, replacing: replacementID)
+            installGeneratedAIMask(generated, replacing: replacementID, actionName: "Change AI Mask Size")
         }
     }
 
@@ -8211,15 +8297,34 @@ struct EditWorkspaceView: View {
         viewportOrigin: SIMD2<Float>, viewportSize: SIMD2<Float>, viewSize: CGSize
     ) -> some View {
         if isSelectingAIMask, !isShowingBefore, canEditSingleImage {
-            AIMaskPickOverlay(isEnabled: !isGeneratingAIMask) { panePoint in
-                performAIMaskPick(
-                    panePoint: panePoint,
-                    paneSize: viewSize,
-                    viewportOrigin: viewportOrigin,
-                    viewportSize: viewportSize
-                )
-            }
+            AIMaskPickOverlay(
+                isEnabled: !isGeneratingAIMask,
+                onDrag: { panePoint in
+                    previewAIMaskPick(
+                        panePoint: panePoint,
+                        paneSize: viewSize,
+                        viewportOrigin: viewportOrigin,
+                        viewportSize: viewportSize
+                    )
+                },
+                onPick: { panePoint in
+                    performAIMaskPick(
+                        panePoint: panePoint,
+                        paneSize: viewSize,
+                        viewportOrigin: viewportOrigin,
+                        viewportSize: viewportSize
+                    )
+                }
+            )
             .frame(width: viewSize.width, height: viewSize.height)
+            .background {
+                aiMaskPreviewOverlay(
+                    viewportOrigin: viewportOrigin,
+                    viewportSize: viewportSize,
+                    viewSize: viewSize
+                )
+                .allowsHitTesting(false)
+            }
             .overlay {
                 aiMaskPointMarkers(
                     viewportOrigin: viewportOrigin,
@@ -8244,36 +8349,92 @@ struct EditWorkspaceView: View {
     }
 
     private var aiMaskSelectionPrompt: String {
-        guard aiMaskSelection.isRefining else { return "Click a face, person, or object" }
+        let drags = aiMaskEngine == .sam21 && aiMaskTarget != .face
+        guard aiMaskSelection.isRefining else {
+            return drags ? "Click or drag over a person or object" : "Click a face, person, or object"
+        }
         return aiMaskSelection.pointMode == .add
             ? "Click to add to the mask · Option-click to subtract"
             : "Click to subtract from the mask · Shift-click to add"
     }
 
-    /// Green + / red − markers at the recorded clicks of the mask being refined.
+    /// Where a top-left normalized point of the (unstraightened) source lands in the pane.
+    private func aiMaskPanePoint(
+        forSourcePoint point: CGPoint,
+        viewportOrigin: SIMD2<Float>, viewportSize: SIMD2<Float>, viewSize: CGSize
+    ) -> CGPoint {
+        let uv = layerGeometryInteraction.displayedUVForAIMask(
+            fromSourcePoint: point,
+            projection: layerGeometryProjection
+        )
+        return CGPoint(
+            x: (uv.x - CGFloat(viewportOrigin.x)) / CGFloat(viewportSize.x) * viewSize.width,
+            y: (uv.y - CGFloat(viewportOrigin.y)) / CGFloat(viewportSize.y) * viewSize.height
+        )
+    }
+
+    /// The live drag preview, drawn over the photo with the same straighten/crop/zoom mapping as
+    /// the point markers. The mapping is affine, so three points define it.
+    @ViewBuilder
+    private func aiMaskPreviewOverlay(
+        viewportOrigin: SIMD2<Float>, viewportSize: SIMD2<Float>, viewSize: CGSize
+    ) -> some View {
+        if let preview = aiMaskSelection.preview, viewportSize.x > 0, viewportSize.y > 0 {
+            let map = { (point: CGPoint) in
+                aiMaskPanePoint(
+                    forSourcePoint: point,
+                    viewportOrigin: viewportOrigin,
+                    viewportSize: viewportSize,
+                    viewSize: viewSize
+                )
+            }
+            let origin = map(.zero)
+            let xAxis = map(CGPoint(x: 1, y: 0))
+            let yAxis = map(CGPoint(x: 0, y: 1))
+            let width = CGFloat(preview.image.width)
+            let height = CGFloat(preview.image.height)
+            Canvas { context, _ in
+                context.concatenate(CGAffineTransform(
+                    a: (xAxis.x - origin.x) / width,
+                    b: (xAxis.y - origin.y) / width,
+                    c: (yAxis.x - origin.x) / height,
+                    d: (yAxis.y - origin.y) / height,
+                    tx: origin.x,
+                    ty: origin.y
+                ))
+                context.draw(
+                    Image(decorative: preview.image, scale: 1),
+                    in: CGRect(x: 0, y: 0, width: width, height: height)
+                )
+            }
+            .frame(width: viewSize.width, height: viewSize.height)
+        }
+    }
+
+    /// Green + / red − markers at the clicks of the mask being refined, or of the live preview.
     @ViewBuilder
     private func aiMaskPointMarkers(
         viewportOrigin: SIMD2<Float>, viewportSize: SIMD2<Float>, viewSize: CGSize
     ) -> some View {
-        if let id = aiMaskSelection.refiningMaskID,
-           viewportSize.x > 0, viewportSize.y > 0,
-           let aiMask = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
-            .first(where: { $0.id == id })?.aiMask {
-            let points = aiMask.promptPoints(inDisplayOrientation: selectedImageOrientation)
+        let points: [AIMaskPromptPoint]? = aiMaskSelection.preview?.points ?? aiMaskSelection.refiningMaskID
+            .flatMap { id in
+                metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+                    .first(where: { $0.id == id })?.aiMask
+            }
+            .map { $0.promptPoints(inDisplayOrientation: selectedImageOrientation) }
+        if let points, viewportSize.x > 0, viewportSize.y > 0 {
             ZStack {
                 ForEach(Array(points.enumerated()), id: \.offset) { _, point in
-                    let uv = layerGeometryInteraction.displayedUVForAIMask(
-                        fromSourcePoint: CGPoint(x: point.x, y: point.y),
-                        projection: layerGeometryProjection
-                    )
                     Image(systemName: point.isPositive ? "plus.circle.fill" : "minus.circle.fill")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.white, point.isPositive ? Color.green : Color.red)
                         .shadow(radius: 1.5)
-                        .position(
-                            x: (uv.x - CGFloat(viewportOrigin.x)) / CGFloat(viewportSize.x) * viewSize.width,
-                            y: (uv.y - CGFloat(viewportOrigin.y)) / CGFloat(viewportSize.y) * viewSize.height
-                        )
+                        .position(aiMaskPanePoint(
+                            forSourcePoint: CGPoint(x: point.x, y: point.y),
+                            viewportOrigin: viewportOrigin,
+                            viewportSize: viewportSize,
+                            viewSize: viewSize
+                        ))
                 }
             }
             .frame(width: viewSize.width, height: viewSize.height)
@@ -9791,13 +9952,20 @@ private struct WhiteBalancePickOverlay: View {
 /// wins cursor arbitration against the underlying Metal/AppKit preview.
 private struct AIMaskPickOverlay: View {
     let isEnabled: Bool
+    /// Pointer down or moved while down: a live preview at that point.
+    let onDrag: (CGPoint) -> Void
+    /// Pointer released: select at the release point.
     let onPick: (CGPoint) -> Void
 
     var body: some View {
         Color.clear
             .contentShape(Rectangle())
             .gesture(
-                SpatialTapGesture()
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard isEnabled else { return }
+                        onDrag(value.location)
+                    }
                     .onEnded { value in
                         guard isEnabled else { return }
                         onPick(value.location)

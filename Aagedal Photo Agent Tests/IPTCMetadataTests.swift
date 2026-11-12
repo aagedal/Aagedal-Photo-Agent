@@ -4269,7 +4269,8 @@ struct AIMaskExtensionTests {
             promptPoints: [
                 AIMaskPromptPoint(x: 0.25, y: 0.5, isPositive: true),
                 AIMaskPromptPoint(x: 0.125, y: 0.75, isPositive: false),
-            ]
+            ],
+            selectionSize: .large
         )
         var settings = CameraRawSettings()
         settings.localAdjustments = [MaskAdjustment(name: "Object", aiMask: ai, exposure: 0.75)]
@@ -4292,6 +4293,7 @@ struct AIMaskExtensionTests {
         #expect(abs(reloadedAI.resolvedBlurRadius - 0.005) < 1e-9)
         #expect(reloadedAI.promptPoints == ai.promptPoints)
         #expect(reloadedAI.canRefineWithPoints)
+        #expect(reloadedAI.selectionSize == .large)
         #expect(reloadedAI.pngData == png)
         #expect(reloaded.inverted == false)
         #expect(reloaded.exposure.map { abs($0 - 0.75) < 1e-6 } == true)
@@ -4364,6 +4366,50 @@ struct AIMaskPromptPointTests {
         #expect(AIMaskGenerator.unionPromptBox([left, nil]) == nil)
         #expect(AIMaskGenerator.unionPromptBox([nil]) == nil)
         #expect(AIMaskGenerator.unionPromptBox([]) == nil)
+    }
+
+    @Test("SAM candidates sort by area; Auto keeps the best-scoring one")
+    func samCandidateSelection() {
+        func mask(cells: Int, score: Float) -> SAM2LowResolutionMask {
+            var logits = [Float](repeating: -4, count: 16)
+            for index in 0..<cells { logits[index] = 4 }
+            return SAM2LowResolutionMask(logits: logits, score: score)
+        }
+        // Decoder order is not by size; the middle-sized candidate scores highest.
+        let prediction = SAM2Segmenter.prediction(from: [
+            mask(cells: 12, score: 0.7),
+            mask(cells: 2, score: 0.6),
+            mask(cells: 6, score: 0.9),
+        ])
+        #expect(prediction.candidates.map(\.area) == [2, 6, 12])
+        #expect(prediction.candidate(for: .automatic).area == 6)
+        #expect(prediction.candidate(for: .small).area == 2)
+        #expect(prediction.candidate(for: .medium).area == 6)
+        #expect(prediction.candidate(for: .large).area == 12)
+
+        let single = SAM2Segmenter.prediction(from: [mask(cells: 3, score: 0.5)])
+        #expect(single.candidate(for: .large).area == 3)
+    }
+
+    @Test("Vision instance index boxes the instance under a click")
+    func visionInstanceIndexPromptBox() {
+        let side = VisionInstanceIndex.gridSide
+        func instance(_ bounds: CGRect) -> VisionInstanceIndex.Instance {
+            var coverage = [UInt8](repeating: 0, count: side * side)
+            for row in Int(bounds.minY * CGFloat(side))..<Int(bounds.maxY * CGFloat(side)) {
+                for column in Int(bounds.minX * CGFloat(side))..<Int(bounds.maxX * CGFloat(side)) {
+                    coverage[row * side + column] = 255
+                }
+            }
+            return VisionInstanceIndex.Instance(coverage: coverage, bounds: bounds)
+        }
+        let person = CGRect(x: 0.25, y: 0.25, width: 0.25, height: 0.5)
+        let frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        let index = VisionInstanceIndex(instances: [instance(person)])
+        #expect(index.promptBox(at: CGPoint(x: 0.3, y: 0.5)) == AIMaskGenerator.paddedPromptBox(person))
+        #expect(index.promptBox(at: CGPoint(x: 0.8, y: 0.5)) == nil)
+        // A full-frame instance (the foreground model's misfire) constrains nothing.
+        #expect(VisionInstanceIndex(instances: [instance(frame)]).promptBox(at: CGPoint(x: 0.5, y: 0.5)) == nil)
     }
 }
 
