@@ -460,7 +460,7 @@ nonisolated enum AIMaskSelectionSize: String, Codable, CaseIterable, Sendable, E
 /// One click that shaped an AI mask: top-left normalized, in the frame of the mask's PNG
 /// (`AIMaskGeometry.sourceOrientation`). Positive points add to the selection, negative ones
 /// exclude. Masks are regenerated from the full ordered list, so the list is the mask's recipe.
-nonisolated struct AIMaskPromptPoint: Codable, Sendable, Equatable {
+nonisolated struct AIMaskPromptPoint: Codable, Sendable, Hashable {
     var x: Double
     var y: Double
     var isPositive: Bool

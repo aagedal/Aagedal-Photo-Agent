@@ -201,16 +201,13 @@ nonisolated enum AIMaskGenerator {
         guard extent.width > 0, extent.height > 0 else {
             throw AIMaskGeneratorError.couldNotGenerateMask
         }
-        let promptBox = try samPromptBox(for: image, points: points, target: target)
-        let lowResolution = try SAM2Segmenter.shared
-            .segment(image: image, points: points, box: promptBox)
-            .candidate(for: size)
+        let logits = try accumulatedSAMLogits(for: image, points: points, target: target, size: size)
 
         let scale = min(1, CGFloat(maximumMaskDimension) / max(extent.width, extent.height))
         let width = max(1, Int((extent.width * scale).rounded()))
         let height = max(1, Int((extent.height * scale).rounded()))
         let bytes = upsampledSAMMatte(
-            logits: SAM2MatteCleanup.cleaned(lowResolution.logits, points: points),
+            logits: logits,
             side: SAM2LowResolutionMask.side,
             width: width,
             height: height
@@ -270,6 +267,47 @@ nonisolated enum AIMaskGenerator {
         return unionPromptBox(boxes)
     }
 
+    /// SAM's answer to a growing point list is not monotonic: re-predicting from all points can
+    /// drop areas an earlier click had. Like Photoshop's add/subtract selection, each click is
+    /// therefore combined with the result before it: SAM's (cleaned) answer for the points so far
+    /// is unioned in for an Add click and intersected for a Subtract click, so adding never
+    /// shrinks the selection and subtracting never grows it. Results per prefix are cached, so a
+    /// new click or a drag update costs one decoder run.
+    private static func accumulatedSAMLogits(
+        for image: CIImage,
+        points: [AIMaskPromptPoint],
+        target: AIMaskTarget,
+        size: AIMaskSelectionSize
+    ) throws -> [Float] {
+        var accumulated: [Float]?
+        for count in 1...points.count {
+            let prefix = Array(points.prefix(count))
+            if let cached = SAMAccumulationCache.shared.logits(for: image, points: prefix, target: target, size: size) {
+                accumulated = cached
+                continue
+            }
+            let promptBox = try samPromptBox(for: image, points: prefix, target: target)
+            let step = SAM2MatteCleanup.cleaned(
+                try SAM2Segmenter.shared
+                    .segment(image: image, points: prefix, box: promptBox)
+                    .candidate(for: size)
+                    .logits,
+                points: prefix
+            )
+            let combined = accumulated.map { combineSAMStep($0, step, isPositive: prefix[count - 1].isPositive) } ?? step
+            SAMAccumulationCache.shared.store(combined, for: image, points: prefix, target: target, size: size)
+            accumulated = combined
+        }
+        guard let accumulated else { throw AIMaskGeneratorError.couldNotGenerateMask }
+        return accumulated
+    }
+
+    /// Union (max) of logits for an Add click, intersection (min) for a Subtract click.
+    static func combineSAMStep(_ previous: [Float], _ step: [Float], isPositive: Bool) -> [Float] {
+        guard previous.count == step.count else { return step }
+        return isPositive ? zip(previous, step).map(max) : zip(previous, step).map(min)
+    }
+
     /// Loads SAM and analyses `image` (encoder plus the Vision passes that steer it) in advance, so
     /// the first click and a live drag preview only pay for SAM's fast decoder. Errors are left
     /// for the real generation to report.
@@ -297,15 +335,12 @@ nonisolated enum AIMaskGenerator {
         guard extent.width > 0, extent.height > 0, points.first?.isPositive == true else {
             throw AIMaskGeneratorError.couldNotGenerateMask
         }
-        let promptBox = try samPromptBox(for: image, points: points, target: target)
-        let lowResolution = try SAM2Segmenter.shared
-            .segment(image: image, points: points, box: promptBox)
-            .candidate(for: size)
+        let logits = try accumulatedSAMLogits(for: image, points: points, target: target, size: size)
         let scale = CGFloat(AIMaskPreview.longEdge) / max(extent.width, extent.height)
         let width = max(1, Int((extent.width * scale).rounded()))
         let height = max(1, Int((extent.height * scale).rounded()))
         let coverage = upsampledSAMMatte(
-            logits: SAM2MatteCleanup.cleaned(lowResolution.logits, points: points),
+            logits: logits,
             side: SAM2LowResolutionMask.side,
             width: width,
             height: height

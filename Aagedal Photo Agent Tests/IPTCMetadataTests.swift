@@ -4400,6 +4400,14 @@ struct AIMaskPromptPointTests {
         #expect(withJunk.candidate(for: .small).area == 4)
     }
 
+    @Test("SAM clicks accumulate: Add never shrinks the selection, Subtract never grows it")
+    func samStepsAreMonotonic() {
+        let previous: [Float] = [4, 4, -4, -4]
+        let step: [Float] = [-3, 5, 2, -6]
+        #expect(AIMaskGenerator.combineSAMStep(previous, step, isPositive: true) == [4, 5, 2, -4])
+        #expect(AIMaskGenerator.combineSAMStep(previous, step, isPositive: false) == [-3, 4, -4, -6])
+    }
+
     @Test("SAM cleanup drops islands away from clicks and fills small enclosed holes")
     func samMatteCleanup() {
         let side = SAM2LowResolutionMask.side

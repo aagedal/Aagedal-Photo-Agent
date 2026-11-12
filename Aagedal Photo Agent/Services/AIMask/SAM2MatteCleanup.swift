@@ -1,3 +1,4 @@
+import CoreImage
 import Foundation
 
 /// Cleans SAM's 256×256 logit grid before it is upsampled. Where SAM is unsure, its logits hover
@@ -119,5 +120,57 @@ nonisolated enum SAM2MatteCleanup {
             touchesEdge.append(edge)
         }
         return Components(labels: labels, sizes: sizes, touchesEdge: touchesEdge)
+    }
+}
+
+/// Accumulated SAM logits per point prefix for the most recent image (weak, like the encoder
+/// cache), so extending a selection by one click, or dragging that click, reruns only the last
+/// step. Bounded; a different photo, target or size simply misses.
+nonisolated final class SAMAccumulationCache: @unchecked Sendable {
+    static let shared = SAMAccumulationCache()
+    private static let capacity = 96
+
+    private struct Key: Hashable {
+        var points: [AIMaskPromptPoint]
+        var target: AIMaskTarget
+        var size: AIMaskSelectionSize
+    }
+
+    private let lock = NSLock()
+    private weak var image: CIImage?
+    private var entries: [Key: [Float]] = [:]
+    private var order: [Key] = []
+
+    func logits(
+        for image: CIImage,
+        points: [AIMaskPromptPoint],
+        target: AIMaskTarget,
+        size: AIMaskSelectionSize
+    ) -> [Float]? {
+        lock.withLock {
+            guard self.image === image else { return nil }
+            return entries[Key(points: points, target: target, size: size)]
+        }
+    }
+
+    func store(
+        _ logits: [Float],
+        for image: CIImage,
+        points: [AIMaskPromptPoint],
+        target: AIMaskTarget,
+        size: AIMaskSelectionSize
+    ) {
+        lock.withLock {
+            if self.image !== image {
+                self.image = image
+                entries = [:]
+                order = []
+            }
+            let key = Key(points: points, target: target, size: size)
+            if entries.updateValue(logits, forKey: key) == nil { order.append(key) }
+            while order.count > Self.capacity {
+                entries[order.removeFirst()] = nil
+            }
+        }
     }
 }
