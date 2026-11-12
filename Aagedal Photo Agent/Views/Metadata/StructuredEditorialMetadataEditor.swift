@@ -6,6 +6,7 @@ struct StructuredEditorialMetadataEditor: View {
     @Binding var creatorContactInfo: CreatorContactInfo?
     @Binding var locationsCreated: [EditorialLocation]
     @Binding var locationsShown: [EditorialLocation]
+    var visibleSections: Set<StructuredEditorialSection> = Set(StructuredEditorialSection.allCases)
     var onChange: () -> Void
     /// Saves like the panel's other fields: on Return, on leaving a field, and on Remove.
     var onCommit: () -> Void = {}
@@ -17,25 +18,31 @@ struct StructuredEditorialMetadataEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            DisclosureGroup("Creator Contact Information", isExpanded: $isContactExpanded) {
-                contactEditor
-                    .padding(.top, 6)
+            if visibleSections.contains(.creatorContactInfo) {
+                DisclosureGroup("Creator Contact Information", isExpanded: $isContactExpanded) {
+                    contactEditor
+                        .padding(.top, 6)
+                }
+                .accessibilityIdentifier("metadata.creatorContactInfo")
             }
-            .accessibilityIdentifier("metadata.creatorContactInfo")
 
-            locationCollection(
-                title: "Location Created",
-                locations: $locationsCreated,
-                isExpanded: $isCreatedExpanded,
-                identifier: "metadata.locationsCreated"
-            )
+            if visibleSections.contains(.locationsCreated) {
+                locationCollection(
+                    title: "Location Created",
+                    locations: $locationsCreated,
+                    isExpanded: $isCreatedExpanded,
+                    identifier: "metadata.locationsCreated"
+                )
+            }
 
-            locationCollection(
-                title: "Location Shown",
-                locations: $locationsShown,
-                isExpanded: $isShownExpanded,
-                identifier: "metadata.locationsShown"
-            )
+            if visibleSections.contains(.locationsShown) {
+                locationCollection(
+                    title: "Location Shown",
+                    locations: $locationsShown,
+                    isExpanded: $isShownExpanded,
+                    identifier: "metadata.locationsShown"
+                )
+            }
         }
         .onSubmit { onCommit() }
         .onChange(of: focusedKey) { oldValue, newValue in

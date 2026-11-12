@@ -29,6 +29,21 @@ struct RequiredMetadataFieldsSection: View {
                     }
             }
 
+            ForEach(StructuredEditorialSection.allCases, id: \.self) { section in
+                Toggle(
+                    section.displayName,
+                    isOn: Binding(
+                        get: { !settingsViewModel.hiddenStructuredEditorialSections.contains(section) },
+                        set: { settingsViewModel.setStructuredEditorialSection(section, visible: $0) }
+                    )
+                )
+                .toggleStyle(.checkbox)
+                .accessibilityIdentifier("metadata.fieldCustomization.\(section.rawValue)")
+            }
+            Text("These grouped fields always appear after the fields above in the Metadata panel.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             LabeledContent("Headline minimum length") { minimumLengthField(for: .title) }
             LabeledContent("Description minimum length") { minimumLengthField(for: .description) }
             Text("Minimum length is checked only when that field is set to Warn or Require. Set it to 0 to disable the length check.")
@@ -45,8 +60,12 @@ struct RequiredMetadataFieldsSection: View {
 
                 Button("Show All") {
                     settingsViewModel.hiddenIPTCMetadataFields.removeAll()
+                    settingsViewModel.hiddenStructuredEditorialSections.removeAll()
                 }
-                .disabled(settingsViewModel.hiddenIPTCMetadataFields.isEmpty)
+                .disabled(
+                    settingsViewModel.hiddenIPTCMetadataFields.isEmpty
+                        && settingsViewModel.hiddenStructuredEditorialSections.isEmpty
+                )
             }
         }
         // Levels and minimum lengths sync between Macs: show a synced change, and never save

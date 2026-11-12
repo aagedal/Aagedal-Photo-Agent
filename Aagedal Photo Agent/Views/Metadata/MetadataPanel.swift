@@ -1192,7 +1192,7 @@ struct MetadataPanel: View {
     /// focus change. Names, identifiers, codes, and controlled vocabulary fields deliberately do
     /// not receive prose corrections.
     private func configureSystemWritingAssistance(for focusKey: String?) {
-        let proseFields: Set<MetadataFieldID> = [.headline, .description, .extendedDescription]
+        let proseFields: Set<MetadataFieldID> = [.headline, .description, .extendedDescription, .rightsUsageTerms]
         let enabled = focusKey.flatMap(MetadataFieldID.init(rawValue:)).map(proseFields.contains)
             ?? false
         DispatchQueue.main.async {
@@ -1688,7 +1688,10 @@ struct MetadataPanel: View {
             editableAdditionalMetadataField(field)
         }
 
-        if viewModel.isBatchEdit {
+        let structuredSections = settingsViewModel.visibleStructuredEditorialSections
+        if structuredSections.isEmpty {
+            EmptyView()
+        } else if viewModel.isBatchEdit {
             Text("Creator contact and structured locations can be edited one image at a time.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1698,6 +1701,7 @@ struct MetadataPanel: View {
                 creatorContactInfo: $viewModel.editingMetadata.creatorContactInfo,
                 locationsCreated: $viewModel.editingMetadata.locationsCreated,
                 locationsShown: $viewModel.editingMetadata.locationsShown,
+                visibleSections: structuredSections,
                 onChange: { viewModel.markChanged() },
                 onCommit: { commitEdits() }
             )
@@ -1963,20 +1967,47 @@ struct MetadataPanel: View {
         }
 
         if field == .rightsUsageTerms {
-            EditableTextField(
-                label: "Rights Usage Terms",
-                text: Binding(
-                    get: { viewModel.editingMetadata.rightsUsageTerms ?? "" },
-                    set: { viewModel.editingMetadata.rightsUsageTerms = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                ),
-                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "rightsUsageTerms") : "Enter permitted uses or restrictions",
-                onCommit: { commitEdits() },
-                showsDifference: viewModel.fieldDiffers(\.rightsUsageTerms),
-                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("rightsUsageTerms"),
-                onInsertVariable: { openVariableReference(for: .rightsUsageTerms) },
-                focusKey: "rightsUsageTerms",
-                focusedField: $focusedField
-            )
+            // Multi-line: usage terms are often several sentences or a list of restrictions,
+            // and xmpRights:UsageTerms (XMP only, no IIM length limit) keeps line breaks.
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text("Rights Usage Terms")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    DifferenceIndicator(differs: viewModel.fieldDiffers(\.rightsUsageTerms), fieldName: "Rights Usage Terms")
+                    if viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("rightsUsageTerms") {
+                        MultipleValuesIndicator()
+                    }
+                    Spacer()
+                    Button {
+                        openVariableReference(for: .rightsUsageTerms)
+                    } label: {
+                        Image(systemName: "curlybraces")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Variable Reference")
+                    .accessibilityLabel("Variable reference for rights usage terms")
+                }
+                BufferedTextEditor(
+                    currentValue: viewModel.editingMetadata.rightsUsageTerms ?? "",
+                    readCurrentValue: { viewModel.editingMetadata.rightsUsageTerms ?? "" },
+                    placeholder: viewModel.isBatchEdit
+                        ? viewModel.batchPlaceholder(for: "rightsUsageTerms")
+                        : "Enter permitted uses or restrictions",
+                    focusedField: $focusedField,
+                    focusKey: "rightsUsageTerms",
+                    onTextFinished: { newValue in
+                        if newValue != viewModel.editingMetadata.rightsUsageTerms {
+                            viewModel.editingMetadata.rightsUsageTerms = newValue
+                            viewModel.markChanged()
+                        }
+                    },
+                    onCommit: { commitEdits() },
+                    onTabTraversalRequested: tabTraversal(from: .rightsUsageTerms)
+                )
+            }
             .metadataField(.rightsUsageTerms)
         }
 
@@ -4074,7 +4105,6 @@ private struct OrderedCreatorsEditor: View {
     let onCommit: () -> Void
 
     let focusedField: FocusState<String?>.Binding
-    @State private var isListExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -4097,79 +4127,9 @@ private struct OrderedCreatorsEditor: View {
             Text("Separate multiple creators with semicolons.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            DisclosureGroup("Edit creators individually", isExpanded: $isListExpanded) {
-                creatorRows
-                    .padding(.top, 5)
-            }
-            .accessibilityIdentifier("metadata.creator.list")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("metadata.creator.editor")
-    }
-
-    private var creatorRows: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Button("Add Creator") {
-                creators.append("")
-            }
-            .buttonStyle(.borderless)
-            .accessibilityIdentifier("metadata.creator.add")
-
-            ForEach(creators.indices, id: \.self) { index in
-                HStack(spacing: 5) {
-                    Text("\(index + 1)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 20, alignment: .trailing)
-                    TextField("Creator name", text: Binding(
-                        get: { creators.indices.contains(index) ? creators[index] : "" },
-                        set: {
-                            guard creators.indices.contains(index) else { return }
-                            creators[index] = $0
-                            onChange()
-                        }
-                    ))
-                    .onSubmit {
-                        creators = IPTCMetadata.normalizedCreators(creators)
-                        onChange()
-                        onCommit()
-                    }
-                    .accessibilityLabel("Creator \(index + 1)")
-
-                    Button {
-                        guard creators.indices.contains(index), index > 0 else { return }
-                        creators.swapAt(index, index - 1)
-                        onChange()
-                        onCommit()
-                    } label: { Image(systemName: "arrow.up") }
-                    .buttonStyle(.plain)
-                    .disabled(index == 0)
-                    .accessibilityLabel("Move creator \(index + 1) earlier")
-
-                    Button {
-                        guard index + 1 < creators.count else { return }
-                        creators.swapAt(index, index + 1)
-                        onChange()
-                        onCommit()
-                    } label: { Image(systemName: "arrow.down") }
-                    .buttonStyle(.plain)
-                    .disabled(index + 1 == creators.count)
-                    .accessibilityLabel("Move creator \(index + 1) later")
-
-                    Button(role: .destructive) {
-                        guard creators.indices.contains(index) else { return }
-                        creators.remove(at: index)
-                        onChange()
-                        onCommit()
-                    } label: { Image(systemName: "minus.circle") }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Remove creator \(index + 1)")
-                }
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("metadata.creator.orderedEditor")
-        .help("Creator order is preserved in XMP dc:creator and repeatable IPTC By-line values.")
     }
 }
 

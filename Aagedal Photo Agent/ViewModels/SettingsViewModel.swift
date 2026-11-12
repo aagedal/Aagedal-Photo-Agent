@@ -476,6 +476,15 @@ final class SettingsViewModel {
         }
     }
 
+    var hiddenStructuredEditorialSections: Set<StructuredEditorialSection> {
+        didSet {
+            persist(
+                hiddenStructuredEditorialSections.map(\.rawValue).sorted(),
+                forKey: UserDefaultsKeys.hiddenStructuredEditorialSections
+            )
+        }
+    }
+
     var orderedIPTCMetadataFields: [MetadataFieldID] {
         didSet {
             guard !isApplyingStoredValues else { return }
@@ -506,6 +515,19 @@ final class SettingsViewModel {
 
     func resetIPTCMetadataFieldVisibility() {
         hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(storedRawValues: nil)
+        hiddenStructuredEditorialSections = StructuredEditorialSection.defaultHidden
+    }
+
+    var visibleStructuredEditorialSections: Set<StructuredEditorialSection> {
+        Set(StructuredEditorialSection.allCases).subtracting(hiddenStructuredEditorialSections)
+    }
+
+    func setStructuredEditorialSection(_ section: StructuredEditorialSection, visible: Bool) {
+        if visible {
+            hiddenStructuredEditorialSections.remove(section)
+        } else {
+            hiddenStructuredEditorialSections.insert(section)
+        }
     }
 
     func moveIPTCMetadataField(_ field: MetadataFieldID, by offset: Int) {
@@ -1108,6 +1130,7 @@ final class SettingsViewModel {
         self.hiddenDevelopSliders = synced.hiddenDevelopSliders
         self.developSectionOrder = synced.developSectionOrder
         self.hiddenIPTCMetadataFields = synced.hiddenIPTCMetadataFields
+        self.hiddenStructuredEditorialSections = synced.hiddenStructuredEditorialSections
         self.orderedIPTCMetadataFields = synced.orderedIPTCMetadataFields
         self.defaultEditDestination = synced.defaultEditDestination
         self.faceCleanupPolicy = synced.faceCleanupPolicy
@@ -1237,6 +1260,7 @@ final class SettingsViewModel {
         update(\.hiddenDevelopSliders, to: synced.hiddenDevelopSliders)
         update(\.developSectionOrder, to: synced.developSectionOrder)
         update(\.hiddenIPTCMetadataFields, to: synced.hiddenIPTCMetadataFields)
+        update(\.hiddenStructuredEditorialSections, to: synced.hiddenStructuredEditorialSections)
         update(\.orderedIPTCMetadataFields, to: synced.orderedIPTCMetadataFields)
         update(\.defaultEditDestination, to: synced.defaultEditDestination)
         update(\.faceCleanupPolicy, to: synced.faceCleanupPolicy)
@@ -1505,6 +1529,7 @@ private struct SyncedPreferences {
     let hiddenDevelopSliders: Set<DevelopSlider>
     let developSectionOrder: [DevelopPanelSection]
     let hiddenIPTCMetadataFields: Set<MetadataFieldID>
+    let hiddenStructuredEditorialSections: Set<StructuredEditorialSection>
     let orderedIPTCMetadataFields: [MetadataFieldID]
     let defaultEditDestination: DefaultEditDestination
     let faceCleanupPolicy: FaceCleanupPolicy
@@ -1547,6 +1572,9 @@ private struct SyncedPreferences {
             store.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
         )
         hiddenIPTCMetadataFields = MetadataFieldID.resolvedHiddenEditorFields(in: store)
+        hiddenStructuredEditorialSections = StructuredEditorialSection.decodeHidden(
+            store.stringArray(forKey: UserDefaultsKeys.hiddenStructuredEditorialSections)
+        )
         orderedIPTCMetadataFields = MetadataFieldID.loadEditorFieldOrder(from: AppDefaults.store)
 
         let editDestinationRaw = store.string(forKey: UserDefaultsKeys.defaultEditDestination)

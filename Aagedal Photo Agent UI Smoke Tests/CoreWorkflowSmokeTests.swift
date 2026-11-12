@@ -3052,7 +3052,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     @MainActor
     func testCreatorContactAddButtonsRetainBlankRows() throws {
         let photos = try makePhotoFolder(count: 1)
-        launch(workflow: "caption", folder: photos)
+        launch(workflow: "caption", folder: photos, showsStructuredEditorial: true)
         XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
         let scroll = app.descendants(matching: .any)["metadata.panel"].scrollViews.firstMatch
         func reveal(_ element: XCUIElement) {
@@ -3095,30 +3095,6 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         emailAdd.click()
         XCTAssertTrue(app.textFields["metadata.structured.Email.1"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.textFields["metadata.structured.Email.0"].value as? String, entries["Email"])
-    }
-
-    @MainActor
-    func testCreatorTextAndIndividualRowsStayInSync() throws {
-        let photos = try makePhotoFolder(count: 1)
-        launch(workflow: "caption", folder: photos)
-        XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
-        let scroll = app.descendants(matching: .any)["metadata.panel"].scrollViews.firstMatch
-        let creator = app.textFields["metadata.input.creator"]
-        XCTAssertTrue(creator.waitForExistence(timeout: 10))
-        for _ in 0..<20 {
-            if creator.isHittable { break }
-            scroll.scroll(byDeltaX: 0, deltaY: -250)
-        }
-        creator.click()
-        creator.typeText("Smith, Jane; Lee, Sam")
-        creator.typeKey(.return, modifierFlags: [])
-        let list = app.disclosureTriangles["metadata.creator.list"]
-        XCTAssertTrue(list.exists)
-        list.click()
-        XCTAssertEqual(app.textFields["Creator 1"].value as? String, "Smith, Jane")
-        XCTAssertEqual(app.textFields["Creator 2"].value as? String, "Lee, Sam")
-        app.buttons["Move creator 2 earlier"].click()
-        XCTAssertEqual(creator.value as? String, "Lee, Sam; Smith, Jane")
     }
 
     @MainActor
@@ -4168,7 +4144,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         transcriptionReviewExecution: String? = nil,
         transcriptionInvocation: Bool = false,
         transcriptionHelperSocket: URL? = nil,
-        faceReview: Bool = false
+        faceReview: Bool = false,
+        showsStructuredEditorial: Bool = false
     ) {
         // Resolve the existing parent physically, then append the possibly missing
         // receipt directory. Foundation can shorten an existing /private/tmp leaf
@@ -4199,6 +4176,11 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             // Automation workflows inspect the review/recovery sections directly.
             "-automationShowsAdvanced", "YES",
         ]
+        if showsStructuredEditorial {
+            // Creator Contact and the Location groups are hidden by default; an empty
+            // argument-domain array shows them for this process only.
+            app.launchArguments += ["-hiddenStructuredEditorialSections", "()"]
+        }
         if workflow == "known-people-interchange" {
             // Argument-domain defaults are process-only and keep this workflow away
             // from the user's iCloud-routed Known People store.

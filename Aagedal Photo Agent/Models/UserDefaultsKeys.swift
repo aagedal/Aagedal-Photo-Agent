@@ -101,6 +101,9 @@ nonisolated enum UserDefaultsKeys {
     static let metadataMinimumLengths = "metadataMinimumLengths"
     /// Raw values of IPTC fields hidden from the editable metadata panel.
     static let hiddenIPTCMetadataFields = "hiddenIPTCMetadataFields"
+    /// Raw values of structured groups (Creator Contact, Location Created/Shown) hidden from
+    /// the editable metadata panel.
+    static let hiddenStructuredEditorialSections = "hiddenStructuredEditorialSections"
     /// Ordered raw values of fields in the editable metadata panel and Caption navigator.
     static let iptcMetadataFieldOrder = "iptcMetadataFieldOrder"
 
