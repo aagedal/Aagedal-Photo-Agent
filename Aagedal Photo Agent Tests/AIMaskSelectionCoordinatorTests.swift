@@ -43,8 +43,8 @@ struct AIMaskSelectionCoordinatorTests {
         let imageURL = URL(fileURLWithPath: "/tmp/ai-mask-success.raw")
         let replacementID = UUID()
         let recorder = AIMaskGeneratorRecorder(output: generatedMask(target: .face))
-        let coordinator = AIMaskSelectionCoordinator { image, point, orientation, target in
-            await recorder.generate(image, point, orientation, target)
+        let coordinator = AIMaskSelectionCoordinator { image, points, orientation, target in
+            await recorder.generate(image, points, orientation, target)
         }
         coordinator.beginImageSession(imageURL)
         coordinator.adoptTarget(.face)
@@ -63,13 +63,50 @@ struct AIMaskSelectionCoordinatorTests {
 
         try await eventually { installedReplacementID != nil }
         let request = try #require(await recorder.lastRequest)
-        #expect(request.point == CGPoint(x: 0.6, y: 0.2))
+        #expect(request.points == [AIMaskPromptPoint(x: 0.6, y: 0.2, isPositive: true)])
         #expect(request.orientation == 6)
         #expect(request.target == .face)
         #expect(installedReplacementID == replacementID)
         #expect(!coordinator.isSelecting)
         #expect(!coordinator.isGenerating)
         #expect(coordinator.replacingMaskID == nil)
+    }
+
+    @Test("refinement replays every point, replaces its mask, and stays active between clicks")
+    func refinementStaysActive() async throws {
+        let imageURL = URL(fileURLWithPath: "/tmp/ai-mask-refine.raw")
+        let maskID = UUID()
+        let recorder = AIMaskGeneratorRecorder(output: generatedMask(target: .person))
+        let coordinator = AIMaskSelectionCoordinator { image, points, orientation, target in
+            await recorder.generate(image, points, orientation, target)
+        }
+        coordinator.beginImageSession(imageURL)
+        #expect(coordinator.beginRefinement(of: maskID, mode: .subtract))
+        #expect(coordinator.isRefining)
+        #expect(coordinator.pointMode == .subtract)
+        var installedID: UUID?
+        let points = [
+            AIMaskPromptPoint(x: 0.4, y: 0.5, isPositive: true),
+            AIMaskPromptPoint(x: 0.7, y: 0.2, isPositive: false),
+        ]
+
+        #expect(coordinator.generate(
+            from: sourceImage,
+            points: points,
+            sourceOrientation: 1,
+            imageURL: imageURL
+        ) { _, id in installedID = id })
+
+        try await eventually { installedID != nil }
+        #expect(installedID == maskID)
+        #expect(await recorder.lastRequest?.points == points)
+        #expect(coordinator.isSelecting)
+        #expect(coordinator.refiningMaskID == maskID)
+        #expect(!coordinator.isGenerating)
+
+        coordinator.cancelSelectionIfIdle()
+        #expect(!coordinator.isSelecting)
+        #expect(!coordinator.isRefining)
     }
 
     @Test("a failed generation keeps selection active for another click")
@@ -129,7 +166,7 @@ struct AIMaskSelectionCoordinatorTests {
 
 private actor AIMaskGeneratorRecorder {
     struct Request: Sendable {
-        let point: CGPoint
+        let points: [AIMaskPromptPoint]
         let orientation: Int
         let target: AIMaskTarget
     }
@@ -143,11 +180,11 @@ private actor AIMaskGeneratorRecorder {
 
     func generate(
         _ image: CIImage,
-        _ point: CGPoint,
+        _ points: [AIMaskPromptPoint],
         _ orientation: Int,
         _ target: AIMaskTarget
     ) -> GeneratedAIMask {
-        lastRequest = Request(point: point, orientation: orientation, target: target)
+        lastRequest = Request(points: points, orientation: orientation, target: target)
         return output
     }
 }

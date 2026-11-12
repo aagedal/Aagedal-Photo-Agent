@@ -49,14 +49,16 @@ nonisolated final class SAM2Segmenter: @unchecked Sendable {
         }
     }
 
-    /// Segments `image` at a top-left normalized `point`, optionally constrained by a top-left
-    /// normalized `box` around the intended subject.
-    func segment(image: CIImage, point: CGPoint, box: CGRect?) throws -> SAM2LowResolutionMask {
+    /// Segments `image` from top-left normalized click points (positive = include, negative =
+    /// exclude), optionally constrained by a top-left normalized `box` around the intended subject.
+    func segment(image: CIImage, points clicks: [AIMaskPromptPoint], box: CGRect?) throws -> SAM2LowResolutionMask {
         try lock.withLock {
             let models = try loadedModels()
             let encoding = try imageEncoding(for: image, encoder: models.encoder)
 
-            var prompts: [(CGPoint, Label)] = [(point, .foreground)]
+            var prompts: [(CGPoint, Label)] = clicks.map {
+                (CGPoint(x: $0.x, y: $0.y), $0.isPositive ? .foreground : .background)
+            }
             if let box {
                 prompts.append((CGPoint(x: box.minX, y: box.minY), .boxTopLeft))
                 prompts.append((CGPoint(x: box.maxX, y: box.maxY), .boxBottomRight))
