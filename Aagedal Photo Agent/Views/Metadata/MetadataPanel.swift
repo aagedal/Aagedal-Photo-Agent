@@ -3818,7 +3818,10 @@ private struct BufferedTextEditor: View {
                 .accessibilityIdentifier("metadata.input.\(focusKey)")
                 .scrollContentBackground(.hidden)
                 .focused(focusedField, equals: focusKey)
-                .padding(3)
+                // NSTextView adds a 5 pt line-fragment inset horizontally but none vertically, so
+                // these put the caret and typed text exactly where the placeholder sits.
+                .padding(.horizontal, 3)
+                .padding(.vertical, 8)
         }
             .font(.body)
             .frame(height: 120)

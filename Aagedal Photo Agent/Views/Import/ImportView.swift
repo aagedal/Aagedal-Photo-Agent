@@ -791,7 +791,9 @@ struct ImportView: View {
                     set: { viewModel.configuration.metadata.description = $0.isEmpty ? nil : $0 }
                 ))
                 .font(.body)
-                .frame(height: 56)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 6)
+                .frame(height: 68)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
             }
 
@@ -804,7 +806,9 @@ struct ImportView: View {
                     set: { viewModel.configuration.metadata.extendedDescription = $0.isEmpty ? nil : $0 }
                 ))
                 .font(.body)
-                .frame(height: 56)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 6)
+                .frame(height: 68)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
             }
 
@@ -879,7 +883,9 @@ struct ImportView: View {
                     set: { viewModel.configuration.metadata.rightsUsageTerms = $0.isEmpty ? nil : $0 }
                 ))
                 .font(.body)
-                .frame(height: 56)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 6)
+                .frame(height: 68)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
             }
 
