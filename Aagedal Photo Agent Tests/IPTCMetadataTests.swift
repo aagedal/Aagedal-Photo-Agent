@@ -4389,6 +4389,38 @@ struct AIMaskPromptPointTests {
 
         let single = SAM2Segmenter.prediction(from: [mask(cells: 3, score: 0.5)])
         #expect(single.candidate(for: .large).area == 3)
+
+        // A frame-wide candidate SAM scores near zero is never offered as Large.
+        let withJunk = SAM2Segmenter.prediction(from: [
+            mask(cells: 4, score: 0.97),
+            mask(cells: 5, score: 0.96),
+            mask(cells: 16, score: 0.01),
+        ])
+        #expect(withJunk.candidate(for: .large).area == 5)
+        #expect(withJunk.candidate(for: .small).area == 4)
+    }
+
+    @Test("SAM cleanup drops islands away from clicks and fills small enclosed holes")
+    func samMatteCleanup() {
+        let side = SAM2LowResolutionMask.side
+        var logits = [Float](repeating: -8, count: side * side)
+        func fill(_ rows: Range<Int>, _ columns: Range<Int>, _ value: Float) {
+            for row in rows { for column in columns { logits[row * side + column] = value } }
+        }
+        fill(40..<140, 40..<140, 8)     // the clicked subject
+        fill(80..<84, 80..<84, -8)      // a pinhole inside it
+        fill(200..<210, 200..<210, 8)   // an unrelated island
+        let click = AIMaskPromptPoint(x: 60.0 / Double(side), y: 60.0 / Double(side), isPositive: true)
+
+        let cleaned = SAM2MatteCleanup.cleaned(logits, points: [click])
+        #expect(cleaned[82 * side + 82] > 0)
+        #expect(cleaned[205 * side + 205] < 0)
+        #expect(cleaned[100 * side + 100] > 0)
+        #expect(cleaned[10 * side + 10] < 0)
+
+        // Without a click inside any region, nothing is discarded.
+        let away = AIMaskPromptPoint(x: 0.01, y: 0.99, isPositive: true)
+        #expect(SAM2MatteCleanup.cleaned(logits, points: [away])[205 * side + 205] > 0)
     }
 
     @Test("Vision instance index boxes the instance under a click")

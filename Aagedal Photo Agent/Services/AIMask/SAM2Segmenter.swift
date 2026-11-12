@@ -18,11 +18,23 @@ nonisolated struct SAM2Prediction: Sendable {
     var candidates: [SAM2LowResolutionMask]
     var bestIndex: Int
 
-    /// The candidate for `size`: the best-scoring one for Auto, otherwise by area rank (clamped,
-    /// in case a conversion ever returns fewer than three).
+    /// A candidate scoring under this fraction of the best is one SAM itself does not believe in:
+    /// typically a frame-wide, low-confidence blob whose logits hover around zero and threshold
+    /// into blotches. Size choices skip those rather than offer them as "Large".
+    static let plausibleScoreFraction: Float = 0.5
+
+    /// The candidate for `size`: the best-scoring one for Auto, otherwise by area rank among the
+    /// plausible candidates (the best always counts, so there is at least one).
     func candidate(for size: AIMaskSelectionSize) -> SAM2LowResolutionMask {
         guard let rank = size.candidateRank else { return candidates[bestIndex] }
-        return candidates[min(rank, candidates.count - 1)]
+        let threshold = candidates[bestIndex].score * Self.plausibleScoreFraction
+        let plausible = candidates.indices.filter { $0 == bestIndex || candidates[$0].score >= threshold }
+        let index: Int = switch rank {
+        case 0: plausible[0]
+        case 1: plausible[plausible.count / 2]
+        default: plausible[plausible.count - 1]
+        }
+        return candidates[index]
     }
 }
 

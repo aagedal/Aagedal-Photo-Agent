@@ -210,7 +210,7 @@ nonisolated enum AIMaskGenerator {
         let width = max(1, Int((extent.width * scale).rounded()))
         let height = max(1, Int((extent.height * scale).rounded()))
         let bytes = upsampledSAMMatte(
-            logits: lowResolution.logits,
+            logits: SAM2MatteCleanup.cleaned(lowResolution.logits, points: points),
             side: SAM2LowResolutionMask.side,
             width: width,
             height: height
@@ -305,7 +305,7 @@ nonisolated enum AIMaskGenerator {
         let width = max(1, Int((extent.width * scale).rounded()))
         let height = max(1, Int((extent.height * scale).rounded()))
         let coverage = upsampledSAMMatte(
-            logits: lowResolution.logits,
+            logits: SAM2MatteCleanup.cleaned(lowResolution.logits, points: points),
             side: SAM2LowResolutionMask.side,
             width: width,
             height: height
