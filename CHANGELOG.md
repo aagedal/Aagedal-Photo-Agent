@@ -4,7 +4,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
-## 3.0.0-beta.6 — 2026-11-10
+## 3.0.0-beta.6 — 2026-11-19
 
 This sixth public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.
 
@@ -14,9 +14,10 @@ This sixth public beta continues 3.0 testing. See [known limitations](docs/limit
 - Known People with iCloud sync: a Mac setting up face recognition, or clearing a replaced library, no longer resets the shared library on your other Macs, and a replaced library is picked up right away.
 - Templates deleted on one Mac no longer come back when another Mac turns iCloud sync on again.
 - Browser tabs from the keyboard (⌥⌘T, ⌥⌘N / ⌥⌘B, ⌘W closes the active tab), and the grid keeps its scroll position when panes split or merge.
-- Develop (experimental): AI masks can use Segment Anything 2.1 instead of Apple Vision; AI mask sliders and brush painting are smooth again.
+- Develop (experimental): AI masks can use Segment Anything 2.1 instead of Apple Vision, can be extended or trimmed with Add and Subtract clicks, and SAM previews its selection as you drag; AI mask sliders and brush painting are smooth again.
+- Metadata panel: Creator Contact Information and the Location groups can be hidden, Rights Usage Terms is multi-line, and multi-line fields can be resized.
 - Damaged or hostile archives are refused before they can fill the disk.
-- Fixes for edited renders coming out rotated after a straightened watermarked export, and crashes on invalid Develop values or a folder changing as you leave it.
+- Fixes for edited renders coming out rotated after a straightened watermarked export, and crashes on invalid Develop values, a folder changing as you leave it, or browsing quickly through full-screen previews.
 
 ### Changes since 3.0.0-beta.5
 
@@ -43,6 +44,12 @@ This sixth public beta continues 3.0 testing. See [known limitations](docs/limit
 - Develop: the first slider moves after switching to the next photo no longer wait for the neighbouring RAW files to finish loading in the background.
 - With two tabs on the same folder, dragging photos from the visible one onto a sidebar folder now moves them through the tab you dragged from, and a cancelled move reports in the pane you're looking at.
 - Scopes: each scope frame now carries its own settings, so a fast redraw can no longer pick up the next frame's while the GPU is still drawing.
+- Develop (experimental): a selected AI mask has Add and Subtract buttons, so a selection that caught only part of an object can be extended or trimmed. The mode stays on between clicks until Done or Esc; Shift-click adds and Option-click subtracts in any mode. Each click is one undo step, and the clicked points are shown as green + and red − markers. SAM uses all the points together; Vision and Face add or remove the object or face under each click. The points are saved with the mask, so it can still be refined after reopening or rotating the photo. Masks made before this beta have no saved points; use Select Again on them.
+- Develop (experimental): with SAM, pressing and dragging over the photo previews the selection under the pointer, and releasing keeps it. A Size choice (Auto, Small, Medium, Large) picks between SAM's nested proposals and regenerates the selected mask from its points. Clicks after the first one in a photo are faster.
+- Metadata panel: Creator Contact Information, Location Created and Location Shown can be hidden in Settings → Metadata Fields. They now start hidden; Show All brings them back. The "Edit creators individually" editor is removed; separate creators with semicolons in the Creator field.
+- Rights Usage Terms is now a multi-line field in the Metadata panel and on the Import screen (Shift-Return adds a line).
+- Multi-line metadata fields: the caret and typed text now line up with the placeholder, and a grip in the bottom-right corner resizes the field. Each field remembers its height; double-click the grip to reset it.
+- Fixes a crash that could happen while loading full-screen or embedded RAW previews, for example when browsing quickly.
 
 ## 3.0.0-beta.5 — 2026-10-30
 
