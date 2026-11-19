@@ -11,6 +11,36 @@
         <!-- New release items are inserted here by scripts/release.sh. -->
 
         <item>
+            <title>Version 3.0.0-beta.6</title>
+            <sparkle:channel>beta</sparkle:channel>
+            <pubDate>Thu, 19 Nov 2026 17:09:18 +0100</pubDate>
+            <sparkle:version>745</sparkle:version>
+            <sparkle:shortVersionString>3.0.0-beta.6</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:minimumAutoupdateVersion>740</sparkle:minimumAutoupdateVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>The sidebar's Open Folders list is replaced by a Bridge-style Locations browser: your home folder and every mounted volume, with eject buttons.</li>
+                    <li>Known People with iCloud sync: a Mac setting up face recognition, or clearing a replaced library, no longer resets the shared library on your other Macs, and a replaced library is picked up right away.</li>
+                    <li>Templates deleted on one Mac no longer come back when another Mac turns iCloud sync on again.</li>
+                    <li>Browser tabs from the keyboard (⌥⌘T, ⌥⌘N / ⌥⌘B, ⌘W closes the active tab), and the grid keeps its scroll position when panes split or merge.</li>
+                    <li>Develop (experimental): AI masks can use Segment Anything 2.1 instead of Apple Vision, can be extended or trimmed with Add and Subtract clicks, and SAM previews its selection as you drag; AI mask sliders and brush painting are smooth again.</li>
+                    <li>Metadata panel: Creator Contact Information and the Location groups can be hidden, Rights Usage Terms is multi-line, and multi-line fields can be resized.</li>
+                    <li>Export can write everything to one Specific Folder, scopes match the preview's HDR or SDR output, and Image Analysis reads capture and GPS times correctly for its Sun and timeline checks.</li>
+                    <li>Damaged or hostile archives are refused before they can fill the disk.</li>
+                    <li>Fixes for edited renders coming out rotated after a straightened watermarked export, and crashes on invalid Develop values, crafted templates or rename presets, a folder changing as you leave it, or browsing quickly through full-screen previews.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/aagedal/Aagedal-Photo-Agent/releases/download/3.0.0-beta.6/Aagedal-Photo-Agent-3.0.0-beta.6.dmg"
+                sparkle:version="745"
+                sparkle:shortVersionString="3.0.0-beta.6"
+                sparkle:edSignature="HbpQrakBiCTGDn0lblpJvLQ0K4m6eYw1CeVbOC1UCw4jWdelo72cYr7BDgfQGw/XfsgomZgHeICqLsXF642hDA=="
+                length="266267208"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 3.0.0-beta.5</title>
             <sparkle:channel>beta</sparkle:channel>
             <pubDate>Sat, 31 Oct 2026 13:52:01 +0100</pubDate>
