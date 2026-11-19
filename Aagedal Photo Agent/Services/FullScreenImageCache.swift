@@ -1561,6 +1561,10 @@ nonisolated final class FullScreenImageDecodeExecutor: SerialExecutor {
 
     func enqueue(_ job: consuming ExecutorJob) {
         let unownedJob = UnownedJob(job)
+        // The runtime calls this through an unowned reference. Once the work item is queued,
+        // the job can finish and release a per-request worker (and this executor) before
+        // `async` returns, so nothing may read `self` after it.
+        let didEnqueue = didEnqueue
         queue.async(execute: DispatchWorkItem(qos: qos, flags: .enforceQoS) {
             unownedJob.runSynchronously(on: self.asUnownedSerialExecutor())
         })

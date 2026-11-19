@@ -585,6 +585,33 @@ struct FullScreenImageDecodeWorkerTests {
         #expect(await first.value == 6)
     }
 
+    // Production builds a throwaway worker per request, so the job can finish and free the
+    // worker's executor while `enqueue` is still returning on the submitting thread.
+    @Test("Per-request decode workers survive being released as their job finishes")
+    func perRequestWorkerRelease() async throws {
+        let image = try makeImage()
+        let url = URL(fileURLWithPath: "/virtual/throwaway.tiff")
+        let access = FullScreenImageDecodeAccess(hdr: { _, _ in nil }, raster: { _, _ in (image, 6) })
+        let completed = await withTaskGroup(of: Int.self) { group in
+            for _ in 0..<16 {
+                group.addTask {
+                    var count = 0
+                    for _ in 0..<50_000 {
+                        let worker = FullScreenImageDecodeWorker(access: access)
+                        if await worker.loadRaster(from: url, maxPixelSize: 128)?.orientation == 6 {
+                            count += 1
+                        }
+                    }
+                    return count
+                }
+            }
+            var total = 0
+            for await count in group { total += count }
+            return total
+        }
+        #expect(completed == 16 * 50_000)
+    }
+
     private func decode(_ kind: DecodeKind, from url: URL, worker: FullScreenImageDecodeWorker) async -> Int? {
         switch kind {
         case .hdrPreview:
