@@ -131,35 +131,45 @@ struct AccessibilityKeyboardAuditTests {
 
     @Test("built-in culling profiles are deterministic, conflict-free, and use unique chords")
     func builtInProfiles() {
-        for preset in [
-            KeyboardShortcutPreset.photoAgent,
-            .photoMechanicLike,
-            .bridgeLike,
-        ] {
+        for preset in KeyboardShortcutPreset.allCases {
             let profile = KeyboardShortcutProfiles.profile(for: preset)
             #expect(!profile.bindings.isEmpty)
             #expect(profile.conflicts.isEmpty)
             #expect(Set(profile.bindings.map(\.chord)).count == profile.bindings.count)
+            for command in KeyboardShortcutCommand.allCases {
+                #expect(profile.chords(for: command).count <= KeyboardShortcutProfile.slotCount)
+            }
         }
+        // Two slots per command: Red keeps the bare 6–9 run and its Command-1 menu key.
+        let photoAgent = KeyboardShortcutProfiles.profile(for: .photoAgent)
+        #expect(photoAgent.chords(for: .labelRed) == [.init(key: "6"), .init(key: "1", modifiers: .command)])
+        #expect(photoAgent.chords(for: .labelTrash) == [.init(key: "x"), .init(key: "8", modifiers: .command)])
+        #expect(photoAgent.command(for: .init(key: "s")) == nil)
     }
 
-    @Test("the settings editor exposes every culling command and an unassigned state")
+    @Test("the shortcut editor exposes every command, both slots and reserved chords")
     func completeEditableCommandSurface() throws {
-        let source = try source("Aagedal Photo Agent/Views/Settings/KeyboardShortcutsSettingsView.swift")
-        #expect(source.contains("ForEach(KeyboardShortcutCommand.allCases"))
+        let source = try source("Aagedal Photo Agent/Views/Settings/KeyboardShortcutEditorView.swift")
+        #expect(source.contains("KeyboardShortcutCommand.allCases.filter"))
         #expect(source.contains("settings.shortcuts.keyboardPreview"))
-        #expect(source.contains("registry.reassign(chord, to: command)"))
-        #expect(source.contains("registry.remove(chord, from: command)"))
-        #expect(source.contains("profileRegistry.resolveConflictsKeepingFirstCommand()"))
+        #expect(source.contains("TableColumn(\"Alternate\")"))
+        #expect(source.contains("registry.reassign(pending.chord, to: pending.command, slot: pending.slot)"))
+        #expect(source.contains("registry.remove(chord)"))
+        let settings = try self.source("Aagedal Photo Agent/Views/Settings/KeyboardShortcutsSettingsView.swift")
+        #expect(settings.contains("openWindow(id: KeyboardShortcutEditorWindow.id)"))
 
-        let reservedMenuChords: Set<KeyboardShortcutChord> = [
+        let reservedMenuChords: [KeyboardShortcutChord] = [
             .init(key: "w", modifiers: .command),
             .init(key: "x", modifiers: .command),
             .init(key: "q", modifiers: .command),
             .init(key: "z", modifiers: [.command, .shift]),
             .init(key: "return", modifiers: [.command, .option]),
+            .init(key: "k", modifiers: [.command, .option]),
         ]
-        #expect(reservedMenuChords.isDisjoint(with: KeyboardShortcutProfiles.editableChordChoices))
+        for chord in reservedMenuChords {
+            #expect(KeyboardShortcutProfiles.validationError(chord, for: .renderSelected) != nil)
+            #expect(KeyboardShortcutProfiles.validationError(chord, for: .rateOne) != nil)
+        }
     }
 
     @Test("conflicts are grouped and sorted deterministically")
@@ -212,7 +222,7 @@ struct AccessibilityKeyboardAuditTests {
         ), profile: profile) == nil)
     }
 
-    @Test("preset selection and custom assignments persist")
+    @Test("preset selection and modified shortcuts persist")
     func registryPersistence() throws {
         let suiteName = "AccessibilityKeyboardAuditTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -220,60 +230,46 @@ struct AccessibilityKeyboardAuditTests {
         let key = "shortcut-profile"
 
         let first = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: key)
-        first.select(.bridgeLike)
+        first.applyPreset(named: KeyboardShortcutPreset.bridgeLike.displayName)
         let reopened = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: key)
-        #expect(reopened.selectedPreset == .bridgeLike)
-        #expect(reopened.selectedProfile == KeyboardShortcutProfiles.profile(for: .bridgeLike))
+        #expect(reopened.activePresetName == "Bridge-like")
+        #expect(reopened.selectedProfile.savedForm == KeyboardShortcutProfiles.profile(for: .bridgeLike).savedForm)
+        #expect(!reopened.isModified)
 
-        reopened.assign(
-            KeyboardShortcutChord(key: "r", modifiers: [.control, .option]),
-            to: .labelRed
-        )
-        let custom = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: key)
-        #expect(custom.selectedPreset == .custom)
-        #expect(custom.selectedProfile.command(for: KeyboardShortcutChord(
-            key: "r",
-            modifiers: [.control, .option]
-        )) == .labelRed)
+        let chord = KeyboardShortcutChord(key: "r", modifiers: [.control, .option])
+        #expect(reopened.set(chord, for: .labelRed, slot: 1) == nil)
+        #expect(reopened.isModified)
+        let modified = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: key)
+        #expect(modified.activePresetName == "Bridge-like")
+        #expect(modified.isModified)
+        #expect(modified.selectedProfile.command(for: chord) == .labelRed)
     }
 
-    @Test("custom assignments can be unassigned and ambiguous chords are disabled until remediated")
-    func customConflictRemediation() throws {
+    @Test("an occupied chord is refused until the editor confirms the reassignment")
+    func conflictRequiresConfirmation() throws {
         let suiteName = "AccessibilityKeyboardAuditTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let registry = KeyboardShortcutProfileRegistry(
-            defaults: defaults,
-            storageKey: "shortcut-conflict"
-        )
+        let registry = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "shortcut-conflict")
+        let original = registry.selectedProfile
         let chord = KeyboardShortcutChord(key: "1")
 
-        registry.assign(chord, to: .labelYellow)
-        #expect(registry.selectedPreset == .custom)
-        #expect(registry.selectedProfile.command(for: chord) == nil)
-        #expect(registry.selectedProfile.conflicts.count == 1)
-        #expect(KeyboardShortcutRouter.resolve(KeyboardShortcutRouteInput(
-            key: "1",
-            modifiers: [],
-            textEditorOwnsInput: false,
-            imeHasMarkedText: false,
-            isRepeat: false
-        ), profile: registry.selectedProfile) == nil)
+        #expect(registry.set(chord, for: .labelYellow, slot: 1) != nil)
+        #expect(registry.selectedProfile == original)
+        #expect(defaults.data(forKey: "shortcut-conflict") == nil)
 
-        registry.resolveConflictsKeepingFirstCommand()
+        #expect(registry.reassign(chord, to: .labelYellow, slot: 1) == nil)
+        #expect(registry.selectedProfile.command(for: chord) == .labelYellow)
+        #expect(registry.selectedProfile.chords(for: .rateOne).isEmpty)
         #expect(registry.selectedProfile.conflicts.isEmpty)
-        #expect(registry.selectedProfile.command(for: chord) != nil)
 
-        registry.unassign(.labelYellow)
-        #expect(registry.selectedProfile.chord(for: .labelYellow) == nil)
-        let reopened = KeyboardShortcutProfileRegistry(
-            defaults: defaults,
-            storageKey: "shortcut-conflict"
-        )
-        #expect(reopened.selectedProfile.chord(for: .labelYellow) == nil)
+        registry.remove(chord)
+        let reopened = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "shortcut-conflict")
+        #expect(reopened.selectedProfile.command(for: chord) == nil)
+        #expect(reopened.selectedProfile.chords(for: .labelYellow) == [.init(key: "7")])
     }
 
-    @Test("editor reassignment refuses conflicts without changing persisted state and preserves aliases")
+    @Test("editor slots replace, promote and reset in order")
     func editorReassignment() throws {
         let suiteName = "ShortcutEditor.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -281,29 +277,24 @@ struct AccessibilityKeyboardAuditTests {
         let registry = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "editor")
         let original = registry.selectedProfile
         let occupied = KeyboardShortcutChord(key: "1")
-        #expect(!registry.reassign(occupied, to: .labelRed))
-        #expect(registry.selectedPreset == .photoAgent)
-        #expect(registry.selectedProfile == original)
-        #expect(defaults.data(forKey: "editor") == nil)
-        #expect(!registry.reassign(.init(key: "s", modifiers: .command), to: .labelRed))
+        #expect(registry.set(.init(key: "s", modifiers: .command), for: .labelRed, slot: 1) != nil)
+        #expect(registry.set(.init(key: "n"), for: .labelRed, slot: 2) != nil)
         #expect(registry.selectedProfile == original)
 
-        #expect(registry.reassign(occupied, to: .labelRed, replacingConflicts: true))
-        #expect(registry.selectedProfile.command(for: occupied) == .labelRed)
+        #expect(registry.reassign(occupied, to: .labelRed, slot: 1) == nil)
+        #expect(registry.selectedProfile.chords(for: .labelRed) == [.init(key: "6"), occupied])
         #expect(registry.selectedProfile.chord(for: .rateOne) == nil)
-        #expect(registry.selectedProfile.command(for: .init(key: "s")) == .labelRed)
-        #expect(registry.selectedProfile.command(for: .init(key: "6")) == .labelRed)
+        #expect(registry.selectedProfile.menuChord(for: .colorLabel(1)) == nil)
         #expect(registry.selectedProfile.conflicts.isEmpty)
-        #expect(registry.reassign(occupied, to: .labelRed))
-        #expect(registry.selectedProfile.bindings.filter { $0.chord == occupied }.count == 1)
-        registry.remove(.init(key: "s"), from: .labelRed)
+
+        // Clearing the first shortcut promotes the alternate.
+        #expect(registry.set(nil, for: .labelRed, slot: 0) == nil)
+        #expect(registry.selectedProfile.chords(for: .labelRed) == [occupied])
         let reopened = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "editor")
         #expect(reopened.selectedProfile == registry.selectedProfile)
-        #expect(reopened.selectedProfile.command(for: .init(key: "s")) == nil)
-        #expect(reopened.selectedProfile.command(for: .init(key: "6")) == .labelRed)
-        #expect(reopened.selectedProfile.command(for: occupied) == .labelRed)
-        reopened.resetCustom()
+        reopened.resetToDefaults()
         #expect(reopened.selectedProfile.bindings == original.bindings)
+        #expect(!reopened.isModified)
     }
 
     @Test("global shortcuts preserve Close Window and avoid bare text-entry keys")
@@ -458,7 +449,7 @@ struct UnifiedKeyboardShortcutTests {
 
     @Test("Every native command default belongs to each built-in profile without conflicts")
     func completeDefaults() {
-        for preset in KeyboardShortcutPreset.allCases where preset != .custom {
+        for preset in KeyboardShortcutPreset.allCases {
             let profile = KeyboardShortcutProfiles.profile(for: preset)
             #expect(profile.conflicts.isEmpty)
             for command in KeyboardShortcutCommand.allCases where !command.isCulling {
@@ -483,17 +474,17 @@ struct UnifiedKeyboardShortcutTests {
         try withRegistry { registry, defaults in
             let chord = KeyboardShortcutChord(key: "s", modifiers: .command)
             let original = registry.selectedProfile
-            #expect(!registry.reassign(chord, to: .rateOne))
+            #expect(registry.set(chord, for: .rateOne, slot: 1) != nil)
             #expect(registry.selectedProfile == original)
             #expect(defaults.data(forKey: "profile") == nil)
-            #expect(registry.reassign(chord, to: .rateOne, replacingConflicts: true))
+            #expect(registry.reassign(chord, to: .rateOne, slot: 1) == nil)
             #expect(registry.selectedProfile.chord(for: .renderSelected) == nil)
             #expect(registry.selectedProfile.command(for: .init(key: "1")) == .rateOne)
             #expect(registry.selectedProfile.menuChord(for: .rating(1)) == chord)
             #expect(registry.selectedProfile.conflicts.isEmpty)
             let reopened = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
             #expect(reopened.selectedProfile == registry.selectedProfile)
-            #expect(reopened.reassign(chord, to: .advancedExportSelected, replacingConflicts: true))
+            #expect(reopened.reassign(chord, to: .advancedExportSelected, slot: 0) == nil)
             #expect(reopened.selectedProfile.command(for: chord) == .advancedExportSelected)
             #expect(reopened.selectedProfile.command(for: .init(key: "1")) == .rateOne)
             #expect(reopened.selectedProfile.menuChord(for: .rating(1)) == nil)
@@ -501,50 +492,88 @@ struct UnifiedKeyboardShortcutTests {
         }
     }
 
-    @Test("Native commands have one active shortcut; unassignment never restores their old default")
+    @Test("Native commands keep two shortcuts; the menu shows the first and unassignment never restores a default")
     func replacementAndUnassignment() throws {
         try withRegistry { registry, defaults in
             let newChord = KeyboardShortcutChord(key: "l", modifiers: [.command, .shift])
-            #expect(registry.reassign(newChord, to: .renderSelected))
+            let alternate = KeyboardShortcutChord(key: "f5")
+            #expect(registry.set(newChord, for: .renderSelected, slot: 0) == nil)
             #expect(registry.selectedProfile.command(for: .init(key: "s", modifiers: .command)) == nil)
+            #expect(registry.set(alternate, for: .renderSelected, slot: 1) == nil)
             #expect(registry.selectedProfile.menuChord(for: .renderSelected) == newChord)
-            #expect(registry.selectedProfile.bindings.filter { $0.command == .renderSelected }.count == 1)
-            registry.remove(newChord, from: .renderSelected)
+            #expect(registry.selectedProfile.chords(for: .renderSelected) == [newChord, alternate])
+            registry.remove(newChord)
+            #expect(registry.selectedProfile.menuChord(for: .renderSelected) == alternate)
+            registry.remove(alternate)
             let reopened = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
             #expect(reopened.selectedProfile.chord(for: .renderSelected) == nil)
             #expect(reopened.selectedProfile.command(for: .init(key: "s", modifiers: .command)) == nil)
             #expect(reopened.selectedProfile.command(for: newChord) == nil)
-            reopened.resetCustom()
+            reopened.resetToDefaults()
             #expect(reopened.selectedProfile.chord(for: .renderSelected) == KeyboardShortcutCommand.renderSelected.defaultChord)
         }
     }
 
-    @Test("Version-one custom culling profiles acquire app defaults without losing custom bindings or clears")
+    @Test("Version-one custom culling profiles become a Custom preset with app defaults and kept clears")
     func legacyMigration() throws {
         try withRegistry { _, defaults in
             struct Legacy: Codable {
                 let schemaVersion = 1
-                let selectedPreset = KeyboardShortcutPreset.custom
+                let selectedPreset = "custom"
                 let customBindings: [KeyboardShortcutBinding]
             }
             let saved = [KeyboardShortcutBinding(command: .labelRed, chord: .init(key: "9"))]
             defaults.set(try JSONEncoder().encode(Legacy(customBindings: saved)), forKey: "profile")
             let migrated = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
-            #expect(migrated.selectedPreset == .custom)
+            #expect(migrated.activePresetName == "Custom")
+            #expect(migrated.preset(named: "Custom") != nil)
+            #expect(!migrated.isModified)
             #expect(migrated.selectedProfile.command(for: .init(key: "9")) == .labelRed)
             #expect(migrated.selectedProfile.chord(for: .rateFour) == nil)
             #expect(migrated.selectedProfile.chord(for: .openFolder) == .init(key: "o", modifiers: .command))
-            migrated.unassign(.renderSelected)
+            migrated.set(nil, for: .renderSelected, slot: 0)
             let data = try #require(defaults.data(forKey: "profile"))
             let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-            #expect(object["schemaVersion"] as? Int == 2)
+            #expect(object["schemaVersion"] as? Int == 3)
             let reopened = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
             #expect(reopened.selectedProfile == migrated.selectedProfile)
             #expect(reopened.selectedProfile.chord(for: .renderSelected) == nil)
+            #expect(reopened.isModified)
         }
     }
 
-    @Test("System and typing keys cannot be reassigned or mutate the active profile")
+    @Test("Version-two profiles keep at most two keys per command, preferring the menu chord")
+    func legacyThreeKeyMigration() throws {
+        try withRegistry { _, defaults in
+            struct Legacy: Codable {
+                let schemaVersion = 2
+                let selectedPreset: String
+                let customBindings: [KeyboardShortcutBinding]
+            }
+            var bindings = KeyboardShortcutProfiles.profile(for: .photoAgent).bindings
+            bindings.removeAll { $0.command == .labelRed }
+            bindings += [
+                KeyboardShortcutBinding(command: .labelRed, chord: .init(key: "6")),
+                KeyboardShortcutBinding(command: .labelRed, chord: .init(key: "s")),
+                KeyboardShortcutBinding(command: .labelRed, chord: .init(key: "1", modifiers: .command)),
+            ]
+            defaults.set(try JSONEncoder().encode(Legacy(selectedPreset: "custom", customBindings: bindings)), forKey: "profile")
+            let migrated = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
+            #expect(migrated.selectedProfile.chords(for: .labelRed) == [.init(key: "6"), .init(key: "1", modifiers: .command)])
+            #expect(migrated.selectedProfile.command(for: .init(key: "s")) == nil)
+
+            // An earlier custom list survives as a preset even while a built-in one was chosen.
+            defaults.set(try JSONEncoder().encode(Legacy(selectedPreset: "bridgeLike", customBindings: [
+                KeyboardShortcutBinding(command: .labelRed, chord: .init(key: "r", modifiers: [.control, .option])),
+            ])), forKey: "profile")
+            let builtIn = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
+            #expect(builtIn.activePresetName == "Bridge-like")
+            #expect(builtIn.preset(named: "Custom") != nil)
+            #expect(!builtIn.isModified)
+        }
+    }
+
+    @Test("System, text-entry and workspace keys cannot be assigned or mutate the active profile")
     func protectedKeys() throws {
         try withRegistry { registry, defaults in
             let original = registry.selectedProfile
@@ -555,31 +584,39 @@ struct UnifiedKeyboardShortcutTests {
                 .init(key: "z", modifiers: [.command, .shift]),
                 .init(key: "return", modifiers: [.command, .option]),
                 .init(key: "6"),
+                .init(key: "a", modifiers: .control),
+                .init(key: "left", modifiers: .command),
+                .init(key: "space", modifiers: .command),
+                .init(key: "k", modifiers: [.command, .option]),
             ] {
-                #expect(!registry.reassign(chord, to: .renderSelected, replacingConflicts: true))
+                #expect(registry.set(chord, for: .renderSelected, slot: 0) != nil)
+                #expect(registry.reassign(chord, to: .renderSelected, slot: 0) != nil)
                 #expect(registry.selectedProfile == original)
                 #expect(defaults.data(forKey: "profile") == nil)
             }
-            #expect(!registry.reassign(.init(key: "delete", modifiers: .command), to: .rateOne, replacingConflicts: true))
-            #expect(!registry.reassign(.init(key: "h", modifiers: [.control, .option]), to: .rateOne, replacingConflicts: true))
+            #expect(registry.set(.init(key: "delete", modifiers: .command), for: .rateOne, slot: 1) != nil)
+            #expect(registry.set(.init(key: "c"), for: .rateOne, slot: 1) != nil)
+            #expect(registry.set(.init(key: "h", modifiers: .option), for: .rateOne, slot: 1) != nil)
+            #expect(KeyboardShortcutProfiles.reservedTitle(for: .init(key: "c")) == "Crop / Compare")
+            #expect(KeyboardShortcutProfiles.reservedTitle(for: .init(key: "q", modifiers: .command)) == "Quit")
+            // Wider keys are available where they cannot interrupt typing.
+            #expect(KeyboardShortcutProfiles.canAssign(.init(key: "left", modifiers: [.command, .option]), to: .selectNextImage))
+            #expect(KeyboardShortcutProfiles.canAssign(.init(key: "f6"), to: .rateTwo))
+            #expect(KeyboardShortcutProfiles.canAssign(.init(key: "ø", modifiers: .command), to: .renderAll))
+            #expect(KeyboardShortcutProfiles.canAssign(.init(key: "g"), to: .labelGreen))
         }
     }
 
-    @Test("Forward Delete compatibility never revives a moved, unassigned, or conflicting layer shortcut")
+    @Test("Forward Delete compatibility never revives a moved or unassigned layer shortcut")
     func forwardDeleteFallback() throws {
         try withRegistry { registry, _ in
             let forward = KeyboardShortcutChord(key: "forwarddelete", modifiers: [.control, .option])
             #expect(registry.selectedProfile.hasDevelopForwardDeleteFallback(for: forward))
-            #expect(registry.reassign(forward, to: .renderSelected))
+            #expect(registry.set(forward, for: .renderSelected, slot: 1) == nil)
             #expect(!registry.selectedProfile.hasDevelopForwardDeleteFallback(for: forward))
-            registry.remove(forward, from: .renderSelected)
+            registry.remove(forward)
             #expect(registry.selectedProfile.hasDevelopForwardDeleteFallback(for: forward))
-            registry.unassign(.removeOrResetSelectedEditLayer)
-            #expect(!registry.selectedProfile.hasDevelopForwardDeleteFallback(for: forward))
-            registry.resetCustom()
-            registry.assign(forward, to: .renderSelected)
-            registry.assign(forward, to: .renderAll)
-            #expect(registry.selectedProfile.command(for: forward) == nil)
+            registry.set(nil, for: .removeOrResetSelectedEditLayer, slot: 0)
             #expect(!registry.selectedProfile.hasDevelopForwardDeleteFallback(for: forward))
         }
     }
@@ -593,5 +630,189 @@ struct UnifiedKeyboardShortcutTests {
         #expect(KeyboardShortcutCommand.duplicateSelected.hasDevelopContextOverride(for: .init(key: "d", modifiers: .command)))
         #expect(!KeyboardShortcutCommand.renderSelected.hasDevelopContextOverride(for: .init(key: "d", modifiers: .command)))
         #expect(!KeyboardShortcutCommand.duplicateSelected.hasDevelopContextOverride(for: .init(key: "d", modifiers: [.command, .shift])))
+    }
+}
+
+@Suite("Keyboard shortcut editor presets and keys")
+@MainActor
+struct KeyboardShortcutEditorModelTests {
+    private func withRegistry(_ body: (KeyboardShortcutProfileRegistry, UserDefaults) throws -> Void) throws {
+        let name = "KeyboardShortcutEditorModelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        try body(KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile"), defaults)
+    }
+
+    @Test("User presets save, switch, rename, delete and persist; built-in presets stay read-only")
+    func presetLifecycle() throws {
+        try withRegistry { registry, defaults in
+            let chord = KeyboardShortcutChord(key: "f7")
+            #expect(registry.set(chord, for: .toggleHDR, slot: 1) == nil)
+            #expect(registry.isModified)
+            #expect(registry.savePreset(named: "Photo Agent") != nil)
+            #expect(registry.savePreset(named: "  ") != nil)
+            #expect(registry.savePreset(named: "Sports Desk") == nil)
+            #expect(registry.activePresetName == "Sports Desk")
+            #expect(!registry.isBuiltInPresetActive)
+            #expect(!registry.isModified)
+
+            registry.applyPreset(named: "Photo Agent")
+            #expect(registry.selectedProfile.command(for: chord) == nil)
+            registry.applyPreset(named: "Sports Desk")
+            #expect(registry.selectedProfile.command(for: chord) == .toggleHDR)
+
+            #expect(registry.renamePreset("Sports Desk", to: "Bridge-like") != nil)
+            #expect(registry.renamePreset("Sports Desk", to: "Match Day") == nil)
+            #expect(registry.activePresetName == "Match Day")
+            let reopened = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
+            #expect(reopened.presetNames.contains("Match Day"))
+            #expect(reopened.activePresetName == "Match Day")
+            #expect(reopened.selectedProfile.command(for: chord) == .toggleHDR)
+
+            reopened.deletePreset(named: "Match Day")
+            #expect(reopened.presets.isEmpty)
+            #expect(reopened.activePresetName == "Photo Agent")
+            // Deleting keeps the current shortcuts, now as changes to the default preset.
+            #expect(reopened.selectedProfile.command(for: chord) == .toggleHDR)
+            #expect(reopened.isModified)
+        }
+    }
+
+    @Test("Preset files round-trip, refuse other JSON and report skipped shortcuts on import")
+    func presetFiles() throws {
+        try withRegistry { registry, _ in
+            let current = registry.currentPreset
+            let decoded = try KeyboardShortcutUserPreset(fileData: current.fileData())
+            #expect(decoded == current)
+
+            #expect(throws: KeyboardShortcutPresetError.self) {
+                try KeyboardShortcutUserPreset(fileData: Data(#"{"name":"x"}"#.utf8))
+            }
+            let newer = Data(#"{"format":"com.aagedal.photoagent.keyboard-preset","version":99,"name":"x","shortcuts":{}}"#.utf8)
+            #expect(throws: KeyboardShortcutPresetError.self) { try KeyboardShortcutUserPreset(fileData: newer) }
+
+            // Reserved and duplicate entries are skipped; absent commands take their defaults.
+            let imported = KeyboardShortcutUserPreset(name: "Photo Agent", shortcuts: [
+                KeyboardShortcutCommand.rateOne.rawValue: [.init(key: "q", modifiers: .command), .init(key: "1")],
+                KeyboardShortcutCommand.rateTwo.rawValue: [.init(key: "1")],
+                "commandFromTheFuture": [.init(key: "j", modifiers: .command)],
+            ])
+            let result = registry.importPreset(imported)
+            #expect(result.name == "Photo Agent 2")
+            #expect(result.rejected == 2)
+            #expect(registry.activePresetName == "Photo Agent 2")
+            #expect(registry.selectedProfile.chords(for: .rateOne) == [.init(key: "1")])
+            #expect(registry.selectedProfile.chords(for: .rateTwo).isEmpty)
+            #expect(registry.selectedProfile.chord(for: .openFolder) == KeyboardShortcutCommand.openFolder.defaultChord)
+            #expect(!registry.isModified)
+        }
+    }
+
+    @Test("Key events normalize named keys to the names the editor records")
+    func eventNormalization() throws {
+        func chord(_ keyCode: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags = []) throws -> KeyboardShortcutChord? {
+            let event = try #require(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode
+            ))
+            return KeyboardShortcutChord(event: event)
+        }
+        #expect(try chord(96, "\u{F708}") == .init(key: "f5"))
+        #expect(try chord(123, "\u{F702}", [.command, .option]) == .init(key: "left", modifiers: [.command, .option]))
+        #expect(try chord(117, "\u{F728}", [.control]) == .init(key: "forwarddelete", modifiers: .control))
+        #expect(try chord(49, " ") == .init(key: "space"))
+        #expect(try chord(53, "\u{1b}") == .init(key: "escape"))
+        #expect(KeyboardShortcutChord(key: "f5").displayName == "F5")
+        #expect(KeyboardShortcutChord(key: "left", modifiers: [.command, .option]).displayName == "⌥⌘←")
+        #expect(KeyboardShortcutChord(key: "f5").swiftUIShortcut != nil)
+        #expect(KeyboardShortcutChord(key: "pagedown", modifiers: .command).swiftUIShortcut != nil)
+        let search = KeyboardShortcutChord(key: "b", modifiers: [.command, .shift]).searchText
+        #expect(["cmd", "command", "shift", "b", "⇧⌘b"].allSatisfy(search.contains))
+    }
+
+    @Test("Menu key equivalents map back to chords, including Shift capitals and function keys")
+    func menuItemChords() {
+        let shifted = NSMenuItem(title: "Render All", action: nil, keyEquivalent: "S")
+        shifted.keyEquivalentModifierMask = [.command]
+        #expect(KeyboardShortcutChord(menuItem: shifted) == .init(key: "s", modifiers: [.command, .shift]))
+        let function = NSMenuItem(title: "HDR", action: nil, keyEquivalent: String(Character(Unicode.Scalar(NSF5FunctionKey)!)))
+        function.keyEquivalentModifierMask = []
+        #expect(KeyboardShortcutChord(menuItem: function) == .init(key: "f5"))
+        let arrow = NSMenuItem(title: "Next", action: nil, keyEquivalent: String(Character(Unicode.Scalar(NSRightArrowFunctionKey)!)))
+        arrow.keyEquivalentModifierMask = [.command, .option]
+        #expect(KeyboardShortcutChord(menuItem: arrow) == .init(key: "right", modifiers: [.command, .option]))
+        #expect(KeyboardShortcutChord(menuItem: NSMenuItem(title: "None", action: nil, keyEquivalent: "")) == nil)
+    }
+
+    @Test("An alternate shortcut runs the enabled menu item that shows the primary one")
+    func alternateDispatch() throws {
+        final class Target: NSObject {
+            var count = 0
+            @objc func run(_ sender: Any?) { count += 1 }
+        }
+        let target = Target()
+        let menu = NSMenu()
+        let submenu = NSMenu()
+        let item = NSMenuItem(title: "Render Selected", action: #selector(Target.run(_:)), keyEquivalent: "s")
+        item.keyEquivalentModifierMask = .command
+        item.target = target
+        submenu.addItem(item)
+        let parent = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        parent.submenu = submenu
+        menu.addItem(parent)
+
+        var profile = KeyboardShortcutProfiles.profile(for: .photoAgent)
+        profile.set(.init(key: "f6"), for: .renderSelected, slot: 1)
+        func press(_ keyCode: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags) throws -> Bool {
+            let event = try #require(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode
+            ))
+            return KeyboardShortcutAlternateDispatcher.perform(event, profile: profile, menu: menu)
+        }
+        #expect(try press(97, "\u{F709}", []))
+        #expect(target.count == 1)
+        // The primary chord is the menu's own key equivalent; AppKit handles it natively.
+        #expect(try !press(1, "s", .command))
+        #expect(target.count == 1)
+
+        submenu.autoenablesItems = false
+        item.isEnabled = false
+        #expect(try !press(97, "\u{F709}", []))
+        #expect(target.count == 1)
+
+        KeyboardShortcutAlternateDispatcher.isSuspended = true
+        defer { KeyboardShortcutAlternateDispatcher.isSuspended = false }
+        item.isEnabled = true
+        #expect(try !press(97, "\u{F709}", []))
+        #expect(target.count == 1)
+    }
+
+    @Test("The on-screen keyboard finds named keys on any layout and lists every modifier layer")
+    func virtualKeyboard() throws {
+        let layout = VirtualKeyboardLayout.current()
+        #expect(layout.key(for: .init(key: "f5"))?.keyCode == 96)
+        #expect(layout.key(for: .init(key: "left", modifiers: [.command, .option]))?.keyCode == 123)
+        #expect(layout.key(for: .init(key: "forwarddelete"))?.keyCode == 117)
+        let space = try #require(layout.key(for: .init(key: "space")))
+        #expect(space.chords.count == 16)
+        #expect(space.chords.first?.modifiers == [])
+        #expect(Set(space.chords.map(\.chord)).count == 16)
+        let letterKeys = layout.keys.filter { if case let .key(key) = $0.role { return key.count == 1 } else { return false } }
+        #expect(letterKeys.count >= 47)
+    }
+}
+
+@Suite("Keyboard preset file normalization")
+@MainActor
+struct KeyboardPresetFileNormalizationTests {
+    @Test("Hand-edited preset chords are normalized to what a key press produces")
+    func normalizesStoredChords() throws {
+        let json = #"{"format":"com.aagedal.photoagent.keyboard-preset","version":1,"name":"Edited","shortcuts":{"renderAll":[{"key":"L","modifiers":1025}]}}"#
+        let preset = try KeyboardShortcutUserPreset(fileData: Data(json.utf8))
+        let resolved = preset.resolved
+        #expect(resolved.rejected == 0)
+        #expect(resolved.profile.chords(for: .renderAll) == [.init(key: "l", modifiers: .command)])
+        #expect(KeyboardShortcutProfiles.reservedTitle(for: .init(key: "+", modifiers: [.command, .shift])) == "Help")
     }
 }

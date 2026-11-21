@@ -4,6 +4,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Keyboard Shortcuts window (Photo Agent › Keyboard Shortcuts…, ⌥⌘K): an on-screen keyboard that follows your keyboard layout (Ø, Æ and Å on a Norwegian keyboard, ISO or ANSI shape) and colours each key by what it does. Click or hold ⌘ ⌥ ⌃ ⇧ to see that layer, and click a key to see all 16 modifier combinations, including the keys macOS, text entry and workspace gestures keep for themselves. Search commands by name or by key ("render", "cmd s"), click a Shortcut or Alternate field and press keys to record, or drag a command onto a key. Every command can now have two shortcuts; the menu shows the first. F1–F12, arrows with ⌘⌥ or ⌃⌥, Page Up/Down, Home/End and punctuation keys can now be assigned.
+- Keyboard presets: save your shortcuts under a name, switch between them and the built-in Photo Agent, Photo Mechanic-like and Bridge-like presets, and export, share or import them as `.apkeys` files (or drop one on the window). A "Modified" badge shows unsaved changes. Shortcuts customised in an earlier version become a preset named "Custom".
+- Photo Agent preset: Red label now uses 6 and ⌘1, so bare S is free to assign. A customised profile that gave a command more than two keys keeps its menu (⌘) key and one other.
+
 ## 3.0.0-beta.6 — 2026-11-19
 
 This sixth public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.
