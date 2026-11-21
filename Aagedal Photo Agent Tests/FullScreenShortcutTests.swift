@@ -161,7 +161,9 @@ struct ProfileMenuShortcutTests {
         #expect(photoAgent.menuChord(for: .rating(1)) == nil)
         #expect(photoAgent.menuChord(for: .colorLabel(1)) == .init(key: "1", modifiers: .command))
         #expect(photoAgent.menuChord(for: .colorLabel(0)) == .init(key: "0", modifiers: .command))
-        #expect(photoAgent.command(for: .init(key: "s")) == .labelRed)
+        #expect(photoAgent.command(for: .init(key: "6")) == .labelRed)
+        // Two shortcuts per command: Red keeps 6 and ⌘1, so bare S is free.
+        #expect(photoAgent.command(for: .init(key: "s")) == nil)
 
         let bridge = KeyboardShortcutProfiles.profile(for: .bridgeLike)
         #expect(bridge.menuChord(for: .rating(1)) == .init(key: "1", modifiers: .command))
@@ -193,12 +195,12 @@ struct ProfileMenuShortcutTests {
         let registry = KeyboardShortcutProfileRegistry(defaults: defaults)
         let commandOne = KeyboardShortcutChord(key: "1", modifiers: .command)
         #expect(registry.selectedProfile.menuChord(for: .colorLabel(1)) == commandOne)
-        #expect(registry.reassign(commandOne, to: .rateOne, replacingConflicts: true))
+        #expect(registry.reassign(commandOne, to: .rateOne, slot: 1) == nil)
         #expect(registry.selectedProfile.menuChord(for: .rating(1)) == commandOne)
         #expect(registry.selectedProfile.menuChord(for: .colorLabel(1)) == nil)
-        registry.remove(commandOne, from: .rateOne)
+        registry.remove(commandOne)
         #expect(registry.selectedProfile.menuChord(for: .rating(1)) == nil)
-        registry.select(.bridgeLike)
+        registry.applyPreset(named: KeyboardShortcutPreset.bridgeLike.displayName)
         #expect(registry.selectedProfile.menuChord(for: .rating(1)) == commandOne)
         #expect(registry.selectedProfile.menuChord(for: .colorLabel(1)) == .init(
             key: "1", modifiers: [.command, .option]))

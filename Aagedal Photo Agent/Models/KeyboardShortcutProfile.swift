@@ -38,17 +38,43 @@ nonisolated struct KeyboardShortcutModifiers: OptionSet, Codable, Hashable, Send
         if contains(.shift) { value.insert(.shift) }
         return value
     }
+
+    /// All sixteen combinations, fewest modifiers first.
+    static let allCombinations = (0..<16).map(Self.init(rawValue:))
+        .sorted { ($0.rawValue.nonzeroBitCount, $0.rawValue) < ($1.rawValue.nonzeroBitCount, $1.rawValue) }
+
+    /// In the order macOS menus show them.
+    var symbols: String {
+        (contains(.control) ? "⌃" : "") + (contains(.option) ? "⌥" : "")
+            + (contains(.shift) ? "⇧" : "") + (contains(.command) ? "⌘" : "")
+    }
 }
 
 nonisolated struct KeyboardShortcutChord: Codable, Hashable, Sendable {
     let key: String
     let modifiers: KeyboardShortcutModifiers
 
+    /// Keys known by name rather than by the character they type.
+    static let navigationKeys = ["left", "right", "up", "down", "home", "end", "pageup", "pagedown"]
+    static let functionKeys = (1...12).map { "f\($0)" }
+    static let namedKeys = navigationKeys + functionKeys + ["delete", "forwarddelete", "return", "escape", "space", "tab"]
+
+    /// macOS virtual key codes of the keys that have names rather than characters.
+    static let keyCodeNames: [UInt16: String] = [
+        51: "delete", 117: "forwarddelete", 36: "return", 76: "return", 53: "escape", 49: "space", 48: "tab",
+        123: "left", 124: "right", 125: "down", 126: "up", 115: "home", 119: "end", 116: "pageup", 121: "pagedown",
+        122: "f1", 120: "f2", 99: "f3", 118: "f4", 96: "f5", 97: "f6", 98: "f7", 100: "f8", 101: "f9",
+        109: "f10", 103: "f11", 111: "f12",
+    ]
+
     init(key: String, modifiers: KeyboardShortcutModifiers = []) {
         switch key {
         case "\r", "\u{3}": self.key = "return"
         case "\u{7f}", "\u{8}": self.key = "delete"
         case "\u{f728}": self.key = "forwarddelete"
+        case "\u{1b}": self.key = "escape"
+        case " ": self.key = "space"
+        case "\t", "\u{19}": self.key = "tab"
         default: self.key = key.lowercased()
         }
         self.modifiers = modifiers
@@ -56,13 +82,12 @@ nonisolated struct KeyboardShortcutChord: Codable, Hashable, Sendable {
 
     @MainActor
     init?(event: NSEvent) {
-        // Layout retranslations can turn Forward Delete into backward Delete.
-        // These fixed hardware identities must survive normalization.
-        switch event.keyCode {
-        case 51: self.init(key: "delete", modifiers: KeyboardShortcutModifiers(event.modifierFlags)); return
-        case 117: self.init(key: "forwarddelete", modifiers: KeyboardShortcutModifiers(event.modifierFlags)); return
-        case 36, 76: self.init(key: "return", modifiers: KeyboardShortcutModifiers(event.modifierFlags)); return
-        default: break
+        // Layout retranslations can turn Forward Delete into backward Delete, and named
+        // keys type private-use characters. These fixed hardware identities must survive
+        // normalization.
+        if let name = Self.keyCodeNames[event.keyCode] {
+            self.init(key: name, modifiers: KeyboardShortcutModifiers(event.modifierFlags))
+            return
         }
         // Unlike charactersIgnoringModifiers, this also removes Shift and Caps Lock.
         // Keep modifier identity separate from the logical key on the active layout.
@@ -71,14 +96,35 @@ nonisolated struct KeyboardShortcutChord: Codable, Hashable, Sendable {
         self.init(key: key, modifiers: KeyboardShortcutModifiers(event.modifierFlags))
     }
 
-    var displayName: String {
-        let prefix = [
-            modifiers.contains(.control) ? "⌃" : "",
-            modifiers.contains(.option) ? "⌥" : "",
-            modifiers.contains(.shift) ? "⇧" : "",
-            modifiers.contains(.command) ? "⌘" : "",
-        ].joined()
-        return prefix + (key == "return" ? "↩" : key == "delete" ? "⌫" : key == "forwarddelete" ? "⌦" : key.uppercased())
+    var isFunctionKey: Bool { Self.functionKeys.contains(key) }
+    var isNamedKey: Bool { Self.namedKeys.contains(key) }
+
+    /// A single typed character, such as "k", "1", "ø" or ",".
+    var isCharacterKey: Bool {
+        key.count == 1 && key.unicodeScalars.allSatisfy {
+            !$0.properties.isWhitespace && !CharacterSet.controlCharacters.contains($0)
+                && !(0xF700...0xF8FF).contains($0.value)
+        }
+    }
+
+    var keyLabel: String {
+        [
+            "return": "↩", "delete": "⌫", "forwarddelete": "⌦", "escape": "⎋", "space": "Space", "tab": "⇥",
+            "left": "←", "right": "→", "up": "↑", "down": "↓", "home": "↖", "end": "↘", "pageup": "⇞", "pagedown": "⇟",
+        ][key] ?? key.uppercased()
+    }
+
+    var displayName: String { modifiers.symbols + keyLabel }
+
+    /// Words a search for this shortcut may use, such as "cmd shift b".
+    var searchText: String {
+        let words = [
+            modifiers.contains(.control) ? "control ctrl" : "",
+            modifiers.contains(.option) ? "option opt alt" : "",
+            modifiers.contains(.shift) ? "shift" : "",
+            modifiers.contains(.command) ? "command cmd" : "",
+        ]
+        return (words + [key, displayName]).filter { !$0.isEmpty }.joined(separator: " ").lowercased()
     }
 }
 
@@ -251,63 +297,138 @@ nonisolated enum KeyboardShortcutCommand: String, CaseIterable, Codable, Sendabl
 
     var isCulling: Bool { action != nil }
 
-    var category: String {
+    var category: KeyboardShortcutCategory {
         switch self {
-        case .openFolder: "File"
-        case .showImport: "File"
-        case .showWebImport: "File"
-        case .backupEditedFiles: "File"
-        case .renderSelected: "Export"
-        case .advancedExportSelected: "Export"
-        case .renderAll: "Export"
-        case .saveAsJPEG: "Export"
-        case .saveAsPNG: "Export"
-        case .renameSelected: "Image"
-        case .duplicateSelected: "Image"
-        case .openInEditor: "Image"
-        case .deleteSelected: "Image"
-        case .moveRejectedToFolder: "Image"
-        case .rotateClockwise: "Image"
-        case .rotateCounterclockwise: "Image"
-        case .addNewMask: "Develop"
-        case .removeOrResetSelectedEditLayer: "Develop"
-        case .resetAllEdits: "Develop"
-        case .removeAllIPTC: "Metadata"
-        case .processVariablesSelected: "Metadata"
-        case .processVariablesAll: "Metadata"
-        case .writeAllPendingMetadata: "Metadata"
-        case .showTemplatePalette: "Metadata"
-        case .showVariableReference: "Metadata"
-        case .showRawMetadata: "Metadata"
-        case .showStructuredKeywords: "Metadata"
-        case .renderAndSignSelected: "Export"
-        case .copyIPTCMetadata: "Metadata"
-        case .pasteIPTCMetadata: "Metadata"
-        case .openCaptionWorkspace: "Browser"
-        case .selectPreviousImage: "Browser"
-        case .selectNextImage: "Browser"
-        case .toggleHDR: "View"
-        case .scopeWaveform: "Scopes"
-        case .scopeParade: "Scopes"
-        case .scopeVectorscope: "Scopes"
-        case .scopeGamut: "Scopes"
-        case .toggleGamutClipping: "Scopes"
-        case .toggleCleanFeed: "View"
+        case .openFolder: .file
+        case .showImport: .file
+        case .showWebImport: .file
+        case .backupEditedFiles: .file
+        case .renderSelected: .export
+        case .advancedExportSelected: .export
+        case .renderAll: .export
+        case .saveAsJPEG: .export
+        case .saveAsPNG: .export
+        case .renameSelected: .image
+        case .duplicateSelected: .image
+        case .openInEditor: .image
+        case .deleteSelected: .image
+        case .moveRejectedToFolder: .image
+        case .rotateClockwise: .image
+        case .rotateCounterclockwise: .image
+        case .addNewMask: .develop
+        case .removeOrResetSelectedEditLayer: .develop
+        case .resetAllEdits: .develop
+        case .removeAllIPTC: .metadata
+        case .processVariablesSelected: .metadata
+        case .processVariablesAll: .metadata
+        case .writeAllPendingMetadata: .metadata
+        case .showTemplatePalette: .metadata
+        case .showVariableReference: .metadata
+        case .showRawMetadata: .metadata
+        case .showStructuredKeywords: .metadata
+        case .renderAndSignSelected: .export
+        case .copyIPTCMetadata: .metadata
+        case .pasteIPTCMetadata: .metadata
+        case .openCaptionWorkspace: .browser
+        case .selectPreviousImage: .browser
+        case .selectNextImage: .browser
+        case .toggleHDR: .view
+        case .scopeWaveform: .scopes
+        case .scopeParade: .scopes
+        case .scopeVectorscope: .scopes
+        case .scopeGamut: .scopes
+        case .toggleGamutClipping: .scopes
+        case .toggleCleanFeed: .view
+        case .uploadSelected: .upload
+        case .uploadAll: .upload
+        case .newBrowserTab: .browser
+        case .showNextBrowserTab: .browser
+        case .showPreviousBrowserTab: .browser
+        case .templateOne: .templates
+        case .templateTwo: .templates
+        case .templateThree: .templates
+        case .templateFour: .templates
+        case .templateFive: .templates
+        case .templateSix: .templates
+        case .templateSeven: .templates
+        case .templateEight: .templates
+        case .templateNine: .templates
+        default: .ratingAndLabel
+        }
+    }
+
+    /// A few words that fit on a key of the shortcut editor's keyboard.
+    var shortTitle: String {
+        switch self {
+        case .clearRating: "No Stars"
+        case .rateOne: "★"
+        case .rateTwo: "★★"
+        case .rateThree: "★★★"
+        case .rateFour: "★★★★"
+        case .rateFive: "★★★★★"
+        case .clearLabel: "No Label"
+        case .labelRed: "Red"
+        case .labelYellow: "Yellow"
+        case .labelGreen: "Green"
+        case .labelBlue: "Blue"
+        case .labelPurple: "Purple"
+        case .labelWhite: "White"
+        case .labelBlack: "Black"
+        case .labelTrash: "Trash Label"
+        case .openFolder: "Open"
+        case .showImport: "Import"
+        case .showWebImport: "Web Import"
+        case .backupEditedFiles: "Back Up"
+        case .renderSelected: "Render"
+        case .advancedExportSelected: "Adv. Export"
+        case .renderAll: "Render All"
+        case .saveAsJPEG: "JPEG"
+        case .saveAsPNG: "PNG"
+        case .renameSelected: "Rename"
+        case .duplicateSelected: "Duplicate"
+        case .openInEditor: "Editor"
+        case .deleteSelected: "Trash"
+        case .moveRejectedToFolder: "Move Rejects"
+        case .rotateClockwise: "Rotate ↻"
+        case .rotateCounterclockwise: "Rotate ↺"
+        case .addNewMask: "New Mask"
+        case .removeOrResetSelectedEditLayer: "Remove Layer"
+        case .resetAllEdits: "Reset Edits"
+        case .removeAllIPTC: "Strip IPTC"
+        case .processVariablesSelected: "Variables"
+        case .processVariablesAll: "Variables All"
+        case .writeAllPendingMetadata: "Write Pending"
+        case .showTemplatePalette: "Templates"
+        case .showVariableReference: "Var. Reference"
+        case .showRawMetadata: "Raw Metadata"
+        case .showStructuredKeywords: "Keywords"
+        case .renderAndSignSelected: "Render & Sign"
+        case .copyIPTCMetadata: "Copy IPTC"
+        case .pasteIPTCMetadata: "Paste IPTC"
+        case .openCaptionWorkspace: "Captions"
+        case .selectPreviousImage: "Prev Image"
+        case .selectNextImage: "Next Image"
+        case .toggleHDR: "HDR"
+        case .scopeWaveform: "Waveform"
+        case .scopeParade: "Parade"
+        case .scopeVectorscope: "Vectorscope"
+        case .scopeGamut: "Gamut"
+        case .toggleGamutClipping: "Gamut Clip"
+        case .toggleCleanFeed: "Clean Feed"
         case .uploadSelected: "Upload"
-        case .uploadAll: "Upload"
-        case .newBrowserTab: "Browser"
-        case .showNextBrowserTab: "Browser"
-        case .showPreviousBrowserTab: "Browser"
-        case .templateOne: "Templates"
-        case .templateTwo: "Templates"
-        case .templateThree: "Templates"
-        case .templateFour: "Templates"
-        case .templateFive: "Templates"
-        case .templateSix: "Templates"
-        case .templateSeven: "Templates"
-        case .templateEight: "Templates"
-        case .templateNine: "Templates"
-        default: "Rating & Label"
+        case .uploadAll: "Upload All"
+        case .newBrowserTab: "New Tab"
+        case .showNextBrowserTab: "Next Tab"
+        case .showPreviousBrowserTab: "Prev Tab"
+        case .templateOne: "Template 1"
+        case .templateTwo: "Template 2"
+        case .templateThree: "Template 3"
+        case .templateFour: "Template 4"
+        case .templateFive: "Template 5"
+        case .templateSix: "Template 6"
+        case .templateSeven: "Template 7"
+        case .templateEight: "Template 8"
+        case .templateNine: "Template 9"
         }
     }
 
@@ -377,12 +498,35 @@ nonisolated enum KeyboardShortcutCommand: String, CaseIterable, Codable, Sendabl
     }
 }
 
+/// Groups commands in the shortcut editor's list and colours them on its keyboard.
+nonisolated enum KeyboardShortcutCategory: String, CaseIterable, Identifiable, Sendable {
+    case ratingAndLabel, file, browser, image, metadata, templates, develop, export, view, scopes, upload
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .ratingAndLabel: "Rating & Label"
+        case .file: "File"
+        case .browser: "Browser"
+        case .image: "Image"
+        case .metadata: "Metadata"
+        case .templates: "Templates"
+        case .develop: "Develop"
+        case .export: "Export"
+        case .view: "View"
+        case .scopes: "Scopes"
+        case .upload: "Upload"
+        }
+    }
+}
+
 nonisolated enum KeyboardCullingAction: Equatable, Sendable {
     case rating(Int)
     case colorLabel(Int)
 }
 
-nonisolated struct KeyboardShortcutBinding: Codable, Equatable, Sendable {
+nonisolated struct KeyboardShortcutBinding: Codable, Hashable, Sendable {
     let command: KeyboardShortcutCommand
     let chord: KeyboardShortcutChord
 }
@@ -392,8 +536,13 @@ nonisolated struct KeyboardShortcutConflict: Equatable, Sendable {
     let commands: [KeyboardShortcutCommand]
 }
 
+/// Every command's shortcuts, up to two each and in order. The first menu-safe one is the
+/// key the menu shows; the focus-aware routers accept any of them. A command's shortcuts stay
+/// compact, so clearing the first promotes the second.
 nonisolated struct KeyboardShortcutProfile: Codable, Equatable, Sendable {
-    let name: String
+    static let slotCount = 2
+
+    var name: String
     var bindings: [KeyboardShortcutBinding]
 
     func command(for chord: KeyboardShortcutChord) -> KeyboardShortcutCommand? {
@@ -404,6 +553,29 @@ nonisolated struct KeyboardShortcutProfile: Codable, Equatable, Sendable {
 
     func chord(for command: KeyboardShortcutCommand) -> KeyboardShortcutChord? {
         bindings.first { $0.command == command }?.chord
+    }
+
+    func chords(for command: KeyboardShortcutCommand) -> [KeyboardShortcutChord] {
+        bindings.filter { $0.command == command }.map(\.chord)
+    }
+
+    func chord(for command: KeyboardShortcutCommand, slot: Int) -> KeyboardShortcutChord? {
+        let list = chords(for: command)
+        return list.indices.contains(slot) ? list[slot] : nil
+    }
+
+    /// The command that runs a chord, and which of that command's shortcuts it is.
+    func assignment(of chord: KeyboardShortcutChord) -> (command: KeyboardShortcutCommand, slot: Int)? {
+        guard let command = bindings.first(where: { $0.chord == chord })?.command,
+              let slot = chords(for: command).firstIndex(of: chord) else { return nil }
+        return (command, slot)
+    }
+
+    /// Every assigned chord and its command, for lookups across a whole keyboard.
+    var commandsByChord: [KeyboardShortcutChord: KeyboardShortcutCommand] {
+        var result: [KeyboardShortcutChord: KeyboardShortcutCommand] = [:]
+        for binding in bindings where result[binding.chord] == nil { result[binding.chord] = binding.command }
+        return result
     }
 
     var conflicts: [KeyboardShortcutConflict] {
@@ -420,13 +592,99 @@ nonisolated struct KeyboardShortcutProfile: Codable, Equatable, Sendable {
                 return lhs.commands.map(\.rawValue).joined() < rhs.commands.map(\.rawValue).joined()
             }
     }
+
+    /// The other command (or this command's other slot) that already uses `chord`.
+    func conflict(
+        for chord: KeyboardShortcutChord,
+        command: KeyboardShortcutCommand,
+        slot: Int
+    ) -> KeyboardShortcutCommand? {
+        guard let found = assignment(of: chord) else { return nil }
+        return found.command == command && found.slot == min(slot, chords(for: command).count) ? nil : found.command
+    }
+
+    /// Why `chord` cannot be the command's shortcut in `slot`, including conflicts.
+    func validationError(
+        _ chord: KeyboardShortcutChord,
+        for command: KeyboardShortcutCommand,
+        slot: Int = 0
+    ) -> String? {
+        guard (0..<Self.slotCount).contains(slot) else { return "Each command has a shortcut and an alternate." }
+        if let error = KeyboardShortcutProfiles.validationError(chord, for: command) { return error }
+        if let other = conflict(for: chord, command: command, slot: slot) {
+            return other == command ? "Already this command’s other shortcut." : "Already assigned to \(other.displayName)."
+        }
+        return nil
+    }
+
+    /// Sets one shortcut without validation. `nil` clears the slot, and a slot past the
+    /// command's last shortcut adds one.
+    mutating func set(_ chord: KeyboardShortcutChord?, for command: KeyboardShortcutCommand, slot: Int) {
+        var list = chords(for: command)
+        if list.indices.contains(slot) {
+            if let chord { list[slot] = chord } else { list.remove(at: slot) }
+        } else if let chord {
+            list.append(chord)
+        }
+        // Keep a command's bindings together where they were, so profiles stay readable.
+        let position = bindings.firstIndex { $0.command == command } ?? bindings.endIndex
+        bindings.removeAll { $0.command == command }
+        bindings.insert(
+            contentsOf: list.prefix(Self.slotCount).map { KeyboardShortcutBinding(command: command, chord: $0) },
+            at: min(position, bindings.endIndex)
+        )
+    }
+
+    /// Removes a shortcut from whichever command has it.
+    mutating func unassign(_ chord: KeyboardShortcutChord) {
+        guard let found = assignment(of: chord) else { return }
+        set(nil, for: found.command, slot: found.slot)
+    }
+
+    /// Every command's shortcuts by command name, unbound commands included.
+    var savedForm: [String: [KeyboardShortcutChord]] {
+        Dictionary(uniqueKeysWithValues: KeyboardShortcutCommand.allCases.map { ($0.rawValue, chords(for: $0)) })
+    }
+
+    /// Rebuilds a profile from saved choices. Commands absent from `saved` (such as ones added
+    /// since it was written) take their `defaults` unless a saved choice already uses them;
+    /// saved shortcuts that are invalid, surplus or already in use are left out and counted.
+    static func restoring(
+        _ saved: [String: [KeyboardShortcutChord]],
+        name: String,
+        defaults: KeyboardShortcutProfile
+    ) -> (profile: KeyboardShortcutProfile, rejected: Int) {
+        var profile = KeyboardShortcutProfile(name: name, bindings: [])
+        var rejected = 0
+        for command in KeyboardShortcutCommand.allCases {
+            for stored in saved[command.rawValue] ?? [] {
+                // Files and stored data bypass the initializer; normalize as a key press would.
+                let chord = KeyboardShortcutChord(
+                    key: stored.key, modifiers: stored.modifiers.intersection([.command, .option, .control, .shift])
+                )
+                let slot = profile.chords(for: command).count
+                if slot < slotCount, profile.validationError(chord, for: command, slot: slot) == nil {
+                    profile.set(chord, for: command, slot: slot)
+                } else {
+                    rejected += 1
+                }
+            }
+        }
+        // New or changed defaults must not erase a custom map: a command whose default is
+        // already in use stays unbound.
+        for command in KeyboardShortcutCommand.allCases where saved[command.rawValue] == nil {
+            for chord in defaults.chords(for: command) where profile.assignment(of: chord) == nil {
+                profile.set(chord, for: command, slot: profile.chords(for: command).count)
+            }
+        }
+        return (profile, rejected)
+    }
 }
 
 nonisolated enum KeyboardShortcutPreset: String, CaseIterable, Codable, Identifiable, Sendable {
     case photoAgent
     case photoMechanicLike
     case bridgeLike
-    case custom
 
     var id: String { rawValue }
 
@@ -435,9 +693,10 @@ nonisolated enum KeyboardShortcutPreset: String, CaseIterable, Codable, Identifi
         case .photoAgent: "Photo Agent"
         case .photoMechanicLike: "Photo Mechanic-like"
         case .bridgeLike: "Bridge-like"
-        case .custom: "Custom"
         }
     }
+
+    static func named(_ name: String) -> Self? { allCases.first { $0.displayName == name } }
 }
 
 nonisolated enum KeyboardShortcutProfiles {
@@ -446,44 +705,131 @@ nonisolated enum KeyboardShortcutProfiles {
         return KeyboardShortcutBinding(command: command, chord: chord)
     }
 
-    static let editableChordChoices: [KeyboardShortcutChord] = {
-        let bare = ((0...9).map(String.init) + ["s", "x"]).map { KeyboardShortcutChord(key: $0) }
-        let keys = Array("abcdefghijklmnopqrstuvwxyz0123456789").map(String.init) + ["delete", "forwarddelete"]
-        let commandChords = (0..<16).map(KeyboardShortcutModifiers.init(rawValue:))
-            .filter { $0.contains(.command) }
-            .flatMap { modifiers in keys.map { KeyboardShortcutChord(key: $0, modifiers: modifiers) } }
-            .filter { reservation(for: $0) == nil }
-        let legacy = applicationBindings.map(\.chord)
-        let controlOption = keys.map { KeyboardShortcutChord(key: $0, modifiers: [.control, .option]) }
-        return Array(Set(bare + commandChords + controlOption + legacy)).sorted { $0.displayName < $1.displayName }
-    }()
+    /// Chords the built-in profiles ship with. They stay assignable to their own command
+    /// even when they predate the editor's rules (Option-V for Variable Reference).
+    private static let builtInBindings: Set<KeyboardShortcutBinding> = Set(
+        KeyboardShortcutPreset.allCases.flatMap { profile(for: $0).bindings }
+    )
 
-    /// System text editing, window controls and fixed workspace navigation keep their keys.
+    /// Single-letter gestures that Develop, Full Screen and Comparison handle before any
+    /// profile lookup, as (short keycap title, explanation).
+    static let workspaceGestures: [String: (title: String, detail: String)] = [
+        "c": ("Crop / Compare", "Develop toggles crop; Full Screen opens Comparison"),
+        "j": ("Radial Mask", "Develop adds a radial mask"),
+        "b": ("Brush", "Develop toggles the brush tool"),
+        "z": ("Zoom", "Develop and Full Screen toggle zoom"),
+        "m": ("Before / After", "Develop shows the original while held"),
+        "d": ("Disable Edits", "Develop hides adjustments while held"),
+        "h": ("Hide UI", "Full Screen hides the interface"),
+        "f": ("Faces", "Full Screen shows face rectangles"),
+        "e": ("Edits", "Full Screen toggles edit rendering"),
+    ]
+
+    /// Why no command may use this chord: macOS, text entry, window controls and fixed
+    /// workspace gestures keep their keys.
     static func reservation(for chord: KeyboardShortcutChord) -> String? {
+        reservationEntry(for: chord)?.detail
+    }
+
+    /// A few words naming what owns a reserved chord, for the shortcut editor's keyboard.
+    static func reservedTitle(for chord: KeyboardShortcutChord) -> String? {
+        reservationEntry(for: chord)?.title
+    }
+
+    private static func reservationEntry(for chord: KeyboardShortcutChord) -> (title: String, detail: String)? {
         let modifiers = chord.modifiers
-        if chord.key == "return" { return "Reserved for text entry and Caption advance shortcuts" }
+        let key = chord.key
+        let withoutShift = modifiers.subtracting(.shift)
+        switch key {
+        case "return":
+            return ("Return", "Reserved for text entry and Caption advance shortcuts")
+        case "space":
+            return withoutShift.isEmpty
+                ? ("Full Screen / Pan", "Reserved for Full Screen and the Develop hand tool")
+                : ("Input / Spotlight", "Reserved for macOS input sources and Spotlight")
+        case "tab":
+            return ("Focus", "Reserved for keyboard focus, app switching and Comparison")
+        case "escape":
+            return ("Cancel", "Reserved for cancelling and leaving workspaces")
+        case _ where KeyboardShortcutChord.navigationKeys.contains(key):
+            if withoutShift.isEmpty { return ("Navigate", "Reserved for moving and extending the selection") }
+            if withoutShift.contains(.control) && withoutShift.subtracting(.control).isEmpty {
+                return ("Spaces", "Reserved for macOS Spaces and Mission Control")
+            }
+            if !withoutShift.contains(.control) && withoutShift.rawValue.nonzeroBitCount == 1 {
+                return ("Text Navigation", "Reserved for moving the insertion point in text")
+            }
+        case "delete", "forwarddelete":
+            if withoutShift.isEmpty || modifiers == .option {
+                return ("Delete", "Reserved for deleting text and the focused Comparison photo")
+            }
+        default:
+            break
+        }
         if modifiers.contains(.command) {
-            if chord.key == "q" { return "Reserved for Quit and macOS session controls" }
-            if modifiers == .command && ["a", "c", "x", "v", "z", "w", "h", "m", "f"].contains(chord.key) {
-                return "Reserved for text editing, window controls or full screen"
+            if key == "q" { return ("Quit", "Reserved for Quit and macOS session controls") }
+            if modifiers == .command {
+                let standard = ["a": "Select All", "c": "Copy", "x": "Cut", "v": "Paste", "z": "Undo",
+                                "w": "Close", "h": "Hide", "m": "Minimize", "f": "Full Screen", ",": "Settings", "`": "Next Window"]
+                if let title = standard[key] {
+                    return (title, "Reserved for text editing, window controls or full screen")
+                }
             }
-            if modifiers == [.command, .shift] && ["z", "v"].contains(chord.key) {
-                return "Reserved for Redo and Develop paste with crop"
+            if modifiers == [.command, .shift] {
+                if key == "z" { return ("Redo", "Reserved for Redo") }
+                if key == "v" { return ("Paste + Crop", "Reserved for Develop paste with crop") }
+                if ["3", "4", "5"].contains(key) { return ("Screenshot", "Reserved for macOS screenshots") }
             }
-            if modifiers == [.command, .option] && ["w", "h", "m"].contains(chord.key) {
-                return "Reserved for macOS window controls"
+            // Help is ⌘? on every layout: Shift-/ on U.S. keyboards, Shift-+ on Norwegian ones.
+            if key == "?" || (["/", "+"].contains(key) && modifiers == [.command, .shift]) {
+                return ("Help", "Reserved for the Help menu")
             }
+            if modifiers == [.command, .option] {
+                if ["w", "h", "m"].contains(key) { return ("Window", "Reserved for macOS window controls") }
+                if key == "d" { return ("Dock", "Reserved for showing and hiding the Dock") }
+                if key == "k" { return ("Shortcuts", "Opens the keyboard shortcut editor") }
+            }
+            if modifiers == [.command, .control] && ["f", "q"].contains(key) {
+                return ("System", "Reserved for macOS full screen and Lock Screen")
+            }
+        }
+        if withoutShift == .control, chord.isCharacterKey, key.unicodeScalars.allSatisfy(CharacterSet.letters.contains) {
+            return ("Text Editing", "Reserved for Control-key text editing, such as ⌃A and ⌃E")
+        }
+        if withoutShift.isEmpty, let gesture = workspaceGestures[key] {
+            return (gesture.title, "Reserved for a workspace gesture: \(gesture.detail)")
+        }
+        if modifiers == .option {
+            if key == "s" { return ("Scaling", "Reserved for Full Screen’s scaling filter") }
+            if key == "m" { return ("Embedded / XMP", "Reserved for switching the embedded and XMP reference") }
+        }
+        return nil
+    }
+
+    /// Why `chord` cannot run `command`, apart from conflicts with other commands.
+    static func validationError(_ chord: KeyboardShortcutChord, for command: KeyboardShortcutCommand) -> String? {
+        if let reservation = reservation(for: chord) { return reservation }
+        if builtInBindings.contains(KeyboardShortcutBinding(command: command, chord: chord)) { return nil }
+        guard chord.isCharacterKey || chord.isNamedKey else {
+            return "Use a letter, digit, punctuation, F1–F12 or a named key."
+        }
+        if chord.isFunctionKey { return nil }
+        // The culling routers match the typed character, so named keys never reach them.
+        if command.isCulling, !chord.isCharacterKey {
+            return "Ratings and labels use a letter, digit, punctuation or F1–F12 key."
+        }
+        // Bare culling keys are focus-aware: the routers skip them while text is being typed.
+        if command.isCulling, chord.isCharacterKey, chord.modifiers.isSubset(of: .shift) { return nil }
+        guard chord.modifiers.contains(.command) || chord.modifiers.contains(.control) else {
+            return command.isCulling
+                ? "Use a key on its own or with Shift, Command or Control. Option alone types special characters."
+                : "Include Command or Control so the shortcut never interrupts typing."
         }
         return nil
     }
 
     static func canAssign(_ chord: KeyboardShortcutChord, to command: KeyboardShortcutCommand) -> Bool {
-        guard editableChordChoices.contains(chord) else { return false }
-        // Menu commands must not consume ordinary typing. Culling's bare-key input is focus-aware.
-        if command.isCulling {
-            return chord.key.count == 1 && (chord.modifiers.isEmpty || chord.modifiers.contains(.command))
-        }
-        return !chord.modifiers.isEmpty
+        validationError(chord, for: command) == nil
     }
 
     static func profile(for preset: KeyboardShortcutPreset) -> KeyboardShortcutProfile {
@@ -494,8 +840,6 @@ nonisolated enum KeyboardShortcutProfiles {
             KeyboardShortcutProfile(name: preset.displayName, bindings: photoMechanicLikeBindings + applicationBindings)
         case .bridgeLike:
             KeyboardShortcutProfile(name: preset.displayName, bindings: bridgeLikeBindings + applicationBindings)
-        case .custom:
-            KeyboardShortcutProfile(name: preset.displayName, bindings: photoAgentBindings + applicationBindings)
         }
     }
 
@@ -507,21 +851,20 @@ nonisolated enum KeyboardShortcutProfiles {
         .labelPurple, .labelWhite, .labelBlack, .labelTrash,
     ]
 
+    /// Ratings on bare 0–5, labels on bare 6–9 and X, and every label on Command-0 to 8 in
+    /// the menu. Each command has at most two keys, the bare one first.
     private static let photoAgentBindings: [KeyboardShortcutBinding] = {
         var bindings = ratingCommands.enumerated().map {
             KeyboardShortcutBinding(command: $0.element, chord: .init(key: String($0.offset)))
         }
-        bindings += [
-            KeyboardShortcutBinding(command: .labelRed, chord: .init(key: "6")),
-            KeyboardShortcutBinding(command: .labelYellow, chord: .init(key: "7")),
-            KeyboardShortcutBinding(command: .labelGreen, chord: .init(key: "8")),
-            KeyboardShortcutBinding(command: .labelBlue, chord: .init(key: "9")),
-            KeyboardShortcutBinding(command: .labelRed, chord: .init(key: "s")),
-            KeyboardShortcutBinding(command: .labelTrash, chord: .init(key: "x")),
+        let bare: [KeyboardShortcutCommand: String] = [
+            .labelRed: "6", .labelYellow: "7", .labelGreen: "8", .labelBlue: "9", .labelTrash: "x",
         ]
-        bindings += labelCommands.enumerated().map {
-            KeyboardShortcutBinding(command: $0.element,
-                chord: .init(key: String($0.offset), modifiers: .command))
+        for (index, command) in labelCommands.enumerated() {
+            if let key = bare[command] {
+                bindings.append(KeyboardShortcutBinding(command: command, chord: .init(key: key)))
+            }
+            bindings.append(KeyboardShortcutBinding(command: command, chord: .init(key: String(index), modifiers: .command)))
         }
         return bindings
     }()
@@ -572,7 +915,7 @@ nonisolated enum KeyboardShortcutRouter {
         guard !input.textEditorOwnsInput,
               !input.imeHasMarkedText,
               !input.isRepeat,
-              input.key.count == 1 else { return nil }
+              input.key.count == 1 || KeyboardShortcutChord.functionKeys.contains(input.key) else { return nil }
         return profile.command(for: KeyboardShortcutChord(
             key: input.key,
             modifiers: input.modifiers
@@ -580,21 +923,35 @@ nonisolated enum KeyboardShortcutRouter {
     }
 }
 
+/// The live keymap plus named presets. The built-in presets are read-only; the current
+/// shortcuts may differ from the active preset ("Modified") until saved or reverted.
 @MainActor
 @Observable
 final class KeyboardShortcutProfileRegistry {
     static let shared = KeyboardShortcutProfileRegistry()
 
     private struct Document: Codable {
-        var schemaVersion = 2
-        var selectedPreset: KeyboardShortcutPreset
+        var schemaVersion = 3
+        var activePresetName: String
+        var current: [String: [KeyboardShortcutChord]]
+        var presets: [KeyboardShortcutUserPreset]
+    }
+
+    /// Schema 1 and 2: one editable "custom" list beside fixed presets.
+    private struct LegacyDocument: Codable {
+        var schemaVersion: Int
+        var selectedPreset: String
         var customBindings: [KeyboardShortcutBinding]
     }
 
+    private static let defaultPresetName = KeyboardShortcutPreset.photoAgent.displayName
+    private static let migratedPresetName = "Custom"
+
     private let defaults: UserDefaults
     private let storageKey: String
-    private(set) var selectedPreset: KeyboardShortcutPreset
-    private(set) var customBindings: [KeyboardShortcutBinding]
+    private(set) var selectedProfile: KeyboardShortcutProfile
+    private(set) var activePresetName: String
+    private(set) var presets: [KeyboardShortcutUserPreset]
 
     init(
         defaults: UserDefaults = AppDefaults.store,
@@ -602,114 +959,199 @@ final class KeyboardShortcutProfileRegistry {
     ) {
         self.defaults = defaults
         self.storageKey = storageKey
-        if let data = defaults.data(forKey: storageKey),
-           let document = try? JSONDecoder().decode(Document.self, from: data),
-           (1...2).contains(document.schemaVersion) {
-            selectedPreset = document.selectedPreset
-            customBindings = document.customBindings
-            if document.schemaVersion == 1 {
-                let occupied = Set(customBindings.map(\.chord))
-                customBindings += KeyboardShortcutProfiles.applicationBindings.filter { !occupied.contains($0.chord) }
+        let base = KeyboardShortcutProfiles.profile(for: .photoAgent)
+        let data = defaults.data(forKey: storageKey)
+        if let data, let document = try? JSONDecoder().decode(Document.self, from: data), document.schemaVersion == 3 {
+            var names = Set(KeyboardShortcutPreset.allCases.map(\.displayName))
+            presets = document.presets.filter { names.insert($0.name).inserted }
+            let active = names.contains(document.activePresetName) ? document.activePresetName : Self.defaultPresetName
+            activePresetName = active
+            selectedProfile = KeyboardShortcutProfile.restoring(document.current, name: active, defaults: base).profile
+        } else if let data, let legacy = try? JSONDecoder().decode(LegacyDocument.self, from: data),
+                  (1...2).contains(legacy.schemaVersion) {
+            let custom = KeyboardShortcutProfile.restoring(
+                Self.migratedSavedForm(legacy.customBindings, schemaVersion: legacy.schemaVersion),
+                name: Self.migratedPresetName, defaults: base
+            ).profile
+            let customPreset = KeyboardShortcutUserPreset(name: Self.migratedPresetName, shortcuts: custom.savedForm)
+            if let preset = KeyboardShortcutPreset(rawValue: legacy.selectedPreset) {
+                // Keep earlier customisations reachable even while a built-in preset was chosen.
+                presets = custom.savedForm == base.savedForm ? [] : [customPreset]
+                activePresetName = preset.displayName
+                selectedProfile = KeyboardShortcutProfiles.profile(for: preset)
+            } else {
+                presets = [customPreset]
+                activePresetName = Self.migratedPresetName
+                selectedProfile = custom
             }
+            persist()
         } else {
-            selectedPreset = .photoAgent
-            customBindings = KeyboardShortcutProfiles.profile(for: .photoAgent).bindings
+            presets = []
+            activePresetName = Self.defaultPresetName
+            selectedProfile = base
         }
     }
 
-    var selectedProfile: KeyboardShortcutProfile {
-        if selectedPreset == .custom {
-            return KeyboardShortcutProfile(name: KeyboardShortcutPreset.custom.displayName, bindings: customBindings)
-        }
-        return KeyboardShortcutProfiles.profile(for: selectedPreset)
-    }
-
-    func select(_ preset: KeyboardShortcutPreset) {
-        selectedPreset = preset
-        persist()
-    }
-
-    func assign(_ chord: KeyboardShortcutChord, to command: KeyboardShortcutCommand) {
-        if selectedPreset != .custom {
-            customBindings = selectedProfile.bindings
-            selectedPreset = .custom
-        }
-        customBindings.removeAll { $0.command == command }
-        customBindings.append(KeyboardShortcutBinding(command: command, chord: chord))
-        customBindings.sort { $0.command.rawValue < $1.command.rawValue }
-        persist()
-    }
-
-    /// Refuse occupied chords until the editor explicitly confirms reassignment.
-    /// Existing aliases remain available when adding another shortcut.
-    @discardableResult
-    func reassign(
-        _ chord: KeyboardShortcutChord,
-        to command: KeyboardShortcutCommand,
-        replacingConflicts: Bool = false
-    ) -> Bool {
-        guard KeyboardShortcutProfiles.canAssign(chord, to: command) else { return false }
-        let occupied = selectedProfile.bindings.contains { $0.chord == chord && $0.command != command }
-        guard !occupied || replacingConflicts else { return false }
-        if selectedPreset != .custom {
-            customBindings = selectedProfile.bindings
-            selectedPreset = .custom
-        }
-        // App menus have one key equivalent per command. Culling retains alternate keys,
-        // routed by the focus-aware workspaces as well as the native menu.
-        customBindings.removeAll { $0.chord == chord || (!command.isCulling && $0.command == command) }
-        customBindings.append(KeyboardShortcutBinding(command: command, chord: chord))
-        persist()
-        return true
-    }
-
-    func remove(_ chord: KeyboardShortcutChord, from command: KeyboardShortcutCommand) {
-        if selectedPreset != .custom {
-            customBindings = selectedProfile.bindings
-            selectedPreset = .custom
-        }
-        customBindings.removeAll { $0.command == command && $0.chord == chord }
-        persist()
-    }
-
-    func unassign(_ command: KeyboardShortcutCommand) {
-        if selectedPreset != .custom {
-            customBindings = selectedProfile.bindings
-            selectedPreset = .custom
-        }
-        customBindings.removeAll { $0.command == command }
-        persist()
-    }
-
-    func resolveConflictsKeepingFirstCommand() {
-        if selectedPreset != .custom {
-            customBindings = selectedProfile.bindings
-            selectedPreset = .custom
-        }
-        let conflictingChords = Set(selectedProfile.conflicts.map(\.chord))
-        for chord in conflictingChords {
-            let commands = customBindings
-                .filter { $0.chord == chord }
-                .map(\.command)
-                .sorted { $0.rawValue < $1.rawValue }
-            for command in commands.dropFirst() {
-                customBindings.removeAll { $0.command == command && $0.chord == chord }
+    /// Earlier versions stored a flat list with any number of keys per command. Keep at most
+    /// two per command, preferring one menu (Command) chord and one other key, so Red's former
+    /// 6 / S / ⌘1 becomes 6 and ⌘1. Version 1 predates app commands, which take defaults.
+    private static func migratedSavedForm(
+        _ bindings: [KeyboardShortcutBinding],
+        schemaVersion: Int
+    ) -> [String: [KeyboardShortcutChord]] {
+        var saved: [String: [KeyboardShortcutChord]] = [:]
+        for command in KeyboardShortcutCommand.allCases where schemaVersion >= 2 || command.isCulling {
+            var chords: [KeyboardShortcutChord] = []
+            for chord in bindings.filter({ $0.command == command }).map(\.chord) where !chords.contains(chord) {
+                chords.append(chord)
             }
+            if chords.count > KeyboardShortcutProfile.slotCount {
+                let menu = chords.first { $0.modifiers.contains(.command) }
+                let other = chords.first { $0 != menu }
+                chords = chords.filter { $0 == menu || $0 == other }
+            }
+            saved[command.rawValue] = chords
+        }
+        return saved
+    }
+
+    var isBuiltInPresetActive: Bool { KeyboardShortcutPreset.named(activePresetName) != nil }
+
+    /// Every preset name, built-in first.
+    var presetNames: [String] { KeyboardShortcutPreset.allCases.map(\.displayName) + presets.map(\.name) }
+
+    func preset(named name: String) -> KeyboardShortcutUserPreset? { presets.first { $0.name == name } }
+
+    /// The saved shortcuts of a built-in or user preset, and how many of them this version
+    /// cannot use.
+    func savedProfile(named name: String) -> (profile: KeyboardShortcutProfile, rejected: Int)? {
+        if let builtIn = KeyboardShortcutPreset.named(name) { return (KeyboardShortcutProfiles.profile(for: builtIn), 0) }
+        return preset(named: name)?.resolved
+    }
+
+    var isModified: Bool {
+        savedProfile(named: activePresetName)?.profile.savedForm != selectedProfile.savedForm
+    }
+
+    /// The current shortcuts under the active preset's name, as a shareable file would hold them.
+    var currentPreset: KeyboardShortcutUserPreset {
+        KeyboardShortcutUserPreset(name: activePresetName, shortcuts: selectedProfile.savedForm)
+    }
+
+    // MARK: Editing
+
+    /// Sets one shortcut after checking reserved keys and conflicts; `nil` clears the slot.
+    /// Returns why the shortcut was refused.
+    @discardableResult
+    func set(_ chord: KeyboardShortcutChord?, for command: KeyboardShortcutCommand, slot: Int) -> String? {
+        if let chord, let error = selectedProfile.validationError(chord, for: command, slot: slot) { return error }
+        selectedProfile.set(chord, for: command, slot: slot)
+        persist()
+        return nil
+    }
+
+    /// Moves a chord from whichever command has it to `command`, once the editor confirmed.
+    @discardableResult
+    func reassign(_ chord: KeyboardShortcutChord, to command: KeyboardShortcutCommand, slot: Int) -> String? {
+        if let error = KeyboardShortcutProfiles.validationError(chord, for: command) { return error }
+        var profile = selectedProfile
+        let previous = profile.assignment(of: chord)
+        profile.unassign(chord)
+        // Clearing an earlier slot of the same command shifts the target down by one.
+        let target = previous.map { $0.command == command && $0.slot < slot ? slot - 1 : slot } ?? slot
+        if let error = profile.validationError(chord, for: command, slot: target) { return error }
+        profile.set(chord, for: command, slot: target)
+        selectedProfile = profile
+        persist()
+        return nil
+    }
+
+    func remove(_ chord: KeyboardShortcutChord) {
+        selectedProfile.unassign(chord)
+        persist()
+    }
+
+    // MARK: Presets
+
+    /// Replaces the current shortcuts with a saved preset's. Returns how many of the preset's
+    /// shortcuts were skipped as reserved or duplicated.
+    @discardableResult
+    func applyPreset(named name: String) -> Int {
+        guard let saved = savedProfile(named: name) else { return 0 }
+        activePresetName = name
+        selectedProfile = saved.profile
+        selectedProfile.name = name
+        persist()
+        return saved.rejected
+    }
+
+    /// Saves the current shortcuts as a user preset, replacing one of the same name.
+    @discardableResult
+    func savePreset(named rawName: String) -> String? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return "Enter a name for the preset." }
+        guard KeyboardShortcutPreset.named(name) == nil else {
+            return "“\(name)” is a built-in preset. Choose another name."
+        }
+        let preset = KeyboardShortcutUserPreset(name: name, shortcuts: selectedProfile.savedForm)
+        if let index = presets.firstIndex(where: { $0.name == name }) { presets[index] = preset } else { presets.append(preset) }
+        activePresetName = name
+        selectedProfile.name = name
+        persist()
+        return nil
+    }
+
+    @discardableResult
+    func renamePreset(_ oldName: String, to rawName: String) -> String? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = presets.firstIndex(where: { $0.name == oldName }) else { return "Built-in presets cannot be renamed." }
+        guard !name.isEmpty else { return "Enter a name for the preset." }
+        guard name == oldName || !presetNames.contains(name) else { return "A preset named “\(name)” already exists." }
+        presets[index].name = name
+        if activePresetName == oldName {
+            activePresetName = name
+            selectedProfile.name = name
+        }
+        persist()
+        return nil
+    }
+
+    /// Deletes a user preset. The current shortcuts stay as they are, now as changes to the
+    /// default preset.
+    func deletePreset(named name: String) {
+        guard presets.contains(where: { $0.name == name }) else { return }
+        presets.removeAll { $0.name == name }
+        if activePresetName == name {
+            activePresetName = Self.defaultPresetName
+            selectedProfile.name = activePresetName
         }
         persist()
     }
 
-    func resetCustom() {
-        customBindings = KeyboardShortcutProfiles.profile(for: .photoAgent).bindings
-        selectedPreset = .custom
+    /// Adds an imported preset under a free name and switches to it.
+    @discardableResult
+    func importPreset(_ imported: KeyboardShortcutUserPreset) -> (name: String, rejected: Int) {
+        var name = imported.name
+        var counter = 2
+        while presetNames.contains(name) {
+            name = "\(imported.name) \(counter)"
+            counter += 1
+        }
+        let resolved = imported.resolved
+        presets.append(KeyboardShortcutUserPreset(name: name, shortcuts: resolved.profile.savedForm))
+        activePresetName = name
+        selectedProfile = resolved.profile
+        selectedProfile.name = name
         persist()
+        return (name, resolved.rejected)
+    }
+
+    func resetToDefaults() {
+        applyPreset(named: Self.defaultPresetName)
     }
 
     private func persist() {
-        let document = Document(
-            selectedPreset: selectedPreset,
-            customBindings: customBindings
-        )
+        let document = Document(activePresetName: activePresetName, current: selectedProfile.savedForm, presets: presets)
         if let data = try? JSONEncoder().encode(document) {
             defaults.set(data, forKey: storageKey)
         }
@@ -851,11 +1293,52 @@ extension KeyboardShortcutChord {
         case "delete": equivalent = .delete
         case "forwarddelete": equivalent = .deleteForward
         case "return": equivalent = .return
+        case "escape": equivalent = .escape
+        case "space": equivalent = .space
+        case "tab": equivalent = .tab
+        case "left": equivalent = .leftArrow
+        case "right": equivalent = .rightArrow
+        case "up": equivalent = .upArrow
+        case "down": equivalent = .downArrow
+        case "home": equivalent = .home
+        case "end": equivalent = .end
+        case "pageup": equivalent = .pageUp
+        case "pagedown": equivalent = .pageDown
         default:
-            guard key.count == 1, let character = key.first else { return nil }
-            equivalent = KeyEquivalent(character)
+            if let index = Self.functionKeys.firstIndex(of: key),
+               let scalar = Unicode.Scalar(NSF1FunctionKey + index) {
+                equivalent = KeyEquivalent(Character(scalar))
+            } else {
+                guard key.count == 1, let character = key.first else { return nil }
+                equivalent = KeyEquivalent(character)
+            }
         }
         return KeyboardShortcut(equivalent, modifiers: modifiers.eventModifiers)
+    }
+
+    /// The chord a menu item's key equivalent produces, so an alternate shortcut can find
+    /// the item whose primary shortcut the menu shows.
+    @MainActor
+    init?(menuItem: NSMenuItem) {
+        let equivalent = menuItem.keyEquivalent
+        guard let scalar = equivalent.unicodeScalars.first, equivalent.unicodeScalars.count == 1 else { return nil }
+        var modifiers = KeyboardShortcutModifiers(menuItem.keyEquivalentModifierMask)
+        let names: [UInt32: String] = [
+            UInt32(NSLeftArrowFunctionKey): "left", UInt32(NSRightArrowFunctionKey): "right",
+            UInt32(NSUpArrowFunctionKey): "up", UInt32(NSDownArrowFunctionKey): "down",
+            UInt32(NSHomeFunctionKey): "home", UInt32(NSEndFunctionKey): "end",
+            UInt32(NSPageUpFunctionKey): "pageup", UInt32(NSPageDownFunctionKey): "pagedown",
+            UInt32(NSDeleteFunctionKey): "forwarddelete",
+        ]
+        if let name = names[scalar.value] {
+            self.init(key: name, modifiers: modifiers)
+        } else if (NSF1FunctionKey...NSF12FunctionKey).contains(Int(scalar.value)) {
+            self.init(key: "f\(Int(scalar.value) - NSF1FunctionKey + 1)", modifiers: modifiers)
+        } else {
+            // AppKit spells Shift-letter equivalents as the capital letter.
+            if equivalent != equivalent.lowercased() { modifiers.insert(.shift) }
+            self.init(key: equivalent, modifiers: modifiers)
+        }
     }
 
 }
@@ -864,7 +1347,7 @@ extension KeyboardShortcutProfile {
     nonisolated func menuChord(for command: KeyboardShortcutCommand) -> KeyboardShortcutChord? {
         guard !command.isCulling else { return nil }
         return bindings.first { binding in
-            binding.command == command && !binding.chord.modifiers.isEmpty
+            binding.command == command && (!binding.chord.modifiers.isEmpty || binding.chord.isFunctionKey)
                 && self.command(for: binding.chord) == command
         }?.chord
     }

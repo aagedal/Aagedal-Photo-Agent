@@ -5,7 +5,7 @@
 
 This guide covers the new 3.0 investigation, comparison, versioning, caption, and rename
 workflows. It supplements the control-level hover help and accessibility hints in the app. Commands and
-shortcuts shown in Settings → Shortcuts are authoritative when they differ from examples here. Open this guide, the known limitations and What's New from the **Help** menu.
+shortcuts shown in the Keyboard Shortcuts window (⌥⌘K) are authoritative when they differ from examples here. Open this guide, the known limitations and What's New from the **Help** menu.
 
 ## Find a setting
 
@@ -29,7 +29,7 @@ opens it in that pane. View ▸ Tabs has the same commands from the keyboard: Ne
 Next / Previous Tab (⌥⌘N / ⌥⌘B, every tab of every pane in reading order) and Close Tab; ⌘W closes
 the active tab instead of the window while the browser has more than one pane (the first tab, which
 owns the sidebar, can't be closed). The New Tab and Next / Previous shortcuts can be changed in
-Settings → Shortcuts. Returning to Browser preserves the layout. Metadata Review also has a **Back to Browser**
+the Keyboard Shortcuts window (⌥⌘K). Returning to Browser preserves the layout. Metadata Review also has a **Back to Browser**
 button for leaving the review table.
 
 - **Caption Workspace** works through the visible folder with a compact field navigator, validation,
