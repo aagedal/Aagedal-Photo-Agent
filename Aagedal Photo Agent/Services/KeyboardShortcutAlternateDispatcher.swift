@@ -67,7 +67,8 @@ enum KeyboardShortcutAlternateDispatcher {
         var search = ItemSearch(command: command, chord: chord)
         if let titled = search.titledItem(in: menu) { return titled }
         if search.matches > 1 {
-            logger.fault("No menu item titled “\(command.displayName, privacy: .public)” shows its shortcut \(chord.displayName, privacy: .public); its alternate was not run.")
+            // Logged private, as app logs must be; Xcode's console shows the value while debugging.
+            logger.fault("No menu item titled “\(command.displayName)” shows its shortcut; its alternate was not run.")
             return nil
         }
         return search.onlyMatch
