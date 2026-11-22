@@ -35,12 +35,13 @@ struct KeyboardShortcutEditorView: View {
     }
 
     var body: some View {
+        let commands = profile.commandsByChord
         VStack(alignment: .leading, spacing: 14) {
             presetBar
             VirtualKeyboardView(
-                layout: layout, commands: profile.commandsByChord, layer: layer,
+                layout: layout, commands: commands, layer: layer,
                 selectedKeyID: selectedKeyID, highlightedKeyIDs: highlightedKeyIDs,
-                reservedTitle: reservedTitle, summary: keySummary,
+                reservedTitle: reservedTitle, summary: { keySummary($0, commands: commands) },
                 select: { selectedKeyID = $0.id },
                 toggleModifier: { clickedModifiers.formSymmetricDifference($0) },
                 drop: dropCommand
@@ -50,7 +51,7 @@ struct KeyboardShortcutEditorView: View {
             HStack(alignment: .top, spacing: 14) {
                 commandList
                 KeyDetailView(
-                    key: selectedKey, profile: profile, layer: layer, selectedCommand: selectedCommand,
+                    key: selectedKey, profile: profile, commands: commands, layer: layer, selectedCommand: selectedCommand,
                     reservedTitle: reservedTitle, reservedDetail: reservedDetail,
                     assign: { chord in selectedCommand.map { assign(chord, to: $0, slot: nil) } },
                     remove: { chord in remove(chord) },
@@ -66,6 +67,7 @@ struct KeyboardShortcutEditorView: View {
         .onAppear {
             recorder.install()
             recorder.record = { chord, target in assign(chord, to: target.command, slot: target.slot) }
+            if status == nil, let note = registry.skippedOnLoadNote { status = .info(note) }
         }
         .onDisappear { recorder.uninstall() }
         .onReceive(DistributedNotificationCenter.default().publisher(
@@ -163,15 +165,13 @@ struct KeyboardShortcutEditorView: View {
                 .help("Add a preset from a .\(KeyboardShortcutUserPreset.fileExtension) file. You can also drop the file on this window.")
             Button("Export…", action: export)
                 .help("Save the current shortcuts as a .\(KeyboardShortcutUserPreset.fileExtension) file to share.")
-            if let data = try? registry.currentPreset.fileData() {
-                ShareLink(
-                    item: KeyboardShortcutPresetShareItem(name: registry.activePresetName, data: data),
-                    preview: SharePreview(registry.activePresetName, image: Image(systemName: "keyboard"))
-                ) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .help("Share the current shortcuts as a preset file.")
+            ShareLink(
+                item: KeyboardShortcutPresetShareItem(preset: registry.currentPreset),
+                preview: SharePreview(registry.activePresetName, image: Image(systemName: "keyboard"))
+            ) {
+                Image(systemName: "square.and.arrow.up")
             }
+            .help("Share the current shortcuts as a preset file.")
             Menu {
                 Button("Rename…") { prompt(.rename) }.disabled(registry.isBuiltInPresetActive)
                 Button("Delete…") { confirmDelete = true }.disabled(registry.isBuiltInPresetActive)
@@ -301,9 +301,9 @@ struct KeyboardShortcutEditorView: View {
         return KeyboardShortcutProfiles.reservation(for: chord)
     }
 
-    private func keySummary(_ key: VirtualKey) -> String {
+    private func keySummary(_ key: VirtualKey, commands: [KeyboardShortcutChord: KeyboardShortcutCommand]) -> String {
         let lines = key.chords.compactMap { entry -> String? in
-            if let command = profile.command(for: entry.chord) {
+            if let command = commands[entry.chord] {
                 return "\(entry.chord.displayName)  \(command.displayName)" + developNote(command, entry.chord)
             }
             return nil
@@ -539,6 +539,7 @@ final class ShortcutRecorder: ObservableObject {
     @Published private(set) var heldModifiers: KeyboardShortcutModifiers = []
     var record: ((KeyboardShortcutChord, Target) -> Void)?
     private var monitors: [Any] = []
+    private var observers: [NSObjectProtocol] = []
     private weak var window: NSWindow?
 
     func toggle(_ newTarget: Target) {
@@ -566,11 +567,32 @@ final class ShortcutRecorder: ObservableObject {
             return event
         }
         monitors = [keyMonitor, flagsMonitor].compactMap { $0 }
+        // Recording suspends every alternate shortcut, and modifier releases in other apps
+        // never arrive, so leaving the editor's window ends both.
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [weak self] note in
+                let window = note.object as? NSWindow
+                MainActor.assumeIsolated {
+                    guard let self, window === self.window else { return }
+                    self.target = nil
+                    self.heldModifiers = []
+                }
+            },
+            center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.target = nil
+                    self?.heldModifiers = []
+                }
+            },
+        ]
     }
 
     func uninstall() {
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
         target = nil
         heldModifiers = []
     }
@@ -761,6 +783,7 @@ private struct KeyCapView: View {
 private struct KeyDetailView: View {
     let key: VirtualKey?
     let profile: KeyboardShortcutProfile
+    let commands: [KeyboardShortcutChord: KeyboardShortcutCommand]
     let layer: KeyboardShortcutModifiers
     let selectedCommand: KeyboardShortcutCommand?
     let reservedTitle: (KeyboardShortcutChord) -> String?
@@ -775,7 +798,7 @@ private struct KeyDetailView: View {
                 HStack {
                     Text("\(key.name) Key").font(.headline)
                     Spacer()
-                    let used = key.chords.filter { profile.command(for: $0.chord) != nil }.count
+                    let used = key.chords.filter { commands[$0.chord] != nil }.count
                     Text("\(used) of \(key.chords.count) used").font(.caption).foregroundStyle(.secondary)
                 }
                 ScrollView {
@@ -803,7 +826,7 @@ private struct KeyDetailView: View {
     }
 
     private func row(_ chord: KeyboardShortcutChord, inLayer: Bool) -> some View {
-        let command = profile.command(for: chord)
+        let command = commands[chord]
         return HStack(spacing: 8) {
             Text(chord.displayName)
                 .font(.callout.monospaced())

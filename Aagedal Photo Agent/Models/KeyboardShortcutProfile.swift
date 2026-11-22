@@ -107,6 +107,12 @@ nonisolated struct KeyboardShortcutChord: Codable, Hashable, Sendable {
         }
     }
 
+    /// Menus compare their key equivalent with the character a key types, so Shift with a
+    /// digit or punctuation (⇧⌘[ types "{") never matches. Letters have capitals that do.
+    var menuCanMatch: Bool {
+        !(modifiers.contains(.shift) && isCharacterKey && key.uppercased() == key)
+    }
+
     var keyLabel: String {
         [
             "return": "↩", "delete": "⌫", "forwarddelete": "⌦", "escape": "⎋", "space": "Space", "tab": "⇥",
@@ -643,7 +649,9 @@ nonisolated struct KeyboardShortcutProfile: Codable, Equatable, Sendable {
 
     /// Every command's shortcuts by command name, unbound commands included.
     var savedForm: [String: [KeyboardShortcutChord]] {
-        Dictionary(uniqueKeysWithValues: KeyboardShortcutCommand.allCases.map { ($0.rawValue, chords(for: $0)) })
+        var saved = Dictionary(uniqueKeysWithValues: KeyboardShortcutCommand.allCases.map { ($0.rawValue, [KeyboardShortcutChord]()) })
+        for binding in bindings { saved[binding.command.rawValue, default: []].append(binding.chord) }
+        return saved
     }
 
     /// Rebuilds a profile from saved choices. Commands absent from `saved` (such as ones added
@@ -763,6 +771,15 @@ nonisolated enum KeyboardShortcutProfiles {
             if withoutShift.isEmpty || modifiers == .option {
                 return ("Delete", "Reserved for deleting text and the focused Comparison photo")
             }
+        case "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8":
+            if modifiers == .control {
+                return ("Keyboard Navigation", "Reserved for macOS keyboard navigation, such as ⌃F2 for the menu bar")
+            }
+            if key == "f5", modifiers == .command || modifiers == [.command, .option] {
+                return ("VoiceOver", "Reserved for VoiceOver and Accessibility Shortcuts")
+            }
+        case "f11":
+            if modifiers.isEmpty { return ("Show Desktop", "Reserved for macOS Show Desktop") }
         default:
             break
         }
@@ -952,6 +969,25 @@ final class KeyboardShortcutProfileRegistry {
     private(set) var selectedProfile: KeyboardShortcutProfile
     private(set) var activePresetName: String
     private(set) var presets: [KeyboardShortcutUserPreset]
+    /// Saved shortcuts this version could not use (now reserved or duplicated) when the
+    /// shortcuts were loaded, so the editor can say they were left out.
+    private(set) var skippedOnLoad = 0
+
+    var skippedOnLoadNote: String? {
+        guard skippedOnLoad > 0 else { return nil }
+        let one = skippedOnLoad == 1
+        return "\(skippedOnLoad) saved shortcut\(one ? " was" : "s were") left out because this version reserves or already uses \(one ? "it" : "them")."
+    }
+
+    /// Presets resolved once rather than on every `isModified` read; an entry is reused only
+    /// while its source preset is unchanged.
+    private struct ResolvedPreset {
+        let source: KeyboardShortcutUserPreset?
+        let profile: KeyboardShortcutProfile
+        let rejected: Int
+        let savedForm: [String: [KeyboardShortcutChord]]
+    }
+    @ObservationIgnored private var resolvedPresets: [String: ResolvedPreset] = [:]
 
     init(
         defaults: UserDefaults = AppDefaults.store,
@@ -966,13 +1002,17 @@ final class KeyboardShortcutProfileRegistry {
             presets = document.presets.filter { names.insert($0.name).inserted }
             let active = names.contains(document.activePresetName) ? document.activePresetName : Self.defaultPresetName
             activePresetName = active
-            selectedProfile = KeyboardShortcutProfile.restoring(document.current, name: active, defaults: base).profile
+            let current = KeyboardShortcutProfile.restoring(document.current, name: active, defaults: base)
+            selectedProfile = current.profile
+            skippedOnLoad = current.rejected
         } else if let data, let legacy = try? JSONDecoder().decode(LegacyDocument.self, from: data),
                   (1...2).contains(legacy.schemaVersion) {
-            let custom = KeyboardShortcutProfile.restoring(
+            let restored = KeyboardShortcutProfile.restoring(
                 Self.migratedSavedForm(legacy.customBindings, schemaVersion: legacy.schemaVersion),
                 name: Self.migratedPresetName, defaults: base
-            ).profile
+            )
+            let custom = restored.profile
+            skippedOnLoad = restored.rejected
             let customPreset = KeyboardShortcutUserPreset(name: Self.migratedPresetName, shortcuts: custom.savedForm)
             if let preset = KeyboardShortcutPreset(rawValue: legacy.selectedPreset) {
                 // Keep earlier customisations reachable even while a built-in preset was chosen.
@@ -1006,9 +1046,13 @@ final class KeyboardShortcutProfileRegistry {
                 chords.append(chord)
             }
             if chords.count > KeyboardShortcutProfile.slotCount {
-                let menu = chords.first { $0.modifiers.contains(.command) }
-                let other = chords.first { $0 != menu }
-                chords = chords.filter { $0 == menu || $0 == other }
+                let preferred = [
+                    chords.first { $0.modifiers.contains(.command) },
+                    chords.first { !$0.modifiers.contains(.command) },
+                ].compactMap { $0 }
+                // Without one of each, keep the first two.
+                chords = preferred.count == KeyboardShortcutProfile.slotCount
+                    ? chords.filter(preferred.contains) : Array(chords.prefix(KeyboardShortcutProfile.slotCount))
             }
             saved[command.rawValue] = chords
         }
@@ -1025,12 +1069,28 @@ final class KeyboardShortcutProfileRegistry {
     /// The saved shortcuts of a built-in or user preset, and how many of them this version
     /// cannot use.
     func savedProfile(named name: String) -> (profile: KeyboardShortcutProfile, rejected: Int)? {
-        if let builtIn = KeyboardShortcutPreset.named(name) { return (KeyboardShortcutProfiles.profile(for: builtIn), 0) }
-        return preset(named: name)?.resolved
+        resolvedPreset(named: name).map { ($0.profile, $0.rejected) }
+    }
+
+    private func resolvedPreset(named name: String) -> ResolvedPreset? {
+        let source = preset(named: name)
+        if let cached = resolvedPresets[name], cached.source == source { return cached }
+        let resolved: (profile: KeyboardShortcutProfile, rejected: Int)
+        if let builtIn = KeyboardShortcutPreset.named(name) {
+            resolved = (KeyboardShortcutProfiles.profile(for: builtIn), 0)
+        } else if let source {
+            resolved = source.resolved
+        } else {
+            return nil
+        }
+        let entry = ResolvedPreset(source: source, profile: resolved.profile, rejected: resolved.rejected,
+                                   savedForm: resolved.profile.savedForm)
+        resolvedPresets[name] = entry
+        return entry
     }
 
     var isModified: Bool {
-        savedProfile(named: activePresetName)?.profile.savedForm != selectedProfile.savedForm
+        resolvedPreset(named: activePresetName)?.savedForm != selectedProfile.savedForm
     }
 
     /// The current shortcuts under the active preset's name, as a shareable file would hold them.

@@ -3099,6 +3099,7 @@ struct EditWorkspaceView: View {
         DevelopPrimaryLifecycleCoordinator.shared.unregisterEditor(ownerID: primaryEditorOwnerID)
         metadataViewModel.unregisterPrimaryDevelopRecoveryEditorBarrier(owner: primaryEditorOwnerID)
         DevelopUndoMenuRouter.shared.unregister(ownerID: primaryEditorOwnerID)
+        KeyboardShortcutAlternateDispatcher.unregisterDevelopGestureOwner(primaryEditorOwnerID)
         exportSession.endWorkspaceSession()
         colorLUTImport.endImageSession()
         layerSession.endImageSession()
@@ -3231,6 +3232,7 @@ struct EditWorkspaceView: View {
         }
         DevelopPrimaryLifecycleCoordinator.shared.unregisterEditor(ownerID: primaryEditorOwnerID)
         metadataViewModel.unregisterPrimaryDevelopRecoveryEditorBarrier(owner: primaryEditorOwnerID)
+        KeyboardShortcutAlternateDispatcher.unregisterDevelopGestureOwner(primaryEditorOwnerID)
         primaryEditorOwnerID = UUID()
         DevelopPrimaryLifecycleCoordinator.shared.registerEditor(ownerID: primaryEditorOwnerID,
             hasPendingWork: { hasUncapturedPrimaryDevelopWork },
@@ -3254,6 +3256,11 @@ struct EditWorkspaceView: View {
         }
         if let keyMonitor {
             workspaceInput.installKeyMonitor(keyMonitor) { NSEvent.removeMonitor($0) }
+        }
+        // ⌘D and ⌥V stay Develop's hold and paste gestures only where handleKeyEvent takes them.
+        KeyboardShortcutAlternateDispatcher.registerDevelopGestureOwner(primaryEditorOwnerID) { [self] event in
+            !workspaceInput.isOverlayPresented && keyboardWindow.ownsKeyEvent(in: event.window)
+                && NSApp.modalWindow == nil && event.window?.attachedSheet == nil && event.window?.sheetParent == nil
         }
         // Edit ▸ Undo/Redo drive this history (with step names) while Develop owns input; the
         // menu falls back to the responder chain for text fields and other windows.
