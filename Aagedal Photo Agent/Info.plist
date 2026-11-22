@@ -66,6 +66,23 @@
 				<string>application/vnd.aagedal.photo-intelligence-project</string>
 			</dict>
 		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Photo Agent Keyboard Preset</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.aagedal.photoagent.keyboard-preset</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>apkeys</string>
+				</array>
+			</dict>
+		</dict>
 	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Truls Aagedal</string>

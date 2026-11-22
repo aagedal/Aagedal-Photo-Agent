@@ -266,18 +266,25 @@ Opt-in sync that keeps your library settings in step across Macs, configured in 
 
 ## Keyboard Shortcuts
 
-Open **Settings → Shortcuts** to inspect the keyboard, switch profiles, record a key,
-or unassign a command. File, browsing, metadata, Develop, export, scopes and upload
-commands share one profile with rating and label shortcuts. The preview shows actual
-assignments and free keys across modifier layers; moving an occupied key requires
-confirmation. Core menu commands have one shortcut each, while rating and label actions
-support alternate bindings. Native menus update immediately. Caption Save & Next and
-Write & Next keep separate assignments because they also work during typing.
+Open **Photo Agent › Keyboard Shortcuts…** (⌥⌘K) to edit shortcuts. The window draws your
+keyboard from the current input source (ISO or ANSI, with your layout's characters) and colours
+each key by the command it runs; click or hold ⌘ ⌥ ⌃ ⇧ to see that layer, and click a key to list
+all 16 modifier combinations. Search commands by name or key, click a **Shortcut** or
+**Alternate** field and press keys to record, or drag a command onto a key. Every command can
+have two shortcuts; the menu shows the first and the other works the same way. Moving an
+occupied key requires confirmation, and native menus update immediately.
 
-Standard text editing, window controls and fixed workspace gestures remain reserved.
-Settings lists these gestures for reference and identifies contextual Develop behavior.
-Dialog and settings editors keep their local controls. The table below uses the default
-Photo Agent profile.
+**Presets:** the built-in Photo Agent, Photo Mechanic-like and Bridge-like presets are
+read-only. Save As stores your shortcuts under a name; the picker switches presets and asks
+before discarding unsaved ("Modified") changes. Export, Share or drop/Import an `.apkeys` file
+to move a preset between Macs or people; reserved or duplicate entries in a file are skipped and
+reported, and commands added in later versions take their defaults.
+
+Standard text editing, window controls and fixed workspace gestures remain reserved and are
+labelled on the keyboard. **Settings → Shortcuts** shows the active preset, the Caption Save &
+Next and Write & Next keys (separate because they also work during typing) and the workspace
+gestures for reference. Dialog and settings editors keep their local controls. The table below
+uses the default Photo Agent preset.
 
 | Shortcut | Action |
 |---|---|

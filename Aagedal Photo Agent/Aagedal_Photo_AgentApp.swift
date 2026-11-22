@@ -124,6 +124,13 @@ struct Aagedal_Photo_AgentApp: App {
                 .disabled(!updater.canCheckForUpdates)
             }
 
+            CommandGroup(after: .appSettings) {
+                Button("Keyboard Shortcuts…") {
+                    openWindow(id: KeyboardShortcutEditorWindow.id)
+                }
+                .keyboardShortcut("k", modifiers: [.command, .option])
+            }
+
             // No Help book ships with the app; point Help at the 3.0 guides instead.
             CommandGroup(replacing: .help) {
                 Button("Photo Agent Feature Guide") {
@@ -515,6 +522,11 @@ struct Aagedal_Photo_AgentApp: App {
         }
         .defaultSize(width: 420, height: 560)
 
+        Window("Keyboard Shortcuts", id: KeyboardShortcutEditorWindow.id) {
+            KeyboardShortcutEditorView()
+        }
+        .defaultSize(width: 1060, height: 840)
+
         Settings {
             SettingsView(settingsViewModel: settingsViewModel)
                 .environment(faceRecognitionViewModel)
@@ -587,6 +599,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Off-main, and skipped in test processes.
         FFmpegWhisperVerifiedSnapshotCache.sweepStaleSessionsAtLaunch()
+        KeyboardShortcutAlternateDispatcher.install()
     }
 
     @MainActor
