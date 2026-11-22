@@ -120,6 +120,13 @@ struct KeyboardShortcutsSettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                if let note = profileRegistry.skippedOnLoadNote {
+                    Label(note, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Caption Workspace").font(.headline)
                     ForEach(CaptionAdvanceShortcutCommand.allCases, id: \.self) { command in

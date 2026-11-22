@@ -62,10 +62,10 @@ extension UTType {
     )
 }
 
-/// The current shortcuts as a preset file, for the share menu.
+/// The current shortcuts as a preset file, for the share menu. The file is written only
+/// when the preset is shared.
 nonisolated struct KeyboardShortcutPresetShareItem: Transferable {
-    let name: String
-    let data: Data
+    let preset: KeyboardShortcutUserPreset
 
     static func fileName(for name: String) -> String {
         name.components(separatedBy: CharacterSet(charactersIn: "/:\\")).joined(separator: "-")
@@ -76,8 +76,8 @@ nonisolated struct KeyboardShortcutPresetShareItem: Transferable {
         FileRepresentation(exportedContentType: .photoAgentKeyboardPreset) { item in
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent(fileName(for: item.name))
-            try item.data.write(to: url)
+            let url = directory.appendingPathComponent(fileName(for: item.preset.name))
+            try item.preset.fileData().write(to: url)
             return SentTransferredFile(url)
         }
     }

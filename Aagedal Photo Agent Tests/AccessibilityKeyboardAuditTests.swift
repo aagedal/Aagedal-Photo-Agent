@@ -573,6 +573,47 @@ struct UnifiedKeyboardShortcutTests {
         }
     }
 
+    @Test("Version-two migration keeps two keys when none of a command's keys uses Command")
+    func legacyMigrationWithoutMenuChord() throws {
+        try withRegistry { _, defaults in
+            struct Legacy: Codable {
+                let schemaVersion = 2
+                let selectedPreset = "custom"
+                let customBindings: [KeyboardShortcutBinding]
+            }
+            var bindings = KeyboardShortcutProfiles.profile(for: .photoAgent).bindings
+            bindings.removeAll { $0.command == .rateOne || $0.chord == .init(key: "q") }
+            bindings += [
+                KeyboardShortcutBinding(command: .rateOne, chord: .init(key: "1")),
+                KeyboardShortcutBinding(command: .rateOne, chord: .init(key: "q")),
+                KeyboardShortcutBinding(command: .rateOne, chord: .init(key: "1", modifiers: .shift)),
+            ]
+            defaults.set(try JSONEncoder().encode(Legacy(customBindings: bindings)), forKey: "profile")
+            let migrated = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
+            #expect(migrated.selectedProfile.chords(for: .rateOne) == [.init(key: "1"), .init(key: "q")])
+        }
+    }
+
+    @Test("Saved shortcuts that are now reserved are counted when loading")
+    func skippedOnLoad() throws {
+        try withRegistry { registry, defaults in
+            #expect(registry.skippedOnLoadNote == nil)
+            struct Document: Codable {
+                var schemaVersion = 3
+                var activePresetName = "Photo Agent"
+                var current: [String: [KeyboardShortcutChord]]
+                var presets: [KeyboardShortcutUserPreset] = []
+            }
+            var current = registry.selectedProfile.savedForm
+            current[KeyboardShortcutCommand.renderSelected.rawValue] = [.init(key: "f", modifiers: [.command, .control])]
+            defaults.set(try JSONEncoder().encode(Document(current: current)), forKey: "profile")
+            let reopened = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
+            #expect(reopened.skippedOnLoad == 1)
+            #expect(reopened.skippedOnLoadNote != nil)
+            #expect(reopened.selectedProfile.chords(for: .renderSelected).isEmpty)
+        }
+    }
+
     @Test("System, text-entry and workspace keys cannot be assigned or mutate the active profile")
     func protectedKeys() throws {
         try withRegistry { registry, defaults in
@@ -786,6 +827,107 @@ struct KeyboardShortcutEditorModelTests {
         item.isEnabled = true
         #expect(try !press(97, "\u{F709}", []))
         #expect(target.count == 1)
+    }
+
+    @Test("Develop's ⌘D gesture blocks Duplicate's alternate only while a Develop workspace claims the key")
+    func developGestureOwnership() throws {
+        final class Target: NSObject {
+            var count = 0
+            @objc func run(_ sender: Any?) { count += 1 }
+        }
+        let target = Target()
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Duplicate", action: #selector(Target.run(_:)), keyEquivalent: "x")
+        item.keyEquivalentModifierMask = [.command, .option]
+        item.target = target
+        menu.addItem(item)
+
+        var profile = KeyboardShortcutProfiles.profile(for: .photoAgent)
+        profile.set(.init(key: "x", modifiers: [.command, .option]), for: .duplicateSelected, slot: 0)
+        profile.set(.init(key: "d", modifiers: .command), for: .duplicateSelected, slot: 1)
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: 0, context: nil,
+            characters: "d", charactersIgnoringModifiers: "d", isARepeat: false, keyCode: 2
+        ))
+        #expect(KeyboardShortcutAlternateDispatcher.perform(event, profile: profile, menu: menu))
+        #expect(target.count == 1)
+
+        let owner = UUID()
+        KeyboardShortcutAlternateDispatcher.registerDevelopGestureOwner(owner) { _ in true }
+        defer { KeyboardShortcutAlternateDispatcher.unregisterDevelopGestureOwner(owner) }
+        #expect(!KeyboardShortcutAlternateDispatcher.perform(event, profile: profile, menu: menu))
+        #expect(target.count == 1)
+    }
+
+    @Test("Alternates run the command's own item when a system item shows the same chord first")
+    func alternateDispatchPrefersCommandTitle() throws {
+        final class Target: NSObject {
+            var count = 0
+            @objc func run(_ sender: Any?) { count += 1 }
+        }
+        let system = Target(), tab = Target()
+        let menu = NSMenu()
+        for (title, target) in [("Show Toolbar", system), ("New Tab", tab)] {
+            let item = NSMenuItem(title: title, action: #selector(Target.run(_:)), keyEquivalent: "t")
+            item.keyEquivalentModifierMask = [.command, .option]
+            item.target = target
+            menu.addItem(item)
+        }
+        var profile = KeyboardShortcutProfiles.profile(for: .photoAgent)
+        profile.set(.init(key: "f6"), for: .newBrowserTab, slot: 1)
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+            characters: "\u{F709}", charactersIgnoringModifiers: "\u{F709}", isARepeat: false, keyCode: 97
+        ))
+        #expect(KeyboardShortcutAlternateDispatcher.perform(event, profile: profile, menu: menu))
+        #expect(tab.count == 1)
+        #expect(system.count == 0)
+        #expect(KeyboardShortcutCommand.openFolder.isMenuTitle("Open Folder..."))
+        #expect(KeyboardShortcutCommand.showWebImport.isMenuTitle("Import from Web URL…"))
+        #expect(KeyboardShortcutCommand.toggleCleanFeed.isMenuTitle("Turn Off Clean Feed"))
+        #expect(!KeyboardShortcutCommand.newBrowserTab.isMenuTitle("Show Toolbar"))
+    }
+
+    @Test("A Shift-punctuation primary, which menus cannot match, runs through the dispatcher")
+    func shiftedPunctuationPrimary() throws {
+        final class Target: NSObject {
+            var count = 0
+            @objc func run(_ sender: Any?) { count += 1 }
+        }
+        #expect(!KeyboardShortcutChord(key: "[", modifiers: [.command, .shift]).menuCanMatch)
+        #expect(KeyboardShortcutChord(key: "b", modifiers: [.command, .shift]).menuCanMatch)
+        #expect(KeyboardShortcutChord(key: "[", modifiers: [.command, .option]).menuCanMatch)
+        // The comma key types punctuation on common layouts; read it as this layout does.
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command, .shift], timestamp: 0, windowNumber: 0, context: nil,
+            characters: ",", charactersIgnoringModifiers: ",", isARepeat: false, keyCode: 43
+        ))
+        let chord = try #require(KeyboardShortcutChord(event: event))
+        guard !chord.menuCanMatch else { return }
+        let target = Target()
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Show Previous Tab", action: #selector(Target.run(_:)), keyEquivalent: chord.key)
+        item.keyEquivalentModifierMask = [.command, .shift]
+        item.target = target
+        menu.addItem(item)
+        var profile = KeyboardShortcutProfiles.profile(for: .photoAgent)
+        profile.set(chord, for: .showPreviousBrowserTab, slot: 0)
+        #expect(KeyboardShortcutAlternateDispatcher.perform(event, profile: profile, menu: menu))
+        #expect(target.count == 1)
+    }
+
+    @Test("macOS-owned function-key chords are reserved")
+    func reservedFunctionKeys() {
+        for chord in [
+            KeyboardShortcutChord(key: "f2", modifiers: .control),
+            KeyboardShortcutChord(key: "f8", modifiers: .control),
+            KeyboardShortcutChord(key: "f5", modifiers: .command),
+            KeyboardShortcutChord(key: "f11"),
+        ] {
+            #expect(!KeyboardShortcutProfiles.canAssign(chord, to: .renderSelected))
+        }
+        #expect(KeyboardShortcutProfiles.canAssign(.init(key: "f9", modifiers: .control), to: .renderSelected))
+        #expect(KeyboardShortcutProfiles.canAssign(.init(key: "f2", modifiers: [.control, .shift]), to: .renderSelected))
     }
 
     @Test("The on-screen keyboard finds named keys on any layout and lists every modifier layer")
