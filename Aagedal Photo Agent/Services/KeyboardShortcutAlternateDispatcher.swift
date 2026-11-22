@@ -1,4 +1,7 @@
 import AppKit
+import os
+
+private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "KeyboardShortcutAlternateDispatcher")
 
 /// A menu item shows one key equivalent, so a menu command's alternate shortcut runs the
 /// item whose primary shortcut the menu shows. Running the real item keeps its enabled state
@@ -11,11 +14,11 @@ enum KeyboardShortcutAlternateDispatcher {
     /// Set while the shortcut editor records a key, so the press is recorded instead of run.
     static var isSuspended = false
 
-    /// Develop workspaces that currently handle their hold and paste gestures (⌘D, ⌥V) for
-    /// a key event. Elsewhere those chords run their command like any other alternate.
-    private static var developGestureOwners: [UUID: (NSEvent) -> Bool] = [:]
+    /// Develop workspaces asked whether they take a hold or paste gesture (⌘D, ⌥V) for a key
+    /// event. Wherever none does, those chords run their command like any other alternate.
+    private static var developGestureOwners: [UUID: (NSEvent, KeyboardShortcutChord) -> Bool] = [:]
 
-    static func registerDevelopGestureOwner(_ id: UUID, owns: @escaping (NSEvent) -> Bool) {
+    static func registerDevelopGestureOwner(_ id: UUID, owns: @escaping (NSEvent, KeyboardShortcutChord) -> Bool) {
         developGestureOwners[id] = owns
     }
 
@@ -37,35 +40,62 @@ enum KeyboardShortcutAlternateDispatcher {
         let profile = profile ?? KeyboardShortcutProfileRegistry.shared.selectedProfile
         guard let command = profile.command(for: chord), !command.isCulling,
               let primary = profile.menuChord(for: command), primary != chord || !chord.menuCanMatch,
-              !(command.hasDevelopContextOverride(for: chord) && developGestureOwners.values.contains { $0(event) }),
+              !(command.hasDevelopContextOverride(for: chord) && developGestureOwners.values.contains { $0(event, chord) }),
               !keyboardTextInputState(in: event.window).imeHasMarkedText,
               let menu, let (owner, index) = item(for: command, matching: primary, in: menu) else { return false }
+        // A disabled item leaves the event to AppKit, which offers it to the key window
+        // itself; asking the window here as well would run its key equivalents twice.
+        owner.update()
+        guard owner.items[index].isEnabled else { return false }
         // AppKit offers a menu key to the key window (a sheet, a button's key equivalent)
         // before the menu; an alternate takes the same order.
         if let window = event.window, window.performKeyEquivalent(with: event) { return true }
         if event.isARepeat { return true }
-        owner.update()
-        guard owner.items[index].isEnabled else { return false }
         owner.performActionForItem(at: index)
         return true
     }
 
     /// The item for `command` that shows `chord`. A system item can show the same chord ahead
-    /// of the command's own, so when several do, the title decides.
+    /// of the command's own, so when several do, the title decides. SwiftUI menu items carry
+    /// no tag to match on, so a title that no longer names its command is logged, and the
+    /// shortcut does nothing rather than run the system item.
     static func item(
         for command: KeyboardShortcutCommand,
         matching chord: KeyboardShortcutChord,
         in menu: NSMenu
     ) -> (NSMenu, Int)? {
-        let found = items(matching: chord, in: menu)
-        if found.count == 1 { return found[0] }
-        return found.first { command.isMenuTitle($0.0.items[$0.1].title) }
+        var search = ItemSearch(command: command, chord: chord)
+        if let titled = search.titledItem(in: menu) { return titled }
+        if search.matches > 1 {
+            // Logged private, as app logs must be; Xcode's console shows the value while debugging.
+            logger.fault("No menu item titled “\(command.displayName)” shows its shortcut; its alternate was not run.")
+            return nil
+        }
+        return search.onlyMatch
     }
 
-    private static func items(matching chord: KeyboardShortcutChord, in menu: NSMenu) -> [(NSMenu, Int)] {
-        menu.items.enumerated().flatMap { index, item -> [(NSMenu, Int)] in
-            let nested = item.submenu.map { items(matching: chord, in: $0) } ?? []
-            return KeyboardShortcutChord(menuItem: item) == chord ? nested + [(menu, index)] : nested
+    /// One depth-first walk that stops at the first item titled for the command and
+    /// otherwise remembers whether exactly one item shows the chord.
+    private struct ItemSearch {
+        let command: KeyboardShortcutCommand
+        let chord: KeyboardShortcutChord
+        private(set) var matches = 0
+        private(set) var onlyMatch: (NSMenu, Int)?
+
+        init(command: KeyboardShortcutCommand, chord: KeyboardShortcutChord) {
+            self.command = command
+            self.chord = chord
+        }
+
+        mutating func titledItem(in menu: NSMenu) -> (NSMenu, Int)? {
+            for (index, item) in menu.items.enumerated() {
+                if let submenu = item.submenu, let found = titledItem(in: submenu) { return found }
+                guard KeyboardShortcutChord(menuItem: item) == chord else { continue }
+                if command.isMenuTitle(item.title) { return (menu, index) }
+                matches += 1
+                onlyMatch = matches == 1 ? (menu, index) : nil
+            }
+            return nil
         }
     }
 }

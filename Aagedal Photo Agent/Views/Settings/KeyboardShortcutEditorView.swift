@@ -51,7 +51,7 @@ struct KeyboardShortcutEditorView: View {
             HStack(alignment: .top, spacing: 14) {
                 commandList
                 KeyDetailView(
-                    key: selectedKey, profile: profile, commands: commands, layer: layer, selectedCommand: selectedCommand,
+                    key: selectedKey, commands: commands, layer: layer, selectedCommand: selectedCommand,
                     reservedTitle: reservedTitle, reservedDetail: reservedDetail,
                     assign: { chord in selectedCommand.map { assign(chord, to: $0, slot: nil) } },
                     remove: { chord in remove(chord) },
@@ -782,7 +782,7 @@ private struct KeyCapView: View {
 /// Everything one key does, under each modifier combination.
 private struct KeyDetailView: View {
     let key: VirtualKey?
-    let profile: KeyboardShortcutProfile
+    /// The command each chord runs (`KeyboardShortcutProfile.commandsByChord`).
     let commands: [KeyboardShortcutChord: KeyboardShortcutCommand]
     let layer: KeyboardShortcutModifiers
     let selectedCommand: KeyboardShortcutCommand?
@@ -807,7 +807,7 @@ private struct KeyDetailView: View {
                         ForEach(key.chords.map(\.chord), id: \.self) { chord in row(chord, inLayer: chord == current) }
                     }
                 }
-                if let selectedCommand, let chord = key.chord(with: layer), profile.assignment(of: chord) == nil,
+                if let selectedCommand, let chord = key.chord(with: layer), commands[chord] == nil,
                    KeyboardShortcutProfiles.validationError(chord, for: selectedCommand) == nil {
                     Button("Assign “\(selectedCommand.displayName)” to \(chord.displayName)") { assign(chord) }
                         .frame(maxWidth: .infinity)

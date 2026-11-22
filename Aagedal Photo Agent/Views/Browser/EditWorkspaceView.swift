@@ -1757,9 +1757,7 @@ struct EditWorkspaceView: View {
             )
             .onAppear {
                 let monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-                    guard keyboardWindow.ownsKeyEvent(in: event.window),
-                          NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
-                          event.window?.sheetParent == nil,
+                    guard keyboardWindow.admitsInput(in: event.window),
                           isCursorOverPreview else { return event }
                     // Only handle direct scroll input, ignore momentum to avoid drift
                     guard event.phase != [] || event.momentumPhase == [] else { return event }
@@ -3258,9 +3256,12 @@ struct EditWorkspaceView: View {
             workspaceInput.installKeyMonitor(keyMonitor) { NSEvent.removeMonitor($0) }
         }
         // ⌘D and ⌥V stay Develop's hold and paste gestures only where handleKeyEvent takes them.
-        KeyboardShortcutAlternateDispatcher.registerDevelopGestureOwner(primaryEditorOwnerID) { [self] event in
-            !workspaceInput.isOverlayPresented && keyboardWindow.ownsKeyEvent(in: event.window)
-                && NSApp.modalWindow == nil && event.window?.attachedSheet == nil && event.window?.sheetParent == nil
+        // The process-wide registry keeps this closure until disappear, so it holds only what
+        // the check reads, not the whole view.
+        KeyboardShortcutAlternateDispatcher.registerDevelopGestureOwner(primaryEditorOwnerID) {
+            [workspaceInput, keyboardWindow, browserViewModel] event, chord in
+            Self.ownsInput(in: event.window, workspaceInput: workspaceInput, keyboardWindow: keyboardWindow)
+                && Self.takesDevelopGesture(chord, browserViewModel: browserViewModel)
         }
         // Edit ▸ Undo/Redo drive this history (with step names) while Develop owns input; the
         // menu falls back to the responder chain for text fields and other windows.
@@ -3269,10 +3270,7 @@ struct EditWorkspaceView: View {
             session: persistenceSession,
             window: { [self] in keyboardWindow.window },
             canRoute: { [self] in
-                let window = NSApp.keyWindow
-                return keyboardWindow.ownsKeyEvent(in: window) && !isTextFieldActive()
-                    && !workspaceInput.isOverlayPresented && NSApp.modalWindow == nil
-                    && window?.attachedSheet == nil && window?.sheetParent == nil
+                developOwnsInput(in: NSApp.keyWindow) && !isTextFieldActive()
             },
             perform: { [self] redo in
                 // Same gate as the ⌘Z key handler: history belongs to the loaded photo.
@@ -3283,9 +3281,7 @@ struct EditWorkspaceView: View {
         // DaVinci Resolve-style grade copy: middle-click the hovered filmstrip thumbnail to
         // apply its develop settings to the current selection without changing that selection.
         let middleMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [self] event in
-            guard keyboardWindow.ownsKeyEvent(in: event.window),
-                  NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
-                  event.window?.sheetParent == nil,
+            guard keyboardWindow.admitsInput(in: event.window),
                   event.buttonNumber == 2,
                   let sourceURL = hoveredFilmstripURL,
                   let source = browserViewModel.images.first(where: { $0.url == sourceURL }) else {
@@ -9174,12 +9170,46 @@ struct EditWorkspaceView: View {
         workspaceSession.showNotice(message)
     }
 
-    private func isTextFieldActive() -> Bool {
+    private func isTextFieldActive() -> Bool { Self.isTextFieldActive() }
+
+    private static func isTextFieldActive() -> Bool {
         guard let window = NSApp.keyWindow else { return false }
         if let responder = window.firstResponder {
             return responder is NSText || responder is NSTextView
         }
         return false
+    }
+
+    /// Whether Develop owns keyboard input for an event in `window`: its window is key and no
+    /// recovery or save overlay, modal panel or sheet is in front of it.
+    private func developOwnsInput(in window: NSWindow?) -> Bool {
+        Self.ownsInput(in: window, workspaceInput: workspaceInput, keyboardWindow: keyboardWindow)
+    }
+
+    private static func ownsInput(
+        in window: NSWindow?,
+        workspaceInput: DevelopWorkspaceInputCoordinator,
+        keyboardWindow: DevelopKeyboardWindowReference
+    ) -> Bool {
+        !workspaceInput.isOverlayPresented && keyboardWindow.admitsInput(in: window)
+    }
+
+    /// Whether handleKeyEvent takes a hold or paste gesture itself once Develop owns input,
+    /// so the chord's menu command must not also run as an alternate. ⌘D is always consumed;
+    /// ⌥V only when it has settings to paste and no text field is typing.
+    private static func takesDevelopGesture(_ chord: KeyboardShortcutChord, browserViewModel: BrowserViewModel) -> Bool {
+        switch chord {
+        case KeyboardShortcutChord(key: "d", modifiers: .command): true
+        case KeyboardShortcutChord(key: "v", modifiers: .option): !isTextFieldActive() && developPaste(from: browserViewModel) != nil
+        default: false
+        }
+    }
+
+    /// The copied settings and the photos a paste gesture applies them to, or nil when the
+    /// gesture has nothing to paste and passes the key on.
+    private static func developPaste(from browserViewModel: BrowserViewModel) -> (settings: CameraRawSettings, urls: Set<URL>)? {
+        guard let copied = browserViewModel.copiedCameraRawSettings, !browserViewModel.selectedImageIDs.isEmpty else { return nil }
+        return (copied, browserViewModel.selectedImageIDs)
     }
 
     private func resetCropZoom() {
@@ -9506,10 +9536,7 @@ struct EditWorkspaceView: View {
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
         // Recovery and save panels own their key events. The workspace's application-wide
         // monitor must not turn typing or Escape in a sheet into another Develop mutation.
-        guard !workspaceInput.isOverlayPresented,
-              keyboardWindow.ownsKeyEvent(in: event.window),
-              NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
-              event.window?.sheetParent == nil else {
+        guard developOwnsInput(in: event.window) else {
             releaseHeldDevelopInput()
             return event
         }
@@ -9717,10 +9744,8 @@ struct EditWorkspaceView: View {
         // Cmd+V / Cmd+Shift+V — paste develop settings
         if chord == KeyboardShortcutChord(key: "v", modifiers: .command)
             || chord == KeyboardShortcutChord(key: "v", modifiers: [.command, .shift]) {
-            guard let copied = browserViewModel.copiedCameraRawSettings else { return event }
+            guard let (copied, selectedURLs) = Self.developPaste(from: browserViewModel) else { return event }
             let withCrop = modifiers.contains(.shift)
-            let selectedURLs = browserViewModel.selectedImageIDs
-            guard !selectedURLs.isEmpty else { return event }
 
             if selectedURLs.count == 1 {
                 // The selected photo's saved settings must be loaded before they are merged.
@@ -9739,9 +9764,9 @@ struct EditWorkspaceView: View {
         // matching Adobe's copy-dialog default of leaving crop unchecked).
         // Exclude Cmd+Option+V, which is reserved for Paste IPTC Metadata.
         if chord == KeyboardShortcutChord(key: "v", modifiers: .option) {
-            guard let copied = browserViewModel.copiedCameraRawSettings else { return event }
-            let selectedURLs = browserViewModel.selectedImageIDs
-            guard !selectedURLs.isEmpty else { return event }
+            // Keep in step with takesDevelopGesture, which lets ⌥V's menu alternate run
+            // whenever this passes the key on.
+            guard let (copied, selectedURLs) = Self.developPaste(from: browserViewModel) else { return event }
 
             if selectedURLs.count == 1 {
                 performWhenSelectedImageReady("Paste") {
@@ -10047,6 +10072,12 @@ final class DevelopKeyboardWindowReference {
     func ownsKeyEvent(in candidate: NSWindow?) -> Bool {
         guard let window else { return false }
         return candidate === window && window.isKeyWindow
+    }
+
+    /// `ownsKeyEvent`, and no modal panel or sheet is in front of the window.
+    func admitsInput(in candidate: NSWindow?) -> Bool {
+        ownsKeyEvent(in: candidate) && NSApp.modalWindow == nil
+            && candidate?.attachedSheet == nil && candidate?.sheetParent == nil
     }
 }
 

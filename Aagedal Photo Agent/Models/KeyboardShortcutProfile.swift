@@ -113,6 +113,11 @@ nonisolated struct KeyboardShortcutChord: Codable, Hashable, Sendable {
         !(modifiers.contains(.shift) && isCharacterKey && key.uppercased() == key)
     }
 
+    /// Files and stored data bypass the initializer; normalize as a key press would.
+    var normalizedFromStorage: KeyboardShortcutChord {
+        KeyboardShortcutChord(key: key, modifiers: modifiers.intersection([.command, .option, .control, .shift]))
+    }
+
     var keyLabel: String {
         [
             "return": "↩", "delete": "⌫", "forwarddelete": "⌦", "escape": "⎋", "space": "Space", "tab": "⇥",
@@ -577,10 +582,16 @@ nonisolated struct KeyboardShortcutProfile: Codable, Equatable, Sendable {
         return (command, slot)
     }
 
-    /// Every assigned chord and its command, for lookups across a whole keyboard.
+    /// The command each chord runs, for lookups across a whole keyboard. Like
+    /// `command(for:)`, a chord that two commands share runs neither and is left out.
     var commandsByChord: [KeyboardShortcutChord: KeyboardShortcutCommand] {
         var result: [KeyboardShortcutChord: KeyboardShortcutCommand] = [:]
-        for binding in bindings where result[binding.chord] == nil { result[binding.chord] = binding.command }
+        var shared: Set<KeyboardShortcutChord> = []
+        for binding in bindings {
+            if let existing = result[binding.chord], existing != binding.command { shared.insert(binding.chord) }
+            result[binding.chord] = binding.command
+        }
+        for chord in shared { result[chord] = nil }
         return result
     }
 
@@ -666,10 +677,7 @@ nonisolated struct KeyboardShortcutProfile: Codable, Equatable, Sendable {
         var rejected = 0
         for command in KeyboardShortcutCommand.allCases {
             for stored in saved[command.rawValue] ?? [] {
-                // Files and stored data bypass the initializer; normalize as a key press would.
-                let chord = KeyboardShortcutChord(
-                    key: stored.key, modifiers: stored.modifiers.intersection([.command, .option, .control, .shift])
-                )
+                let chord = stored.normalizedFromStorage
                 let slot = profile.chords(for: command).count
                 if slot < slotCount, profile.validationError(chord, for: command, slot: slot) == nil {
                     profile.set(chord, for: command, slot: slot)
@@ -970,13 +978,16 @@ final class KeyboardShortcutProfileRegistry {
     private(set) var activePresetName: String
     private(set) var presets: [KeyboardShortcutUserPreset]
     /// Saved shortcuts this version could not use (now reserved or duplicated) when the
-    /// shortcuts were loaded, so the editor can say they were left out.
+    /// shortcuts were loaded, so the editor can say they were left out. Loading saves the
+    /// shortcuts without them, and the note lasts until the shortcuts next change.
     private(set) var skippedOnLoad = 0
+    /// The preset whose saved shortcuts lost `skippedOnLoad`.
+    private var skippedOnLoadPreset = ""
 
     var skippedOnLoadNote: String? {
         guard skippedOnLoad > 0 else { return nil }
         let one = skippedOnLoad == 1
-        return "\(skippedOnLoad) saved shortcut\(one ? " was" : "s were") left out because this version reserves or already uses \(one ? "it" : "them")."
+        return "\(skippedOnLoad) shortcut\(one ? "" : "s") saved in “\(skippedOnLoadPreset)” \(one ? "was" : "were") left out because this version reserves or already uses \(one ? "it" : "them")."
     }
 
     /// Presets resolved once rather than on every `isModified` read; an entry is reused only
@@ -1004,15 +1015,16 @@ final class KeyboardShortcutProfileRegistry {
             activePresetName = active
             let current = KeyboardShortcutProfile.restoring(document.current, name: active, defaults: base)
             selectedProfile = current.profile
-            skippedOnLoad = current.rejected
+            if current.rejected > 0 {
+                persist()
+                skippedOnLoad = current.rejected
+                skippedOnLoadPreset = active
+            }
         } else if let data, let legacy = try? JSONDecoder().decode(LegacyDocument.self, from: data),
                   (1...2).contains(legacy.schemaVersion) {
-            let restored = KeyboardShortcutProfile.restoring(
-                Self.migratedSavedForm(legacy.customBindings, schemaVersion: legacy.schemaVersion),
-                name: Self.migratedPresetName, defaults: base
-            )
+            let migrated = Self.migratedSavedForm(legacy.customBindings, schemaVersion: legacy.schemaVersion)
+            let restored = KeyboardShortcutProfile.restoring(migrated.saved, name: Self.migratedPresetName, defaults: base)
             let custom = restored.profile
-            skippedOnLoad = restored.rejected
             let customPreset = KeyboardShortcutUserPreset(name: Self.migratedPresetName, shortcuts: custom.savedForm)
             if let preset = KeyboardShortcutPreset(rawValue: legacy.selectedPreset) {
                 // Keep earlier customisations reachable even while a built-in preset was chosen.
@@ -1025,6 +1037,8 @@ final class KeyboardShortcutProfileRegistry {
                 selectedProfile = custom
             }
             persist()
+            skippedOnLoad = migrated.rejected + restored.rejected
+            skippedOnLoadPreset = Self.migratedPresetName
         } else {
             presets = []
             activePresetName = Self.defaultPresetName
@@ -1035,15 +1049,23 @@ final class KeyboardShortcutProfileRegistry {
     /// Earlier versions stored a flat list with any number of keys per command. Keep at most
     /// two per command, preferring one menu (Command) chord and one other key, so Red's former
     /// 6 / S / ⌘1 becomes 6 and ⌘1. Version 1 predates app commands, which take defaults.
+    /// Keys this version cannot use (reserved, or taken by an earlier command as `restoring`
+    /// would find) are dropped and counted before the trim, so a usable third key fills the slot.
     private static func migratedSavedForm(
         _ bindings: [KeyboardShortcutBinding],
         schemaVersion: Int
-    ) -> [String: [KeyboardShortcutChord]] {
+    ) -> (saved: [String: [KeyboardShortcutChord]], rejected: Int) {
         var saved: [String: [KeyboardShortcutChord]] = [:]
+        var used: Set<KeyboardShortcutChord> = []
+        var rejected = 0
         for command in KeyboardShortcutCommand.allCases where schemaVersion >= 2 || command.isCulling {
             var chords: [KeyboardShortcutChord] = []
-            for chord in bindings.filter({ $0.command == command }).map(\.chord) where !chords.contains(chord) {
-                chords.append(chord)
+            for chord in bindings.filter({ $0.command == command }).map(\.chord.normalizedFromStorage) where !chords.contains(chord) {
+                if used.contains(chord) || KeyboardShortcutProfiles.validationError(chord, for: command) != nil {
+                    rejected += 1
+                } else {
+                    chords.append(chord)
+                }
             }
             if chords.count > KeyboardShortcutProfile.slotCount {
                 let preferred = [
@@ -1054,9 +1076,10 @@ final class KeyboardShortcutProfileRegistry {
                 chords = preferred.count == KeyboardShortcutProfile.slotCount
                     ? chords.filter(preferred.contains) : Array(chords.prefix(KeyboardShortcutProfile.slotCount))
             }
+            used.formUnion(chords)
             saved[command.rawValue] = chords
         }
-        return saved
+        return (saved, rejected)
     }
 
     var isBuiltInPresetActive: Bool { KeyboardShortcutPreset.named(activePresetName) != nil }
@@ -1210,7 +1233,10 @@ final class KeyboardShortcutProfileRegistry {
         applyPreset(named: Self.defaultPresetName)
     }
 
+    /// Saves the shortcuts. Every change goes through here, so it also retires the note
+    /// about shortcuts left out when they were loaded.
     private func persist() {
+        skippedOnLoad = 0
         let document = Document(activePresetName: activePresetName, current: selectedProfile.savedForm, presets: presets)
         if let data = try? JSONEncoder().encode(document) {
             defaults.set(data, forKey: storageKey)

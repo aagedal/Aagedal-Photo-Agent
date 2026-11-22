@@ -594,6 +594,30 @@ struct UnifiedKeyboardShortcutTests {
         }
     }
 
+    @Test("Migration drops keys this version cannot use before keeping two, so a usable key fills the slot")
+    func legacyMigrationDropsUnusableKeysBeforeTrimming() throws {
+        try withRegistry { _, defaults in
+            struct Legacy: Codable {
+                let schemaVersion = 2
+                let selectedPreset = "custom"
+                let customBindings: [KeyboardShortcutBinding]
+            }
+            var bindings = KeyboardShortcutProfiles.profile(for: .photoAgent).bindings
+            bindings.removeAll { $0.command == .rateOne || $0.chord == .init(key: "q") }
+            bindings += [
+                // Now reserved for macOS keyboard navigation.
+                KeyboardShortcutBinding(command: .rateOne, chord: .init(key: "f2", modifiers: .control)),
+                KeyboardShortcutBinding(command: .rateOne, chord: .init(key: "1")),
+                KeyboardShortcutBinding(command: .rateOne, chord: .init(key: "q")),
+            ]
+            defaults.set(try JSONEncoder().encode(Legacy(customBindings: bindings)), forKey: "profile")
+            let migrated = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
+            #expect(migrated.selectedProfile.chords(for: .rateOne) == [.init(key: "1"), .init(key: "q")])
+            #expect(migrated.skippedOnLoad == 1)
+            #expect(migrated.skippedOnLoadNote?.contains("“Custom”") == true)
+        }
+    }
+
     @Test("Saved shortcuts that are now reserved are counted when loading")
     func skippedOnLoad() throws {
         try withRegistry { registry, defaults in
@@ -611,7 +635,26 @@ struct UnifiedKeyboardShortcutTests {
             #expect(reopened.skippedOnLoad == 1)
             #expect(reopened.skippedOnLoadNote != nil)
             #expect(reopened.selectedProfile.chords(for: .renderSelected).isEmpty)
+
+            // Loading saved the shortcuts without it, so the note shows once.
+            let again = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "profile")
+            #expect(again.skippedOnLoadNote == nil)
+            // Any change retires the note.
+            reopened.resetToDefaults()
+            #expect(reopened.skippedOnLoadNote == nil)
         }
+    }
+
+    @Test("A chord two commands share runs neither, on the keyboard as when pressed")
+    func sharedChordRunsNeither() {
+        let profile = KeyboardShortcutProfile(name: "Test", bindings: [
+            KeyboardShortcutBinding(command: .rateOne, chord: .init(key: "z")),
+            KeyboardShortcutBinding(command: .rateTwo, chord: .init(key: "z")),
+            KeyboardShortcutBinding(command: .rateThree, chord: .init(key: "y")),
+        ])
+        #expect(profile.command(for: .init(key: "z")) == nil)
+        #expect(profile.commandsByChord[.init(key: "z")] == nil)
+        #expect(profile.commandsByChord[.init(key: "y")] == .rateThree)
     }
 
     @Test("System, text-entry and workspace keys cannot be assigned or mutate the active profile")
@@ -853,7 +896,7 @@ struct KeyboardShortcutEditorModelTests {
         #expect(target.count == 1)
 
         let owner = UUID()
-        KeyboardShortcutAlternateDispatcher.registerDevelopGestureOwner(owner) { _ in true }
+        KeyboardShortcutAlternateDispatcher.registerDevelopGestureOwner(owner) { _, _ in true }
         defer { KeyboardShortcutAlternateDispatcher.unregisterDevelopGestureOwner(owner) }
         #expect(!KeyboardShortcutAlternateDispatcher.perform(event, profile: profile, menu: menu))
         #expect(target.count == 1)
@@ -880,6 +923,12 @@ struct KeyboardShortcutEditorModelTests {
             characters: "\u{F709}", charactersIgnoringModifiers: "\u{F709}", isARepeat: false, keyCode: 97
         ))
         #expect(KeyboardShortcutAlternateDispatcher.perform(event, profile: profile, menu: menu))
+        #expect(tab.count == 1)
+        #expect(system.count == 0)
+
+        // When no item's title names the command, neither item runs.
+        menu.items[1].title = "Open Tab"
+        #expect(!KeyboardShortcutAlternateDispatcher.perform(event, profile: profile, menu: menu))
         #expect(tab.count == 1)
         #expect(system.count == 0)
         #expect(KeyboardShortcutCommand.openFolder.isMenuTitle("Open Folder..."))
